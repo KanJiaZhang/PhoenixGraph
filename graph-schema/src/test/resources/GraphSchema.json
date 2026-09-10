@@ -1,0 +1,79 @@
+{
+  "id": 1,
+  "name": "payment-graph",
+  "description": "Account / IP / Phone graph schema",
+  "constraints": {
+    "idSchemaIndex": 0,
+    "createdTimeIndex": -2,
+    "lastUpdatedTimeIndex": -1
+  },
+  "vertexSchemas": [
+    {
+      "id": 1,
+      "name": "Account",
+      "description": "An account",
+      "idSchema": { "id": 0, "name": "id", "description": "Account id", "type": "LONG" },
+      "createdTime": { "id": -2, "name": "createdTime", "description": "Creation time", "type": "LONG" },
+      "lastUpdatedTime": { "id": -1, "name": "lastUpdatedTime", "description": "Last update time", "type": "LONG" },
+      "properties": [
+        { "id": 1, "name": "accountStatus", "description": "Account status", "type": { "enum": ["ACTIVE", "FROZEN", "CLOSED"] } },
+        { "id": 2, "name": "accountType", "description": "Account type", "type": "STRING" },
+        { "id": 3, "name": "primaryAddress", "description": "Primary address", "type": "STRING" }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "IP",
+      "description": "An IP address",
+      "idSchema": { "id": 0, "name": "id", "description": "IP id", "type": "LONG" },
+      "createdTime": { "id": -2, "name": "createdTime", "description": "Creation time", "type": "LONG" },
+      "lastUpdatedTime": { "id": -1, "name": "lastUpdatedTime", "description": "Last update time", "type": "LONG" },
+      "properties": [
+        { "id": 1, "name": "ipAddress", "description": "IP address string", "type": "STRING" }
+      ]
+    },
+    {
+      "id": 3,
+      "name": "Phone",
+      "description": "A phone number",
+      "idSchema": { "id": 0, "name": "id", "description": "Phone id", "type": "LONG" },
+      "createdTime": { "id": -2, "name": "createdTime", "description": "Creation time", "type": "LONG" },
+      "lastUpdatedTime": { "id": -1, "name": "lastUpdatedTime", "description": "Last update time", "type": "LONG" },
+      "properties": [
+        { "id": 1, "name": "phoneNumber", "description": "Phone number", "type": "STRING" },
+        { "id": 2, "name": "countryCode", "description": "Country code", "type": "STRING" }
+      ]
+    }
+  ],
+  "edgeSchemas": [
+    {
+      "id": 1,
+      "name": "Payment",
+      "description": "A payment from a sender to a receiver",
+      "idSchema": { "id": 0, "name": "id", "description": "Payment id", "type": "LONG" },
+      "source": { "id": 1, "name": "source", "description": "Sender vertex id", "type": "LONG" },
+      "target": { "id": 2, "name": "target", "description": "Receiver vertex id", "type": "LONG" },
+      "createdTime": { "id": -2, "name": "createdTime", "description": "Creation time", "type": "LONG" },
+      "lastUpdatedTime": { "id": -1, "name": "lastUpdatedTime", "description": "Last update time", "type": "LONG" },
+      "properties": [
+        { "id": 3, "name": "status", "description": "Payment status", "type": { "enum": ["PENDING", "SUCCESS", "FAILED"] } },
+        { "id": 4, "name": "type", "description": "Payment type", "type": "STRING" },
+        { "id": 5, "name": "amount", "description": "Payment amount", "type": "DOUBLE" },
+        { "id": 6, "name": "currency", "description": "Currency code", "type": "STRING" }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "PhoneToAccount",
+      "description": "A phone belongs to an account",
+      "idSchema": { "id": 0, "name": "id", "description": "Edge id", "type": "LONG" },
+      "source": { "id": 1, "name": "source", "description": "Phone vertex id", "type": "LONG" },
+      "target": { "id": 2, "name": "target", "description": "Account vertex id", "type": "LONG" },
+      "createdTime": { "id": -2, "name": "createdTime", "description": "Creation time", "type": "LONG" },
+      "lastUpdatedTime": { "id": -1, "name": "lastUpdatedTime", "description": "Last update time", "type": "LONG" },
+      "properties": [
+        { "id": 3, "name": "linkedAt", "description": "Time when the phone was linked to the account", "type": "LONG" }
+      ]
+    }
+  ]
+}
