@@ -16,7 +16,7 @@ import java.util.Objects;
  * <p>Stores each edge inline in the vertex records of a {@link ColumnStore}:
  * {@link #OUT_EDGES_COLUMN} on the source and {@link #IN_EDGES_COLUMN} (reverse
  * edge) on the destination. When the configured maximum outgoing/incoming edge
- * count is exceeded, the oldest edges (by lastModified) are evicted from both
+ * count is exceeded, the oldest edges (by lastUpdatedTime) are evicted from both
  * columns.
  */
 public class InMemoryAdjacentEdgeStore implements AdjacentEdgeStore {
@@ -36,16 +36,6 @@ public class InMemoryAdjacentEdgeStore implements AdjacentEdgeStore {
     }
 
     @Override
-    public int maxOutgoingEdges() {
-        return maxOutgoingEdges;
-    }
-
-    @Override
-    public int maxIncomingEdges() {
-        return maxIncomingEdges;
-    }
-
-    @Override
     public void addEdge(StoredEdge edge) {
         Map<Object, StoredEdge> out = readMap(edge.source(), OUT_EDGES_COLUMN);
         out.put(edge.edgeId(), edge);
@@ -60,17 +50,17 @@ public class InMemoryAdjacentEdgeStore implements AdjacentEdgeStore {
     }
 
     @Override
-    public List<StoredEdge> outgoingEdges(Object vertexId) {
-        return sorted(readMap(vertexId, OUT_EDGES_COLUMN));
+    public List<StoredEdge> outgoingEdges(Object vertexId, int edgeSchemaId) {
+        return sorted(readMap(vertexId, OUT_EDGES_COLUMN), edgeSchemaId);
     }
 
     @Override
-    public List<StoredEdge> incomingEdges(Object vertexId) {
-        return sorted(readMap(vertexId, IN_EDGES_COLUMN));
+    public List<StoredEdge> incomingEdges(Object vertexId, int edgeSchemaId) {
+        return sorted(readMap(vertexId, IN_EDGES_COLUMN), edgeSchemaId);
     }
 
     @Override
-    public void removeEdge(Object source, Object destination, Object edgeId) {
+    public void removeEdge(Object source, Object destination, int edgeSchemaId, Object edgeId) {
         removeFromMap(source, OUT_EDGES_COLUMN, edgeId);
         removeFromMap(destination, IN_EDGES_COLUMN, edgeId);
     }
@@ -85,7 +75,7 @@ public class InMemoryAdjacentEdgeStore implements AdjacentEdgeStore {
             return;
         }
         List<StoredEdge> toEvict = map.values().stream()
-                .sorted(Comparator.comparingLong(StoredEdge::lastModified)) // oldest first
+                .sorted(Comparator.comparingLong(StoredEdge::lastUpdatedTime)) // oldest first
                 .limit(excess)
                 .toList();
         for (StoredEdge evicted : toEvict) {
@@ -115,9 +105,10 @@ public class InMemoryAdjacentEdgeStore implements AdjacentEdgeStore {
         return new LinkedHashMap<>((Map<Object, StoredEdge>) existing);
     }
 
-    private List<StoredEdge> sorted(Map<Object, StoredEdge> edges) {
+    private List<StoredEdge> sorted(Map<Object, StoredEdge> edges, int edgeSchemaId) {
         return edges.values().stream()
-                .sorted(Comparator.comparingLong(StoredEdge::lastModified).reversed())
+                .filter(e -> e.edgeSchemaId() == edgeSchemaId)
+                .sorted(Comparator.comparingLong(StoredEdge::lastUpdatedTime).reversed())
                 .toList();
     }
 }

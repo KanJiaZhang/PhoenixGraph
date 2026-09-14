@@ -40,6 +40,8 @@ class AccountGraphTest {
         assertNotNull(payment);
         assertEquals("source", payment.source().name());
         assertEquals("target", payment.target().name());
+        assertEquals("Account", payment.sourceVertexName());
+        assertEquals("Account", payment.targetVertexName());
         assertInstanceOf(PropertyType.EnumType.class, payment.property("status").type());
         assertEquals(PropertyType.ScalarType.STRING, payment.property("type").type());
         assertEquals(PropertyType.ScalarType.DOUBLE, payment.property("amount").type());
@@ -47,6 +49,8 @@ class AccountGraphTest {
 
         EdgeSchema phoneToAccount = graph.edgeSchema("PhoneToAccount");
         assertNotNull(phoneToAccount);
+        assertEquals("Phone", phoneToAccount.sourceVertexName());
+        assertEquals("Account", phoneToAccount.targetVertexName());
         assertEquals(PropertyType.ScalarType.LONG, phoneToAccount.property("linkedAt").type());
     }
 
@@ -62,6 +66,10 @@ class AccountGraphTest {
         assertEquals("Phone", graph.vertexSchema("Phone").name());
         assertEquals("Payment", graph.edgeSchema("Payment").name());
         assertEquals("PhoneToAccount", graph.edgeSchema("PhoneToAccount").name());
+        assertEquals("Account", graph.edgeSchema("Payment").sourceVertexName());
+        assertEquals("Account", graph.edgeSchema("Payment").targetVertexName());
+        assertEquals("Phone", graph.edgeSchema("PhoneToAccount").sourceVertexName());
+        assertEquals("Account", graph.edgeSchema("PhoneToAccount").targetVertexName());
     }
 
     @Test
@@ -110,8 +118,8 @@ class AccountGraphTest {
                 .property(new VertexPropertySchema(2, "countryCode", "Country code", PropertyType.ScalarType.STRING));
 
         EdgeSchema payment = new EdgeSchema(1, "Payment", "A payment from a sender to a receiver",
-                new EdgePropertySchema(1, "source", "Sender vertex id", PropertyType.ScalarType.LONG),
-                new EdgePropertySchema(2, "target", "Receiver vertex id", PropertyType.ScalarType.LONG))
+                new EdgeEndpointSchema(1, "source", "Sender vertex id", PropertyType.ScalarType.LONG, "Account"),
+                new EdgeEndpointSchema(2, "target", "Receiver vertex id", PropertyType.ScalarType.LONG, "Account"))
                 .property(new EdgePropertySchema(3, "status", "Payment status",
                         PropertyType.enumOf("PENDING", "SUCCESS", "FAILED")))
                 .property(new EdgePropertySchema(4, "type", "Payment type", PropertyType.ScalarType.STRING))
@@ -119,8 +127,8 @@ class AccountGraphTest {
                 .property(new EdgePropertySchema(6, "currency", "Currency code", PropertyType.ScalarType.STRING));
 
         EdgeSchema phoneToAccount = new EdgeSchema(2, "PhoneToAccount", "A phone belongs to an account",
-                new EdgePropertySchema(1, "source", "Phone vertex id", PropertyType.ScalarType.LONG),
-                new EdgePropertySchema(2, "target", "Account vertex id", PropertyType.ScalarType.LONG))
+                new EdgeEndpointSchema(1, "source", "Phone vertex id", PropertyType.ScalarType.LONG, "Phone"),
+                new EdgeEndpointSchema(2, "target", "Account vertex id", PropertyType.ScalarType.LONG, "Account"))
                 .property(new EdgePropertySchema(3, "linkedAt",
                         "Time when the phone was linked to the account", PropertyType.ScalarType.LONG));
 

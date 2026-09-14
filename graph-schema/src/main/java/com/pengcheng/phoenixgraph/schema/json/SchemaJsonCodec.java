@@ -9,10 +9,13 @@ import com.fasterxml.jackson.databind.JsonSerializer;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializerProvider;
 import com.fasterxml.jackson.databind.module.SimpleModule;
+import com.pengcheng.phoenixgraph.schema.EdgeDirection;
+import com.pengcheng.phoenixgraph.schema.EdgeEndpointSchema;
 import com.pengcheng.phoenixgraph.schema.EdgePropertySchema;
 import com.pengcheng.phoenixgraph.schema.EdgeSchema;
 import com.pengcheng.phoenixgraph.schema.GraphSchema;
 import com.pengcheng.phoenixgraph.schema.MetaPropertySchema;
+import com.pengcheng.phoenixgraph.schema.PropertyConstraints;
 import com.pengcheng.phoenixgraph.schema.PropertySchema;
 import com.pengcheng.phoenixgraph.schema.PropertyType;
 import com.pengcheng.phoenixgraph.schema.SchemaConstraints;
@@ -85,15 +88,28 @@ public class SchemaJsonCodec {
         return new EdgeSchemaDto(
                 schema.id(), schema.name(), schema.description(),
                 toPropertyDto(schema.idSchema()),
-                toPropertyDto(schema.source()),
-                toPropertyDto(schema.target()),
+                toEndpointDto(schema.source()),
+                toEndpointDto(schema.target()),
                 toPropertyDto(schema.createdTime()),
                 toPropertyDto(schema.lastUpdatedTime()),
-                schema.properties().stream().map(this::toPropertyDto).toList());
+                schema.direction(),
+                schema.properties().stream().map(this::toPropertyDto).toList(),
+                schema.maxOutgoingEdges(),
+                schema.maxIncomingEdges(),
+                schema.maxDegree());
     }
 
     private PropertyDto toPropertyDto(PropertySchema property) {
-        return new PropertyDto(property.id(), property.name(), property.description(), property.type());
+        PropertyConstraints constraints = property.constraints();
+        return new PropertyDto(property.id(), property.name(), property.description(), property.type(),
+                constraints.min(), constraints.max(), constraints.minLength(), constraints.maxLength(), null);
+    }
+
+    private PropertyDto toEndpointDto(EdgeEndpointSchema endpoint) {
+        PropertyConstraints constraints = endpoint.constraints();
+        return new PropertyDto(endpoint.id(), endpoint.name(), endpoint.description(), endpoint.type(),
+                constraints.min(), constraints.max(), constraints.minLength(), constraints.maxLength(),
+                endpoint.vertexName());
     }
 
     // --- DTO -> domain ---
@@ -116,13 +132,15 @@ public class SchemaJsonCodec {
 
     private VertexSchema toVertexSchema(VertexSchemaDto dto) {
         VertexPropertySchema idSchema = new VertexPropertySchema(
-                dto.idSchema().id(), dto.idSchema().name(), dto.idSchema().description(), dto.idSchema().type());
+                dto.idSchema().id(), dto.idSchema().name(), dto.idSchema().description(), dto.idSchema().type(),
+                toConstraints(dto.idSchema()));
         MetaPropertySchema createdTime = toMetaProperty(dto.createdTime(), MetaPropertySchema.createdTime());
         MetaPropertySchema lastUpdatedTime = toMetaProperty(dto.lastUpdatedTime(), MetaPropertySchema.lastUpdatedTime());
         VertexSchema schema = new VertexSchema(dto.id(), dto.name(), dto.description(), idSchema, createdTime, lastUpdatedTime);
         if (dto.properties() != null) {
             for (PropertyDto p : dto.properties()) {
-                schema.property(new VertexPropertySchema(p.id(), p.name(), p.description(), p.type()));
+                schema.property(new VertexPropertySchema(p.id(), p.name(), p.description(), p.type(),
+                        toConstraints(p)));
             }
         }
         return schema;
@@ -131,10 +149,14 @@ public class SchemaJsonCodec {
     private EdgeSchema toEdgeSchema(EdgeSchemaDto dto) {
         MetaPropertySchema createdTime = toMetaProperty(dto.createdTime(), MetaPropertySchema.createdTime());
         MetaPropertySchema lastUpdatedTime = toMetaProperty(dto.lastUpdatedTime(), MetaPropertySchema.lastUpdatedTime());
+        EdgeDirection direction = dto.direction() != null ? dto.direction() : EdgeDirection.DIRECTED;
         EdgeSchema schema = new EdgeSchema(
                 dto.id(), dto.name(), dto.description(),
-                toEdgeProperty(dto.idSchema()), toEdgeProperty(dto.source()), toEdgeProperty(dto.target()),
-                createdTime, lastUpdatedTime);
+                toEdgeProperty(dto.idSchema()), toEndpoint(dto.source()), toEndpoint(dto.target()),
+                createdTime, lastUpdatedTime, direction,
+                dto.maxOutgoingEdges() == null ? 0 : dto.maxOutgoingEdges(),
+                dto.maxIncomingEdges() == null ? 0 : dto.maxIncomingEdges(),
+                dto.maxDegree() == null ? 0 : dto.maxDegree());
         if (dto.properties() != null) {
             for (PropertyDto p : dto.properties()) {
                 schema.property(toEdgeProperty(p));
@@ -143,15 +165,28 @@ public class SchemaJsonCodec {
         return schema;
     }
 
+    private EdgeEndpointSchema toEndpoint(PropertyDto dto) {
+        return new EdgeEndpointSchema(dto.id(), dto.name(), dto.description(), dto.type(),
+                dto.vertex(), toConstraints(dto));
+    }
+
     private EdgePropertySchema toEdgeProperty(PropertyDto dto) {
-        return new EdgePropertySchema(dto.id(), dto.name(), dto.description(), dto.type());
+        return new EdgePropertySchema(dto.id(), dto.name(), dto.description(), dto.type(),
+                toConstraints(dto));
     }
 
     private MetaPropertySchema toMetaProperty(PropertyDto dto, MetaPropertySchema defaultMeta) {
         if (dto == null) {
             return defaultMeta;
         }
-        return new MetaPropertySchema(dto.id(), dto.name(), dto.description());
+        return new MetaPropertySchema(dto.id(), dto.name(), dto.description(), toConstraints(dto));
+    }
+
+    private static PropertyConstraints toConstraints(PropertyDto dto) {
+        if (dto == null) {
+            return PropertyConstraints.NONE;
+        }
+        return new PropertyConstraints(dto.min(), dto.max(), dto.minLength(), dto.maxLength());
     }
 
     // --- PropertyType JSON support ---

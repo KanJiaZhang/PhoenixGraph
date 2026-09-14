@@ -11,4 +11,9 @@ public class EdgePropertySchema extends PropertySchema {
     public EdgePropertySchema(int id, String name, String description, PropertyType type) {
         super(id, name, description, type);
     }
+
+    public EdgePropertySchema(int id, String name, String description, PropertyType type,
+                              PropertyConstraints constraints) {
+        super(id, name, description, type, constraints);
+    }
 }

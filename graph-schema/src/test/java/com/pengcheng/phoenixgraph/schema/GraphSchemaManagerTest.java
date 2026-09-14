@@ -40,6 +40,19 @@ class GraphSchemaManagerTest {
         assertEquals("source", worksAt.source().name());
         assertEquals("target", worksAt.target().name());
         assertEquals(PropertyType.ScalarType.INT, worksAt.property("since").type());
+        assertEquals(EdgeDirection.DIRECTED, worksAt.direction());
+
+        EdgeSchema friend = parsed.edgeSchema("friend");
+        assertNotNull(friend);
+        assertEquals(EdgeDirection.UNDIRECTED, friend.direction());
+        assertEquals(32, friend.maxDegree());
+        assertEquals(32, friend.maxOutDegree());
+        assertEquals(32, friend.maxInDegree());
+
+        assertEquals(64, parsed.edgeSchema("works_at").maxOutgoingEdges());
+        assertEquals(8, parsed.edgeSchema("works_at").maxIncomingEdges());
+        assertEquals(64, parsed.edgeSchema("works_at").maxOutDegree());
+        assertEquals(8, parsed.edgeSchema("works_at").maxInDegree());
     }
 
     @Test
@@ -107,11 +120,20 @@ class GraphSchemaManagerTest {
         EdgeSchema worksAt = new EdgeSchema(1, "works_at", "employment relation",
                 new EdgePropertySchema(1, "source", "source vertex", PropertyType.ScalarType.LONG),
                 new EdgePropertySchema(2, "target", "target vertex", PropertyType.ScalarType.LONG))
-                .property(new EdgePropertySchema(3, "since", "start year", PropertyType.ScalarType.INT));
+                .property(new EdgePropertySchema(3, "since", "start year", PropertyType.ScalarType.INT))
+                .maxOutgoingEdges(64)
+                .maxIncomingEdges(8);
+
+        EdgeSchema friend = new EdgeSchema(2, "friend", "friendship relation",
+                new EdgePropertySchema(1, "source", "source vertex", PropertyType.ScalarType.LONG),
+                new EdgePropertySchema(2, "target", "target vertex", PropertyType.ScalarType.LONG),
+                EdgeDirection.UNDIRECTED)
+                .maxDegree(32);
 
         return new GraphSchema(1, "social", "social graph")
                 .vertex(person)
                 .vertex(company)
-                .edge(worksAt);
+                .edge(worksAt)
+                .edge(friend);
     }
 }

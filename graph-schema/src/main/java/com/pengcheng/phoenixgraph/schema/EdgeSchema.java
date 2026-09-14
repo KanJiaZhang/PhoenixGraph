@@ -13,11 +13,17 @@ import java.util.Set;
  *
  * <p>Declares the edge schema {@code id}, {@code name} and {@code description},
  * plus dedicated property schemas: the edge {@code idSchema} (default index
- * {@value #ID_INDEX}), the {@code source} and {@code target} endpoints, and the
+ * {@value #ID_INDEX}), the {@link EdgeEndpointSchema source} and
+ * {@link EdgeEndpointSchema target} endpoints, and the
  * {@code createdTime}/{@code lastUpdatedTime} meta-properties. All remaining edge
  * properties are aggregated in the property list. Properties (including
  * id/source/target) can be looked up by id or name, and both ids and names are
  * unique within an edge schema.
+ *
+ * <p>Each endpoint declares both its id property and the vertex schema name it
+ * connects to ({@link EdgeEndpointSchema#vertexName()}). An edge schema also
+ * declares its {@link EdgeDirection} ({@code DIRECTED}, {@code UNDIRECTED} or
+ * {@code BIDIRECTIONAL}), which defaults to {@link EdgeDirection#DIRECTED}.
  */
 public class EdgeSchema {
 
@@ -28,10 +34,14 @@ public class EdgeSchema {
     private final String name;
     private final String description;
     private final EdgePropertySchema idSchema;
-    private final EdgePropertySchema source;
-    private final EdgePropertySchema target;
+    private final EdgeEndpointSchema source;
+    private final EdgeEndpointSchema target;
     private final MetaPropertySchema createdTime;
     private final MetaPropertySchema lastUpdatedTime;
+    private final EdgeDirection direction;
+    private int maxOutgoingEdges;
+    private int maxIncomingEdges;
+    private int maxDegree;
     private final List<EdgePropertySchema> properties = new ArrayList<>();
     private final Map<Integer, EdgePropertySchema> propertiesById = new HashMap<>();
     private final Map<String, EdgePropertySchema> propertiesByName = new HashMap<>();
@@ -40,6 +50,27 @@ public class EdgeSchema {
     public EdgeSchema(int id, String name, String description,
                       EdgePropertySchema idSchema, EdgePropertySchema source, EdgePropertySchema target,
                       MetaPropertySchema createdTime, MetaPropertySchema lastUpdatedTime) {
+        this(id, name, description, idSchema, endpoint(source), endpoint(target),
+                createdTime, lastUpdatedTime, EdgeDirection.DIRECTED);
+    }
+
+    public EdgeSchema(int id, String name, String description,
+                      EdgePropertySchema idSchema, EdgePropertySchema source, EdgePropertySchema target,
+                      MetaPropertySchema createdTime, MetaPropertySchema lastUpdatedTime,
+                      EdgeDirection direction) {
+        this(id, name, description, idSchema, endpoint(source), endpoint(target),
+                createdTime, lastUpdatedTime, direction, 0, 0, 0);
+    }
+
+    /**
+     * Full constructor including per-direction degree limits. Limits
+     * {@code <= 0} mean unlimited.
+     */
+    public EdgeSchema(int id, String name, String description,
+                      EdgePropertySchema idSchema, EdgeEndpointSchema source, EdgeEndpointSchema target,
+                      MetaPropertySchema createdTime, MetaPropertySchema lastUpdatedTime,
+                      EdgeDirection direction,
+                      int maxOutgoingEdges, int maxIncomingEdges, int maxDegree) {
         this.id = id;
         if (name == null || name.isBlank()) {
             throw new IllegalArgumentException("Edge schema name must not be blank");
@@ -51,6 +82,10 @@ public class EdgeSchema {
         this.target = Objects.requireNonNull(target, "target");
         this.createdTime = Objects.requireNonNull(createdTime, "createdTime");
         this.lastUpdatedTime = Objects.requireNonNull(lastUpdatedTime, "lastUpdatedTime");
+        this.direction = Objects.requireNonNull(direction, "direction");
+        this.maxOutgoingEdges = maxOutgoingEdges;
+        this.maxIncomingEdges = maxIncomingEdges;
+        this.maxDegree = maxDegree;
         addProperty(idSchema);
         addProperty(source);
         addProperty(target);
@@ -61,10 +96,17 @@ public class EdgeSchema {
     /** Convenience constructor creating a default id schema with index {@value #ID_INDEX}. */
     public EdgeSchema(int id, String name, String description,
                       EdgePropertySchema source, EdgePropertySchema target) {
+        this(id, name, description, source, target, EdgeDirection.DIRECTED);
+    }
+
+    /** Convenience constructor with an explicit {@link EdgeDirection}. */
+    public EdgeSchema(int id, String name, String description,
+                      EdgePropertySchema source, EdgePropertySchema target, EdgeDirection direction) {
         this(id, name, description,
                 new EdgePropertySchema(ID_INDEX, "id", "Edge id", PropertyType.ScalarType.LONG),
-                source, target,
-                MetaPropertySchema.createdTime(), MetaPropertySchema.lastUpdatedTime());
+                endpoint(source), endpoint(target),
+                MetaPropertySchema.createdTime(), MetaPropertySchema.lastUpdatedTime(),
+                direction);
     }
 
     public EdgeSchema(int id, String name, EdgePropertySchema source, EdgePropertySchema target) {
@@ -77,6 +119,43 @@ public class EdgeSchema {
         addProperty(property);
         properties.add(property);
         return this;
+    }
+
+    /**
+     * Sets the maximum number of outgoing edges retained per vertex for this
+     * edge class (DIRECTED edges only); {@code <= 0} means unlimited (fluent).
+     */
+    public EdgeSchema maxOutgoingEdges(int maxOutgoingEdges) {
+        this.maxOutgoingEdges = maxOutgoingEdges;
+        return this;
+    }
+
+    /**
+     * Sets the maximum number of incoming edges retained per vertex for this
+     * edge class (DIRECTED edges only); {@code <= 0} means unlimited (fluent).
+     */
+    public EdgeSchema maxIncomingEdges(int maxIncomingEdges) {
+        this.maxIncomingEdges = maxIncomingEdges;
+        return this;
+    }
+
+    /**
+     * Sets the single maximum degree retained per vertex for undirected or
+     * bidirectional edge classes; {@code <= 0} means unlimited (fluent).
+     */
+    public EdgeSchema maxDegree(int maxDegree) {
+        this.maxDegree = maxDegree;
+        return this;
+    }
+
+    /** Wraps a plain endpoint property into an {@link EdgeEndpointSchema} (vertex name unknown). */
+    private static EdgeEndpointSchema endpoint(EdgePropertySchema property) {
+        Objects.requireNonNull(property, "endpoint");
+        if (property instanceof EdgeEndpointSchema endpoint) {
+            return endpoint;
+        }
+        return new EdgeEndpointSchema(property.id(), property.name(), property.description(),
+                property.type(), null, property.constraints());
     }
 
     private void addProperty(EdgePropertySchema property) {
@@ -113,13 +192,13 @@ public class EdgeSchema {
         return idSchema;
     }
 
-    /** The source endpoint property schema. */
-    public EdgePropertySchema source() {
+    /** The source endpoint (id property + source vertex schema name). */
+    public EdgeEndpointSchema source() {
         return source;
     }
 
-    /** The target endpoint property schema. */
-    public EdgePropertySchema target() {
+    /** The target endpoint (id property + target vertex schema name). */
+    public EdgeEndpointSchema target() {
         return target;
     }
 
@@ -131,6 +210,52 @@ public class EdgeSchema {
     /** The {@code lastUpdatedTime} meta-property schema. */
     public MetaPropertySchema lastUpdatedTime() {
         return lastUpdatedTime;
+    }
+
+    /** The direction semantics of this edge class. */
+    public EdgeDirection direction() {
+        return direction;
+    }
+
+    /** The vertex schema name of the source endpoint, or {@code null} if not declared. */
+    public String sourceVertexName() {
+        return source.vertexName();
+    }
+
+    /** The vertex schema name of the target endpoint, or {@code null} if not declared. */
+    public String targetVertexName() {
+        return target.vertexName();
+    }
+
+    /** Maximum outgoing edges per vertex ({@code <= 0} means unlimited). */
+    public int maxOutgoingEdges() {
+        return maxOutgoingEdges;
+    }
+
+    /** Maximum incoming edges per vertex ({@code <= 0} means unlimited). */
+    public int maxIncomingEdges() {
+        return maxIncomingEdges;
+    }
+
+    /** Single maximum degree for undirected/bidirectional edges ({@code <= 0} means unlimited). */
+    public int maxDegree() {
+        return maxDegree;
+    }
+
+    /**
+     * Effective maximum outgoing degree: {@code maxOutgoingEdges} for DIRECTED
+     * edges, otherwise the single {@code maxDegree}.
+     */
+    public int maxOutDegree() {
+        return direction == EdgeDirection.DIRECTED ? maxOutgoingEdges : maxDegree;
+    }
+
+    /**
+     * Effective maximum incoming degree: {@code maxIncomingEdges} for DIRECTED
+     * edges, otherwise the single {@code maxDegree}.
+     */
+    public int maxInDegree() {
+        return direction == EdgeDirection.DIRECTED ? maxIncomingEdges : maxDegree;
     }
 
     /** Immutable view of the (remaining) edge properties. */

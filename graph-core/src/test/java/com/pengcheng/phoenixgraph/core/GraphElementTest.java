@@ -1,5 +1,6 @@
 package com.pengcheng.phoenixgraph.core;
 
+import com.pengcheng.phoenixgraph.schema.EdgeDirection;
 import com.pengcheng.phoenixgraph.schema.EdgePropertySchema;
 import com.pengcheng.phoenixgraph.schema.EdgeSchema;
 import com.pengcheng.phoenixgraph.schema.PropertyType;
@@ -67,6 +68,45 @@ class GraphElementTest {
     void edgeRejectsWrongEndpointType() {
         assertThrows(IllegalArgumentException.class,
                 () -> new SimpleEdge(paymentSchema(), 7L, "wrong-source", 2L, Map.of()));
+    }
+
+    @Test
+    void edgeDirectionIsInheritedFromSchema() {
+        Edge edge = new SimpleEdge(paymentSchema(), 7L, 1L, 2L, Map.of());
+        assertEquals(EdgeDirection.DIRECTED, edge.direction());
+    }
+
+    @Test
+    void directedEdgeIdentifiesIncomingAndOutgoingPerEndpoint() {
+        Edge edge = new SimpleEdge(paymentSchema(), 7L, 1L, 2L, Map.of());
+
+        assertTrue(edge.isOutgoing(1L));   // source
+        assertFalse(edge.isOutgoing(2L));  // destination
+        assertTrue(edge.isIncoming(2L));   // destination
+        assertFalse(edge.isIncoming(1L));  // source
+    }
+
+    @Test
+    void undirectedAndBidirectionalEdgesAreBothInAndOut() {
+        EdgeSchema undirected = new EdgeSchema(1, "Friend", null,
+                new EdgePropertySchema(1, "source", null, PropertyType.ScalarType.LONG),
+                new EdgePropertySchema(2, "target", null, PropertyType.ScalarType.LONG),
+                EdgeDirection.UNDIRECTED);
+        Edge friend = new SimpleEdge(undirected, 7L, 1L, 2L, Map.of());
+        assertTrue(friend.isOutgoing(1L));
+        assertTrue(friend.isOutgoing(2L));
+        assertTrue(friend.isIncoming(1L));
+        assertTrue(friend.isIncoming(2L));
+
+        EdgeSchema bidirectional = new EdgeSchema(2, "Talk", null,
+                new EdgePropertySchema(1, "source", null, PropertyType.ScalarType.LONG),
+                new EdgePropertySchema(2, "target", null, PropertyType.ScalarType.LONG),
+                EdgeDirection.BIDIRECTIONAL);
+        Edge talk = new SimpleEdge(bidirectional, 8L, 1L, 2L, Map.of());
+        assertTrue(talk.isOutgoing(1L));
+        assertTrue(talk.isOutgoing(2L));
+        assertTrue(talk.isIncoming(1L));
+        assertTrue(talk.isIncoming(2L));
     }
 
     @Test

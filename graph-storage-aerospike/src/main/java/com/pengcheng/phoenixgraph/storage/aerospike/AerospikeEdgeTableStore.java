@@ -4,6 +4,7 @@ import com.aerospike.client.AerospikeClient;
 import com.aerospike.client.Bin;
 import com.aerospike.client.Record;
 import com.aerospike.client.Value;
+import com.pengcheng.phoenixgraph.schema.EdgeDirection;
 import com.pengcheng.phoenixgraph.storage.EdgeTableStore;
 import com.pengcheng.phoenixgraph.storage.StoredEdge;
 
@@ -41,9 +42,11 @@ public class AerospikeEdgeTableStore implements EdgeTableStore {
     @Override
     public void put(StoredEdge edge) {
         client.put(null, AerospikeKeys.of(namespace, edgeSet, edge.edgeId()),
+                new Bin("edgeSchemaId", edge.edgeSchemaId()),
                 new Bin("source", Value.get(edge.source())),
                 new Bin("destination", Value.get(edge.destination())),
-                new Bin("lastModified", edge.lastModified()),
+                new Bin("direction", edge.direction().name()),
+                new Bin("lastUpdatedTime", edge.lastUpdatedTime()),
                 new Bin("columns", edge.columns()));
         appendIndex(sourceIndexSet, edge.source(), edge.edgeId());
         appendIndex(destinationIndexSet, edge.destination(), edge.edgeId());
@@ -116,9 +119,11 @@ public class AerospikeEdgeTableStore implements EdgeTableStore {
     @SuppressWarnings("unchecked")
     private StoredEdge toEdge(Object edgeId, Map<String, Object> bins) {
         return new StoredEdge(edgeId,
+                ((Number) bins.get("edgeSchemaId")).intValue(),
                 bins.get("source"),
                 bins.get("destination"),
+                EdgeDirection.valueOf((String) bins.get("direction")),
                 (Map<String, Object>) bins.get("columns"),
-                ((Number) bins.get("lastModified")).longValue());
+                ((Number) bins.get("lastUpdatedTime")).longValue());
     }
 }

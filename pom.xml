@@ -18,8 +18,14 @@
         <module>graph-storage</module>
         <module>graph-storage-aerospike</module>
         <module>graph-query-engine</module>
+        <module>graph-query-aerospike</module>
+        <module>graph-query-gremlin</module>
         <module>graph-compute-engine</module>
         <module>graph-web</module>
+        <module>graph-http</module>
+        <module>graph-batch-load</module>
+        <module>graph-mapreduce</module>
+        <module>graph-integration-test</module>
     </modules>
 
     <properties>
@@ -68,12 +74,42 @@
             </dependency>
             <dependency>
                 <groupId>com.pengcheng.phoenixgraph</groupId>
+                <artifactId>graph-query-aerospike</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.pengcheng.phoenixgraph</groupId>
+                <artifactId>graph-query-gremlin</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.pengcheng.phoenixgraph</groupId>
                 <artifactId>graph-compute-engine</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
                 <groupId>com.pengcheng.phoenixgraph</groupId>
                 <artifactId>graph-web</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.pengcheng.phoenixgraph</groupId>
+                <artifactId>graph-http</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.pengcheng.phoenixgraph</groupId>
+                <artifactId>graph-batch-load</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.pengcheng.phoenixgraph</groupId>
+                <artifactId>graph-mapreduce</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.pengcheng.phoenixgraph</groupId>
+                <artifactId>graph-integration-test</artifactId>
                 <version>${project.version}</version>
             </dependency>
 

@@ -19,6 +19,10 @@ public class MetaPropertySchema extends PropertySchema {
         super(id, name, description, PropertyType.ScalarType.LONG);
     }
 
+    public MetaPropertySchema(int id, String name, String description, PropertyConstraints constraints) {
+        super(id, name, description, PropertyType.ScalarType.LONG, constraints);
+    }
+
     /** The built-in {@code createdTime} meta-property (index -2). */
     public static MetaPropertySchema createdTime() {
         return new MetaPropertySchema(CREATED_TIME_ID, "createdTime",

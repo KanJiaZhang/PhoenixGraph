@@ -59,11 +59,33 @@ class GraphSchemaTest {
                 .property(new EdgePropertySchema(3, "since", null, PropertyType.ScalarType.INT));
 
         assertEquals("employment relation", worksAt.description());
-        assertSame(source, worksAt.property(1));
-        assertSame(source, worksAt.property("source"));
-        assertSame(target, worksAt.property("target"));
+        assertEquals("source", worksAt.property(1).name());
+        assertEquals("source", worksAt.property("source").name());
+        assertEquals("target", worksAt.property("target").name());
         assertSame(worksAt.idSchema(), worksAt.property(EdgeSchema.ID_INDEX));
         assertNull(worksAt.property(42));
+        // plain endpoints are wrapped, so the vertex schema name is unknown
+        assertNull(worksAt.sourceVertexName());
+        assertNull(worksAt.targetVertexName());
+    }
+
+    @Test
+    void edgeSchemaDirectionDefaultsToDirected() {
+        EdgeSchema edge = new EdgeSchema(1, "e",
+                new EdgePropertySchema(1, "source", null, PropertyType.ScalarType.LONG),
+                new EdgePropertySchema(2, "target", null, PropertyType.ScalarType.LONG));
+        assertEquals(EdgeDirection.DIRECTED, edge.direction());
+    }
+
+    @Test
+    void edgeSchemaSupportsExplicitDirection() {
+        EdgePropertySchema source = new EdgePropertySchema(1, "source", null, PropertyType.ScalarType.LONG);
+        EdgePropertySchema target = new EdgePropertySchema(2, "target", null, PropertyType.ScalarType.LONG);
+
+        assertEquals(EdgeDirection.UNDIRECTED,
+                new EdgeSchema(1, "e", "desc", source, target, EdgeDirection.UNDIRECTED).direction());
+        assertEquals(EdgeDirection.BIDIRECTIONAL,
+                new EdgeSchema(1, "e", "desc", source, target, EdgeDirection.BIDIRECTIONAL).direction());
     }
 
     @Test

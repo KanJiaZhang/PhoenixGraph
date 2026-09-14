@@ -22,9 +22,15 @@ public class InMemoryEdgeTableStore implements EdgeTableStore {
 
     @Override
     public void put(StoredEdge edge) {
-        edges.put(edge.edgeId(), edge);
-        sourceIndex.computeIfAbsent(edge.source(), k -> new ArrayList<>()).add(edge.edgeId());
-        destinationIndex.computeIfAbsent(edge.destination(), k -> new ArrayList<>()).add(edge.edgeId());
+        StoredEdge previous = edges.put(edge.edgeId(), edge);
+        if (previous != null
+                && (!Objects.equals(previous.source(), edge.source())
+                || !Objects.equals(previous.destination(), edge.destination()))) {
+            removeFromIndex(sourceIndex, previous.source(), edge.edgeId());
+            removeFromIndex(destinationIndex, previous.destination(), edge.edgeId());
+        }
+        addToIndex(sourceIndex, edge.source(), edge.edgeId());
+        addToIndex(destinationIndex, edge.destination(), edge.edgeId());
     }
 
     @Override
@@ -55,6 +61,13 @@ public class InMemoryEdgeTableStore implements EdgeTableStore {
         List<Object> ids = index.get(key);
         if (ids != null) {
             ids.remove(edgeId);
+        }
+    }
+
+    private static void addToIndex(Map<Object, List<Object>> index, Object key, Object edgeId) {
+        List<Object> ids = index.computeIfAbsent(key, k -> new ArrayList<>());
+        if (!ids.contains(edgeId)) {
+            ids.add(edgeId);
         }
     }
 

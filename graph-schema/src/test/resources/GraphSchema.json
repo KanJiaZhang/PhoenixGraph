@@ -40,7 +40,7 @@
       "createdTime": { "id": -2, "name": "createdTime", "description": "Creation time", "type": "LONG" },
       "lastUpdatedTime": { "id": -1, "name": "lastUpdatedTime", "description": "Last update time", "type": "LONG" },
       "properties": [
-        { "id": 1, "name": "phoneNumber", "description": "Phone number", "type": "STRING" },
+        { "id": 1, "name": "phoneNumber", "description": "Phone number", "type": "STRING", "minLength": 3, "maxLength": 20 },
         { "id": 2, "name": "countryCode", "description": "Country code", "type": "STRING" }
       ]
     }
@@ -51,14 +51,17 @@
       "name": "Payment",
       "description": "A payment from a sender to a receiver",
       "idSchema": { "id": 0, "name": "id", "description": "Payment id", "type": "LONG" },
-      "source": { "id": 1, "name": "source", "description": "Sender vertex id", "type": "LONG" },
-      "target": { "id": 2, "name": "target", "description": "Receiver vertex id", "type": "LONG" },
+      "source": { "id": 1, "name": "source", "description": "Sender vertex id", "type": "LONG", "vertex": "Account" },
+      "target": { "id": 2, "name": "target", "description": "Receiver vertex id", "type": "LONG", "vertex": "Account" },
       "createdTime": { "id": -2, "name": "createdTime", "description": "Creation time", "type": "LONG" },
       "lastUpdatedTime": { "id": -1, "name": "lastUpdatedTime", "description": "Last update time", "type": "LONG" },
+      "direction": "DIRECTED",
+      "maxOutgoingEdges": 1000,
+      "maxIncomingEdges": 1000,
       "properties": [
         { "id": 3, "name": "status", "description": "Payment status", "type": { "enum": ["PENDING", "SUCCESS", "FAILED"] } },
         { "id": 4, "name": "type", "description": "Payment type", "type": "STRING" },
-        { "id": 5, "name": "amount", "description": "Payment amount", "type": "DOUBLE" },
+        { "id": 5, "name": "amount", "description": "Payment amount", "type": "DOUBLE", "min": 0.0, "max": 1000000000.0 },
         { "id": 6, "name": "currency", "description": "Currency code", "type": "STRING" }
       ]
     },
@@ -67,10 +70,13 @@
       "name": "PhoneToAccount",
       "description": "A phone belongs to an account",
       "idSchema": { "id": 0, "name": "id", "description": "Edge id", "type": "LONG" },
-      "source": { "id": 1, "name": "source", "description": "Phone vertex id", "type": "LONG" },
-      "target": { "id": 2, "name": "target", "description": "Account vertex id", "type": "LONG" },
+      "source": { "id": 1, "name": "source", "description": "Phone vertex id", "type": "LONG", "vertex": "Phone" },
+      "target": { "id": 2, "name": "target", "description": "Account vertex id", "type": "LONG", "vertex": "Account" },
       "createdTime": { "id": -2, "name": "createdTime", "description": "Creation time", "type": "LONG" },
       "lastUpdatedTime": { "id": -1, "name": "lastUpdatedTime", "description": "Last update time", "type": "LONG" },
+      "direction": "DIRECTED",
+      "maxOutgoingEdges": 10,
+      "maxIncomingEdges": 1000,
       "properties": [
         { "id": 3, "name": "linkedAt", "description": "Time when the phone was linked to the account", "type": "LONG" }
       ]

@@ -8,6 +8,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * Default {@link Edge} implementation.
@@ -34,15 +35,30 @@ public class SimpleEdge implements Edge {
 
     public SimpleEdge(EdgeSchema schema, Object edgeId, Object source, Object destination,
                       Map<String, ?> values, MetaProperty meta) {
+        this(schema, edgeId, source, destination, values, meta, null);
+    }
+
+    /**
+     * Constructs an edge materialising only the given property names; a
+     * {@code null} or empty {@code propertyNames} selects all declared
+     * properties.
+     */
+    public SimpleEdge(EdgeSchema schema, Object edgeId, Object source, Object destination,
+                      Map<String, ?> values, MetaProperty meta, Collection<String> propertyNames) {
         this.schema = Objects.requireNonNull(schema, "schema");
         this.meta = Objects.requireNonNull(meta, "meta");
         this.edgeId = PropertyValues.validate(schema.idSchema().type(), edgeId);
         this.source = PropertyValues.validate(schema.source().type(), source);
         this.destination = PropertyValues.validate(schema.target().type(), destination);
+        Set<String> selected = propertyNames == null || propertyNames.isEmpty()
+                ? null : Set.copyOf(propertyNames);
 
         Map<String, Property> byName = new LinkedHashMap<>();
         Map<Integer, Property> byId = new LinkedHashMap<>();
         for (EdgePropertySchema propertySchema : schema.properties()) {
+            if (selected != null && !selected.contains(propertySchema.name())) {
+                continue;
+            }
             Object value = values == null ? null : values.get(propertySchema.name());
             Property property = SimpleProperty.create(propertySchema, value);
             byName.put(propertySchema.name(), property);

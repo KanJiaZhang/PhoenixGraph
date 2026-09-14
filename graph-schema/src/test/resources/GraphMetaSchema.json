@@ -1,0 +1,13 @@
+{
+  "id": 1,
+  "name": "payment-meta-schema",
+  "description": "Metadata and constraint bounds for the payment graph",
+  "maxInDegree": 1000,
+  "maxOutDegree": 1000,
+  "maxDegree": 1000,
+  "propertyBounds": [
+    { "type": "INT", "min": -2147483648, "max": 2147483647 },
+    { "type": "LONG", "min": 0, "max": 9223372036854775807 },
+    { "type": "DOUBLE", "min": 0.0, "max": 1000000000.0 }
+  ]
+}

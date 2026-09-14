@@ -11,4 +11,9 @@ public class VertexPropertySchema extends PropertySchema {
     public VertexPropertySchema(int id, String name, String description, PropertyType type) {
         super(id, name, description, type);
     }
+
+    public VertexPropertySchema(int id, String name, String description, PropertyType type,
+                                PropertyConstraints constraints) {
+        super(id, name, description, type, constraints);
+    }
 }

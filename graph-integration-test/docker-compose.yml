@@ -1,0 +1,8 @@
+services:
+  aerospike:
+    image: aerospike/aerospike-server-community
+    container_name: aerospike
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./scripts/aerospike.conf:/etc/aerospike/aerospike.conf:ro

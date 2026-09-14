@@ -6,15 +6,16 @@ import java.util.List;
  * Edge storage strategy that denormalizes edges onto their source and
  * destination vertices.
  *
- * <p>Each edge is stored inline in the vertex's key/value record as a map-like
- * column (keyed by edge id), and a reverse copy is stored on the destination so
- * traversal works from either side. Edges are returned ordered by
- * {@link StoredEdge#lastModified()} (most recent first).
+ * <p>Each edge is stored inline in the vertex's key/value record, keyed by the
+ * edge's {@link StoredEdge#edgeSchemaId() edge schema id} and direction, and a
+ * reverse copy is stored on the destination so traversal works from either
+ * side. Edges are returned ordered by {@link StoredEdge#lastUpdatedTime()} (most
+ * recent first).
  *
- * <p>The store retains at most {@link #maxOutgoingEdges()} outgoing edges per
- * vertex and {@link #maxIncomingEdges()} incoming edges per vertex. When adding
- * an edge exceeds a limit, the oldest edges (by lastModified) are evicted from
- * both the forward and reverse columns.
+ * <p>The maximum number of edges retained per vertex is declared by the edge
+ * schema metadata ({@code maxOutgoingEdges} / {@code maxIncomingEdges} for
+ * DIRECTED edges, or the single {@code maxDegree} for UNDIRECTED/BIDIRECTIONAL
+ * edges), not hard-coded in the store.
  */
 public interface AdjacentEdgeStore {
 
@@ -24,21 +25,15 @@ public interface AdjacentEdgeStore {
     /** Column holding incoming edges (on the destination vertex). */
     String IN_EDGES_COLUMN = "__in_edges";
 
-    /** Maximum outgoing edges retained per vertex; {@code <= 0} means unlimited. */
-    int maxOutgoingEdges();
-
-    /** Maximum incoming edges retained per vertex; {@code <= 0} means unlimited. */
-    int maxIncomingEdges();
-
     /** Stores the edge on its source (outgoing) and destination (incoming), trimming if needed. */
     void addEdge(StoredEdge edge);
 
-    /** Returns outgoing edges of the vertex, sorted by lastModified descending. */
-    List<StoredEdge> outgoingEdges(Object vertexId);
+    /** Returns outgoing edges of the given edge schema of the vertex, sorted by lastUpdatedTime descending. */
+    List<StoredEdge> outgoingEdges(Object vertexId, int edgeSchemaId);
 
-    /** Returns incoming edges of the vertex, sorted by lastModified descending. */
-    List<StoredEdge> incomingEdges(Object vertexId);
+    /** Returns incoming edges of the given edge schema of the vertex, sorted by lastUpdatedTime descending. */
+    List<StoredEdge> incomingEdges(Object vertexId, int edgeSchemaId);
 
     /** Removes the edge from both the source and destination vertices. */
-    void removeEdge(Object source, Object destination, Object edgeId);
+    void removeEdge(Object source, Object destination, int edgeSchemaId, Object edgeId);
 }

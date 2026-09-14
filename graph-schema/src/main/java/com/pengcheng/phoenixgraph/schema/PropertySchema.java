@@ -7,7 +7,8 @@ import java.util.Objects;
  *
  * <p>Every property schema has an {@code int} id which is its unique index within
  * its parent schema (a {@link VertexSchema} or an {@link EdgeSchema}), plus a
- * {@code name}, a human-readable {@code description} and a {@link PropertyType}.
+ * {@code name}, a human-readable {@code description}, a {@link PropertyType}
+ * and optional value-level {@link PropertyConstraints}.
  *
  * <p>Concrete subclasses are {@link VertexPropertySchema}, {@link EdgePropertySchema}
  * and {@link MetaPropertySchema}.
@@ -18,8 +19,14 @@ public abstract class PropertySchema {
     private final String name;
     private final String description;
     private final PropertyType type;
+    private final PropertyConstraints constraints;
 
     protected PropertySchema(int id, String name, String description, PropertyType type) {
+        this(id, name, description, type, PropertyConstraints.NONE);
+    }
+
+    protected PropertySchema(int id, String name, String description, PropertyType type,
+                             PropertyConstraints constraints) {
         if (name == null || name.isBlank()) {
             throw new IllegalArgumentException("Property schema name must not be blank");
         }
@@ -27,6 +34,7 @@ public abstract class PropertySchema {
         this.name = name;
         this.description = description;
         this.type = Objects.requireNonNull(type, "type");
+        this.constraints = constraints == null ? PropertyConstraints.NONE : constraints;
     }
 
     /** Unique index of this property within its parent schema. */
@@ -44,6 +52,11 @@ public abstract class PropertySchema {
 
     public PropertyType type() {
         return type;
+    }
+
+    /** The optional value-level constraints declared for this property (never {@code null}). */
+    public PropertyConstraints constraints() {
+        return constraints;
     }
 
     @Override

@@ -18,7 +18,7 @@ import java.util.Objects;
  * <p>Stores each edge inline in the vertex record as a map bin: the outgoing
  * column on the source vertex and a reverse (incoming) column on the
  * destination vertex, so traversal works from either side. Edges are returned
- * sorted by {@link StoredEdge#lastModified()} descending. When the configured
+ * sorted by {@link StoredEdge#lastUpdatedTime()} descending. When the configured
  * maximum outgoing/incoming edge count is exceeded, the oldest edges are evicted
  * from both columns.
  */
@@ -53,16 +53,6 @@ public class AerospikeAdjacentEdgeStore implements AdjacentEdgeStore {
     }
 
     @Override
-    public int maxOutgoingEdges() {
-        return maxOutgoingEdges;
-    }
-
-    @Override
-    public int maxIncomingEdges() {
-        return maxIncomingEdges;
-    }
-
-    @Override
     public void addEdge(StoredEdge edge) {
         Map<String, Object> out = readEdgeMap(edge.source(), OUT_EDGES_COLUMN);
         out.put(String.valueOf(edge.edgeId()), StoredEdgeCodec.serialize(edge));
@@ -77,17 +67,17 @@ public class AerospikeAdjacentEdgeStore implements AdjacentEdgeStore {
     }
 
     @Override
-    public List<StoredEdge> outgoingEdges(Object vertexId) {
-        return sorted(readEdgeMap(vertexId, OUT_EDGES_COLUMN));
+    public List<StoredEdge> outgoingEdges(Object vertexId, int edgeSchemaId) {
+        return sorted(readEdgeMap(vertexId, OUT_EDGES_COLUMN), edgeSchemaId);
     }
 
     @Override
-    public List<StoredEdge> incomingEdges(Object vertexId) {
-        return sorted(readEdgeMap(vertexId, IN_EDGES_COLUMN));
+    public List<StoredEdge> incomingEdges(Object vertexId, int edgeSchemaId) {
+        return sorted(readEdgeMap(vertexId, IN_EDGES_COLUMN), edgeSchemaId);
     }
 
     @Override
-    public void removeEdge(Object source, Object destination, Object edgeId) {
+    public void removeEdge(Object source, Object destination, int edgeSchemaId, Object edgeId) {
         removeFromMap(source, OUT_EDGES_COLUMN, edgeId);
         removeFromMap(destination, IN_EDGES_COLUMN, edgeId);
     }
@@ -103,7 +93,7 @@ public class AerospikeAdjacentEdgeStore implements AdjacentEdgeStore {
         }
         List<StoredEdge> edges = raw.values().stream()
                 .map(v -> StoredEdgeCodec.deserialize((Map<String, Object>) v))
-                .sorted(Comparator.comparingLong(StoredEdge::lastModified)) // oldest first
+                .sorted(Comparator.comparingLong(StoredEdge::lastUpdatedTime)) // oldest first
                 .toList();
         for (StoredEdge evicted : edges.subList(0, excess)) {
             raw.remove(String.valueOf(evicted.edgeId()));
@@ -136,10 +126,11 @@ public class AerospikeAdjacentEdgeStore implements AdjacentEdgeStore {
         client.put(null, AerospikeKeys.of(namespace, vertexSet, vertexId), new Bin(column, map));
     }
 
-    private List<StoredEdge> sorted(Map<String, Object> edgeMap) {
+    private List<StoredEdge> sorted(Map<String, Object> edgeMap, int edgeSchemaId) {
         return edgeMap.values().stream()
                 .map(v -> StoredEdgeCodec.deserialize((Map<String, Object>) v))
-                .sorted(Comparator.comparingLong(StoredEdge::lastModified).reversed())
+                .filter(e -> e.edgeSchemaId() == edgeSchemaId)
+                .sorted(Comparator.comparingLong(StoredEdge::lastUpdatedTime).reversed())
                 .toList();
     }
 }
