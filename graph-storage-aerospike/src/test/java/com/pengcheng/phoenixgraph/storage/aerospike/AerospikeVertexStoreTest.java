@@ -9,6 +9,7 @@ import com.pengcheng.phoenixgraph.storage.WriteOutcome;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -33,6 +34,32 @@ class AerospikeVertexStoreTest {
     void propertyBinsIncludeValueTimeAndMetaBins() {
         assertArrayEquals(new String[]{"vp_1", "vpt_1", "vp_3", "vpt_3", "vp_-2", "vp_-1"},
                 AerospikeVertexStore.propertyBins(List.of(1, 3)));
+    }
+
+    @Test
+    void maxPropertyLastModifiedReturnsMaxOrFallback() {
+        assertEquals(300L, AerospikeVertexStore.maxPropertyLastModified(
+                Map.of(1, new VertexPropertyValue("a", 100L), 2, new VertexPropertyValue("b", 300L)), 50L));
+        assertEquals(50L, AerospikeVertexStore.maxPropertyLastModified(Map.of(), 50L));
+    }
+
+    @Test
+    void mergeVertexKeepsNewestPropertyLastModifiedTime() {
+        VertexUpsert a = new VertexUpsert("v1", null, Map.of(
+                1, new VertexPropertyValue("old", 100L),
+                2, new VertexPropertyValue("keep", 200L)), 10L, 200L);
+        VertexUpsert b = new VertexUpsert("v1", null, Map.of(
+                1, new VertexPropertyValue("new", 300L),
+                3, new VertexPropertyValue("added", 250L)), 20L, 250L);
+
+        VertexUpsert merged = AerospikeVertexStore.mergeVertex(a, b);
+
+        assertEquals("v1", merged.vertexId());
+        assertEquals("new", merged.properties().get(1).value());   // newer wins
+        assertEquals("keep", merged.properties().get(2).value());  // kept
+        assertEquals("added", merged.properties().get(3).value()); // added
+        assertEquals(10L, merged.createdTime());                    // min
+        assertEquals(250L, merged.lastUpdatedTime());               // max
     }
 
     @Test

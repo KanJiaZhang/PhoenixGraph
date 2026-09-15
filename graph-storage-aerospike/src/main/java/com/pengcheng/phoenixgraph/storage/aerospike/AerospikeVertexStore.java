@@ -205,8 +205,9 @@ public class AerospikeVertexStore implements VertexStore {
 
             try {
                 if (record == null) {
+                    long effectiveUpdated = maxPropertyLastModified(properties, lastUpdatedTime);
                     client.operate(createOnlyPolicy(), key(vertexId),
-                            buildCreateOps(properties, createdTime, lastUpdatedTime));
+                            buildCreateOps(properties, createdTime, effectiveUpdated));
                 } else {
                     Map<Integer, VertexPropertyValue> toWrite = decideUpdates(vertexId, record, properties);
                     if (toWrite.isEmpty()) {
@@ -214,7 +215,8 @@ public class AerospikeVertexStore implements VertexStore {
                                 conflictDetails(payload, "all properties stale")));
                         return WriteOutcome.CONFLICT;
                     }
-                    long newUpdated = Math.max(readLong(record, LAST_UPDATED_TIME_BIN), lastUpdatedTime);
+                    long newUpdated = Math.max(readLong(record, LAST_UPDATED_TIME_BIN),
+                            mergedPropertyMax(record, toWrite));
                     boolean missingCreatedTime = record.bins.get(CREATED_TIME_BIN) == null;
                     client.operate(generationPolicy(record.generation), key(vertexId),
                             buildUpdateOps(toWrite, newUpdated, missingCreatedTime ? createdTime : null));
@@ -257,36 +259,39 @@ public class AerospikeVertexStore implements VertexStore {
         if (upserts.isEmpty()) {
             return List.of();
         }
+        List<VertexUpsert> merged = mergeVertexUpserts(upserts);
 
-        Key[] keys = new Key[upserts.size()];
-        for (int i = 0; i < upserts.size(); i++) {
-            keys[i] = key(upserts.get(i).vertexId());
+        Key[] keys = new Key[merged.size()];
+        for (int i = 0; i < merged.size(); i++) {
+            keys[i] = key(merged.get(i).vertexId());
         }
 
-        List<WriteOutcome> outcomes = new ArrayList<>(Collections.nCopies(upserts.size(), null));
+        List<WriteOutcome> outcomes = new ArrayList<>(Collections.nCopies(merged.size(), null));
         List<BatchRecord> writes = new ArrayList<>();
         List<Integer> writeIndices = new ArrayList<>();
 
-        WriteOutcome batchOutcome = writer.execute("upsertVertices", "batch:" + upserts.size(),
-                Map.of("count", upserts.size()), () -> {
+        WriteOutcome batchOutcome = writer.execute("upsertVertices", "batch:" + merged.size(),
+                Map.of("count", merged.size()), () -> {
             Collections.fill(outcomes, null);
             writes.clear();
             writeIndices.clear();
 
             Record[] records = client.get(new BatchPolicy(), keys);
-            for (int i = 0; i < upserts.size(); i++) {
-                VertexUpsert upsert = upserts.get(i);
+            for (int i = 0; i < merged.size(); i++) {
+                VertexUpsert upsert = merged.get(i);
                 Record record = records[i];
                 if (record == null) {
+                    long effectiveUpdated = maxPropertyLastModified(upsert.properties(), upsert.lastUpdatedTime());
                     writes.add(new BatchWrite(createOnlyBatchPolicy(), keys[i],
-                            buildCreateOps(upsert.properties(), upsert.createdTime(), upsert.lastUpdatedTime())));
+                            buildCreateOps(upsert.properties(), upsert.createdTime(), effectiveUpdated)));
                     writeIndices.add(i);
                 } else {
                     Map<Integer, VertexPropertyValue> toWrite = decideUpdates(upsert.vertexId(), record, upsert.properties());
                     if (toWrite.isEmpty()) {
                         outcomes.set(i, WriteOutcome.CONFLICT);
                     } else {
-                        long newUpdated = Math.max(readLong(record, LAST_UPDATED_TIME_BIN), upsert.lastUpdatedTime());
+                        long newUpdated = Math.max(readLong(record, LAST_UPDATED_TIME_BIN),
+                                mergedPropertyMax(record, toWrite));
                         boolean missingCreatedTime = record.bins.get(CREATED_TIME_BIN) == null;
                         writes.add(new BatchWrite(generationBatchPolicy(record.generation), keys[i],
                                 buildUpdateOps(toWrite, newUpdated, missingCreatedTime ? upsert.createdTime() : null)));
@@ -315,9 +320,38 @@ public class AerospikeVertexStore implements VertexStore {
             if (outcomes.get(i) == null) {
                 outcomes.set(i, WriteOutcome.FAILED);
             }
-            logBatchRecord(upserts.get(i).vertexId(), outcomes.get(i));
+            logBatchRecord(merged.get(i).vertexId(), outcomes.get(i));
         }
         return outcomes;
+    }
+
+    /** Merges upserts sharing the same vertex id; for the same property the newest lastModifiedTime wins. */
+    private List<VertexUpsert> mergeVertexUpserts(List<VertexUpsert> upserts) {
+        Map<Object, VertexUpsert> byId = new LinkedHashMap<>();
+        for (VertexUpsert upsert : upserts) {
+            VertexUpsert existing = byId.get(upsert.vertexId());
+            if (existing == null) {
+                byId.put(upsert.vertexId(), upsert);
+            } else {
+                byId.put(upsert.vertexId(), mergeVertex(existing, upsert));
+                // biz log still records every update, including the merged one
+                businessLog.record(BusinessLogEntry.success("upsertVertices", String.valueOf(upsert.vertexId()),
+                        Map.of("merged", true)));
+            }
+        }
+        return new ArrayList<>(byId.values());
+    }
+
+    static VertexUpsert mergeVertex(VertexUpsert a, VertexUpsert b) {
+        Map<Integer, VertexPropertyValue> properties = new LinkedHashMap<>(a.properties());
+        for (Map.Entry<Integer, VertexPropertyValue> entry : b.properties().entrySet()) {
+            VertexPropertyValue old = properties.get(entry.getKey());
+            if (old == null || entry.getValue().lastModifiedTime() >= old.lastModifiedTime()) {
+                properties.put(entry.getKey(), entry.getValue());
+            }
+        }
+        return new VertexUpsert(a.vertexId(), a.vertexSchema(), properties,
+                Math.min(a.createdTime(), b.createdTime()), Math.max(a.lastUpdatedTime(), b.lastUpdatedTime()));
     }
 
     /** Decides which incoming properties are newer than the stored ones, logging stale properties. */
@@ -339,6 +373,33 @@ public class AerospikeVertexStore implements VertexStore {
             }
         }
         return toWrite;
+    }
+
+    /** Maximum lastModifiedTime among the given properties, or {@code fallback} when empty. */
+    static long maxPropertyLastModified(Map<Integer, VertexPropertyValue> properties, long fallback) {
+        long max = Long.MIN_VALUE;
+        for (VertexPropertyValue property : properties.values()) {
+            max = Math.max(max, property.lastModifiedTime());
+        }
+        return max == Long.MIN_VALUE ? fallback : max;
+    }
+
+    /** Maximum property lastModifiedTime after merging stored properties with the newer incoming ones. */
+    private static long mergedPropertyMax(Record record, Map<Integer, VertexPropertyValue> toWrite) {
+        long max = Long.MIN_VALUE;
+        for (Map.Entry<String, Object> entry : record.bins.entrySet()) {
+            String bin = entry.getKey();
+            if (bin.startsWith(PROPERTY_TIME_BIN_PREFIX)) {
+                int index = Integer.parseInt(bin.substring(PROPERTY_TIME_BIN_PREFIX.length()));
+                if (index >= 0) {
+                    max = Math.max(max, ((Number) entry.getValue()).longValue());
+                }
+            }
+        }
+        for (VertexPropertyValue property : toWrite.values()) {
+            max = Math.max(max, property.lastModifiedTime());
+        }
+        return max == Long.MIN_VALUE ? 0L : max;
     }
 
     private static Operation[] buildCreateOps(Map<Integer, VertexPropertyValue> properties,

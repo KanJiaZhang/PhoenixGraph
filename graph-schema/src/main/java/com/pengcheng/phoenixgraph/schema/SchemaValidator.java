@@ -1,7 +1,9 @@
 package com.pengcheng.phoenixgraph.schema;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Validates a {@link GraphSchema} against {@link SchemaConstraints} and, when
@@ -15,19 +17,38 @@ public class SchemaValidator {
      * (empty when the schema conforms to the constraints).
      */
     public List<String> validate(GraphSchema schema, SchemaConstraints constraints) {
+        return validateResult(schema, constraints).errors();
+    }
+
+    /**
+     * Validates the graph schema and returns both violations and warnings (e.g.
+     * implicitly-applied defaults such as undeclared degree limits or endpoints).
+     */
+    public SchemaValidationResult validateResult(GraphSchema schema, SchemaConstraints constraints) {
         List<String> errors = new ArrayList<>();
+        List<String> warnings = new ArrayList<>();
         for (VertexSchema vertex : schema.vertexSchemas()) {
             checkIdSchema(errors, "vertex", vertex.name(), vertex.idSchema().id(), constraints);
             checkMetaProperties(errors, "vertex", vertex.name(),
                     vertex.createdTime(), vertex.lastUpdatedTime(), constraints);
+            checkDuplicateProperties(errors, "vertex", vertex.name(), vertex.properties());
+            for (VertexPropertySchema property : vertex.properties()) {
+                checkSupportedPropertyType(errors, "vertex", vertex.name(), property);
+            }
         }
         for (EdgeSchema edge : schema.edgeSchemas()) {
             checkIdSchema(errors, "edge", edge.name(), edge.idSchema().id(), constraints);
             checkMetaProperties(errors, "edge", edge.name(),
                     edge.createdTime(), edge.lastUpdatedTime(), constraints);
             checkEndpointVertex(errors, schema, edge);
+            checkEndpointVertexDeclared(warnings, edge);
+            checkDegreeLimitsDeclared(warnings, edge);
+            checkDuplicateProperties(errors, "edge", edge.name(), edge.properties());
+            for (EdgePropertySchema property : edge.properties()) {
+                checkSupportedPropertyType(errors, "edge", edge.name(), property);
+            }
         }
-        return errors;
+        return new SchemaValidationResult(List.copyOf(errors), List.copyOf(warnings));
     }
 
     /**
@@ -36,7 +57,7 @@ public class SchemaValidator {
      * limits conform to the meta-schema.
      */
     public List<String> validate(GraphSchema schema, SchemaConstraints constraints, GraphMetaSchema metaSchema) {
-        List<String> errors = validate(schema, constraints);
+        List<String> errors = new ArrayList<>(validate(schema, constraints));
         if (metaSchema != null) {
             validateAgainstMeta(schema, metaSchema, errors);
         }
@@ -121,6 +142,64 @@ public class SchemaValidator {
         if (edge.targetVertexName() != null && schema.vertexSchema(edge.targetVertexName()) == null) {
             errors.add("edge schema '" + edge.name() + "' targetVertex '" + edge.targetVertexName()
                     + "' is not a declared vertex schema");
+        }
+    }
+
+    private void checkEndpointVertexDeclared(List<String> warnings, EdgeSchema edge) {
+        if (edge.sourceVertexName() == null) {
+            warnings.add("edge schema '" + edge.name() + "' does not declare sourceVertex");
+        }
+        if (edge.targetVertexName() == null) {
+            warnings.add("edge schema '" + edge.name() + "' does not declare targetVertex");
+        }
+    }
+
+    private void checkDegreeLimitsDeclared(List<String> warnings, EdgeSchema edge) {
+        if (!edge.maxOutgoingEdgesSet()) {
+            warnings.add("edge schema '" + edge.name() + "' does not declare maxOutgoingEdges (default: unlimited)");
+        }
+        if (!edge.maxIncomingEdgesSet()) {
+            warnings.add("edge schema '" + edge.name() + "' does not declare maxIncomingEdges (default: unlimited)");
+        }
+        if (!edge.maxDegreeSet()) {
+            warnings.add("edge schema '" + edge.name() + "' does not declare maxDegree (default: unlimited)");
+        }
+    }
+
+    private void checkDuplicateProperties(List<String> errors, String kind, String schemaName,
+                                          List<? extends PropertySchema> properties) {
+        Set<Integer> ids = new HashSet<>();
+        Set<String> names = new HashSet<>();
+        for (PropertySchema property : properties) {
+            if (!ids.add(property.id())) {
+                errors.add(kind + " schema '" + schemaName + "' has duplicate property id " + property.id()
+                        + " (" + property.name() + ")");
+            }
+            if (!names.add(property.name())) {
+                errors.add(kind + " schema '" + schemaName + "' has duplicate property name '"
+                        + property.name() + "'");
+            }
+        }
+    }
+
+    private void checkSupportedPropertyType(List<String> errors, String kind, String schemaName,
+                                            PropertySchema property) {
+        PropertyType type = property.type();
+        if (type == null) {
+            errors.add(kind + " schema '" + schemaName + "' property '" + property.name() + "' has a null type");
+            return;
+        }
+        if (type instanceof PropertyType.EnumType en && en.values().isEmpty()) {
+            errors.add(kind + " schema '" + schemaName + "' property '" + property.name()
+                    + "' declares an enum type with no allowed values");
+        }
+        if (type instanceof PropertyType.ListType list && list.elementType() == null) {
+            errors.add(kind + " schema '" + schemaName + "' property '" + property.name()
+                    + "' list type has no element type");
+        }
+        if (type instanceof PropertyType.MapType map && map.valueType() == null) {
+            errors.add(kind + " schema '" + schemaName + "' property '" + property.name()
+                    + "' map type has no value type");
         }
     }
 

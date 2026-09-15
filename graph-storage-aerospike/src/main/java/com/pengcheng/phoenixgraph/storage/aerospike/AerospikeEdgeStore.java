@@ -191,9 +191,19 @@ public class AerospikeEdgeStore implements AdjacentEdgeStore {
         if (!anyNewer) {
             return null;
         }
-        long lastUpdatedTime = Math.max(existingEdge.lastUpdatedTime(), incomingEdge.lastUpdatedTime());
+        long lastUpdatedTime = Math.max(existingEdge.lastUpdatedTime(),
+                edgeLastUpdatedTime(incomingEdge.lastUpdatedTime(), merged));
         return serializeEdgeValue(lastUpdatedTime, existingEdge.createdTime(),
                 existingEdge.otherVertexId(), merged);
+    }
+
+    /** Maximum property lastUpdatedTime, or {@code fallback} when there are no properties. */
+    static long edgeLastUpdatedTime(long fallback, Map<Integer, EdgePropertyValue> properties) {
+        long max = Long.MIN_VALUE;
+        for (EdgePropertyValue property : properties.values()) {
+            max = Math.max(max, property.lastUpdatedTime());
+        }
+        return max == Long.MIN_VALUE ? fallback : max;
     }
 
     /** Removes the oldest edges (by lastUpdatedTime) beyond {@code limit}. */
@@ -281,9 +291,10 @@ public class AerospikeEdgeStore implements AdjacentEdgeStore {
         EdgeSchema edgeSchema = edge.edgeSchema();
         EdgeDirection direction = edgeSchema.direction();
         String edgeId = String.valueOf(edge.edgeId());
-        List<Object> onSource = serializeEdgeValue(edge.lastUpdatedTime(), edge.createdTime(),
+        long effectiveUpdated = edgeLastUpdatedTime(edge.lastUpdatedTime(), edge.properties());
+        List<Object> onSource = serializeEdgeValue(effectiveUpdated, edge.createdTime(),
                 edge.destination(), edge.properties());
-        List<Object> onDestination = serializeEdgeValue(edge.lastUpdatedTime(), edge.createdTime(),
+        List<Object> onDestination = serializeEdgeValue(effectiveUpdated, edge.createdTime(),
                 edge.source(), edge.properties());
 
         int sourceDir = sourceDirection(direction);
@@ -300,14 +311,74 @@ public class AerospikeEdgeStore implements AdjacentEdgeStore {
         return WriteOutcome.SUCCESS;
     }
 
-    /** Convenience: upserts several edges, returning one outcome per edge. */
+    /**
+     * Upserts several edges (of possibly different edge classes), aggregating by
+     * vertex so each vertex's shared bin (out/in for DIRECTED, both for
+     * UNDIRECTED/BIDIRECTIONAL) is read and written once, evicting against the
+     * schema's degree limit a single time. Returns one outcome per edge in the
+     * input order.
+     */
     public List<WriteOutcome> upsertEdges(List<EdgeUpsert> edges) {
         Objects.requireNonNull(edges, "edges");
-        List<WriteOutcome> outcomes = new ArrayList<>(edges.size());
+        if (edges.isEmpty()) {
+            return List.of();
+        }
+
+        Map<Integer, EdgeSchema> schemas = new LinkedHashMap<>();
+        Map<Integer, Map<Object, Map<Integer, Map<String, Object>>>> bySchemaVertex = new LinkedHashMap<>();
+        record EdgeTargets(int schemaId, Object v1, int dir1, Object v2, int dir2) {}
+        List<EdgeTargets> targets = new ArrayList<>(edges.size());
+
         for (EdgeUpsert edge : edges) {
-            outcomes.add(upsertEdge(edge));
+            EdgeSchema schema = edge.edgeSchema();
+            int schemaId = schema.id();
+            schemas.putIfAbsent(schemaId, schema);
+            EdgeDirection direction = schema.direction();
+            String edgeId = String.valueOf(edge.edgeId());
+            long updated = edgeLastUpdatedTime(edge.lastUpdatedTime(), edge.properties());
+            Object source = edge.source();
+            Object destination = edge.destination();
+            int sourceDir = sourceDirection(direction);
+            int destinationDir = destinationDirection(direction);
+
+            Map<Object, Map<Integer, Map<String, Object>>> byVertex =
+                    bySchemaVertex.computeIfAbsent(schemaId, k -> new LinkedHashMap<>());
+            addEdgeValue(byVertex, source, sourceDir, edgeId,
+                    serializeEdgeValue(updated, edge.createdTime(), destination, edge.properties()));
+            addEdgeValue(byVertex, destination, destinationDir, edgeId,
+                    serializeEdgeValue(updated, edge.createdTime(), source, edge.properties()));
+
+            targets.add(new EdgeTargets(schemaId, source, sourceDir, destination, destinationDir));
+        }
+
+        record BinKey(int schemaId, Object vertexId, int dir) {}
+        Map<BinKey, WriteOutcome> binOutcomes = new LinkedHashMap<>();
+        for (Map.Entry<Integer, Map<Object, Map<Integer, Map<String, Object>>>> schemaEntry
+                : bySchemaVertex.entrySet()) {
+            EdgeSchema schema = schemas.get(schemaEntry.getKey());
+            for (Map.Entry<Object, Map<Integer, Map<String, Object>>> vertexEntry
+                    : schemaEntry.getValue().entrySet()) {
+                for (Map.Entry<Integer, Map<String, Object>> binEntry : vertexEntry.getValue().entrySet()) {
+                    binOutcomes.put(new BinKey(schemaEntry.getKey(), vertexEntry.getKey(), binEntry.getKey()),
+                            upsertBatchInto(vertexEntry.getKey(), schema, binEntry.getKey(), binEntry.getValue()));
+                }
+            }
+        }
+
+        List<WriteOutcome> outcomes = new ArrayList<>(edges.size());
+        for (EdgeTargets target : targets) {
+            outcomes.add(combine(
+                    binOutcomes.get(new BinKey(target.schemaId(), target.v1(), target.dir1())),
+                    binOutcomes.get(new BinKey(target.schemaId(), target.v2(), target.dir2()))));
         }
         return outcomes;
+    }
+
+    private static void addEdgeValue(Map<Object, Map<Integer, Map<String, Object>>> byVertex, Object vertex,
+                                     int dir, String edgeId, List<Object> value) {
+        byVertex.computeIfAbsent(vertex, k -> new LinkedHashMap<>())
+                .computeIfAbsent(dir, k -> new LinkedHashMap<>())
+                .put(edgeId, value);
     }
 
     /**
@@ -368,8 +439,9 @@ public class AerospikeEdgeStore implements AdjacentEdgeStore {
             }
             EdgeWritePlan plan = planFor(vertexId, edgeSchema, edge);
             bySharedDir.computeIfAbsent(plan.sharedDir(), k -> new LinkedHashMap<>())
-                    .put(plan.edgeId(), serializeEdgeValue(edge.lastUpdatedTime(), edge.createdTime(),
-                            plan.otherEndpoint(), edge.properties()));
+                    .put(plan.edgeId(), serializeEdgeValue(
+                            edgeLastUpdatedTime(edge.lastUpdatedTime(), edge.properties()),
+                            edge.createdTime(), plan.otherEndpoint(), edge.properties()));
             plans.add(plan);
         }
 
@@ -383,7 +455,8 @@ public class AerospikeEdgeStore implements AdjacentEdgeStore {
         // Write each edge's other side individually.
         List<WriteOutcome> outcomes = new ArrayList<>(plans.size());
         for (EdgeWritePlan plan : plans) {
-            List<Object> otherSideValue = serializeEdgeValue(plan.edge().lastUpdatedTime(),
+            List<Object> otherSideValue = serializeEdgeValue(
+                    edgeLastUpdatedTime(plan.edge().lastUpdatedTime(), plan.edge().properties()),
                     plan.edge().createdTime(), vertexId, plan.edge().properties());
             WriteOutcome otherOutcome = upsertInto(plan.otherEndpoint(), edgeSchema, plan.otherDir(),
                     plan.edgeId(), otherSideValue);

@@ -6,9 +6,11 @@ import com.pengcheng.phoenixgraph.query.storage.EdgeSide;
 import com.pengcheng.phoenixgraph.query.storage.VertexQueryResult;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Built-in {@link GremlinStep} implementations.
@@ -144,7 +146,7 @@ final class GremlinSteps {
     // --- internals ---
 
     private static List<Object> hopEdges(GremlinContext ctx, List<Object> in, String edgeName, EdgeSide dir) {
-        List<EdgeQueryResult> allEdges = readAllEdges(ctx, toVertices(in), edgeName, dir);
+        List<EdgeQueryResult> allEdges = readAllEdges(ctx, toVertices(in), edgeName, dir, edgeReadProperties(ctx));
         List<Object> out = new ArrayList<>(allEdges.size());
         for (EdgeQueryResult edge : allEdges) {
             out.add(new GremlinEdge(edge.edgeName(), edge.edgeId(), edge.side(), edge.otherVertexId(),
@@ -154,37 +156,67 @@ final class GremlinSteps {
     }
 
     private static List<Object> hopVertices(GremlinContext ctx, List<Object> in, String edgeName, EdgeSide dir) {
-        List<EdgeQueryResult> allEdges = readAllEdges(ctx, toVertices(in), edgeName, dir);
-        return new ArrayList<>(readNeighbourVertices(ctx, allEdges, edgeName));
+        // The intermediate edges of a vertex hop are internal: only their otherVertexId
+        // is consumed, so no edge property projection is applied here.
+        List<EdgeQueryResult> allEdges = readAllEdges(ctx, toVertices(in), edgeName, dir, List.of());
+        return new ArrayList<>(readNeighbourVertices(ctx, allEdges));
     }
 
-    /** Reads the edges of the given edge class for all input vertices, batched by {@code ctx.batchSize()}. */
+    /** Reads the edges of the given edge class for all input vertices, with per-query dedup + cache. */
     private static List<EdgeQueryResult> readAllEdges(GremlinContext ctx, List<GremlinVertex> vertices,
-                                                      String edgeName, EdgeSide dir) {
+                                                      String edgeName, EdgeSide dir, List<String> edgeProperties) {
         if (vertices.isEmpty()) {
             return List.of();
         }
+        if (edgeName == null) {
+            return readAllEdgeClasses(ctx, vertices, dir, edgeProperties);
+        }
         if (vertices.size() == 1) {
             GremlinVertex v = vertices.get(0);
-            return ctx.graphQuery().readEdges(v.id(), v.label(), edgeName, dir, List.of());
+            return ctx.readEdgesCached(v.id(), v.label(), edgeName, dir, edgeProperties);
         }
-        List<EdgeQueryResult> allEdges = new ArrayList<>();
-        int batchSize = ctx.batchSize();
-        for (int start = 0; start < vertices.size(); start += batchSize) {
-            int end = Math.min(start + batchSize, vertices.size());
-            List<Object> chunkIds = new ArrayList<>(end - start);
-            for (GremlinVertex v : vertices.subList(start, end)) {
-                chunkIds.add(v.id());
-            }
-            for (List<EdgeQueryResult> edges : ctx.graphQuery().readEdgesBatch(edgeName, dir, chunkIds, List.of())) {
-                allEdges.addAll(edges);
+        List<Object> ids = new ArrayList<>(vertices.size());
+        for (GremlinVertex v : vertices) {
+            ids.add(v.id());
+        }
+        return ctx.readAllEdgesBatchCached(edgeName, dir, ids, edgeProperties);
+    }
+
+    /** Reads the edges of every edge class (the {@code both()}/{@code bothE()} no-argument form). */
+    private static List<EdgeQueryResult> readAllEdgeClasses(GremlinContext ctx, List<GremlinVertex> vertices,
+                                                            EdgeSide dir, List<String> edgeProperties) {
+        List<Object> ids = new ArrayList<>();
+        Set<Object> seen = new HashSet<>();
+        for (GremlinVertex v : vertices) {
+            if (seen.add(v.id())) {
+                ids.add(v.id());
             }
         }
-        return allEdges;
+        if (ids.isEmpty()) {
+            return List.of();
+        }
+        List<List<EdgeQueryResult>> perVertex = ctx.graphQuery().readAllEdgesBatch(ids, dir, edgeProperties);
+        List<EdgeQueryResult> all = new ArrayList<>();
+        for (int i = 0; i < ids.size(); i++) {
+            ctx.recordEdges(ids.get(i), perVertex.get(i));
+            all.addAll(perVertex.get(i));
+        }
+        return all;
+    }
+
+    /**
+     * The edge property projection for an edge hop. Edge records must always be
+     * read (their {@code otherVertexId} is needed), so {@code null} ("no vertex
+     * properties") falls back to reading all edge properties; a non-empty list
+     * projects only the named properties (used by {@code has}/{@code values}).
+     */
+    private static List<String> edgeReadProperties(GremlinContext ctx) {
+        List<String> properties = ctx.readProperties();
+        return properties == null ? List.of() : properties;
     }
 
     private static List<GremlinVertex> readNeighbourVertices(GremlinContext ctx,
-                                                             List<EdgeQueryResult> edges, String edgeName) {
+                                                             List<EdgeQueryResult> edges) {
         if (edges.isEmpty()) {
             return List.of();
         }
@@ -193,7 +225,7 @@ final class GremlinSteps {
         Object[] ids = new Object[edges.size()];
         for (int i = 0; i < edges.size(); i++) {
             EdgeQueryResult edge = edges.get(i);
-            String name = ctx.vertexResolver().neighborVertexName(edgeName, edge.side());
+            String name = ctx.vertexResolver().neighborVertexName(edge.edgeName(), edge.side());
             ids[i] = edge.otherVertexId();
             groups.computeIfAbsent(name, k -> new ArrayList<>()).add(i);
         }
@@ -207,6 +239,7 @@ final class GremlinSteps {
             if (name == null || readProperties == null) {
                 // Only the id/label are needed for the next hop — skip the vertex read.
                 for (int idx : indices) {
+                    ctx.recordVertex(name, ids[idx]);
                     result[idx] = new GremlinVertex(name, ids[idx], Map.of(), 0L, 0L);
                 }
                 continue;
@@ -222,6 +255,7 @@ final class GremlinSteps {
                 for (int k = 0; k < chunk.size(); k++) {
                     int idx = chunk.get(k);
                     VertexQueryResult vertex = vertices.get(k);
+                    ctx.recordVertex(name, ids[idx]);
                     result[idx] = vertex == null
                             ? new GremlinVertex(name, ids[idx], Map.of(), 0L, 0L)
                             : new GremlinVertex(vertex.vertexName(), vertex.vertexId(), vertex.properties(),

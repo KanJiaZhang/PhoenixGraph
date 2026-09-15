@@ -4,3 +4,10 @@ spring:
 
 server:
   port: 8080
+  compression:
+    enabled: true
+    mime-types: application/json,text/html,text/css,text/javascript
+
+phoenixgraph:
+  # graph-http backend the UI proxies /api/query and /api/graphs to
+  http-url: http://localhost:8081

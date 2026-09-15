@@ -101,6 +101,20 @@ public interface GraphQuery {
         return out;
     }
 
+    /**
+     * Reads the edges of <em>all</em> edge classes for many vertices (used by
+     * in-memory graph algorithms that build the induced subgraph over the
+     * traversed vertices). The default returns one empty list per vertex.
+     */
+    default List<List<EdgeQueryResult>> readAllEdgesBatch(List<Object> vertexIds, EdgeSide direction,
+                                                          List<String> propertyNames) {
+        List<List<EdgeQueryResult>> out = new ArrayList<>(vertexIds.size());
+        for (int i = 0; i < vertexIds.size(); i++) {
+            out.add(List.of());
+        }
+        return out;
+    }
+
     /** Reads the edges of the given edge class in both directions, projecting all properties. */
     default List<EdgeQueryResult> readEdges(Object vertexId, String vertexName, String edgeName,
                                             String... propertyNames) {

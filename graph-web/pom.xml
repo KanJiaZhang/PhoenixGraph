@@ -29,7 +29,7 @@
         </dependency>
         <dependency>
             <groupId>com.pengcheng.phoenixgraph</groupId>
-            <artifactId>graph-query-engine</artifactId>
+            <artifactId>graph-query</artifactId>
         </dependency>
         <dependency>
             <groupId>com.pengcheng.phoenixgraph</groupId>

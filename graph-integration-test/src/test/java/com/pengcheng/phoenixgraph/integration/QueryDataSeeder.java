@@ -90,7 +90,24 @@ final class QueryDataSeeder {
         props.put(1, new VertexPropertyValue(ACCOUNT_STATUS[i % 3], now(i)));
         props.put(2, new VertexPropertyValue(i % 2 == 0 ? "savings" : "checking", now(i)));
         props.put(3, new VertexPropertyValue("addr-" + (100 + i), now(i)));
+        props.put(4, new VertexPropertyValue(accountUsage(i), now(i)));
+        props.put(5, new VertexPropertyValue(accountLimited(i), now(i)));
         return props;
+    }
+
+    private static List<String> accountUsage(int i) {
+        return switch (i % 3) {
+            case 0 -> List.of("Personal");
+            case 1 -> List.of("Business");
+            default -> List.of("Personal", "Business", "Enterprise");
+        };
+    }
+
+    private static Map<String, String> accountLimited(int i) {
+        Map<String, String> map = new LinkedHashMap<>();
+        map.put("174", i % 2 == 0 ? "open" : "closed");
+        map.put("175", "kyc");
+        return map;
     }
 
     private static Map<Integer, VertexPropertyValue> ipProperties(int i) {

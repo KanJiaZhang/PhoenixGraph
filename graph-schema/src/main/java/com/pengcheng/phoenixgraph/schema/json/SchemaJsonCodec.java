@@ -153,10 +153,16 @@ public class SchemaJsonCodec {
         EdgeSchema schema = new EdgeSchema(
                 dto.id(), dto.name(), dto.description(),
                 toEdgeProperty(dto.idSchema()), toEndpoint(dto.source()), toEndpoint(dto.target()),
-                createdTime, lastUpdatedTime, direction,
-                dto.maxOutgoingEdges() == null ? 0 : dto.maxOutgoingEdges(),
-                dto.maxIncomingEdges() == null ? 0 : dto.maxIncomingEdges(),
-                dto.maxDegree() == null ? 0 : dto.maxDegree());
+                createdTime, lastUpdatedTime, direction, 0, 0, 0);
+        if (dto.maxOutgoingEdges() != null) {
+            schema.maxOutgoingEdges(dto.maxOutgoingEdges());
+        }
+        if (dto.maxIncomingEdges() != null) {
+            schema.maxIncomingEdges(dto.maxIncomingEdges());
+        }
+        if (dto.maxDegree() != null) {
+            schema.maxDegree(dto.maxDegree());
+        }
         if (dto.properties() != null) {
             for (PropertyDto p : dto.properties()) {
                 schema.property(toEdgeProperty(p));

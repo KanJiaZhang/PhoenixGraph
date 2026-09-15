@@ -4,6 +4,10 @@ spring:
 
 server:
   port: 8081
+  compression:
+    enabled: true
+    mime-types: application/json,application/xml,text/html,text/plain,text/xml
+    min-response-size: 1024
 
 phoenixgraph:
   storage:

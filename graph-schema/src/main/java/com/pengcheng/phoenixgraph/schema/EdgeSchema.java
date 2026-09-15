@@ -42,6 +42,9 @@ public class EdgeSchema {
     private int maxOutgoingEdges;
     private int maxIncomingEdges;
     private int maxDegree;
+    private boolean maxOutgoingEdgesSet;
+    private boolean maxIncomingEdgesSet;
+    private boolean maxDegreeSet;
     private final List<EdgePropertySchema> properties = new ArrayList<>();
     private final Map<Integer, EdgePropertySchema> propertiesById = new HashMap<>();
     private final Map<String, EdgePropertySchema> propertiesByName = new HashMap<>();
@@ -127,6 +130,7 @@ public class EdgeSchema {
      */
     public EdgeSchema maxOutgoingEdges(int maxOutgoingEdges) {
         this.maxOutgoingEdges = maxOutgoingEdges;
+        this.maxOutgoingEdgesSet = true;
         return this;
     }
 
@@ -136,6 +140,7 @@ public class EdgeSchema {
      */
     public EdgeSchema maxIncomingEdges(int maxIncomingEdges) {
         this.maxIncomingEdges = maxIncomingEdges;
+        this.maxIncomingEdgesSet = true;
         return this;
     }
 
@@ -145,6 +150,7 @@ public class EdgeSchema {
      */
     public EdgeSchema maxDegree(int maxDegree) {
         this.maxDegree = maxDegree;
+        this.maxDegreeSet = true;
         return this;
     }
 
@@ -232,14 +238,29 @@ public class EdgeSchema {
         return maxOutgoingEdges;
     }
 
+    /** Whether {@code maxOutgoingEdges} was explicitly declared. */
+    public boolean maxOutgoingEdgesSet() {
+        return maxOutgoingEdgesSet;
+    }
+
     /** Maximum incoming edges per vertex ({@code <= 0} means unlimited). */
     public int maxIncomingEdges() {
         return maxIncomingEdges;
     }
 
+    /** Whether {@code maxIncomingEdges} was explicitly declared. */
+    public boolean maxIncomingEdgesSet() {
+        return maxIncomingEdgesSet;
+    }
+
     /** Single maximum degree for undirected/bidirectional edges ({@code <= 0} means unlimited). */
     public int maxDegree() {
         return maxDegree;
+    }
+
+    /** Whether {@code maxDegree} was explicitly declared. */
+    public boolean maxDegreeSet() {
+        return maxDegreeSet;
     }
 
     /**

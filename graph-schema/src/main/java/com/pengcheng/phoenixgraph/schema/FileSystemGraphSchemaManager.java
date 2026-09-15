@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.logging.Logger;
 
 /**
  * Default {@link GraphSchemaManager} implementation.
@@ -18,8 +19,11 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public class FileSystemGraphSchemaManager implements GraphSchemaManager {
 
+    private static final Logger LOGGER = Logger.getLogger(FileSystemGraphSchemaManager.class.getName());
+
     private final SchemaSource source;
     private final SchemaJsonCodec codec;
+    private final SchemaValidator validator = new SchemaValidator();
     private final Map<String, GraphSchema> schemas = new ConcurrentHashMap<>();
 
     /** Loads {@code <name>.json} files from the current working directory. */
@@ -47,12 +51,42 @@ public class FileSystemGraphSchemaManager implements GraphSchemaManager {
         if (json == null || json.isBlank()) {
             throw new IllegalArgumentException("No schema definition found for name: " + name);
         }
-        return codec.fromJson(json);
+        GraphSchema schema = codec.fromJson(json);
+        validateLoaded(schema);
+        checkDuplicate(schema);
+        return schema;
     }
 
     @Override
     public void register(GraphSchema schema) {
+        Objects.requireNonNull(schema, "schema");
+        validateLoaded(schema);
+        checkDuplicate(schema);
         schemas.put(schema.name(), schema);
+    }
+
+    private void checkDuplicate(GraphSchema schema) {
+        GraphSchema byName = schemas.get(schema.name());
+        if (byName != null && byName != schema) {
+            throw new IllegalArgumentException("Graph schema name '" + schema.name() + "' is already registered");
+        }
+        for (GraphSchema existing : schemas.values()) {
+            if (existing != schema && existing.id() == schema.id()) {
+                throw new IllegalArgumentException("Graph schema id " + schema.id()
+                        + " is already registered as '" + existing.name() + "'");
+            }
+        }
+    }
+
+    private void validateLoaded(GraphSchema schema) {
+        SchemaValidationResult result = validator.validateResult(schema, schema.constraints());
+        if (!result.isValid()) {
+            throw new IllegalArgumentException("Invalid graph schema '" + schema.name() + "': "
+                    + String.join("; ", result.errors()));
+        }
+        for (String warning : result.warnings()) {
+            LOGGER.warning("Schema '" + schema.name() + "': " + warning);
+        }
     }
 
     @Override

@@ -113,6 +113,29 @@ class AerospikeEdgeStoreTest {
     }
 
     @Test
+    void mergeEdgeValueUsesMaxPropertyLastUpdatedTime() {
+        Map<Integer, EdgePropertyValue> oldProps = Map.of(3, new EdgePropertyValue("old", 10L, 150L));
+        List<Object> existing = AerospikeEdgeStore.serializeEdgeValue(200L, 50L, "other", oldProps);
+
+        Map<Integer, EdgePropertyValue> newProps = Map.of(3, new EdgePropertyValue("new", 20L, 300L));
+        List<Object> incoming = AerospikeEdgeStore.serializeEdgeValue(50L, 60L, "other", newProps);
+
+        List<Object> merged = AerospikeEdgeStore.mergeEdgeValue("e1", incoming, existing);
+
+        StoredEdgeValue mergedEdge = AerospikeEdgeStore.deserializeEdgeValue("e1", merged);
+        assertEquals("new", mergedEdge.properties().get(3).value());
+        // edge lastUpdatedTime = max(existing 200, max property 300) = 300, NOT max(200, incoming 50)
+        assertEquals(300L, mergedEdge.lastUpdatedTime());
+    }
+
+    @Test
+    void edgeLastUpdatedTimeReturnsMaxOrFallback() {
+        assertEquals(300L, AerospikeEdgeStore.edgeLastUpdatedTime(50L,
+                Map.of(3, new EdgePropertyValue("a", 1L, 300L), 4, new EdgePropertyValue("b", 1L, 100L))));
+        assertEquals(50L, AerospikeEdgeStore.edgeLastUpdatedTime(50L, Map.of()));
+    }
+
+    @Test
     void evictsOldestEdgesBeyondLimit() {
         Map<String, Object> edges = new LinkedHashMap<>();
         edges.put("e1", List.of(100L, 0L, Map.of())); // oldest

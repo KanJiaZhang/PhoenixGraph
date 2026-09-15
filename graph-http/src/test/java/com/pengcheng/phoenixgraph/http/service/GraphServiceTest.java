@@ -3,6 +3,7 @@ package com.pengcheng.phoenixgraph.http.service;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.pengcheng.phoenixgraph.http.dto.BatchRequest;
 import com.pengcheng.phoenixgraph.http.dto.EdgeRequest;
+import com.pengcheng.phoenixgraph.http.dto.GraphInfo;
 import com.pengcheng.phoenixgraph.http.dto.VertexPropertyRequest;
 import com.pengcheng.phoenixgraph.http.dto.VertexRequest;
 import com.pengcheng.phoenixgraph.schema.EdgePropertySchema;
@@ -86,6 +87,15 @@ class GraphServiceTest {
         assertEquals("e1", upsert.edgeId());
         assertEquals("Payment", upsert.edgeSchema().name());
         assertEquals(1, upsert.edgeSchema().id());
+    }
+
+    @Test
+    void graphInfoSummarizesVertexAndEdgeTypes() {
+        GraphInfo info = GraphInfo.of(schema());
+
+        assertEquals("payment-graph", info.name());
+        assertEquals(List.of("Account"), info.vertexTypes());
+        assertEquals(List.of("Payment"), info.edgeTypes());
     }
 
     @Test

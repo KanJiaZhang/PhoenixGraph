@@ -10,7 +10,7 @@
         <version>0.1.0-SNAPSHOT</version>
     </parent>
 
-    <artifactId>graph-query-engine</artifactId>
+    <artifactId>graph-query</artifactId>
     <name>PhoenixGraph :: Query Engine</name>
     <description>Query language parsing, planning and execution engine.</description>
 

@@ -173,6 +173,27 @@ public class AerospikeGraphQuery implements GraphQuery {
         return perVertex;
     }
 
+    @Override
+    public List<List<EdgeQueryResult>> readAllEdgesBatch(List<Object> vertexIds, EdgeSide direction,
+                                                         List<String> propertyNames) {
+        Objects.requireNonNull(vertexIds, "vertexIds");
+        Objects.requireNonNull(direction, "direction");
+        if (vertexIds.isEmpty()) {
+            return List.of();
+        }
+        List<List<EdgeQueryResult>> perVertex = new ArrayList<>(vertexIds.size());
+        for (int i = 0; i < vertexIds.size(); i++) {
+            perVertex.add(new ArrayList<>());
+        }
+        for (EdgeSchema edgeSchema : schema.edgeSchemas()) {
+            List<List<EdgeQueryResult>> byEdge = readEdgesBatch(edgeSchema.name(), direction, vertexIds, propertyNames);
+            for (int i = 0; i < vertexIds.size(); i++) {
+                perVertex.get(i).addAll(byEdge.get(i));
+            }
+        }
+        return perVertex;
+    }
+
     private List<EdgeQueryResult> readEdgesForVertex(Object vertexId, String edgeName, EdgeSchema edgeSchema,
                                                      EdgeSide direction, Map<Integer, String> requested) {
         List<EdgeQueryResult> results = new ArrayList<>();

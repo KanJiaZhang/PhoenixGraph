@@ -1,0 +1,31 @@
+services:
+  aerospike:
+    image: aerospike/aerospike-server:latest
+    ports:
+      - "3000:3000"
+
+  graph-http:
+    build:
+      context: .
+      dockerfile: graph-http/Dockerfile
+    environment:
+      PHOENIXGRAPH_STORAGE_HOST: aerospike
+      PHOENIXGRAPH_STORAGE_PORT: "3000"
+      PHOENIXGRAPH_STORAGE_NAMESPACE: test
+      PHOENIXGRAPH_STORAGE_VERTEX_SET: vertices
+      PHOENIXGRAPH_STORAGE_SCHEMA: payment-graph
+    ports:
+      - "8081:8081"
+    depends_on:
+      - aerospike
+
+  graph-web:
+    build:
+      context: .
+      dockerfile: graph-web/Dockerfile
+    environment:
+      PHOENIXGRAPH_HTTP_URL: http://graph-http:8081
+    ports:
+      - "8080:8080"
+    depends_on:
+      - graph-http

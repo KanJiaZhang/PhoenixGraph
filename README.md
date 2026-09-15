@@ -9,7 +9,7 @@ A High Scaled and High Performance HTAP Graph Database.
 | `graph-core`          | Core graph abstractions: graph, vertex, edge and exceptions     |
 | `graph-schema`        | Schema model: labels, property keys, data types, cardinalities  |
 | `graph-storage`       | Storage engine abstraction + in-memory storage implementation   |
-| `graph-query-engine`  | Query parsing, planning and execution                           |
+| `graph-query`  | Query parsing, planning and execution                           |
 | `graph-compute-engine`| Graph analytics and algorithm execution (BFS, PageRank, ...)    |
 | `graph-web`           | RESTful web service (Spring Boot)                               |
 

@@ -18,7 +18,9 @@
       "properties": [
         { "id": 1, "name": "accountStatus", "description": "Account status", "type": { "enum": ["ACTIVE", "FROZEN", "CLOSED"] } },
         { "id": 2, "name": "accountType", "description": "Account type", "type": "STRING" },
-        { "id": 3, "name": "primaryAddress", "description": "Primary address", "type": "STRING" }
+        { "id": 3, "name": "primaryAddress", "description": "Primary address", "type": "STRING" },
+        { "id": 4, "name": "accountUsage", "description": "Account usage types", "type": { "list": "STRING" } },
+        { "id": 5, "name": "accountLimited", "description": "Account limits / flags", "type": { "map": "STRING" } }
       ]
     },
     {

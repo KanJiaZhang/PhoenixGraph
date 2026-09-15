@@ -49,12 +49,12 @@ public class GremlinStepRegistry {
     }
 
     private void registerBuiltIns() {
-        register("out", args -> GremlinSteps.out(single(args, "out")));
-        register("in", args -> GremlinSteps.in(single(args, "in")));
-        register("both", args -> GremlinSteps.both(single(args, "both")));
-        register("outE", args -> GremlinSteps.outE(single(args, "outE")));
-        register("inE", args -> GremlinSteps.inE(single(args, "inE")));
-        register("bothE", args -> GremlinSteps.bothE(single(args, "bothE")));
+        register("out", args -> GremlinSteps.out(optionalSingle(args, "out")));
+        register("in", args -> GremlinSteps.in(optionalSingle(args, "in")));
+        register("both", args -> GremlinSteps.both(optionalSingle(args, "both")));
+        register("outE", args -> GremlinSteps.outE(optionalSingle(args, "outE")));
+        register("inE", args -> GremlinSteps.inE(optionalSingle(args, "inE")));
+        register("bothE", args -> GremlinSteps.bothE(optionalSingle(args, "bothE")));
         register("batch", args -> GremlinSteps.batch(positiveInt(single(args, "batch"))));
         register("barrier", args -> GremlinSteps.barrier(positiveInt(single(args, "barrier"))));
         register("has", args -> {
@@ -76,6 +76,9 @@ public class GremlinStepRegistry {
         register("count", args -> GremlinSteps.count());
         register("limit", args -> GremlinSteps.limit(parseLong(single(args, "limit"))));
         register("dedup", args -> GremlinSteps.dedup());
+        register("pagerank", args -> GremlinAlgorithms.pagerank());
+        register("louvain", args -> GremlinAlgorithms.louvain());
+        register("cc", args -> GremlinAlgorithms.cc());
     }
 
     private static String single(List<String> args, String stepName) {
@@ -83,6 +86,11 @@ public class GremlinStepRegistry {
             throw new QueryException(stepName + " expects exactly 1 argument, got " + args.size());
         }
         return args.get(0);
+    }
+
+    /** Hop steps accept zero args (all edge classes) or exactly one (a single edge class). */
+    private static String optionalSingle(List<String> args, String stepName) {
+        return args.isEmpty() ? null : single(args, stepName);
     }
 
     private static long parseLong(String value) {

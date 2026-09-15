@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Executes Gremlin-style traversals over a {@link GraphQuery} storage backend.
@@ -37,8 +38,10 @@ public class GremlinGraphQuery {
     private final NeighborVertexResolver vertexResolver;
     private final GremlinStepRegistry registry;
     private final Map<String, String> logics = new LinkedHashMap<>();
-    private final Map<String, CompiledQuery> compiledCache = new LinkedHashMap<>();
+    private final Map<String, CompiledQuery> compiledCache = new ConcurrentHashMap<>();
     private boolean cacheEnabled = true;
+    private boolean adaptiveBatchEnabled = true;
+    private int maxBatchSize = GremlinContext.DEFAULT_MAX_BATCH_SIZE;
 
     public GremlinGraphQuery(GraphQuery graphQuery) {
         this(graphQuery, NeighborVertexResolver.none());
@@ -65,6 +68,21 @@ public class GremlinGraphQuery {
     /** Enables or disables the per-query vertex cache (on by default). */
     public GremlinGraphQuery cacheEnabled(boolean cacheEnabled) {
         this.cacheEnabled = cacheEnabled;
+        return this;
+    }
+
+    /** Enables or disables adaptive batch-size tuning for fan-out hops (on by default). */
+    public GremlinGraphQuery adaptiveBatchEnabled(boolean adaptiveBatchEnabled) {
+        this.adaptiveBatchEnabled = adaptiveBatchEnabled;
+        return this;
+    }
+
+    /** Upper bound for the adaptive batch size; must be {@code >= 1}. */
+    public GremlinGraphQuery maxBatchSize(int maxBatchSize) {
+        if (maxBatchSize < 1) {
+            throw new IllegalArgumentException("max batch size must be >= 1");
+        }
+        this.maxBatchSize = maxBatchSize;
         return this;
     }
 
@@ -104,23 +122,100 @@ public class GremlinGraphQuery {
         if (query.logic() != null && !query.logic().isBlank()) {
             parsedSteps.addAll(expandLogic(query.logic()));
         }
+        parsedSteps = optimizeSteps(parsedSteps);
         List<String>[] properties = planProperties(parsedSteps);
         List<String> startProperties = startProperties(parsedSteps);
         List<GremlinStep> steps = new ArrayList<>(parsedSteps.size());
+        List<String> stepNames = new ArrayList<>(parsedSteps.size());
         for (GremlinQuery.Step step : parsedSteps) {
             steps.add(registry.resolve(step.name(), step.args()));
+            stepNames.add(step.name());
         }
-        return new CompiledQuery(query.vertexIds(), query.vertexName(), properties, startProperties, steps);
+        return new CompiledQuery(query.vertexIds(), query.vertexName(), properties, startProperties,
+                stepNames, steps);
+    }
+
+    /**
+     * Rewrites a vertex hop immediately followed by {@code count()} into an edge
+     * hop: {@code out/in/both(label).count()} → {@code outE/inE/bothE(label).count()}.
+     * This avoids materialising the reached vertices (a vertex hop has exactly one
+     * neighbour per edge, so the count is identical). Applied globally.
+     */
+    private static List<GremlinQuery.Step> optimizeSteps(List<GremlinQuery.Step> steps) {
+        List<GremlinQuery.Step> result = new ArrayList<>(steps);
+        for (int i = 0; i < result.size(); i++) {
+            String edgeHop = edgeHopOf(result.get(i).name());
+            if (edgeHop == null) {
+                continue;
+            }
+            int next = i + 1;
+            while (next < result.size() && isMeta(result.get(next).name())) {
+                next++;
+            }
+            if (next < result.size() && result.get(next).name().equals("count")) {
+                result.set(i, new GremlinQuery.Step(edgeHop, result.get(i).args()));
+            }
+        }
+        return result;
+    }
+
+    private static String edgeHopOf(String name) {
+        return switch (name) {
+            case "out" -> "outE";
+            case "in" -> "inE";
+            case "both" -> "bothE";
+            default -> null;
+        };
+    }
+
+    /** Executes a query and returns the induced subgraph instead of the final traversers. */
+    public Subgraph executeSubgraph(String gremlin) {
+        Objects.requireNonNull(gremlin, "gremlin");
+        CompiledQuery compiled = compiledCache.computeIfAbsent(gremlin, this::compile);
+        GremlinContext context = newContext();
+        context.collectSubgraph(true);
+        runCompiled(context, compiled);
+        return context.buildSubgraph();
     }
 
     private List<Object> executeCompiled(CompiledQuery compiled) {
+        GremlinContext context = newContext();
+        return runCompiled(context, compiled);
+    }
+
+    private GremlinContext newContext() {
         GremlinContext context = new GremlinContext(graphQuery, vertexResolver);
         context.cacheEnabled(cacheEnabled);
+        context.adaptiveBatchEnabled(adaptiveBatchEnabled);
+        context.maxBatchSize(maxBatchSize);
+        return context;
+    }
 
+    private List<Object> runCompiled(GremlinContext context, CompiledQuery compiled) {
         List<Object> current = start(context, compiled.vertexIds, compiled.vertexName, compiled.startProperties);
+        int hopsDone = 0;
+        int hopFanOut = 0;
+        boolean filterSinceHop = false;
         for (int i = 0; i < compiled.steps.size(); i++) {
-            context.readProperties(compiled.properties[i]);
-            current = compiled.steps.get(i).apply(context, current);
+            String name = compiled.stepNames.get(i);
+            if (isHop(name)) {
+                // Adaptive batch tuning: scale the next hop's batch size to the previous
+                // hop's fan-out, unless a filter already reduced the traverser cardinality.
+                if (hopsDone >= 1) {
+                    context.adaptBatchSize(hopFanOut, filterSinceHop);
+                }
+                context.readProperties(compiled.properties[i]);
+                current = compiled.steps.get(i).apply(context, current);
+                hopFanOut = current.size();
+                hopsDone++;
+                filterSinceHop = false;
+            } else {
+                if (hopsDone >= 1 && name.equals("has")) {
+                    filterSinceHop = true;
+                }
+                context.readProperties(compiled.properties[i]);
+                current = compiled.steps.get(i).apply(context, current);
+            }
         }
         return current;
     }
@@ -131,14 +226,16 @@ public class GremlinGraphQuery {
         final String vertexName;
         final List<String>[] properties;
         final List<String> startProperties;
+        final List<String> stepNames;
         final List<GremlinStep> steps;
 
         CompiledQuery(List<Object> vertexIds, String vertexName, List<String>[] properties,
-                      List<String> startProperties, List<GremlinStep> steps) {
+                      List<String> startProperties, List<String> stepNames, List<GremlinStep> steps) {
             this.vertexIds = vertexIds;
             this.vertexName = vertexName;
             this.properties = properties;
             this.startProperties = startProperties;
+            this.stepNames = stepNames;
             this.steps = steps;
         }
     }
@@ -232,6 +329,7 @@ public class GremlinGraphQuery {
             // Only the id/label are needed for the first hop — skip reading the record.
             List<Object> out = new ArrayList<>(vertexIds.size());
             for (Object vertexId : vertexIds) {
+                context.recordVertex(vertexName, vertexId);
                 out.add(new GremlinVertex(vertexName, vertexId, Map.of(), 0L, 0L));
             }
             return out;
@@ -242,6 +340,7 @@ public class GremlinGraphQuery {
             if (vertex == null) {
                 continue;
             }
+            context.recordVertex(vertex.vertexName(), vertex.vertexId());
             out.add(new GremlinVertex(vertex.vertexName(), vertex.vertexId(), vertex.properties(),
                     vertex.createdTime(), vertex.lastUpdatedTime()));
         }

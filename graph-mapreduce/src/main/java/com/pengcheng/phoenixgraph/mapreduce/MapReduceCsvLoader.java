@@ -248,6 +248,10 @@ public class MapReduceCsvLoader {
         if (buffer.isEmpty()) {
             return;
         }
+        // upsertEdges aggregates by vertex (DIRECTED: source out-bin + destination in-bin;
+        // UNDIRECTED/BIDIRECTIONAL: both endpoints' shared bin), so each vertex's bin is
+        // written once. Duplicate edge rows were already merged by edge id in mergeEdgeRows.
+        // TODO: multi-edge-type batch write optimization (cross-schema bin aggregation) is deferred.
         List<WriteOutcome> outcomes = edgeStore.upsertEdges(buffer);
         for (int i = 0; i < buffer.size(); i++) {
             results.add(new ItemResult(buffer.get(i).edgeId(), outcomes.get(i).name()));

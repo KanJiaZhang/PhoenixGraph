@@ -17,7 +17,7 @@
         <module>graph-schema</module>
         <module>graph-storage</module>
         <module>graph-storage-aerospike</module>
-        <module>graph-query-engine</module>
+        <module>graph-query</module>
         <module>graph-query-aerospike</module>
         <module>graph-query-gremlin</module>
         <module>graph-compute-engine</module>
@@ -69,7 +69,7 @@
             </dependency>
             <dependency>
                 <groupId>com.pengcheng.phoenixgraph</groupId>
-                <artifactId>graph-query-engine</artifactId>
+                <artifactId>graph-query</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
