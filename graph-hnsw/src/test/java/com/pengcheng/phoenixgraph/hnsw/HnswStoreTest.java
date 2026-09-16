@@ -71,7 +71,7 @@ class HnswStoreTest {
                 "v2", Map.of(), 1L, 2L)));
         query.edges.put("v1@vector_3", List.of(new EdgeQueryResult("vector_3", "v1:v9", EdgeSide.BOTH,
                 "v9", Map.of(), 1L, 2L)));
-        GraphQueryHnswStore store = new GraphQueryHnswStore(query, "Vector");
+        GraphQueryHnswStore store = new GraphQueryHnswStore(query, "Vector", "vector");
 
         List<HnswNeighbor> neighbours = store.neighbours("v1", 0);
         assertEquals(1, neighbours.size());
@@ -87,12 +87,12 @@ class HnswStoreTest {
 
     @Test
     void layerEdgeNamesRoundTrip() {
-        assertEquals("vector_7", HnswLevels.edgeName(7));
-        assertEquals(7, HnswLevels.levelOfEdgeName("vector_7"));
-        assertEquals(-1, HnswLevels.levelOfEdgeName("vector_x"));
-        assertEquals(-1, HnswLevels.levelOfEdgeName("Payment"));
-        assertEquals(-1, HnswLevels.levelOfEdgeName(null));
-        assertTrue(HnswLevels.isLayerEdge("vector_0"));
+        assertEquals("vector_7", HnswLevels.edgeName("vector", 7));
+        assertEquals(7, HnswLevels.levelOfEdgeName("vector", "vector_7"));
+        assertEquals(-1, HnswLevels.levelOfEdgeName("vector", "vector_x"));
+        assertEquals(-1, HnswLevels.levelOfEdgeName("vector", "Payment"));
+        assertEquals(-1, HnswLevels.levelOfEdgeName("vector", null));
+        assertTrue(HnswLevels.isLayerEdge("vector", "vector_0"));
     }
 
     @Test

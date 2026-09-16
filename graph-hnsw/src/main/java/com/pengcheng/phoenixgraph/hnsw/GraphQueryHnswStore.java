@@ -15,22 +15,25 @@ import java.util.Objects;
  * <p>This is the store a search uses - it never writes, so {@link #linkAll} and
  * {@link #unlink} are unsupported. The layer edges carry no properties of their
  * own, so the reads project nothing but the edge id, the far endpoint and the
- * timestamps.
+ * timestamps. Layer {@code l} of a vector property is the edge class
+ * {@code <property>_<l>} ({@link HnswLevels#edgeName(String, int)}).
  */
 public final class GraphQueryHnswStore implements HnswStore {
 
     private final GraphQuery graphQuery;
     private final String vertexName;
+    private final String vectorProperty;
 
-    public GraphQueryHnswStore(GraphQuery graphQuery, String vertexName) {
+    public GraphQueryHnswStore(GraphQuery graphQuery, String vertexName, String vectorProperty) {
         this.graphQuery = Objects.requireNonNull(graphQuery, "graphQuery");
         this.vertexName = Objects.requireNonNull(vertexName, "vertexName");
+        this.vectorProperty = Objects.requireNonNull(vectorProperty, "vectorProperty");
     }
 
     @Override
     public List<HnswNeighbor> neighbours(Object vertexId, int level) {
         List<EdgeQueryResult> edges = graphQuery.readEdges(vertexId, vertexName,
-                HnswLevels.edgeName(level), EdgeSide.BOTH, List.of());
+                HnswLevels.edgeName(vectorProperty, level), EdgeSide.BOTH, List.of());
         List<HnswNeighbor> out = new ArrayList<>(edges.size());
         for (EdgeQueryResult edge : edges) {
             out.add(new HnswNeighbor(edge.edgeId(), edge.otherVertexId()));
@@ -43,7 +46,7 @@ public final class GraphQueryHnswStore implements HnswStore {
         if (vertexIds.isEmpty()) {
             return List.of();
         }
-        List<List<EdgeQueryResult>> edges = graphQuery.readEdgesBatch(HnswLevels.edgeName(level),
+        List<List<EdgeQueryResult>> edges = graphQuery.readEdgesBatch(HnswLevels.edgeName(vectorProperty, level),
                 EdgeSide.BOTH, vertexIds, List.of());
         List<List<HnswNeighbor>> out = new ArrayList<>(vertexIds.size());
         for (List<EdgeQueryResult> perVertex : edges) {

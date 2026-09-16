@@ -5,6 +5,14 @@ import com.aerospike.client.AerospikeException;
 import com.aerospike.client.policy.InfoPolicy;
 import com.pengcheng.phoenixgraph.hnsw.CachingHnswStore;
 import com.pengcheng.phoenixgraph.hnsw.HeapHnswVectorSource;
+import com.pengcheng.phoenixgraph.hnsw.CachedHnswMetadataStore;
+import com.pengcheng.phoenixgraph.schema.MetaPropertySchema;
+import com.pengcheng.phoenixgraph.schema.PropertyType;
+import com.pengcheng.phoenixgraph.schema.VectorIndexConfig;
+import com.pengcheng.phoenixgraph.schema.VectorIndexSchemas;
+import com.pengcheng.phoenixgraph.hnsw.VectorCodec;
+import com.pengcheng.phoenixgraph.storage.aerospike.VertexPropertyValue;
+import java.util.LinkedHashMap;
 import com.pengcheng.phoenixgraph.hnsw.HnswConfig;
 import com.pengcheng.phoenixgraph.hnsw.HnswIndex;
 import com.pengcheng.phoenixgraph.hnsw.HnswInsertResult;
@@ -24,6 +32,7 @@ import com.pengcheng.phoenixgraph.query.gremlin.Subgraph;
 import com.pengcheng.phoenixgraph.schema.GraphSchema;
 import com.pengcheng.phoenixgraph.schema.SchemaConstraints;
 import com.pengcheng.phoenixgraph.schema.SchemaValidator;
+import com.pengcheng.phoenixgraph.schema.VertexPropertySchema;
 import com.pengcheng.phoenixgraph.schema.VertexSchema;
 import com.pengcheng.phoenixgraph.schema.json.SchemaJsonCodec;
 import com.pengcheng.phoenixgraph.storage.BusinessLog;
@@ -47,6 +56,7 @@ import java.util.Map;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -90,6 +100,154 @@ class HnswGraphIntegrationTest {
         }
     }
 
+    /**
+     * The write-driven path: a schema that only flags a property
+     * {@code "isVector": true} (no layer edge classes at all) gets its layers
+     * created while vertices are written and indexed, so the index grows with the
+     * data instead of a size known up front.
+     */
+    @Test
+    void growsAVectorIndexFromWritesOnAFreshSchema() throws IOException {
+        IntegrationConfig config = IntegrationConfig.fromEnv();
+        AerospikeClient client = config.connectOrNull();
+        assumeTrue(client != null, "Aerospike is not reachable - skipping HNSW integration test");
+        Path directory = datasetDirectory();
+        assumeTrue(Files.exists(directory.resolve("siftsmall_base.fvecs")),
+                "SIFT small dataset not found in " + directory.toAbsolutePath()
+                        + " - run tools/download-siftsmall-dataset.sh");
+        try {
+            runDynamic(client, config, directory);
+        } finally {
+            client.close();
+        }
+    }
+
+    private void runDynamic(AerospikeClient client, IntegrationConfig config, Path directory) throws IOException {
+        int limit = intEnv("HNSW_DYNAMIC_LIMIT", 600);
+        HnswDatasetLoader.Dataset dataset = HnswDatasetLoader.load(directory, limit);
+        int size = dataset.size();
+        String set = env("HNSW_DYNAMIC_SET", "hnsw_dynamic_v1");
+        GraphSchema schema = writableVectorSchema();
+        assertTrue(new SchemaValidator().validate(schema, SchemaConstraints.defaults()).isEmpty(),
+                "the vector-only schema must be valid");
+        assertEquals(0, VectorIndexSchemas.declaredLevels(schema, "Doc", "embedding"),
+                "the schema declares the vector property only");
+
+        BusinessLog silentBusiness = entry -> {
+        };
+        ErrorLog silentErrors = entry -> {
+        };
+        AerospikeVertexStore vertexStore = new AerospikeVertexStore(client, config.namespace(), set,
+                silentBusiness, silentErrors, 10);
+        AerospikeEdgeStore edgeStore = new AerospikeEdgeStore(client, config.namespace(), set, schema,
+                silentBusiness, silentErrors, 10);
+        AerospikeHnswMetadataStore metadataRecords = new AerospikeHnswMetadataStore(client,
+                config.namespace(), METADATA_SET,
+                AerospikeHnswIndexFactory.metadataRecordKey(schema, "Doc", "embedding"));
+        // always start clean: re-running the scenario must not index the same ids twice
+        truncate(client, config.namespace(), set);
+        metadataRecords.delete();
+
+        VectorIndexSchemas.VectorProperty property =
+                VectorIndexSchemas.vectorProperty(schema, "Doc", "embedding");
+        assertEquals(new VectorIndexConfig("COSINE", 8, 64, 24).metric(), property.config().metric());
+        HnswIndex index = AerospikeHnswIndexFactory.open(
+                new AerospikeGraphQuery(vertexStore, edgeStore, schema), edgeStore, schema, client,
+                config.namespace(), METADATA_SET, property, CachedHnswMetadataStore.DEFAULT_TTL);
+        assertTrue(index.dynamicSize(), "a write-driven index follows the data");
+        assertEquals(0, index.topLevel(), "an empty index starts at layer 0");
+
+        System.out.println("[hnsw-dyn] dataset : " + size + " x " + dataset.vectors().get(0).length
+                + " vectors, set=" + set + ", schema declares no layer edge classes");
+        System.out.println("[hnsw-dyn] config  : schema -> " + index.config().describe());
+
+        // the write path: store the vertex, then index its vector
+        long start = System.currentTimeMillis();
+        int[] perLevel = new int[64];
+        for (int row = 0; row < size; row++) {
+            String id = HnswDatasetLoader.Dataset.idOf(row);
+            // exactly what the REST write path does: store the vertex, then index it
+            long now = System.currentTimeMillis();
+            Map<Integer, VertexPropertyValue> properties = new LinkedHashMap<>();
+            properties.put(1, new VertexPropertyValue("doc-" + row, now));
+            properties.put(2, new VertexPropertyValue(VectorCodec.toList(dataset.vectors().get(row)), now));
+            vertexStore.upsertVertex(id, properties, now, now);
+            HnswInsertResult result = index.insert(id);
+            if (result.level() < perLevel.length) {
+                perLevel[result.level()]++;
+            }
+        }
+        index.flush();
+        double seconds = (System.currentTimeMillis() - start) / 1000.0;
+        int expectedTop = HnswLevels.topLevel(size);
+        System.out.printf("[hnsw-dyn] indexed %d vertices in %.1fs (%.1f/s), levels %s%n",
+                size, seconds, size / seconds, histogram(perLevel, size));
+
+        // the layers were created on demand, one per doubling of the dataset
+        assertEquals(expectedTop + 1, VectorIndexSchemas.declaredLevels(schema, "Doc", "embedding"));
+        assertEquals(expectedTop, index.topLevel());
+        for (int level = 0; level <= expectedTop; level++) {
+            assertNotNull(schema.edgeSchema("embedding_" + level), "layer " + level + " was created");
+        }
+        // and the metadata record holds the entry points for the next reader
+        HnswMetadata metadata = metadataRecords.read();
+        assertNotNull(metadata, "the index published its entry points");
+        assertEquals(size, metadata.size());
+        assertEquals(expectedTop, metadata.topLevel());
+        assertEquals(HnswMetric.COSINE, metadata.metric());
+        assertEquals(64, metadata.efConstruction());
+        assertEquals(24, metadata.efSearch());
+        assertFalse(metadata.entryPoints().isEmpty());
+        System.out.println("[hnsw-dyn] metadata : " + metadata.entryPoints()
+                + " (layers=0.." + metadata.topLevel() + ")");
+
+        // a reader that only knows the metadata (every query process) searches the same graph
+        HnswIndex cold = AerospikeHnswIndexFactory.open(
+                new AerospikeGraphQuery(vertexStore, edgeStore, schema), edgeStore, schema, client,
+                config.namespace(), METADATA_SET, property, CachedHnswMetadataStore.DEFAULT_TTL);
+        List<Set<Long>> exact = new ArrayList<>(dataset.queries().size());
+        for (float[] query : dataset.queries()) {
+            exact.add(bruteForce(dataset, query, K, null));
+        }
+        double recall = recallAt(cold, dataset, K, 24, exact);
+        System.out.printf("[hnsw-dyn] cold search: recall@%d=%.3f (ef=24)%n", K, recall);
+        assertTrue(recall >= 0.85, "recall@" + K + " = " + recall);
+
+        // the query step finds the neighbours of a written vertex
+        GremlinGraphQuery gremlin = new GremlinGraphQuery(
+                new AerospikeGraphQuery(vertexStore, edgeStore, schema), NeighborVertexResolver.from(schema));
+        gremlin.hnswIndex(cold);
+        long row = size / 2;
+        List<Object> found = gremlin.execute("g.V('" + row + "', 'Doc').nearest(" + K + ")");
+        assertEquals(K, found.size());
+        Set<Object> ids = new HashSet<>();
+        for (Object traverser : found) {
+            GremlinVertex vertex = (GremlinVertex) traverser;
+            assertNotNull(vertex.properties().get("embedding"), "the embedding is materialised");
+            ids.add(vertex.id());
+        }
+        Set<Long> expected = bruteForce(dataset, dataset.vectors().get((int) row), K, row);
+        long hits = expected.stream().filter(wanted -> ids.contains(String.valueOf(wanted))).count();
+        System.out.println("[hnsw-dyn] gremlin   : g.V('" + row + "', 'Doc').nearest(" + K + ") -> "
+                + hits + "/" + K + " exact neighbours");
+        assertTrue(hits >= K * 0.85, "gremlin recall = " + hits + "/" + K);
+    }
+
+    /** A schema with a single vector property and no layer edge classes. */
+    private static GraphSchema writableVectorSchema() {
+        GraphSchema schema = new GraphSchema(7, "hnsw-dynamic", "written vectors");
+        schema.vertex(new VertexSchema(1, "Doc", "A document with an embedding",
+                new VertexPropertySchema(0, "id", "Doc id", PropertyType.ScalarType.STRING),
+                MetaPropertySchema.createdTime(), MetaPropertySchema.lastUpdatedTime())
+                .property(new VertexPropertySchema(1, "title", "Doc title", PropertyType.ScalarType.STRING)
+                        .display(true))
+                .property(new VertexPropertySchema(2, "embedding", "The embedding",
+                        new PropertyType.ListType(PropertyType.ScalarType.DOUBLE))
+                        // the schema only says "this is a vector": the index tunables are here too
+                        .vector(new VectorIndexConfig("COSINE", 8, 64, 24))));
+        return schema;
+    }
+
     private void run(AerospikeClient client, IntegrationConfig config) throws IOException {
         Path directory = datasetDirectory();
         assumeTrue(Files.exists(directory.resolve("siftsmall_base.fvecs")),
@@ -97,8 +255,11 @@ class HnswGraphIntegrationTest {
                         + " - run tools/download-siftsmall-dataset.sh");
 
         GraphSchema schema = loadSchema();
-        assertEquals(List.of("Vector"), AerospikeHnswIndexFactory.vectorVertexTypes(schema));
-        assertEquals("vector", AerospikeHnswIndexFactory.vectorProperty(schema, "Vector"));
+        List<VectorIndexSchemas.VectorProperty> vectorProperties = AerospikeHnswIndexFactory.vectorProperties(schema);
+        assertEquals(1, vectorProperties.size());
+        assertEquals("Vector", vectorProperties.get(0).vertexName());
+        assertEquals("vector", vectorProperties.get(0).propertyName());
+        assertTrue(vectorProperties.get(0).config().sameAs(VectorIndexConfig.DEFAULT), "schema defaults");
         assertTrue(new SchemaValidator().validate(schema, SchemaConstraints.defaults()).isEmpty(),
                 "the generated HNSW schema must be valid");
 
@@ -124,7 +285,7 @@ class HnswGraphIntegrationTest {
         AerospikeEdgeStore edgeStore =
                 new AerospikeEdgeStore(client, config.namespace(), set, schema, silentBusiness, silentErrors, attempts);
         AerospikeHnswMetadataStore metadataStore =
-                new AerospikeHnswMetadataStore(client, config.namespace(), METADATA_SET, "Vector");
+                AerospikeHnswMetadataStore.forVertex(client, config.namespace(), METADATA_SET, "Vector");
 
         System.out.println("[hnsw] dataset     : " + size + " x " + dataset.vectors().get(0).length
                 + " vectors from " + directory);
@@ -138,15 +299,20 @@ class HnswGraphIntegrationTest {
         boolean verticesPresent = vertexStore.readVertex(HnswDatasetLoader.Dataset.idOf(0)) != null
                 && vertexStore.readVertex(HnswDatasetLoader.Dataset.idOf(size - 1)) != null;
         HnswMetadata existing = metadataStore.read();
-        // An index is only reusable when its vectors, its size and its metadata all
-        // match the request; anything else (first run, interrupted build, different
-        // limit) restarts from a clean set so no stale layer edges survive.
-        boolean upToDate = !force && existing != null && existing.size() == size && verticesPresent;
+        if (existing != null && existing.size() > size) {
+            System.out.println("[hnsw] index holds " + existing.size() + " vertices (" + (existing.size() - size)
+                    + " written after the load)");
+        }
+        // An index is reusable when its vectors, its size and its metadata all match
+        // the request; anything else (first run, interrupted build, different limit)
+        // restarts from a clean set so no stale layer edges survive. Vertices written
+        // *after* the load (the write path indexes them) are fine: they only add to
+        // the graph, so the metadata may be slightly ahead of the dataset.
+        boolean upToDate = !force && existing != null && existing.size() >= size && verticesPresent;
 
         HnswIndex index;
         if (upToDate) {
-            index = AerospikeHnswIndexFactory.open(new AerospikeGraphQuery(vertexStore, edgeStore, schema),
-                    edgeStore, schema, client, config.namespace(), METADATA_SET, "Vector");
+            index = indexOf(client, config, vertexStore, edgeStore, schema);
             System.out.println("[hnsw] reused the existing index: " + index.stats().describe());
         } else {
             truncate(client, config.namespace(), set);
@@ -183,7 +349,7 @@ class HnswGraphIntegrationTest {
         }
         // the build reads neighbour lists far more often than it writes them, so the
         // storage store is wrapped in a write-through cache
-        AerospikeHnswStore storage = new AerospikeHnswStore(edgeStore, schema, "Vector");
+        AerospikeHnswStore storage = new AerospikeHnswStore(edgeStore, schema, "Vector", "vector");
         HnswIndex index = HnswIndex.builder()
                 .vertexName("Vector")
                 .vectorProperty("vector")
@@ -326,8 +492,7 @@ class HnswGraphIntegrationTest {
                                   HnswDatasetLoader.Dataset dataset, HnswConfig config2,
                                   List<Set<Long>> exact) {
         AerospikeGraphQuery graphQuery = new AerospikeGraphQuery(vertexStore, edgeStore, schema);
-        HnswIndex cold = AerospikeHnswIndexFactory.open(graphQuery, edgeStore, schema, client,
-                config.namespace(), METADATA_SET, "Vector");
+        HnswIndex cold = indexOf(client, config, vertexStore, edgeStore, schema);
         assertNotNull(cold, "the index metadata must be readable from Aerospike");
         assertEquals(dataset.size(), cold.stats().size());
         assertEquals(HnswMetric.L2, cold.config().metric());
@@ -348,8 +513,7 @@ class HnswGraphIntegrationTest {
                                      GraphSchema schema, HnswDatasetLoader.Dataset dataset, int size) {
         AerospikeGraphQuery graphQuery = new AerospikeGraphQuery(vertexStore, edgeStore, schema);
         GremlinGraphQuery gremlin = new GremlinGraphQuery(graphQuery, NeighborVertexResolver.from(schema));
-        gremlin.hnswIndex(AerospikeHnswIndexFactory.open(graphQuery, edgeStore, schema, client,
-                config.namespace(), METADATA_SET, "Vector"));
+        gremlin.hnswIndex(indexOf(client, config, vertexStore, edgeStore, schema));
         assertTrue(!gremlin.hnswIndexes().isEmpty(), "vector search is wired into the engine");
 
         long row = size / 2;
@@ -404,6 +568,16 @@ class HnswGraphIntegrationTest {
     }
 
     // ---------------------------------------------------------------- helpers
+
+    /** Opens the 'Vector' index of the demo schema the way the service does (schema driven, cached metadata). */
+    private static HnswIndex indexOf(AerospikeClient client, IntegrationConfig config,
+                                     AerospikeVertexStore vertexStore, AerospikeEdgeStore edgeStore,
+                                     GraphSchema schema) {
+        return AerospikeHnswIndexFactory.open(
+                new AerospikeGraphQuery(vertexStore, edgeStore, schema), edgeStore, schema, client,
+                config.namespace(), METADATA_SET,
+                VectorIndexSchemas.vectorProperty(schema, "Vector", "vector"), CachedHnswMetadataStore.DEFAULT_TTL);
+    }
 
     private static GraphSchema loadSchema() throws IOException {
         try (InputStream in = HnswGraphIntegrationTest.class.getResourceAsStream("/hnsw-sift.json")) {

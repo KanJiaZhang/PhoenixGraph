@@ -1,5 +1,7 @@
 package com.pengcheng.phoenixgraph.hnsw;
 
+import com.pengcheng.phoenixgraph.schema.VectorIndexSchemas;
+
 /**
  * The layer scheme of an HNSW index.
  *
@@ -7,7 +9,8 @@ package com.pengcheng.phoenixgraph.hnsw;
  * numbered {@code 0} (bottom, every vertex is present) up to {@code topLevel =
  * ceil(log2(size))}. For {@code 4096 = 2^12} that is the 13 layers {@code 0..12},
  * materialised as the 13 bidirectional edge classes
- * {@code vector_0, vector_1, ... vector_12}.
+ * {@code vector_0, vector_1, ... vector_12} - named after the vector property
+ * ({@link VectorIndexSchemas}).
  *
  * <p>A vertex's top layer follows the standard exponentially decaying draw
  * {@code P(level = l) = 2^-(l+1)}, i.e. {@code level = floor(-log2(u))} for
@@ -18,9 +21,6 @@ package com.pengcheng.phoenixgraph.hnsw;
  * lands on the same layer (a rebuild is reproducible and a second process agrees).
  */
 public final class HnswLevels {
-
-    /** Edge class name prefix: layer {@code l} is stored under {@code vector_<l>}. */
-    public static final String EDGE_PREFIX = "vector_";
 
     /** Highest number of entry points kept in the metadata record. */
     public static final int MAX_ENTRY_POINTS = 10;
@@ -51,30 +51,19 @@ public final class HnswLevels {
         return Math.max(1, level);
     }
 
-    /** Edge class name of a layer: {@code 0 -> vector_0}. */
-    public static String edgeName(int level) {
-        if (level < 0) {
-            throw new IllegalArgumentException("level must be >= 0, got " + level);
-        }
-        return EDGE_PREFIX + level;
+    /** Edge class name of a layer of a vector property: {@code (vector, 0) -> vector_0}. */
+    public static String edgeName(String propertyName, int level) {
+        return VectorIndexSchemas.layerEdgeName(propertyName, level);
     }
 
-    /** Layer of an edge class name, or {@code -1} when the name is not an HNSW layer. */
-    public static int levelOfEdgeName(String edgeName) {
-        if (edgeName == null || !edgeName.startsWith(EDGE_PREFIX)) {
-            return -1;
-        }
-        try {
-            int level = Integer.parseInt(edgeName.substring(EDGE_PREFIX.length()));
-            return level < 0 ? -1 : level;
-        } catch (NumberFormatException e) {
-            return -1;
-        }
+    /** Layer of an edge class name of a vector property, or {@code -1} when it is not one. */
+    public static int levelOfEdgeName(String propertyName, String edgeName) {
+        return VectorIndexSchemas.levelOfLayerEdge(propertyName, edgeName);
     }
 
-    /** Whether the edge class name follows the HNSW layer naming scheme. */
-    public static boolean isLayerEdge(String edgeName) {
-        return levelOfEdgeName(edgeName) >= 0;
+    /** Whether the edge class name is a layer of the given vector property. */
+    public static boolean isLayerEdge(String propertyName, String edgeName) {
+        return levelOfEdgeName(propertyName, edgeName) >= 0;
     }
 
     /**

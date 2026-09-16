@@ -47,6 +47,13 @@ import java.util.concurrent.atomic.AtomicLong;
  * else. Neighbour lists and vectors are fetched in batches and memoised per
  * operation, which keeps a search at roughly one storage read per expanded node.
  *
+ * <p>An index either knows its dataset size up front ({@link Builder#size}) or
+ * follows the data ({@link Builder#dynamicSize}): every doubling of the vertex
+ * count adds a layer and the matching edge class is created on demand through the
+ * {@link HnswLayerProvisioner}. Entry points live in the metadata record and are
+ * refreshed for the search path (see {@link CachedHnswMetadataStore}: one minute
+ * by default), so several instances can index and query the same graph.
+ *
  * <p>{@link #insert} is synchronised (a build is a single writer); searches use
  * their own per-call state and are safe to run concurrently.
  */
@@ -61,8 +68,11 @@ public final class HnswIndex {
     private final HnswVectorSource vectors;
     private final HnswMetadataStore metadataStore;
     private final HnswConfig config;
-    private final int topLevel;
+    private final HnswLayerProvisioner provisioner;
+    private final boolean dynamicSize;
     private final List<HnswEntryPoint> entryPoints = new ArrayList<>();
+    /** Layers this instance already asked the provisioner for (guarded by {@code this}). */
+    private final Set<Integer> provisionedLayers = new HashSet<>();
     private final AtomicLong inserts = new AtomicLong();
     private final AtomicLong searches = new AtomicLong();
     private final AtomicLong distances = new AtomicLong();
@@ -70,6 +80,8 @@ public final class HnswIndex {
     private long size;
     private long insertsSincePersist;
     private long updatedAt;
+    /** Highest layer of the index; grows with the dataset when {@link #dynamicSize}. */
+    private volatile int topLevel;
 
     private HnswIndex(Builder builder, HnswMetadata metadata) {
         this.vertexName = builder.vertexName;
@@ -78,15 +90,24 @@ public final class HnswIndex {
         this.vectors = builder.vectors;
         this.metadataStore = builder.metadataStore;
         this.metadataWriteInterval = builder.metadataWriteInterval;
+        this.provisioner = builder.provisioner;
+        this.dynamicSize = builder.dynamicSize;
         if (metadata == null) {
             this.config = builder.config;
-            this.topLevel = HnswLevels.topLevel(builder.size);
+            this.topLevel = dynamicSize ? 0 : HnswLevels.topLevel(builder.size);
         } else {
             this.config = metadata.toConfig().withEfSearch(builder.config.efSearch());
             this.topLevel = Math.max(metadata.topLevel(), HnswLevels.topLevel(metadata.size()));
             this.size = metadata.size();
             this.entryPoints.addAll(metadata.entryPoints());
             this.updatedAt = metadata.updatedAt();
+            // an existing index promises these layers: make sure the schema has them,
+            // otherwise a descent above the declared layers would find nothing
+            if (dynamicSize) {
+                for (int level = 0; level <= topLevel; level++) {
+                    ensureLayer(level);
+                }
+            }
         }
     }
 
@@ -106,9 +127,14 @@ public final class HnswIndex {
         return config;
     }
 
-    /** Highest layer of the index ({@code ceil(log2(size))}). */
+    /** Highest layer of the index ({@code ceil(log2(size))}, growing with the data). */
     public int topLevel() {
         return topLevel;
+    }
+
+    /** Whether the layer count follows the dataset size ({@code true} for an index that grows on write). */
+    public boolean dynamicSize() {
+        return dynamicSize;
     }
 
     /** Entry points currently kept, highest layer first. */
@@ -149,12 +175,28 @@ public final class HnswIndex {
     }
 
     /**
+     * Inserts a vertex when it has a vector, i.e. skips a vertex that does not
+     * carry the indexed property (a partial write, or another vertex type).
+     *
+     * @return the insert result, or {@code null} when there was no vector to index
+     */
+    public HnswInsertResult insertIfPresent(Object vertexId) {
+        float[] vector = vectors.vector(vertexId);
+        return vector == null ? null : insert(vertexId, vector);
+    }
+
+    /**
      * Inserts one vertex into the layered graph, linking it to its nearest
      * neighbours on every layer it reaches.
      */
     public synchronized HnswInsertResult insert(Object vertexId, float[] vector) {
         Objects.requireNonNull(vertexId, "vertexId");
         Objects.requireNonNull(vector, "vector");
+        if (dynamicSize) {
+            // the layer count follows the dataset: every doubling adds one layer, and
+            // the schema gets the matching edge class on demand
+            growFor(size + 1);
+        }
         int level = levelOf(vertexId);
         if (entryPoints.isEmpty()) {
             // first vertex: it is the sole entry point of every layer
@@ -177,6 +219,7 @@ public final class HnswIndex {
         int links = 0;
         int pruned = 0;
         for (int l = Math.min(level, entryLevel); l >= 0; l--) {
+            ensureLayer(l);
             List<HnswSearchResult> candidates =
                     searchLayer(List.of(current), config.efConstructionAt(l), l, session);
             List<Object> selected = selectNeighbours(toCandidates(candidates), config.maxLinksFor(l), session);
@@ -233,6 +276,7 @@ public final class HnswIndex {
         if (k < 1) {
             throw new IllegalArgumentException("k must be >= 1, got " + k);
         }
+        refreshEntryPoints();
         if (entryPoints.isEmpty()) {
             return List.of();
         }
@@ -456,6 +500,73 @@ public final class HnswIndex {
     }
 
     // -------------------------------------------------------------- bookkeeping
+
+    /**
+     * Re-reads the index metadata (at most once per TTL, see the store) and merges
+     * what another instance may have indexed meanwhile: the entry points are a
+     * union of both views, so a search always starts from the highest vertices
+     * known anywhere.
+     */
+    private void refreshEntryPoints() {
+        HnswMetadata fresh = metadataStore.read();
+        if (fresh == null) {
+            return;
+        }
+        synchronized (this) {
+            if (fresh.size() > size) {
+                size = fresh.size();
+            }
+            if (fresh.topLevel() > topLevel && dynamicSize) {
+                growFor(fresh.size());
+            }
+            boolean changed = false;
+            for (HnswEntryPoint point : fresh.entryPoints()) {
+                int existing = indexOfEntryPoint(point.vertexId());
+                if (existing < 0) {
+                    entryPoints.add(point);
+                    changed = true;
+                } else if (entryPoints.get(existing).level() < point.level()) {
+                    entryPoints.set(existing, point);
+                    changed = true;
+                }
+            }
+            if (changed) {
+                entryPoints.sort(null);
+                while (entryPoints.size() > HnswLevels.MAX_ENTRY_POINTS) {
+                    entryPoints.remove(entryPoints.size() - 1);
+                }
+            }
+        }
+    }
+
+    private int indexOfEntryPoint(Object vertexId) {
+        for (int i = 0; i < entryPoints.size(); i++) {
+            if (entryPoints.get(i).vertexId().equals(vertexId)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /** Grows the index to the layer count a dataset of {@code expectedSize} deserves. */
+    private void growFor(long expectedSize) {
+        int wanted = HnswLevels.topLevel(Math.max(expectedSize, 1));
+        if (wanted <= topLevel) {
+            return;
+        }
+        for (int level = topLevel; level <= wanted; level++) {
+            ensureLayer(level);
+        }
+        topLevel = wanted;
+    }
+
+    /** Makes sure the layer's edge class exists (a no-op without a provisioner, called once per layer). */
+    private void ensureLayer(int level) {
+        if (provisioner == null || !provisionedLayers.add(level)) {
+            return;
+        }
+        provisioner.ensureLayer(vertexName, vectorProperty, level);
+    }
 
     private void registerEntryPoint(Object vertexId, int level) {
         entryPoints.removeIf(point -> point.vertexId().equals(vertexId));
@@ -682,7 +793,9 @@ public final class HnswIndex {
         private HnswVectorSource vectors;
         private HnswMetadataStore metadataStore = HnswMetadataStore.inMemory();
         private HnswConfig config = HnswConfig.defaults();
+        private HnswLayerProvisioner provisioner;
         private long size;
+        private boolean dynamicSize;
         private int metadataWriteInterval = 100;
         private boolean overwrite;
 
@@ -727,6 +840,23 @@ public final class HnswIndex {
             return this;
         }
 
+        /**
+         * Lets the layer count follow the dataset ({@code ceil(log2(size)) + 1}, one
+         * more layer per doubling) instead of a size fixed up front. Needed for an
+         * index fed by writes, where the final size is unknown; the layers are
+         * created on demand through {@link #provisioner}.
+         */
+        public Builder dynamicSize(boolean dynamicSize) {
+            this.dynamicSize = dynamicSize;
+            return this;
+        }
+
+        /** Creates the layer edge classes the index needs while it grows. */
+        public Builder provisioner(HnswLayerProvisioner provisioner) {
+            this.provisioner = provisioner;
+            return this;
+        }
+
         public Builder metadataWriteInterval(int metadataWriteInterval) {
             this.metadataWriteInterval = metadataWriteInterval;
             return this;
@@ -746,10 +876,15 @@ public final class HnswIndex {
             Objects.requireNonNull(config, "config");
             HnswMetadata metadata = overwrite ? null : metadataStore.read();
             if (metadata == null) {
-                if (size < 1) {
+                if (size < 1 && !dynamicSize) {
                     throw new IllegalStateException("size is required to create a new HNSW index");
                 }
-                if (metadataStore.read() == null) {
+                if (dynamicSize && provisioner == null) {
+                    provisioner = HnswLayerProvisioner.none();
+                }
+                // a dynamic index derives its layer count from the data, so it does not
+                // claim the record up front (a reader must not overwrite a builder's state)
+                if (!dynamicSize && metadataStore.read() == null) {
                     metadataStore.write(HnswMetadata.empty(vertexName, vectorProperty, config,
                             vectors.dimensions(), size));
                 }

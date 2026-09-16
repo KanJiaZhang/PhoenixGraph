@@ -1,0 +1,58 @@
+{
+  "id": 8,
+  "name": "hnsw-dynamic",
+  "description": "HNSW vector index of 600 128-d vectors over 11 layers",
+  "constraints": {
+    "idSchemaIndex": 0,
+    "createdTimeIndex": -2,
+    "lastUpdatedTimeIndex": -1
+  },
+  "vertexSchemas": [
+    {
+      "id": 1,
+      "name": "Doc",
+      "description": "A vector of the HNSW demo dataset (128 dimensions, 600 rows)",
+      "idSchema": {
+        "id": 0,
+        "name": "id",
+        "description": "Doc id (the dataset row as a string)",
+        "type": "STRING"
+      },
+      "createdTime": {
+        "id": -2,
+        "name": "createdTime",
+        "description": "Creation time",
+        "type": "LONG"
+      },
+      "lastUpdatedTime": {
+        "id": -1,
+        "name": "lastUpdatedTime",
+        "description": "Last update time",
+        "type": "LONG"
+      },
+      "properties": [
+        {
+          "id": 1,
+          "name": "name",
+          "description": "Human readable vector name",
+          "type": "STRING",
+          "display": true
+        },
+        {
+          "id": 2,
+          "name": "embedding",
+          "description": "The 128-dimensional vector",
+          "type": {
+            "list": "DOUBLE"
+          },
+          "isVector": true,
+          "metric": "COSINE",
+          "m": 8,
+          "efConstruction": 64,
+          "efSearch": 24
+        }
+      ]
+    }
+  ],
+  "edgeSchemas": []
+}

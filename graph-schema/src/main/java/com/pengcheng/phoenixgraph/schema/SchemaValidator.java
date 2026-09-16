@@ -33,6 +33,7 @@ public class SchemaValidator {
                     vertex.createdTime(), vertex.lastUpdatedTime(), constraints);
             checkDuplicateProperties(errors, "vertex", vertex.name(), vertex.properties());
             checkDisplayProperties(warnings, vertex);
+            checkVectorProperties(errors, warnings, vertex);
             for (VertexPropertySchema property : vertex.properties()) {
                 checkSupportedPropertyType(errors, "vertex", vertex.name(), property);
             }
@@ -116,6 +117,37 @@ public class SchemaValidator {
                             + "' constraint is outside meta-schema bound " + bounds);
                 }
             }
+        }
+    }
+
+    /**
+     * Vector properties: an embedding must be a numeric list, and every vector
+     * property gets its own layer edge classes (named after the property, e.g.
+     * {@code vector_0}, {@code embedding_0}).
+     */
+    private void checkVectorProperties(List<String> errors, List<String> warnings, VertexSchema vertex) {
+        List<String> vectorProperties = new ArrayList<>();
+        for (VertexPropertySchema property : vertex.properties()) {
+            if (!property.isVector()) {
+                continue;
+            }
+            vectorProperties.add(property.name());
+            if (!(property.type() instanceof PropertyType.ListType list)) {
+                errors.add("vector property '" + vertex.name() + "." + property.name()
+                        + "' must be a list of numbers, got " + property.type());
+            } else if (list.elementType() == PropertyType.ScalarType.STRING
+                    || list.elementType() == PropertyType.ScalarType.BOOLEAN) {
+                errors.add("vector property '" + vertex.name() + "." + property.name()
+                        + "' must hold numbers, got " + property.type());
+            } else if (list.elementType() == PropertyType.ScalarType.OBJECT) {
+                warnings.add("vector property '" + vertex.name() + "." + property.name()
+                        + "' is list<object>; list<double> or list<float> is cheaper to read");
+            }
+        }
+        if (vectorProperties.size() > 1) {
+            warnings.add("vertex schema '" + vertex.name() + "' declares " + vectorProperties.size()
+                    + " vector properties (" + String.join(", ", vectorProperties)
+                    + "): each one gets its own layer edge classes");
         }
     }
 

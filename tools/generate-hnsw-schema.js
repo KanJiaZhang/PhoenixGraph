@@ -2,12 +2,21 @@
 /*
  * Generates the HNSW demo graph schema (graph-http/src/main/resources/hnsw-sift.json).
  *
- * The schema describes one vector vertex type plus one bidirectional edge class
- * per HNSW layer: a dataset of `size` vectors gets the layers 0..ceil(log2(size)),
- * so 4096 vectors become the 13 edge classes vector_0 .. vector_12.
+ * The schema describes one vector vertex type plus, optionally, one bidirectional
+ * edge class per HNSW layer: a dataset of `size` vectors gets the layers
+ * 0..ceil(log2(size)), so 4096 vectors become the 13 edge classes vector_0 ..
+ * vector_12.
+ *
+ * The vector property is flagged `"isVector": true` with its index tunables; the
+ * layer edge classes are listed explicitly here (stable ids for an existing
+ * dataset) but the graph creates them on demand for any vector property that does
+ * not declare them, so `--layers 0` produces a schema whose layers appear as the
+ * index grows.
  *
  * Usage:
  *   node tools/generate-hnsw-schema.js [--size 10000] [--m 15] [--dimensions 128]
+ *                                      [--ef-construction 100] [--ef-search 30]
+ *                                      [--metric L2] [--layers auto]
  *                                      [--vertex Vector] [--out <path>]
  */
 'use strict';
@@ -20,8 +29,12 @@ function parseArgs(argv) {
     size: 10000,
     m: 15,
     dimensions: 128,
+    'ef-construction': 100,
+    'ef-search': 30,
+    metric: 'L2',
+    layers: 'auto',
     vertex: 'Vector',
-    vectorProperty: 'vector',
+    'vector-property': 'vector',
     graph: 'hnsw-sift',
     id: 3,
     out: path.join(__dirname, '..', 'graph-http', 'src', 'main', 'resources', 'hnsw-sift.json'),
@@ -50,6 +63,7 @@ function main() {
   const args = parseArgs(process.argv.slice(2));
   const top = topLevel(args.size);
   const vertex = args.vertex;
+  const layerCount = args.layers === 'auto' ? top + 1 : Number(args.layers);
 
   const meta = (id) => property(id, id === -2 ? 'createdTime' : 'lastUpdatedTime',
       id === -2 ? 'Creation time' : 'Last update time', 'LONG');
@@ -63,15 +77,24 @@ function main() {
     lastUpdatedTime: meta(-1),
     properties: [
       property(1, 'name', 'Human readable vector name', 'STRING', { display: true }),
-      property(2, args.vectorProperty, `The ${args.dimensions}-dimensional vector`,
-          { list: 'DOUBLE' }),
+      property(2, args['vector-property'], `The ${args.dimensions}-dimensional vector`,
+          { list: 'DOUBLE' }, {
+            // the property is an embedding: writes index it automatically
+            isVector: true,
+            metric: args.metric,
+            m: args.m,
+            efConstruction: args['ef-construction'],
+            efSearch: args['ef-search'],
+          }),
     ],
   };
 
   // one bidirectional edge class per layer: vector_0 holds every vertex, the top
-  // layer holds about one (the entry point of a search)
+  // layer holds about one (the entry point of a search). They are listed here so
+  // an existing dataset keeps stable ids; a vector property without them gets
+  // them created on demand while the index grows.
   const edgeSchemas = [];
-  for (let level = 0; level <= top; level++) {
+  for (let level = 0; level < layerCount; level++) {
     const maxLinks = level === 0 ? 2 * args.m : args.m;
     const degree = 2 * maxLinks; // head-room above the HNSW cap: the index prunes first
     edgeSchemas.push({
@@ -105,6 +128,10 @@ function main() {
   console.log(`Wrote ${args.out}`);
   console.log(`  size=${args.size} -> layers 0..${top} (${top + 1} edge classes vector_0..vector_${top})`);
   console.log(`  m=${args.m}: maxLinks(0)=${2 * args.m}, maxLinks(>=1)=${args.m}`);
+  console.log(`  declared layer edge classes: ${layerCount}` +
+      (layerCount === top + 1 ? '' : ' (the rest are created on demand)'));
+  console.log(`  vector property '${args['vector-property']}': isVector=true, metric=${args.metric}, ` +
+      `m=${args.m}, efConstruction=${args['ef-construction']}, efSearch=${args['ef-search']}`);
 }
 
 main();

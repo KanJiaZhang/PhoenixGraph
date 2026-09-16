@@ -22,4 +22,18 @@ public class EdgePropertySchema extends PropertySchema {
         super.display(display);
         return this;
     }
+
+    /** Covariant overload of {@link PropertySchema#vector(VectorIndexConfig)} (fluent). */
+    @Override
+    public EdgePropertySchema vector(VectorIndexConfig config) {
+        super.vector(config);
+        return this;
+    }
+
+    /** Covariant overload of {@link PropertySchema#vector(boolean)} (fluent). */
+    @Override
+    public EdgePropertySchema vector(boolean isVector) {
+        super.vector(isVector);
+        return this;
+    }
 }

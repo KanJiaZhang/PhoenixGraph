@@ -120,7 +120,7 @@ final class GremlinSteps {
                         hits.add(hit.vertexId());
                     }
                 }
-                recordNeighbourEdges(ctx, vertex, hits);
+                recordNeighbourEdges(ctx, index, vertex, hits);
                 out.addAll(readVertices(ctx, vertex.label(), new ArrayList<>(hits)));
             }
             return out;
@@ -128,12 +128,13 @@ final class GremlinSteps {
     }
 
     /** Records the layer-0 links that connect a query vertex to its returned neighbours. */
-    private static void recordNeighbourEdges(GremlinContext ctx, GremlinVertex vertex, Set<Object> hits) {
+    private static void recordNeighbourEdges(GremlinContext ctx, HnswIndex index, GremlinVertex vertex,
+                                            Set<Object> hits) {
         if (!ctx.collectSubgraph() || hits.isEmpty()) {
             return;
         }
         List<EdgeQueryResult> edges = ctx.graphQuery().readEdges(vertex.id(), vertex.label(),
-                HnswLevels.edgeName(0), EdgeSide.BOTH, List.of());
+                HnswLevels.edgeName(index.vectorProperty(), 0), EdgeSide.BOTH, List.of());
         for (EdgeQueryResult edge : edges) {
             Object other = edge.otherVertexId();
             if (hits.contains(other)) {

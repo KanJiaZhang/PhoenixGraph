@@ -19,6 +19,7 @@ import com.pengcheng.phoenixgraph.schema.PropertyConstraints;
 import com.pengcheng.phoenixgraph.schema.PropertySchema;
 import com.pengcheng.phoenixgraph.schema.PropertyType;
 import com.pengcheng.phoenixgraph.schema.SchemaConstraints;
+import com.pengcheng.phoenixgraph.schema.VectorIndexConfig;
 import com.pengcheng.phoenixgraph.schema.VertexPropertySchema;
 import com.pengcheng.phoenixgraph.schema.VertexSchema;
 
@@ -101,9 +102,15 @@ public class SchemaJsonCodec {
 
     private PropertyDto toPropertyDto(PropertySchema property) {
         PropertyConstraints constraints = property.constraints();
+        VectorIndexConfig vector = property.vectorConfig();
         return new PropertyDto(property.id(), property.name(), property.description(), property.type(),
                 constraints.min(), constraints.max(), constraints.minLength(), constraints.maxLength(), null,
-                property.display() ? Boolean.TRUE : null);
+                property.display() ? Boolean.TRUE : null,
+                property.isVector() ? Boolean.TRUE : null,
+                vector == null ? null : vector.metric(),
+                vector == null ? null : vector.m(),
+                vector == null ? null : vector.efConstruction(),
+                vector == null ? null : vector.efSearch());
     }
 
     private PropertyDto toEndpointDto(EdgeEndpointSchema endpoint) {
@@ -140,8 +147,9 @@ public class SchemaJsonCodec {
         VertexSchema schema = new VertexSchema(dto.id(), dto.name(), dto.description(), idSchema, createdTime, lastUpdatedTime);
         if (dto.properties() != null) {
             for (PropertyDto p : dto.properties()) {
-                schema.property(new VertexPropertySchema(p.id(), p.name(), p.description(), p.type(),
-                        toConstraints(p)).display(Boolean.TRUE.equals(p.display())));
+                schema.property(toVectorProperty(
+                        new VertexPropertySchema(p.id(), p.name(), p.description(), p.type(),
+                                toConstraints(p)).display(Boolean.TRUE.equals(p.display())), p));
             }
         }
         return schema;
@@ -175,6 +183,17 @@ public class SchemaJsonCodec {
     private EdgeEndpointSchema toEndpoint(PropertyDto dto) {
         return new EdgeEndpointSchema(dto.id(), dto.name(), dto.description(), dto.type(),
                 dto.vertex(), toConstraints(dto));
+    }
+
+    /**
+     * Applies the vector index declaration of a property DTO ({@code isVector} plus
+     * its optional metric/m/ef tunables).
+     */
+    private static <T extends PropertySchema> T toVectorProperty(T property, PropertyDto dto) {
+        if (Boolean.TRUE.equals(dto.isVector())) {
+            property.vector(VectorIndexConfig.of(dto.metric(), dto.m(), dto.efConstruction(), dto.efSearch()));
+        }
+        return property;
     }
 
     private EdgePropertySchema toEdgeProperty(PropertyDto dto) {

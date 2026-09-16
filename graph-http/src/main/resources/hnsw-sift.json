@@ -44,7 +44,12 @@
           "description": "The 128-dimensional vector",
           "type": {
             "list": "DOUBLE"
-          }
+          },
+          "isVector": true,
+          "metric": "L2",
+          "m": 15,
+          "efConstruction": 100,
+          "efSearch": 30
         }
       ]
     }

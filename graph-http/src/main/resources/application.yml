@@ -27,3 +27,7 @@ phoenixgraph:
       # exposes the vector-search step: g.V('4242','Vector').nearest(20)
       - schema: hnsw-sift
         vertex-set: hnsw_sift_v1
+      # vector graph whose schema declares *only* isVector: its layer edge classes
+      # are created while the index grows (see the hnsw-dynamic profile for writes)
+      - schema: hnsw-dynamic
+        vertex-set: hnsw_dynamic_v1

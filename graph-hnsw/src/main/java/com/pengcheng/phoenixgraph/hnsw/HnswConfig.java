@@ -6,7 +6,7 @@ package com.pengcheng.phoenixgraph.hnsw;
  * @param metric          distance metric the graph is ordered by
  * @param m               neighbours kept per layer while inserting ({@code 15} by default)
  * @param efConstruction  candidate list size while inserting ({@code 100} by default)
- * @param efSearch        candidate list size while searching ({@code 50} by default)
+ * @param efSearch        candidate list size while searching ({@code 30} by default)
  * @param maxLinks        max edges per vertex on layers {@code >= 1} ({@code m}, standard HNSW)
  * @param maxLinksLevel0  max edges per vertex on layer 0 ({@code 2 * m}, standard HNSW)
  */
@@ -31,9 +31,9 @@ public record HnswConfig(HnswMetric metric, int m, int efConstruction, int efSea
         }
     }
 
-    /** {@code m = 15}, {@code efConstruction = 100}, {@code efSearch = 50}, L2 distance. */
+    /** {@code m = 15}, {@code efConstruction = 100}, {@code efSearch = 30}, L2 distance. */
     public static HnswConfig defaults() {
-        return new HnswConfig(HnswMetric.L2, 15, 100, 50, 15, 30);
+        return new HnswConfig(HnswMetric.L2, 15, 100, 30, 15, 30);
     }
 
     /** Neighbours kept at the given layer while inserting ({@code m}); the search cap is {@link #maxLinksFor(int)}. */

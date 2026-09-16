@@ -6,6 +6,7 @@ import com.pengcheng.phoenixgraph.hnsw.HnswNeighbor;
 import com.pengcheng.phoenixgraph.hnsw.HnswStore;
 import com.pengcheng.phoenixgraph.hnsw.HnswUnlink;
 import com.pengcheng.phoenixgraph.query.QueryException;
+import com.pengcheng.phoenixgraph.schema.EdgeDirection;
 import com.pengcheng.phoenixgraph.schema.EdgeSchema;
 import com.pengcheng.phoenixgraph.schema.GraphSchema;
 import com.pengcheng.phoenixgraph.storage.WriteOutcome;
@@ -22,7 +23,8 @@ import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Aerospike {@link HnswStore}: layer {@code l} is read from, and written to, the
- * bidirectional edge class {@code vector_<l>} on the indexed vertex set.
+ * bidirectional edge class {@code <vectorProperty>_<l>} on the indexed vertex set
+ * ({@link HnswLevels#edgeName(String, int)}).
  *
  * <p>Reads of many vertices use one native batch read
  * ({@link AerospikeEdgeStore#getEdgesBatch}), which is the hot path of a search.
@@ -40,17 +42,24 @@ public final class AerospikeHnswStore implements HnswStore {
     private final AerospikeEdgeStore edgeStore;
     private final GraphSchema schema;
     private final String vertexName;
+    private final String vectorProperty;
     private final Map<Integer, EdgeSchema> layerSchemas = new ConcurrentHashMap<>();
 
-    public AerospikeHnswStore(AerospikeEdgeStore edgeStore, GraphSchema schema, String vertexName) {
+    public AerospikeHnswStore(AerospikeEdgeStore edgeStore, GraphSchema schema, String vertexName,
+                              String vectorProperty) {
         this.edgeStore = Objects.requireNonNull(edgeStore, "edgeStore");
         this.schema = Objects.requireNonNull(schema, "schema");
         this.vertexName = Objects.requireNonNull(vertexName, "vertexName");
+        this.vectorProperty = Objects.requireNonNull(vectorProperty, "vectorProperty");
     }
 
     @Override
     public List<HnswNeighbor> neighbours(Object vertexId, int level) {
-        EdgeSchema layer = layerSchema(level);
+        EdgeSchema layer = declaredLayerSchema(level);
+        if (layer == null) {
+            // the layer class does not exist (nothing was ever written on it)
+            return List.of();
+        }
         return decode(edgeStore.getEdges(vertexId, layer.id(), AerospikeEdgeStore.EDGE_DIR_BOTH));
     }
 
@@ -59,7 +68,10 @@ public final class AerospikeHnswStore implements HnswStore {
         if (vertexIds.isEmpty()) {
             return List.of();
         }
-        EdgeSchema layer = layerSchema(level);
+        EdgeSchema layer = declaredLayerSchema(level);
+        if (layer == null) {
+            return vertexIds.stream().map(id -> List.<HnswNeighbor>of()).toList();
+        }
         List<List<StoredEdgeValue>> raw =
                 edgeStore.getEdgesBatch(vertexIds, layer.id(), AerospikeEdgeStore.EDGE_DIR_BOTH);
         List<List<HnswNeighbor>> out = new ArrayList<>(raw.size());
@@ -142,15 +154,21 @@ public final class AerospikeHnswStore implements HnswStore {
         throw new QueryException("Failed to delete " + pending.size() + " HNSW links (" + vertexName + ")");
     }
 
+    /** The edge class backing a layer, or {@code null} when the schema does not declare it. */
+    public EdgeSchema declaredLayerSchema(int level) {
+        EdgeSchema edge = schema.edgeSchema(HnswLevels.edgeName(vectorProperty, level));
+        return edge == null || edge.direction() == EdgeDirection.DIRECTED ? null : edge;
+    }
+
     /** The edge class backing a layer, resolved (and cached) from the graph schema. */
     public EdgeSchema layerSchema(int level) {
         return layerSchemas.computeIfAbsent(level, l -> {
-            String name = HnswLevels.edgeName(l);
+            String name = HnswLevels.edgeName(vectorProperty, l);
             EdgeSchema edgeSchema = schema.edgeSchema(name);
             if (edgeSchema == null) {
                 throw new QueryException("HNSW layer edge class '" + name + "' is missing from the schema of "
-                        + vertexName + " (the index needs the " + HnswLevels.layerCount(l + 1)
-                        + " layer classes vector_0.." + name + ")");
+                        + vertexName + " (vector property '" + vectorProperty
+                        + "'; layers are created on demand by the index provisioner)");
             }
             return edgeSchema;
         });

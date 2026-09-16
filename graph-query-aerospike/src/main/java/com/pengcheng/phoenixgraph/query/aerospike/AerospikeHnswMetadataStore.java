@@ -45,14 +45,23 @@ public final class AerospikeHnswMetadataStore implements HnswMetadataStore {
     private final Key key;
 
     /**
-     * @param client     connected Aerospike client
-     * @param namespace  namespace holding the graph
-     * @param set        set holding the metadata record (e.g. {@code hnsw_meta})
-     * @param vertexName indexed vertex type (one metadata record per type)
+     * @param client    connected Aerospike client
+     * @param namespace namespace holding the graph
+     * @param set       set holding the metadata record (e.g. {@code hnsw_meta})
+     * @param recordKey full key of the metadata record: {@code hnsw:Vector} for the
+     *                  first vector property of a vertex type, or
+     *                  {@code hnsw:Vector:embedding} when a vertex type carries more
+     *                  than one vector property
      */
-    public AerospikeHnswMetadataStore(AerospikeClient client, String namespace, String set, String vertexName) {
+    public AerospikeHnswMetadataStore(AerospikeClient client, String namespace, String set, String recordKey) {
         this.client = Objects.requireNonNull(client, "client");
-        this.key = new Key(namespace, set, Value.get("hnsw:" + vertexName));
+        this.key = new Key(namespace, set, Value.get(Objects.requireNonNull(recordKey, "recordKey")));
+    }
+
+    /** Store for the first vector property of a vertex type (key {@code hnsw:<vertexName>}). */
+    public static AerospikeHnswMetadataStore forVertex(AerospikeClient client, String namespace, String set,
+                                                      String vertexName) {
+        return new AerospikeHnswMetadataStore(client, namespace, set, "hnsw:" + vertexName);
     }
 
     @Override

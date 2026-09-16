@@ -16,6 +16,15 @@ import java.util.Objects;
  * {@code Phone}'s {@code cnCode}/{@code phoneNumber}). See
  * {@link VertexSchema#displayProperties()}.
  *
+ * <p>A property may also be flagged as a <em>vector</em> property
+ * ({@link #isVector()}): its value is an embedding, and the graph keeps an HNSW
+ * index over it (one bidirectional edge class per layer, see
+ * {@link VectorIndexSchemas}). Writes of such a property index the element
+ * automatically and queries reach the nearest neighbours with
+ * {@code nearest(k)}. The optional {@link VectorIndexConfig} carries the metric
+ * and the {@code m}/{@code efConstruction}/{@code efSearch} tunables; the
+ * defaults are used when the schema does not declare them.
+ *
  * <p>Concrete subclasses are {@link VertexPropertySchema}, {@link EdgePropertySchema}
  * and {@link MetaPropertySchema}.
  */
@@ -27,6 +36,7 @@ public abstract class PropertySchema {
     private final PropertyType type;
     private final PropertyConstraints constraints;
     private boolean display;
+    private VectorIndexConfig vectorConfig;
 
     protected PropertySchema(int id, String name, String description, PropertyType type) {
         this(id, name, description, type, PropertyConstraints.NONE);
@@ -80,6 +90,45 @@ public abstract class PropertySchema {
         return this;
     }
 
+    /**
+     * Whether this property holds an embedding the graph indexes with HNSW (see
+     * {@link VectorIndexSchemas}). Defaults to {@code false}.
+     */
+    public boolean isVector() {
+        return vectorConfig != null;
+    }
+
+    /**
+     * The vector index configuration of this property, or {@code null} when the
+     * property is not a vector property.
+     */
+    public VectorIndexConfig vectorConfig() {
+        return vectorConfig;
+    }
+
+    /**
+     * The vector index configuration of this property, falling back to
+     * {@link VectorIndexConfig#DEFAULT} for a property that is not a vector
+     * property (handy for callers that do not care whether it is one).
+     */
+    public VectorIndexConfig vectorConfigOrDefault() {
+        return vectorConfig == null ? VectorIndexConfig.DEFAULT : vectorConfig;
+    }
+
+    /**
+     * Marks this property as a vector property (fluent) and declares how its index
+     * is built and queried. Passing {@code null} unmarks it.
+     */
+    public PropertySchema vector(VectorIndexConfig config) {
+        this.vectorConfig = config;
+        return this;
+    }
+
+    /** Marks this property as a vector property with the default index configuration. */
+    public PropertySchema vector(boolean isVector) {
+        return vector(isVector ? VectorIndexConfig.DEFAULT : null);
+    }
+
     @Override
     public String toString() {
         return getClass().getSimpleName()
@@ -87,6 +136,7 @@ public abstract class PropertySchema {
                 + ", name='" + name + '\''
                 + ", type=" + type
                 + (display ? ", display=true" : "")
+                + (isVector() ? ", isVector=true (" + vectorConfig.describe() + ")" : "")
                 + '}';
     }
 }

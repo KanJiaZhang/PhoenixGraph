@@ -1,0 +1,19 @@
+# Write-driven vector profile: the primary graph is a vector graph whose schema
+# declares nothing but the isVector property, so its HNSW layer edge classes are
+# created on demand (layer 0 at startup, one more layer per doubling of the data).
+#
+#   java -jar graph-http/target/graph-http-0.1.0-SNAPSHOT.jar \
+#     --spring.profiles.active=hnsw-dynamic --server.port=8083
+#
+# Writing a vertex indexes it right away:
+#   curl -X POST http://localhost:8083/api/v1/vertices -H 'content-type: application/json' \
+#     -d '{"id":"900","vertexSchemaName":"Doc",
+#          "properties":[{"index":1,"value":"my-doc"},{"index":2,"value":[0.1,0.2,...]}]}'
+# and the neighbours come out of the graph:
+#   g.V('900','Doc').nearest(20)
+#
+phoenixgraph:
+  storage:
+    vertex-set: hnsw_dynamic_v1
+    schema: hnsw-dynamic
+    graphs: []

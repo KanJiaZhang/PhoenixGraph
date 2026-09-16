@@ -17,9 +17,16 @@ A High Scaled and High Performance HTAP Graph Database.
 
 ### Vector search in one query
 
-A vector dataset is stored as `Vector` vertices (a `vector` property) plus one
-bidirectional edge class per HNSW layer (`vector_0` .. `vector_<ceil(log2 n)>`).
-The query engine exposes the layered search as a Gremlin step:
+Flag a property `"isVector": true` and the graph does the rest: writes index the
+embedding automatically, the HNSW layer edge classes (`<property>_0`, one more per
+doubling of the data) are created on demand, and the query engine exposes the
+layered search as a Gremlin step:
+
+```json
+{ "id": 2, "name": "embedding", "type": { "list": "DOUBLE" },
+  "isVector": true, "metric": "COSINE", "m": 15,
+  "efConstruction": 100, "efSearch": 30 }
+```
 
 ```groovy
 g.V('4242', 'Vector').nearest(20)          // 20 nearest vectors of that id
@@ -27,9 +34,10 @@ g.V('4242', 'Vector').nearest(20, 200)     // wider candidate list (more accurat
 g.V('4242', 'Vector').nearest(20).values('name')
 ```
 
-See `CONTEXT.md` (section "HNSW vector index") for the design, the dataset and
-the measured recall, and `tools/download-siftsmall-dataset.sh` +
-`HnswGraphIntegrationTest` to build the demo index.
+See `CONTEXT.md` ("HNSW vector index" and the schema-driven index section) for the
+design, the dataset and the measured recall, and
+`tools/download-siftsmall-dataset.sh` + `HnswGraphIntegrationTest` to build the
+demo index.
 
 ## Requirements
 

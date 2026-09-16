@@ -6,7 +6,7 @@ import java.util.List;
  * Port for the layered neighbour lists of an HNSW index.
  *
  * <p>Layer {@code l} is the bidirectional edge class {@code vector_<l>} between
- * two vertices of the indexed type (see {@link HnswLevels#edgeName(int)}), so a
+ * two vertices of the indexed type (see {@link HnswLevels#edgeName(String, int)}), so a
  * link is visible from both endpoints and reading a vertex's neighbours on a
  * layer is a single graph read.
  *
@@ -58,6 +58,6 @@ public interface HnswStore {
      * bidirectional edge on both endpoints).
      */
     default String edgeId(Object from, Object to, int level) {
-        return HnswLevels.edgeName(level) + ":" + from + ":" + to;
+        return "v" + level + ":" + from + ":" + to;
     }
 }

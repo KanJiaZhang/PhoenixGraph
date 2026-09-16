@@ -28,10 +28,10 @@ class HnswIndexTest {
         // 4096 = 2^12 -> the 13 layers 0..12 (vector_0 .. vector_12)
         assertEquals(12, HnswLevels.topLevel(4096));
         assertEquals(13, HnswLevels.layerCount(4096));
-        assertEquals("vector_0", HnswLevels.edgeName(0));
-        assertEquals("vector_12", HnswLevels.edgeName(12));
-        assertEquals(12, HnswLevels.levelOfEdgeName("vector_12"));
-        assertEquals(-1, HnswLevels.levelOfEdgeName("Payment"));
+        assertEquals("vector_0", HnswLevels.edgeName("vector", 0));
+        assertEquals("vector_12", HnswLevels.edgeName("vector", 12));
+        assertEquals(12, HnswLevels.levelOfEdgeName("vector", "vector_12"));
+        assertEquals(-1, HnswLevels.levelOfEdgeName("vector", "Payment"));
         // 10000 -> ceil(log2(10000)) = 14
         assertEquals(14, HnswLevels.topLevel(10_000));
         assertEquals(1, HnswLevels.topLevel(2));

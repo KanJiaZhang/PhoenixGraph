@@ -1,20 +1,20 @@
 package com.pengcheng.phoenixgraph.query.aerospike;
 
 import com.aerospike.client.AerospikeClient;
+import com.pengcheng.phoenixgraph.hnsw.CachedHnswMetadataStore;
 import com.pengcheng.phoenixgraph.hnsw.GraphQueryVectorSource;
+import com.pengcheng.phoenixgraph.hnsw.HnswConfig;
 import com.pengcheng.phoenixgraph.hnsw.HnswIndex;
-import com.pengcheng.phoenixgraph.hnsw.HnswLevels;
+import com.pengcheng.phoenixgraph.hnsw.HnswLayerProvisioner;
 import com.pengcheng.phoenixgraph.hnsw.HnswMetadata;
 import com.pengcheng.phoenixgraph.hnsw.HnswMetadataStore;
-import com.pengcheng.phoenixgraph.schema.EdgeDirection;
-import com.pengcheng.phoenixgraph.schema.EdgeSchema;
+import com.pengcheng.phoenixgraph.hnsw.HnswMetric;
 import com.pengcheng.phoenixgraph.schema.GraphSchema;
-import com.pengcheng.phoenixgraph.schema.PropertyType;
-import com.pengcheng.phoenixgraph.schema.VertexPropertySchema;
-import com.pengcheng.phoenixgraph.schema.VertexSchema;
+import com.pengcheng.phoenixgraph.schema.VectorIndexConfig;
+import com.pengcheng.phoenixgraph.schema.VectorIndexSchemas;
 import com.pengcheng.phoenixgraph.storage.aerospike.AerospikeEdgeStore;
 
-import java.util.ArrayList;
+import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -23,114 +23,112 @@ import java.util.Objects;
 /**
  * Opens the HNSW indexes of a graph schema over Aerospike.
  *
- * <p>A vertex type carries an HNSW index when its schema declares the layer edge
- * classes {@code vector_0} (bottom, every vertex) and {@code vector_1} as
- * bidirectional self-edges ({@code Vector -> Vector}) - the layout produced by
- * {@code tools/generate-hnsw-schema.js}. The index is only opened when its
- * metadata record exists, i.e. once {@code HnswIndex} has built something, so an
- * empty dataset simply has no vector search.
+ * <p>A vertex property declared {@code "isVector": true} (see
+ * {@link VectorIndexSchemas}) gets an index: the vectors live in that property,
+ * the layers are the bidirectional edge classes {@code <property>_<level>}, and
+ * the tunables ({@code metric}, {@code m}, {@code efConstruction},
+ * {@code efSearch}) come from the property, with {@code metric}/{@code m}/
+ * {@code efConstruction} overridden by the metadata record once an index exists
+ * (they describe how the graph was built, while {@code efSearch} is a query-time
+ * knob).
+ *
+ * <p>Layer edge classes are created on demand while the index grows
+ * ({@link HnswLayerProvisioner} + {@code dynamicSize}), so a schema only has to
+ * declare the vector property. The metadata record (entry points, size, layer
+ * count) is read through {@link CachedHnswMetadataStore}, i.e. at most once per
+ * minute.
  */
 public final class AerospikeHnswIndexFactory {
 
-    /** Set holding one metadata record per indexed vertex type. */
+    /** Set holding one metadata record per indexed vector property. */
     public static final String DEFAULT_METADATA_SET = "hnsw_meta";
 
     private AerospikeHnswIndexFactory() {
     }
 
-    /** Vertex types of the schema that are laid out as an HNSW index. */
-    public static List<String> vectorVertexTypes(GraphSchema schema) {
+    /** Every vector property of the schema (declaration order). */
+    public static List<VectorIndexSchemas.VectorProperty> vectorProperties(GraphSchema schema) {
+        return VectorIndexSchemas.vectorProperties(schema);
+    }
+
+    /** The vector properties of one vertex type (declaration order). */
+    public static List<VectorIndexSchemas.VectorProperty> vectorProperties(GraphSchema schema, String vertexName) {
+        return VectorIndexSchemas.vectorProperties(schema, vertexName);
+    }
+
+    /** Creates the layer edge classes of the property when the index needs them. */
+    public static HnswLayerProvisioner provisioner(GraphSchema schema) {
         Objects.requireNonNull(schema, "schema");
-        List<String> types = new ArrayList<>();
-        for (VertexSchema vertex : schema.vertexSchemas()) {
-            if (isHnswVertex(schema, vertex.name())) {
-                types.add(vertex.name());
-            }
-        }
-        return types;
+        return (vertexName, vectorProperty, level) ->
+                VectorIndexSchemas.ensureLayer(schema, vertexName, vectorProperty, level);
     }
 
-    /** Whether the vertex type has the layered HNSW edge classes. */
-    public static boolean isHnswVertex(GraphSchema schema, String vertexName) {
-        return isLayerEdge(schema, vertexName, 0) && isLayerEdge(schema, vertexName, 1);
+    /** Record key of a vector property's metadata: {@code hnsw:<vertex>} or {@code hnsw:<vertex>:<property>}. */
+    public static String metadataRecordKey(GraphSchema schema, String vertexName, String propertyName) {
+        List<VectorIndexSchemas.VectorProperty> properties = vectorProperties(schema, vertexName);
+        boolean first = properties.isEmpty() || properties.get(0).propertyName().equals(propertyName);
+        return first ? "hnsw:" + vertexName : "hnsw:" + vertexName + ":" + propertyName;
     }
 
-    private static boolean isLayerEdge(GraphSchema schema, String vertexName, int level) {
-        EdgeSchema edge = schema.edgeSchema(HnswLevels.edgeName(level));
-        if (edge == null || edge.direction() == EdgeDirection.DIRECTED) {
-            return false;
-        }
-        return isSelfEndpoint(edge.source(), vertexName) && isSelfEndpoint(edge.target(), vertexName);
-    }
-
-    private static boolean isSelfEndpoint(com.pengcheng.phoenixgraph.schema.EdgeEndpointSchema endpoint,
-                                          String vertexName) {
-        return endpoint != null && vertexName.equals(endpoint.vertexName());
+    /** The index configuration of a vector property, taking an existing build into account. */
+    public static HnswConfig config(VectorIndexConfig declared, HnswMetadata metadata) {
+        HnswMetric metric = metadata != null ? metadata.metric() : HnswMetric.of(declared.metric());
+        int m = metadata != null ? metadata.m() : declared.m();
+        int efConstruction = metadata != null ? metadata.efConstruction() : declared.efConstruction();
+        return new HnswConfig(metric, m, efConstruction, declared.efSearch(), m, 2 * m);
     }
 
     /**
-     * The property holding the vectors of a vertex type: the (first) list-valued
-     * property, e.g. {@code list<double>} for the demo schemas.
-     */
-    public static String vectorProperty(GraphSchema schema, String vertexName) {
-        VertexSchema vertex = schema.vertexSchema(vertexName);
-        if (vertex == null) {
-            throw new IllegalArgumentException("Unknown vertex schema: " + vertexName);
-        }
-        for (VertexPropertySchema property : vertex.properties()) {
-            if (property.type() instanceof PropertyType.ListType) {
-                return property.name();
-            }
-        }
-        throw new IllegalArgumentException("Vertex type '" + vertexName
-                + "' declares no list property to hold the vector");
-    }
-
-    /**
-     * Opens every built HNSW index of the schema, keyed by vertex type. Indexes
-     * whose metadata record is absent are skipped.
+     * Opens the index of one vector property, creating it when it does not exist
+     * yet (the returned index accepts inserts and provisions its layers as it
+     * grows).
      *
      * @param query        read layer (vectors and layer edges)
      * @param edgeStore    the vertex set holding the layer edges
-     * @param schema       graph schema
+     * @param schema       graph schema (extended with layer edge classes on demand)
      * @param client       connected Aerospike client
      * @param namespace    namespace holding the graph
      * @param metadataSet  set holding the metadata records
+     * @param property     the vector property to index
+     * @param metadataTtl  how long the metadata record may be reused before re-reading
+     */
+    public static HnswIndex open(AerospikeGraphQuery query, AerospikeEdgeStore edgeStore, GraphSchema schema,
+                                 AerospikeClient client, String namespace, String metadataSet,
+                                 VectorIndexSchemas.VectorProperty property, Duration metadataTtl) {
+        Objects.requireNonNull(property, "property");
+        HnswMetadataStore metadataStore = new CachedHnswMetadataStore(
+                new AerospikeHnswMetadataStore(client, namespace, metadataSet,
+                        metadataRecordKey(schema, property.vertexName(), property.propertyName())),
+                metadataTtl);
+        HnswMetadata metadata = metadataStore.read();
+        return HnswIndex.builder()
+                .vertexName(property.vertexName())
+                .vectorProperty(property.propertyName())
+                .store(new AerospikeHnswStore(edgeStore, schema, property.vertexName(), property.propertyName()))
+                .vectors(new GraphQueryVectorSource(query, property.vertexName(), property.propertyName(),
+                        metadata == null ? 0 : metadata.dimensions()))
+                .metadataStore(metadataStore)
+                .config(config(property.config(), metadata))
+                .dynamicSize(true)
+                .provisioner(provisioner(schema))
+                .build();
+    }
+
+    /**
+     * Opens every vector index of the schema, keyed by vertex type (the index a
+     * query step picks for a traverser). A vertex type with several vector
+     * properties keeps its first one here; use
+     * {@link #open(AerospikeGraphQuery, AerospikeEdgeStore, GraphSchema, AerospikeClient, String, String, VectorIndexSchemas.VectorProperty, Duration)}
+     * to address the others.
      */
     public static Map<String, HnswIndex> open(AerospikeGraphQuery query, AerospikeEdgeStore edgeStore,
                                               GraphSchema schema, AerospikeClient client, String namespace,
-                                              String metadataSet) {
+                                              String metadataSet, Duration metadataTtl) {
         Map<String, HnswIndex> indexes = new LinkedHashMap<>();
-        for (String vertexName : vectorVertexTypes(schema)) {
-            HnswIndex index = open(query, edgeStore, schema, client, namespace, metadataSet, vertexName);
-            if (index != null) {
-                indexes.put(vertexName, index);
-            }
+        for (VectorIndexSchemas.VectorProperty property : vectorProperties(schema)) {
+            indexes.putIfAbsent(property.vertexName(),
+                    open(query, edgeStore, schema, client, namespace, metadataSet, property, metadataTtl));
         }
         return indexes;
-    }
-
-    /** Opens the HNSW index of one vertex type, or {@code null} when it was never built. */
-    public static HnswIndex open(AerospikeGraphQuery query, AerospikeEdgeStore edgeStore, GraphSchema schema,
-                                 AerospikeClient client, String namespace, String metadataSet,
-                                 String vertexName) {
-        HnswMetadataStore metadataStore =
-                new AerospikeHnswMetadataStore(client, namespace, metadataSet, vertexName);
-        HnswMetadata metadata = metadataStore.read();
-        if (metadata == null) {
-            return null;
-        }
-        // the metadata of a build records the property it used; fall back to the schema
-        String vectorProperty = metadata.vectorProperty() != null && !metadata.vectorProperty().isBlank()
-                ? metadata.vectorProperty()
-                : vectorProperty(schema, vertexName);
-        return HnswIndex.builder()
-                .vertexName(vertexName)
-                .vectorProperty(vectorProperty)
-                .store(new AerospikeHnswStore(edgeStore, schema, vertexName))
-                .vectors(new GraphQueryVectorSource(query, vertexName, vectorProperty, metadata.dimensions()))
-                .metadataStore(metadataStore)
-                .config(metadata.toConfig())
-                .build();
     }
 }

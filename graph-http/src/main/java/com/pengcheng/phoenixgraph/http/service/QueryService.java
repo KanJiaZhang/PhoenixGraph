@@ -9,6 +9,7 @@ import com.pengcheng.phoenixgraph.schema.GraphSchema;
 import com.pengcheng.phoenixgraph.schema.GraphSchemaManagers;
 import com.pengcheng.phoenixgraph.storage.aerospike.AerospikeEdgeStore;
 import com.pengcheng.phoenixgraph.storage.aerospike.AerospikeVertexStore;
+import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -33,10 +34,12 @@ public class QueryService {
     private static final Pattern PARAMETER = Pattern.compile("\\$\\{([^}]+)}");
 
     private final GraphResolver graphs;
+    private final VectorIndexManager vectorIndexes;
     private final Map<String, GremlinGraphQuery> engines = new ConcurrentHashMap<>();
 
-    public QueryService(GraphResolver graphs) {
+    public QueryService(GraphResolver graphs, @Nullable VectorIndexManager vectorIndexes) {
         this.graphs = Objects.requireNonNull(graphs, "graphs");
+        this.vectorIndexes = vectorIndexes;
     }
 
     /**
@@ -44,7 +47,7 @@ public class QueryService {
      * schemas are looked up by name in {@link GraphSchemaManagers}.
      */
     public static QueryService ambient(AerospikeVertexStore vertexStore, AerospikeEdgeStore edgeStore) {
-        return new QueryService(GraphResolver.ambient(vertexStore, edgeStore));
+        return new QueryService(GraphResolver.ambient(vertexStore, edgeStore), null);
     }
 
     /** Substitutes {@code ${...}} parameters and executes the query, returning the raw traversers. */
@@ -66,11 +69,15 @@ public class QueryService {
                     binding.vertexStore(), binding.edgeStore(), binding.schema());
             GremlinGraphQuery engine = new GremlinGraphQuery(graphQuery,
                     NeighborVertexResolver.from(binding.schema()));
-            // vector search: every vertex type whose schema carries the layered HNSW
-            // edge classes and that has a metadata record gets a nearest(k) step
-            if (binding.hasKeyValueAccess()) {
+            // vector search: every property the schema flags isVector gets a nearest(k)
+            // step (the index is shared with the write path, so freshly written
+            // vertices are searchable immediately)
+            if (vectorIndexes != null) {
+                vectorIndexes.indexesOf(name).forEach(engine::hnswIndex);
+            } else if (binding.hasKeyValueAccess()) {
                 AerospikeHnswIndexFactory.open(graphQuery, binding.edgeStore(), binding.schema(),
-                                binding.client(), binding.namespace(), AerospikeHnswIndexFactory.DEFAULT_METADATA_SET)
+                                binding.client(), binding.namespace(), AerospikeHnswIndexFactory.DEFAULT_METADATA_SET,
+                                VectorIndexManager.METADATA_TTL)
                         .forEach(engine::hnswIndex);
             }
             return engine;

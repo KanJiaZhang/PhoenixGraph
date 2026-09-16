@@ -22,4 +22,18 @@ public class VertexPropertySchema extends PropertySchema {
         super.display(display);
         return this;
     }
+
+    /** Covariant overload of {@link PropertySchema#vector(VectorIndexConfig)} (fluent). */
+    @Override
+    public VertexPropertySchema vector(VectorIndexConfig config) {
+        super.vector(config);
+        return this;
+    }
+
+    /** Covariant overload of {@link PropertySchema#vector(boolean)} (fluent). */
+    @Override
+    public VertexPropertySchema vector(boolean isVector) {
+        super.vector(isVector);
+        return this;
+    }
 }

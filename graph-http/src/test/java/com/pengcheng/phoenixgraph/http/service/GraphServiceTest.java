@@ -20,6 +20,7 @@ import com.pengcheng.phoenixgraph.storage.aerospike.AerospikeVertexStore;
 import com.pengcheng.phoenixgraph.storage.aerospike.EdgeUpsert;
 import com.pengcheng.phoenixgraph.storage.aerospike.VertexUpsert;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
@@ -28,7 +29,10 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -37,6 +41,32 @@ class GraphServiceTest {
     private final AerospikeVertexStore vertexStore = mock(AerospikeVertexStore.class);
     private final AerospikeEdgeStore edgeStore = mock(AerospikeEdgeStore.class);
     private final GraphService service = new GraphService(vertexStore, edgeStore, schema(), new ObjectMapper());
+
+    @Test
+    void aVertexWriteIndexesItsVectorProperty() {
+        VectorIndexManager vectorIndexes = Mockito.mock(VectorIndexManager.class);
+        GraphService indexing = new GraphService(vertexStore, edgeStore, schema(), new ObjectMapper(), vectorIndexes);
+        when(vertexStore.upsertVertex(any(), anyMap(), anyLong(), anyLong())).thenReturn(WriteOutcome.SUCCESS);
+
+        WriteOutcome outcome = indexing.upsertVertex(new VertexRequest("v1", "Account",
+                List.of(new VertexPropertyRequest(1, "alice", 100L)), 50L, 100L));
+
+        assertEquals(WriteOutcome.SUCCESS, outcome);
+        // the index of every isVector property of the vertex type is updated after the write
+        Mockito.verify(vectorIndexes).indexVertex("payment-graph", "Account", "v1");
+    }
+
+    @Test
+    void aFailedVertexWriteIsNotIndexed() {
+        VectorIndexManager vectorIndexes = Mockito.mock(VectorIndexManager.class);
+        GraphService indexing = new GraphService(vertexStore, edgeStore, schema(), new ObjectMapper(), vectorIndexes);
+        when(vertexStore.upsertVertex(any(), anyMap(), anyLong(), anyLong())).thenReturn(WriteOutcome.FAILED);
+
+        indexing.upsertVertex(new VertexRequest("v1", "Account",
+                List.of(new VertexPropertyRequest(1, "alice", 100L)), 50L, 100L));
+
+        Mockito.verifyNoInteractions(vectorIndexes);
+    }
 
     @Test
     void processBatchMapsInlineVerticesAndEdges() {
