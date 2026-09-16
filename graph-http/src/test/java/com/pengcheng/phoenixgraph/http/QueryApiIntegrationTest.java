@@ -117,6 +117,7 @@ class QueryApiIntegrationTest {
             GraphSchema schema = ensureSchemaRegistered();
             AerospikeVertexStore vertexStore = new AerospikeVertexStore(client, namespace, "http_rich_v2");
             AerospikeEdgeStore edgeStore = new AerospikeEdgeStore(client, namespace, "http_rich_v2", schema);
+            truncateSet(client, namespace, "http_rich_v2"); // drop stale data from earlier seed versions
             seedLayeredGraph(vertexStore, edgeStore, schema);
 
             QueryService queryService = new QueryService(vertexStore, edgeStore);
@@ -176,6 +177,31 @@ class QueryApiIntegrationTest {
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$[0].accountUsage[0]").value("Personal"))
                     .andExpect(jsonPath("$[0].accountLimited['174']").value("open"));
+
+            // two-hop both() over ALL edge classes must succeed as a subgraph
+            // (regression: absent neighbours must not NPE the batched vertex read)
+            api.perform(post("/api/v1/query")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("""
+                                    { "graphName": "payment-graph",
+                                      "query": "g.V(888,'Account').both().both()",
+                                      "params": {},
+                                      "returnSubgraph": true }
+                                    """))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.vertices.length()")
+                            .value(org.hamcrest.Matchers.greaterThan(400)));
+        }
+    }
+
+    private static void truncateSet(AerospikeClient client, String namespace, String set) {
+        try {
+            client.truncate(new com.aerospike.client.policy.InfoPolicy(), namespace, set, null);
+            Thread.sleep(300); // give the server a moment to apply the truncate
+        } catch (AerospikeException e) {
+            // truncate can be disabled on a server; seeding will just upsert on top
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
     }
 
@@ -234,9 +260,9 @@ class QueryApiIntegrationTest {
         }
         for (int k = 0; k < 10; k++) {
             String acc = String.valueOf(1000 + k * 10);
-            extraEdges.add(new EdgeUpsert("atiL1_" + k, accountToIp, acc, String.valueOf(9100 + k),
+            extraEdges.add(new EdgeUpsert("atiL1_" + k, accountToIp, acc, String.valueOf(9001 + k),
                     Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
-            extraEdges.add(new EdgeUpsert("atpL1_" + k, accountToPhone, acc, String.valueOf(7100 + k),
+            extraEdges.add(new EdgeUpsert("atpL1_" + k, accountToPhone, acc, String.valueOf(7001 + k),
                     Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
         }
         assertNoFailures(edgeStore.upsertEdges(extraEdges));

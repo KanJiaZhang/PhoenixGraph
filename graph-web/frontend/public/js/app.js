@@ -660,7 +660,7 @@
     if (!id) { setStatus('请输入顶点 ID'); return; }
     const vertexType = el.vertexTypeSelect.value;
     if (!vertexType) { setStatus('当前图没有顶点类型'); return; }
-    queryCurrent(`g.V('${id}','${vertexType}')`);
+    queryCurrent(`g.V('${id}','${vertexType}').both().both()`);
   }
 
   function onGremlinQuery() {

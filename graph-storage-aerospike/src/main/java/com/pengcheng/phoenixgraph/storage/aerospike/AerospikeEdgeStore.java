@@ -677,8 +677,16 @@ public class AerospikeEdgeStore implements AdjacentEdgeStore {
         };
     }
 
+    /** A batched read returns a non-null record with {@code null} bins for an absent key. */
+    private static boolean isMissing(Record record) {
+        return record == null || record.bins == null;
+    }
+
     @SuppressWarnings("unchecked")
     private Map<String, Object> readEdgeMap(Record record, String bin) {
+        if (record.bins == null) {
+            return new LinkedHashMap<>();
+        }
         Object existing = record.bins.get(bin);
         if (existing == null) {
             return new LinkedHashMap<>();
@@ -689,7 +697,7 @@ public class AerospikeEdgeStore implements AdjacentEdgeStore {
     /** Reads and decodes the edges of a vertex for an edge schema and direction, newest first. */
     public List<StoredEdgeValue> getEdges(Object vertexId, int edgeSchemaId, int directionCode) {
         Record record = client.get(null, key(vertexId));
-        return record == null ? List.of() : decodeEdges(record, edgeSchemaId, directionCode);
+        return isMissing(record) ? List.of() : decodeEdges(record, edgeSchemaId, directionCode);
     }
 
     /**
@@ -705,7 +713,7 @@ public class AerospikeEdgeStore implements AdjacentEdgeStore {
         Record[] records = client.get(new BatchPolicy(), keys);
         List<List<StoredEdgeValue>> result = new ArrayList<>(vertexIds.size());
         for (int i = 0; i < keys.length; i++) {
-            result.add(records[i] == null ? List.of() : decodeEdges(records[i], edgeSchemaId, directionCode));
+            result.add(isMissing(records[i]) ? List.of() : decodeEdges(records[i], edgeSchemaId, directionCode));
         }
         return result;
     }
@@ -795,7 +803,7 @@ public class AerospikeEdgeStore implements AdjacentEdgeStore {
             Record[] records = client.get(new BatchPolicy(), keys);
             for (int i = 0; i < keys.length; i++) {
                 Record record = records[i];
-                if (record == null) {
+                if (isMissing(record)) {
                     outcomes.set(i, WriteOutcome.SUCCESS); // nothing to delete
                     continue;
                 }

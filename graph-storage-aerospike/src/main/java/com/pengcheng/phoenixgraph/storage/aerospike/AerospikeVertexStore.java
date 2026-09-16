@@ -177,6 +177,15 @@ public class AerospikeVertexStore implements VertexStore {
     }
 
     /**
+     * Aerospike's batched read returns a non-null record whose {@code bins} map is
+     * {@code null} when the key is absent (or has none of the requested bins), so
+     * that must be treated exactly like a missing record.
+     */
+    static boolean isMissing(Record record) {
+        return record == null || record.bins == null;
+    }
+
+    /**
      * Upserts a vertex: inserts it when absent, otherwise updates each property
      * whose {@code lastModifiedTime} is strictly newer than the stored
      * property's {@code lastModifiedTime} (per-property CAS). The update is
@@ -280,7 +289,7 @@ public class AerospikeVertexStore implements VertexStore {
             for (int i = 0; i < merged.size(); i++) {
                 VertexUpsert upsert = merged.get(i);
                 Record record = records[i];
-                if (record == null) {
+                if (isMissing(record)) {
                     long effectiveUpdated = maxPropertyLastModified(upsert.properties(), upsert.lastUpdatedTime());
                     writes.add(new BatchWrite(createOnlyBatchPolicy(), keys[i],
                             buildCreateOps(upsert.properties(), upsert.createdTime(), effectiveUpdated)));
@@ -361,7 +370,7 @@ public class AerospikeVertexStore implements VertexStore {
         Map<Integer, VertexPropertyValue> toWrite = new LinkedHashMap<>();
         for (Map.Entry<Integer, VertexPropertyValue> entry : properties.entrySet()) {
             int index = entry.getKey();
-            Object storedTime = record.bins.get(propertyTimeBin(index));
+            Object storedTime = record.bins == null ? null : record.bins.get(propertyTimeBin(index));
             long stored = storedTime == null ? Long.MIN_VALUE : ((Number) storedTime).longValue();
             long incoming = entry.getValue().lastModifiedTime();
             if (isNewer(incoming, stored)) {
@@ -387,12 +396,14 @@ public class AerospikeVertexStore implements VertexStore {
     /** Maximum property lastModifiedTime after merging stored properties with the newer incoming ones. */
     private static long mergedPropertyMax(Record record, Map<Integer, VertexPropertyValue> toWrite) {
         long max = Long.MIN_VALUE;
-        for (Map.Entry<String, Object> entry : record.bins.entrySet()) {
-            String bin = entry.getKey();
-            if (bin.startsWith(PROPERTY_TIME_BIN_PREFIX)) {
-                int index = Integer.parseInt(bin.substring(PROPERTY_TIME_BIN_PREFIX.length()));
-                if (index >= 0) {
-                    max = Math.max(max, ((Number) entry.getValue()).longValue());
+        if (record.bins != null) {
+            for (Map.Entry<String, Object> entry : record.bins.entrySet()) {
+                String bin = entry.getKey();
+                if (bin.startsWith(PROPERTY_TIME_BIN_PREFIX)) {
+                    int index = Integer.parseInt(bin.substring(PROPERTY_TIME_BIN_PREFIX.length()));
+                    if (index >= 0) {
+                        max = Math.max(max, ((Number) entry.getValue()).longValue());
+                    }
                 }
             }
         }
@@ -471,13 +482,13 @@ public class AerospikeVertexStore implements VertexStore {
     /** Reads the vertex and decodes its properties and metadata (all bins). */
     public StoredVertex readVertex(Object vertexId) {
         Record record = client.get(null, key(vertexId));
-        return record == null ? null : decode(vertexId, record);
+        return isMissing(record) ? null : decode(vertexId, record);
     }
 
     /** Reads the vertex reading only the given property bins (plus meta bins). */
     public StoredVertex readVertex(Object vertexId, List<Integer> propertyIndexes) {
         Record record = client.get(null, key(vertexId), propertyBins(propertyIndexes));
-        return record == null ? null : decode(vertexId, record);
+        return isMissing(record) ? null : decode(vertexId, record);
     }
 
     /**
@@ -521,12 +532,16 @@ public class AerospikeVertexStore implements VertexStore {
     private List<StoredVertex> decodeAll(List<Object> vertexIds, Record[] records) {
         List<StoredVertex> vertices = new ArrayList<>(vertexIds.size());
         for (int i = 0; i < vertexIds.size(); i++) {
-            vertices.add(records[i] == null ? null : decode(vertexIds.get(i), records[i]));
+            vertices.add(isMissing(records[i]) ? null : decode(vertexIds.get(i), records[i]));
         }
         return vertices;
     }
 
     private StoredVertex decode(Object vertexId, Record record) {
+        if (record.bins == null) {
+            // batched read of an absent key: no properties, no meta times
+            return new StoredVertex(vertexId, Map.of(), 0L, 0L);
+        }
         Map<Integer, VertexPropertyValue> properties = new LinkedHashMap<>();
         for (Map.Entry<String, Object> entry : record.bins.entrySet()) {
             String name = entry.getKey();
@@ -704,7 +719,7 @@ public class AerospikeVertexStore implements VertexStore {
             Record[] records = client.get(new BatchPolicy(), keys);
             for (int i = 0; i < keys.length; i++) {
                 Record record = records[i];
-                if (record == null) {
+                if (isMissing(record)) {
                     outcomes.set(i, WriteOutcome.SUCCESS); // nothing to delete
                     continue;
                 }
