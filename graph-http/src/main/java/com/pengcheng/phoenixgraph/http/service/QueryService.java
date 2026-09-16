@@ -1,6 +1,7 @@
 package com.pengcheng.phoenixgraph.http.service;
 
 import com.pengcheng.phoenixgraph.query.aerospike.AerospikeGraphQuery;
+import com.pengcheng.phoenixgraph.query.aerospike.AerospikeHnswIndexFactory;
 import com.pengcheng.phoenixgraph.query.gremlin.GremlinGraphQuery;
 import com.pengcheng.phoenixgraph.query.gremlin.NeighborVertexResolver;
 import com.pengcheng.phoenixgraph.query.gremlin.Subgraph;
@@ -63,7 +64,16 @@ public class QueryService {
             GraphBinding binding = graphs.require(name);
             AerospikeGraphQuery graphQuery = new AerospikeGraphQuery(
                     binding.vertexStore(), binding.edgeStore(), binding.schema());
-            return new GremlinGraphQuery(graphQuery, NeighborVertexResolver.from(binding.schema()));
+            GremlinGraphQuery engine = new GremlinGraphQuery(graphQuery,
+                    NeighborVertexResolver.from(binding.schema()));
+            // vector search: every vertex type whose schema carries the layered HNSW
+            // edge classes and that has a metadata record gets a nearest(k) step
+            if (binding.hasKeyValueAccess()) {
+                AerospikeHnswIndexFactory.open(graphQuery, binding.edgeStore(), binding.schema(),
+                                binding.client(), binding.namespace(), AerospikeHnswIndexFactory.DEFAULT_METADATA_SET)
+                        .forEach(engine::hnswIndex);
+            }
+            return engine;
         });
     }
 

@@ -1,5 +1,8 @@
 package com.pengcheng.phoenixgraph.query.gremlin;
 
+import com.pengcheng.phoenixgraph.hnsw.HeapHnswVectorSource;
+import com.pengcheng.phoenixgraph.hnsw.HnswIndex;
+import com.pengcheng.phoenixgraph.hnsw.InMemoryHnswStore;
 import com.pengcheng.phoenixgraph.query.QueryException;
 import com.pengcheng.phoenixgraph.query.storage.EdgeQueryResult;
 import com.pengcheng.phoenixgraph.query.storage.EdgeSide;
@@ -267,6 +270,55 @@ class GremlinGraphQueryTest {
         // parallelism(1) is the escape hatch back to a single batch for the seeds
         assertEquals(3, result.size());
         assertEquals(List.of(3), seedBatches.stream().map(List::size).toList());
+    }
+
+    @Test
+    void nearestStepReturnsTheIndexesNearestVertices() {
+        HeapHnswVectorSource source = new HeapHnswVectorSource();
+        source.put("v1", new float[] {0f, 0f});
+        source.put("v2", new float[] {0.1f, 0f});
+        source.put("v3", new float[] {0.2f, 0f});
+        source.put("v4", new float[] {9f, 9f});
+        HnswIndex index = HnswIndex.builder().vertexName("person").store(new InMemoryHnswStore())
+                .vectors(source).size(4).build();
+        index.insertAll(List.of("v1", "v2", "v3", "v4"));
+        gremlin.hnswIndex(index);
+        when(graphQuery.readVertex("v2", "person", List.of()))
+                .thenReturn(new VertexQueryResult("person", "v2", Map.of("name", "b"), 1L, 1L));
+        when(graphQuery.readVertex("v3", "person", List.of()))
+                .thenReturn(new VertexQueryResult("person", "v3", Map.of("name", "c"), 1L, 1L));
+
+        List<Object> result = gremlin.execute("g.V('v1', 'person').nearest(2)");
+
+        assertEquals(2, result.size());
+        GremlinVertex first = (GremlinVertex) result.get(0);
+        assertEquals("v2", first.id());
+        assertEquals("person", first.label());
+        assertEquals(Map.of("name", "b"), first.properties());
+        assertEquals("v3", ((GremlinVertex) result.get(1)).id());
+    }
+
+    @Test
+    void nearestAcceptsAnEfSearchArgument() {
+        HeapHnswVectorSource source = new HeapHnswVectorSource();
+        source.put("v1", new float[] {0f, 0f});
+        source.put("v2", new float[] {0.1f, 0f});
+        HnswIndex index = HnswIndex.builder().vertexName("person").store(new InMemoryHnswStore())
+                .vectors(source).size(2).build();
+        index.insertAll(List.of("v1", "v2"));
+        gremlin.hnswIndex(index);
+        when(graphQuery.readVertex("v2", "person", List.of()))
+                .thenReturn(new VertexQueryResult("person", "v2", Map.of(), 1L, 1L));
+
+        assertEquals(1, gremlin.execute("g.V('v1', 'person').nearest(1, 32)").size());
+        assertThrows(QueryException.class, () -> gremlin.execute("g.V('v1', 'person').nearest(1, 32, 7)"));
+    }
+
+    @Test
+    void nearestWithoutAConfiguredIndexFails() {
+        QueryException error = assertThrows(QueryException.class,
+                () -> gremlin.execute("g.V('v1', 'person').nearest(3)"));
+        assertTrue(error.getMessage().contains("No HNSW index"), error.getMessage());
     }
 
     @Test

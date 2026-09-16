@@ -247,6 +247,11 @@ public final class GremlinContext {
         this.collectSubgraph = collectSubgraph;
     }
 
+    /** Whether the execution is collecting an induced subgraph (see {@link #executeSubgraph}). */
+    public boolean collectSubgraph() {
+        return collectSubgraph;
+    }
+
     /** Records a vertex touched by the traversal (deduplicated by label + id). */
     public void recordVertex(String label, Object id) {
         if (!collectSubgraph) {

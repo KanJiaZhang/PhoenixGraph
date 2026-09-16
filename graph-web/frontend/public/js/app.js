@@ -7,6 +7,7 @@
     IP: '#0d9488',
     Phone: '#d97706',
     Entity: '#6366f1',
+    Vector: '#7c3aed',
   };
   // Bright fallback palette: unknown vertex types cycle through it instead of all
   // sharing one grey, so a single-type graph still reads as vividly as payment-graph.
@@ -43,6 +44,13 @@
       { tag: 'circle', attrs: { cx: 5.5, cy: 5.5, r: 2.5 } },
       { tag: 'circle', attrs: { cx: 18.5, cy: 18.5, r: 2.5 } },
       { tag: 'path', attrs: { d: 'M7.5 7.5 16.5 16.5' } },
+    ],
+    // a vector: three stacked components
+    Vector: [
+      { tag: 'circle', attrs: { cx: 12, cy: 6, r: 2 } },
+      { tag: 'circle', attrs: { cx: 6, cy: 18, r: 2 } },
+      { tag: 'circle', attrs: { cx: 18, cy: 18, r: 2 } },
+      { tag: 'path', attrs: { d: 'M12 6 6 18M12 6l6 12M6 18h12' } },
     ],
   };
   const DEFAULT_ICON = [

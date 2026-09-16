@@ -1,0 +1,684 @@
+{
+  "id": 3,
+  "name": "hnsw-sift",
+  "description": "HNSW vector index of 10000 128-d vectors over 15 layers",
+  "constraints": {
+    "idSchemaIndex": 0,
+    "createdTimeIndex": -2,
+    "lastUpdatedTimeIndex": -1
+  },
+  "vertexSchemas": [
+    {
+      "id": 1,
+      "name": "Vector",
+      "description": "A vector of the HNSW demo dataset (128 dimensions, 10000 rows)",
+      "idSchema": {
+        "id": 0,
+        "name": "id",
+        "description": "Vector id (the dataset row as a string)",
+        "type": "STRING"
+      },
+      "createdTime": {
+        "id": -2,
+        "name": "createdTime",
+        "description": "Creation time",
+        "type": "LONG"
+      },
+      "lastUpdatedTime": {
+        "id": -1,
+        "name": "lastUpdatedTime",
+        "description": "Last update time",
+        "type": "LONG"
+      },
+      "properties": [
+        {
+          "id": 1,
+          "name": "name",
+          "description": "Human readable vector name",
+          "type": "STRING",
+          "display": true
+        },
+        {
+          "id": 2,
+          "name": "vector",
+          "description": "The 128-dimensional vector",
+          "type": {
+            "list": "DOUBLE"
+          }
+        }
+      ]
+    }
+  ],
+  "edgeSchemas": [
+    {
+      "id": 1,
+      "name": "vector_0",
+      "description": "HNSW layer 0 (30 links per vertex, all vertices)",
+      "idSchema": {
+        "id": 0,
+        "name": "id",
+        "description": "Link id",
+        "type": "STRING"
+      },
+      "source": {
+        "id": 1,
+        "name": "source",
+        "description": "First vertex id",
+        "type": "STRING",
+        "vertex": "Vector"
+      },
+      "target": {
+        "id": 2,
+        "name": "target",
+        "description": "Second vertex id",
+        "type": "STRING",
+        "vertex": "Vector"
+      },
+      "createdTime": {
+        "id": -2,
+        "name": "createdTime",
+        "description": "Creation time",
+        "type": "LONG"
+      },
+      "lastUpdatedTime": {
+        "id": -1,
+        "name": "lastUpdatedTime",
+        "description": "Last update time",
+        "type": "LONG"
+      },
+      "direction": "BIDIRECTIONAL",
+      "maxOutgoingEdges": 60,
+      "maxIncomingEdges": 60,
+      "maxDegree": 60,
+      "properties": []
+    },
+    {
+      "id": 2,
+      "name": "vector_1",
+      "description": "HNSW layer 1 (15 links per vertex, about 5000 vertices)",
+      "idSchema": {
+        "id": 0,
+        "name": "id",
+        "description": "Link id",
+        "type": "STRING"
+      },
+      "source": {
+        "id": 1,
+        "name": "source",
+        "description": "First vertex id",
+        "type": "STRING",
+        "vertex": "Vector"
+      },
+      "target": {
+        "id": 2,
+        "name": "target",
+        "description": "Second vertex id",
+        "type": "STRING",
+        "vertex": "Vector"
+      },
+      "createdTime": {
+        "id": -2,
+        "name": "createdTime",
+        "description": "Creation time",
+        "type": "LONG"
+      },
+      "lastUpdatedTime": {
+        "id": -1,
+        "name": "lastUpdatedTime",
+        "description": "Last update time",
+        "type": "LONG"
+      },
+      "direction": "BIDIRECTIONAL",
+      "maxOutgoingEdges": 30,
+      "maxIncomingEdges": 30,
+      "maxDegree": 30,
+      "properties": []
+    },
+    {
+      "id": 3,
+      "name": "vector_2",
+      "description": "HNSW layer 2 (15 links per vertex, about 2500 vertices)",
+      "idSchema": {
+        "id": 0,
+        "name": "id",
+        "description": "Link id",
+        "type": "STRING"
+      },
+      "source": {
+        "id": 1,
+        "name": "source",
+        "description": "First vertex id",
+        "type": "STRING",
+        "vertex": "Vector"
+      },
+      "target": {
+        "id": 2,
+        "name": "target",
+        "description": "Second vertex id",
+        "type": "STRING",
+        "vertex": "Vector"
+      },
+      "createdTime": {
+        "id": -2,
+        "name": "createdTime",
+        "description": "Creation time",
+        "type": "LONG"
+      },
+      "lastUpdatedTime": {
+        "id": -1,
+        "name": "lastUpdatedTime",
+        "description": "Last update time",
+        "type": "LONG"
+      },
+      "direction": "BIDIRECTIONAL",
+      "maxOutgoingEdges": 30,
+      "maxIncomingEdges": 30,
+      "maxDegree": 30,
+      "properties": []
+    },
+    {
+      "id": 4,
+      "name": "vector_3",
+      "description": "HNSW layer 3 (15 links per vertex, about 1250 vertices)",
+      "idSchema": {
+        "id": 0,
+        "name": "id",
+        "description": "Link id",
+        "type": "STRING"
+      },
+      "source": {
+        "id": 1,
+        "name": "source",
+        "description": "First vertex id",
+        "type": "STRING",
+        "vertex": "Vector"
+      },
+      "target": {
+        "id": 2,
+        "name": "target",
+        "description": "Second vertex id",
+        "type": "STRING",
+        "vertex": "Vector"
+      },
+      "createdTime": {
+        "id": -2,
+        "name": "createdTime",
+        "description": "Creation time",
+        "type": "LONG"
+      },
+      "lastUpdatedTime": {
+        "id": -1,
+        "name": "lastUpdatedTime",
+        "description": "Last update time",
+        "type": "LONG"
+      },
+      "direction": "BIDIRECTIONAL",
+      "maxOutgoingEdges": 30,
+      "maxIncomingEdges": 30,
+      "maxDegree": 30,
+      "properties": []
+    },
+    {
+      "id": 5,
+      "name": "vector_4",
+      "description": "HNSW layer 4 (15 links per vertex, about 625 vertices)",
+      "idSchema": {
+        "id": 0,
+        "name": "id",
+        "description": "Link id",
+        "type": "STRING"
+      },
+      "source": {
+        "id": 1,
+        "name": "source",
+        "description": "First vertex id",
+        "type": "STRING",
+        "vertex": "Vector"
+      },
+      "target": {
+        "id": 2,
+        "name": "target",
+        "description": "Second vertex id",
+        "type": "STRING",
+        "vertex": "Vector"
+      },
+      "createdTime": {
+        "id": -2,
+        "name": "createdTime",
+        "description": "Creation time",
+        "type": "LONG"
+      },
+      "lastUpdatedTime": {
+        "id": -1,
+        "name": "lastUpdatedTime",
+        "description": "Last update time",
+        "type": "LONG"
+      },
+      "direction": "BIDIRECTIONAL",
+      "maxOutgoingEdges": 30,
+      "maxIncomingEdges": 30,
+      "maxDegree": 30,
+      "properties": []
+    },
+    {
+      "id": 6,
+      "name": "vector_5",
+      "description": "HNSW layer 5 (15 links per vertex, about 313 vertices)",
+      "idSchema": {
+        "id": 0,
+        "name": "id",
+        "description": "Link id",
+        "type": "STRING"
+      },
+      "source": {
+        "id": 1,
+        "name": "source",
+        "description": "First vertex id",
+        "type": "STRING",
+        "vertex": "Vector"
+      },
+      "target": {
+        "id": 2,
+        "name": "target",
+        "description": "Second vertex id",
+        "type": "STRING",
+        "vertex": "Vector"
+      },
+      "createdTime": {
+        "id": -2,
+        "name": "createdTime",
+        "description": "Creation time",
+        "type": "LONG"
+      },
+      "lastUpdatedTime": {
+        "id": -1,
+        "name": "lastUpdatedTime",
+        "description": "Last update time",
+        "type": "LONG"
+      },
+      "direction": "BIDIRECTIONAL",
+      "maxOutgoingEdges": 30,
+      "maxIncomingEdges": 30,
+      "maxDegree": 30,
+      "properties": []
+    },
+    {
+      "id": 7,
+      "name": "vector_6",
+      "description": "HNSW layer 6 (15 links per vertex, about 156 vertices)",
+      "idSchema": {
+        "id": 0,
+        "name": "id",
+        "description": "Link id",
+        "type": "STRING"
+      },
+      "source": {
+        "id": 1,
+        "name": "source",
+        "description": "First vertex id",
+        "type": "STRING",
+        "vertex": "Vector"
+      },
+      "target": {
+        "id": 2,
+        "name": "target",
+        "description": "Second vertex id",
+        "type": "STRING",
+        "vertex": "Vector"
+      },
+      "createdTime": {
+        "id": -2,
+        "name": "createdTime",
+        "description": "Creation time",
+        "type": "LONG"
+      },
+      "lastUpdatedTime": {
+        "id": -1,
+        "name": "lastUpdatedTime",
+        "description": "Last update time",
+        "type": "LONG"
+      },
+      "direction": "BIDIRECTIONAL",
+      "maxOutgoingEdges": 30,
+      "maxIncomingEdges": 30,
+      "maxDegree": 30,
+      "properties": []
+    },
+    {
+      "id": 8,
+      "name": "vector_7",
+      "description": "HNSW layer 7 (15 links per vertex, about 78 vertices)",
+      "idSchema": {
+        "id": 0,
+        "name": "id",
+        "description": "Link id",
+        "type": "STRING"
+      },
+      "source": {
+        "id": 1,
+        "name": "source",
+        "description": "First vertex id",
+        "type": "STRING",
+        "vertex": "Vector"
+      },
+      "target": {
+        "id": 2,
+        "name": "target",
+        "description": "Second vertex id",
+        "type": "STRING",
+        "vertex": "Vector"
+      },
+      "createdTime": {
+        "id": -2,
+        "name": "createdTime",
+        "description": "Creation time",
+        "type": "LONG"
+      },
+      "lastUpdatedTime": {
+        "id": -1,
+        "name": "lastUpdatedTime",
+        "description": "Last update time",
+        "type": "LONG"
+      },
+      "direction": "BIDIRECTIONAL",
+      "maxOutgoingEdges": 30,
+      "maxIncomingEdges": 30,
+      "maxDegree": 30,
+      "properties": []
+    },
+    {
+      "id": 9,
+      "name": "vector_8",
+      "description": "HNSW layer 8 (15 links per vertex, about 39 vertices)",
+      "idSchema": {
+        "id": 0,
+        "name": "id",
+        "description": "Link id",
+        "type": "STRING"
+      },
+      "source": {
+        "id": 1,
+        "name": "source",
+        "description": "First vertex id",
+        "type": "STRING",
+        "vertex": "Vector"
+      },
+      "target": {
+        "id": 2,
+        "name": "target",
+        "description": "Second vertex id",
+        "type": "STRING",
+        "vertex": "Vector"
+      },
+      "createdTime": {
+        "id": -2,
+        "name": "createdTime",
+        "description": "Creation time",
+        "type": "LONG"
+      },
+      "lastUpdatedTime": {
+        "id": -1,
+        "name": "lastUpdatedTime",
+        "description": "Last update time",
+        "type": "LONG"
+      },
+      "direction": "BIDIRECTIONAL",
+      "maxOutgoingEdges": 30,
+      "maxIncomingEdges": 30,
+      "maxDegree": 30,
+      "properties": []
+    },
+    {
+      "id": 10,
+      "name": "vector_9",
+      "description": "HNSW layer 9 (15 links per vertex, about 20 vertices)",
+      "idSchema": {
+        "id": 0,
+        "name": "id",
+        "description": "Link id",
+        "type": "STRING"
+      },
+      "source": {
+        "id": 1,
+        "name": "source",
+        "description": "First vertex id",
+        "type": "STRING",
+        "vertex": "Vector"
+      },
+      "target": {
+        "id": 2,
+        "name": "target",
+        "description": "Second vertex id",
+        "type": "STRING",
+        "vertex": "Vector"
+      },
+      "createdTime": {
+        "id": -2,
+        "name": "createdTime",
+        "description": "Creation time",
+        "type": "LONG"
+      },
+      "lastUpdatedTime": {
+        "id": -1,
+        "name": "lastUpdatedTime",
+        "description": "Last update time",
+        "type": "LONG"
+      },
+      "direction": "BIDIRECTIONAL",
+      "maxOutgoingEdges": 30,
+      "maxIncomingEdges": 30,
+      "maxDegree": 30,
+      "properties": []
+    },
+    {
+      "id": 11,
+      "name": "vector_10",
+      "description": "HNSW layer 10 (15 links per vertex, about 10 vertices)",
+      "idSchema": {
+        "id": 0,
+        "name": "id",
+        "description": "Link id",
+        "type": "STRING"
+      },
+      "source": {
+        "id": 1,
+        "name": "source",
+        "description": "First vertex id",
+        "type": "STRING",
+        "vertex": "Vector"
+      },
+      "target": {
+        "id": 2,
+        "name": "target",
+        "description": "Second vertex id",
+        "type": "STRING",
+        "vertex": "Vector"
+      },
+      "createdTime": {
+        "id": -2,
+        "name": "createdTime",
+        "description": "Creation time",
+        "type": "LONG"
+      },
+      "lastUpdatedTime": {
+        "id": -1,
+        "name": "lastUpdatedTime",
+        "description": "Last update time",
+        "type": "LONG"
+      },
+      "direction": "BIDIRECTIONAL",
+      "maxOutgoingEdges": 30,
+      "maxIncomingEdges": 30,
+      "maxDegree": 30,
+      "properties": []
+    },
+    {
+      "id": 12,
+      "name": "vector_11",
+      "description": "HNSW layer 11 (15 links per vertex, about 5 vertices)",
+      "idSchema": {
+        "id": 0,
+        "name": "id",
+        "description": "Link id",
+        "type": "STRING"
+      },
+      "source": {
+        "id": 1,
+        "name": "source",
+        "description": "First vertex id",
+        "type": "STRING",
+        "vertex": "Vector"
+      },
+      "target": {
+        "id": 2,
+        "name": "target",
+        "description": "Second vertex id",
+        "type": "STRING",
+        "vertex": "Vector"
+      },
+      "createdTime": {
+        "id": -2,
+        "name": "createdTime",
+        "description": "Creation time",
+        "type": "LONG"
+      },
+      "lastUpdatedTime": {
+        "id": -1,
+        "name": "lastUpdatedTime",
+        "description": "Last update time",
+        "type": "LONG"
+      },
+      "direction": "BIDIRECTIONAL",
+      "maxOutgoingEdges": 30,
+      "maxIncomingEdges": 30,
+      "maxDegree": 30,
+      "properties": []
+    },
+    {
+      "id": 13,
+      "name": "vector_12",
+      "description": "HNSW layer 12 (15 links per vertex, about 2 vertices)",
+      "idSchema": {
+        "id": 0,
+        "name": "id",
+        "description": "Link id",
+        "type": "STRING"
+      },
+      "source": {
+        "id": 1,
+        "name": "source",
+        "description": "First vertex id",
+        "type": "STRING",
+        "vertex": "Vector"
+      },
+      "target": {
+        "id": 2,
+        "name": "target",
+        "description": "Second vertex id",
+        "type": "STRING",
+        "vertex": "Vector"
+      },
+      "createdTime": {
+        "id": -2,
+        "name": "createdTime",
+        "description": "Creation time",
+        "type": "LONG"
+      },
+      "lastUpdatedTime": {
+        "id": -1,
+        "name": "lastUpdatedTime",
+        "description": "Last update time",
+        "type": "LONG"
+      },
+      "direction": "BIDIRECTIONAL",
+      "maxOutgoingEdges": 30,
+      "maxIncomingEdges": 30,
+      "maxDegree": 30,
+      "properties": []
+    },
+    {
+      "id": 14,
+      "name": "vector_13",
+      "description": "HNSW layer 13 (15 links per vertex, about 1 vertices)",
+      "idSchema": {
+        "id": 0,
+        "name": "id",
+        "description": "Link id",
+        "type": "STRING"
+      },
+      "source": {
+        "id": 1,
+        "name": "source",
+        "description": "First vertex id",
+        "type": "STRING",
+        "vertex": "Vector"
+      },
+      "target": {
+        "id": 2,
+        "name": "target",
+        "description": "Second vertex id",
+        "type": "STRING",
+        "vertex": "Vector"
+      },
+      "createdTime": {
+        "id": -2,
+        "name": "createdTime",
+        "description": "Creation time",
+        "type": "LONG"
+      },
+      "lastUpdatedTime": {
+        "id": -1,
+        "name": "lastUpdatedTime",
+        "description": "Last update time",
+        "type": "LONG"
+      },
+      "direction": "BIDIRECTIONAL",
+      "maxOutgoingEdges": 30,
+      "maxIncomingEdges": 30,
+      "maxDegree": 30,
+      "properties": []
+    },
+    {
+      "id": 15,
+      "name": "vector_14",
+      "description": "HNSW layer 14 (15 links per vertex, about 1 vertices)",
+      "idSchema": {
+        "id": 0,
+        "name": "id",
+        "description": "Link id",
+        "type": "STRING"
+      },
+      "source": {
+        "id": 1,
+        "name": "source",
+        "description": "First vertex id",
+        "type": "STRING",
+        "vertex": "Vector"
+      },
+      "target": {
+        "id": 2,
+        "name": "target",
+        "description": "Second vertex id",
+        "type": "STRING",
+        "vertex": "Vector"
+      },
+      "createdTime": {
+        "id": -2,
+        "name": "createdTime",
+        "description": "Creation time",
+        "type": "LONG"
+      },
+      "lastUpdatedTime": {
+        "id": -1,
+        "name": "lastUpdatedTime",
+        "description": "Last update time",
+        "type": "LONG"
+      },
+      "direction": "BIDIRECTIONAL",
+      "maxOutgoingEdges": 30,
+      "maxIncomingEdges": 30,
+      "maxDegree": 30,
+      "properties": []
+    }
+  ]
+}

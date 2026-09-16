@@ -30,3 +30,6 @@ target/
 
 # IDE
 .idea/
+
+# Downloaded demo datasets (tools/download-siftsmall-dataset.sh)
+.datasets/

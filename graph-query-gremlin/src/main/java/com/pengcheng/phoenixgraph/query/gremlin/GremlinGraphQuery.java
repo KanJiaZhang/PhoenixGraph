@@ -1,5 +1,7 @@
 package com.pengcheng.phoenixgraph.query.gremlin;
 
+import com.pengcheng.phoenixgraph.hnsw.HnswIndex;
+import com.pengcheng.phoenixgraph.query.QueryException;
 import com.pengcheng.phoenixgraph.query.storage.GraphQuery;
 import com.pengcheng.phoenixgraph.query.storage.VertexQueryResult;
 
@@ -23,6 +25,7 @@ import java.util.concurrent.ConcurrentHashMap;
  *   <li>edge hops — {@code outE/inE/bothE(edgeName)}, plus {@code otherV()} to hop
  *       from an edge to its far endpoint ({@code bothE().filter(...).otherV()})</li>
  *   <li>filter — {@code has(key[, value])} and {@code filter(expression)}</li>
+ *   <li>vector search — {@code nearest(k[, ef])} over an HNSW index ({@link #hnswIndex})</li>
  *   <li>projection — {@code values(key...)} and {@code elementMap()}</li>
  *   <li>terminal — {@code count()}, {@code limit(n)}, {@code dedup()}</li>
  * </ul>
@@ -40,6 +43,7 @@ public class GremlinGraphQuery {
     private final NeighborVertexResolver vertexResolver;
     private final GremlinStepRegistry registry;
     private final Map<String, String> logics = new LinkedHashMap<>();
+    private final Map<String, HnswIndex> hnswIndexes = new LinkedHashMap<>();
     private final Map<String, CompiledQuery> compiledCache = new ConcurrentHashMap<>();
     private boolean cacheEnabled = true;
     private boolean adaptiveBatchEnabled = true;
@@ -59,6 +63,51 @@ public class GremlinGraphQuery {
         this.graphQuery = Objects.requireNonNull(graphQuery, "graphQuery");
         this.vertexResolver = vertexResolver == null ? NeighborVertexResolver.none() : vertexResolver;
         this.registry = Objects.requireNonNull(registry, "registry");
+        // the vector-search step resolves its index per traverser vertex type
+        registry.register("nearest", args -> {
+            if (args.isEmpty() || args.size() > 2) {
+                throw new QueryException("nearest expects nearest(k) or nearest(k, ef), got " + args.size()
+                        + " arguments");
+            }
+            int k = positiveInt(args.get(0), "nearest");
+            int ef = args.size() > 1 ? positiveInt(args.get(1), "nearest") : 0;
+            return GremlinSteps.nearest(hnswIndexes::get, k, ef);
+        });
+    }
+
+    /**
+     * Registers an HNSW index for a vertex type, enabling
+     * {@code g.V(id, 'Type').nearest(k)} over that type.
+     */
+    public GremlinGraphQuery hnswIndex(HnswIndex index) {
+        Objects.requireNonNull(index, "index");
+        hnswIndexes.put(index.vertexName(), index);
+        compiledCache.clear();
+        return this;
+    }
+
+    /** Registers an HNSW index under an explicit vertex type name. */
+    public GremlinGraphQuery hnswIndex(String vertexName, HnswIndex index) {
+        hnswIndexes.put(Objects.requireNonNull(vertexName, "vertexName"), Objects.requireNonNull(index, "index"));
+        compiledCache.clear();
+        return this;
+    }
+
+    /** The HNSW indexes registered for vector search, keyed by vertex type. */
+    public Map<String, HnswIndex> hnswIndexes() {
+        return Map.copyOf(hnswIndexes);
+    }
+
+    private static int positiveInt(String value, String stepName) {
+        try {
+            int n = Integer.parseInt(value.trim());
+            if (n < 1) {
+                throw new QueryException(stepName + " expects a positive number, got: " + value);
+            }
+            return n;
+        } catch (NumberFormatException e) {
+            throw new QueryException(stepName + " expects a number, got: " + value);
+        }
     }
 
     /** Registers a custom step (a "code snippet") under a step name. */
@@ -337,7 +386,7 @@ public class GremlinGraphQuery {
     private static boolean isHop(String name) {
         return name.equals("out") || name.equals("in") || name.equals("both")
                 || name.equals("outE") || name.equals("inE") || name.equals("bothE")
-                || name.equals("otherV");
+                || name.equals("otherV") || name.equals("nearest");
     }
 
     private static boolean isMeta(String name) {

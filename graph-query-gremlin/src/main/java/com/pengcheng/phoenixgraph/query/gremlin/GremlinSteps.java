@@ -1,5 +1,8 @@
 package com.pengcheng.phoenixgraph.query.gremlin;
 
+import com.pengcheng.phoenixgraph.hnsw.HnswIndex;
+import com.pengcheng.phoenixgraph.hnsw.HnswLevels;
+import com.pengcheng.phoenixgraph.hnsw.HnswSearchResult;
 import com.pengcheng.phoenixgraph.query.QueryException;
 import com.pengcheng.phoenixgraph.query.storage.EdgeQueryResult;
 import com.pengcheng.phoenixgraph.query.storage.EdgeSide;
@@ -8,9 +11,11 @@ import com.pengcheng.phoenixgraph.query.storage.VertexQueryResult;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Function;
 
 /**
  * Built-in {@link GremlinStep} implementations.
@@ -80,6 +85,81 @@ final class GremlinSteps {
     }
 
     // --- tuning ---
+
+    /**
+     * Vector search step: replaces every vertex with its {@code k} nearest
+     * neighbours in the HNSW index of its vertex type (the vertex itself is never
+     * returned). The index is looked up per traverser, so one query can mix vertex
+     * types as long as each type has an index.
+     *
+     * <p>While collecting a subgraph ({\@code returnSubgraph}) the bottom-layer links
+     * between the query vertex and the returned neighbours are recorded too, so the
+     * result can be drawn as a graph instead of k isolated nodes.
+     *
+     * @param indexes  vertex type name to HNSW index
+     * @param k        number of neighbours
+     * @param ef       candidate list size ({@code <= 0} = the index' configured {@code efSearch})
+     */
+    static GremlinStep nearest(Function<String, HnswIndex> indexes, int k, int ef) {
+        return (ctx, in) -> {
+            List<Object> out = new ArrayList<>();
+            Set<Object> seen = new LinkedHashSet<>();
+            for (Object o : in) {
+                if (!(o instanceof GremlinVertex vertex)) {
+                    throw new QueryException("nearest expects vertices but got: " + o);
+                }
+                HnswIndex index = indexes.apply(vertex.label());
+                if (index == null) {
+                    throw new QueryException("No HNSW index is configured for vertex type '"
+                            + vertex.label() + "'");
+                }
+                int candidates = ef > 0 ? ef : index.config().efSearch();
+                Set<Object> hits = new LinkedHashSet<>();
+                for (HnswSearchResult hit : index.searchById(vertex.id(), k, candidates)) {
+                    if (seen.add(hit.vertexId())) {
+                        hits.add(hit.vertexId());
+                    }
+                }
+                recordNeighbourEdges(ctx, vertex, hits);
+                out.addAll(readVertices(ctx, vertex.label(), new ArrayList<>(hits)));
+            }
+            return out;
+        };
+    }
+
+    /** Records the layer-0 links that connect a query vertex to its returned neighbours. */
+    private static void recordNeighbourEdges(GremlinContext ctx, GremlinVertex vertex, Set<Object> hits) {
+        if (!ctx.collectSubgraph() || hits.isEmpty()) {
+            return;
+        }
+        List<EdgeQueryResult> edges = ctx.graphQuery().readEdges(vertex.id(), vertex.label(),
+                HnswLevels.edgeName(0), EdgeSide.BOTH, List.of());
+        for (EdgeQueryResult edge : edges) {
+            Object other = edge.otherVertexId();
+            if (hits.contains(other)) {
+                ctx.recordEdge(edge.edgeName(), edge.edgeId(), vertex.id(), other, edge.properties(),
+                        edge.createdTime(), edge.lastUpdatedTime());
+            }
+        }
+    }
+
+    /** Reads the given vertices (all properties) and records them for the subgraph. */
+    private static List<Object> readVertices(GremlinContext ctx, String vertexName, List<Object> ids) {
+        if (ids.isEmpty()) {
+            return List.of();
+        }
+        List<VertexQueryResult> vertices = ctx.graphQuery().readVertices(vertexName, ids, List.of());
+        List<Object> out = new ArrayList<>(vertices.size());
+        for (VertexQueryResult vertex : vertices) {
+            if (vertex == null) {
+                continue;
+            }
+            ctx.recordVertex(vertex.vertexName(), vertex.vertexId());
+            out.add(new GremlinVertex(vertex.vertexName(), vertex.vertexId(), vertex.properties(),
+                    vertex.createdTime(), vertex.lastUpdatedTime()));
+        }
+        return out;
+    }
 
     /** Sets the fan-out batch size for the batched lookups that follow. */
     static GremlinStep batch(int batchSize) {

@@ -68,7 +68,8 @@ public class StorageConfig {
             GraphSchema schema = loadSchema(definition.schema());
             bindings.add(new GraphBinding(schema,
                     new AerospikeVertexStore(client, properties.namespace(), definition.vertexSet()),
-                    new AerospikeEdgeStore(client, properties.namespace(), definition.vertexSet(), schema)));
+                    new AerospikeEdgeStore(client, properties.namespace(), definition.vertexSet(), schema),
+                    client, properties.namespace()));
         }
         return new GraphRegistry(bindings);
     }

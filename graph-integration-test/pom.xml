@@ -54,6 +54,7 @@
                 <directory>${project.basedir}/../graph-http/src/main/resources</directory>
                 <includes>
                     <include>kg-entity-graph.json</include>
+                    <include>hnsw-sift.json</include>
                 </includes>
             </testResource>
         </testResources>

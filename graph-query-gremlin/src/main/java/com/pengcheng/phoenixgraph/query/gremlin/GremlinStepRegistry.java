@@ -13,8 +13,10 @@ import java.util.Objects;
  * <p>The built-in steps are {@code out}/{@code in}/{@code both} (vertex hops),
  * {@code outE}/{@code inE}/{@code bothE} (edge hops), {@code otherV} (edge to its
  * far endpoint), {@code has}, {@code filter}, {@code values}, {@code elementMap},
- * {@code count}, {@code limit} and {@code dedup}. Custom steps (code snippets) can
- * be added with {@link #register(String, StepFactory)}.
+ * {@code count}, {@code limit} and {@code dedup}. {@code nearest(k[, ef])} - the
+ * HNSW vector search - is registered by {@link GremlinGraphQuery} (it needs the
+ * indexes of the graph). Custom steps (code snippets) can be added with
+ * {@link #register(String, StepFactory)}.
  */
 public class GremlinStepRegistry {
 

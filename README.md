@@ -10,8 +10,26 @@ A High Scaled and High Performance HTAP Graph Database.
 | `graph-schema`        | Schema model: labels, property keys, data types, cardinalities  |
 | `graph-storage`       | Storage engine abstraction + in-memory storage implementation   |
 | `graph-query`  | Query parsing, planning and execution                           |
+| `graph-query-gremlin` | Gremlin-style traversal engine (`out/in/both`, `bothE`, `filter`, `nearest`, ...) |
+| `graph-hnsw`          | HNSW vector index: layered graph build + nearest-neighbour search |
 | `graph-compute-engine`| Graph analytics and algorithm execution (BFS, PageRank, ...)    |
 | `graph-web`           | RESTful web service (Spring Boot)                               |
+
+### Vector search in one query
+
+A vector dataset is stored as `Vector` vertices (a `vector` property) plus one
+bidirectional edge class per HNSW layer (`vector_0` .. `vector_<ceil(log2 n)>`).
+The query engine exposes the layered search as a Gremlin step:
+
+```groovy
+g.V('4242', 'Vector').nearest(20)          // 20 nearest vectors of that id
+g.V('4242', 'Vector').nearest(20, 200)     // wider candidate list (more accurate)
+g.V('4242', 'Vector').nearest(20).values('name')
+```
+
+See `CONTEXT.md` (section "HNSW vector index") for the design, the dataset and
+the measured recall, and `tools/download-siftsmall-dataset.sh` +
+`HnswGraphIntegrationTest` to build the demo index.
 
 ## Requirements
 

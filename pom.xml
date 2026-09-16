@@ -20,6 +20,7 @@
         <module>graph-query</module>
         <module>graph-query-aerospike</module>
         <module>graph-query-gremlin</module>
+        <module>graph-hnsw</module>
         <module>graph-compute-engine</module>
         <module>graph-web</module>
         <module>graph-http</module>
@@ -80,6 +81,11 @@
             <dependency>
                 <groupId>com.pengcheng.phoenixgraph</groupId>
                 <artifactId>graph-query-gremlin</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.pengcheng.phoenixgraph</groupId>
+                <artifactId>graph-hnsw</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
