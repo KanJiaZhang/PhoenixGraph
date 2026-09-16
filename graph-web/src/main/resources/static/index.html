@@ -9,8 +9,13 @@
 <body>
   <header id="topbar">
     <div class="brand">
-      <span class="logo">◈</span>
-      <span>PhoenixGraph</span>
+      <span class="logo" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
+          <line x1="8.59" x2="15.42" y1="13.51" y2="17.49"/><line x1="15.41" x2="8.59" y1="6.51" y2="10.49"/>
+        </svg>
+      </span>
+      <span class="brand-name">PhoenixGraph</span>
     </div>
 
     <div class="field">
@@ -30,7 +35,7 @@
         <span class="slider"></span>
         <span class="switch-label">Gremlin</span>
       </label>
-      <button id="queryBtn">查询</button>
+      <button id="queryBtn" class="btn-primary">查询</button>
     </div>
 
     <div class="query-mode gremlin-row" id="gremlinPanel" hidden>
@@ -43,9 +48,28 @@
     <div id="canvasWrap">
       <div id="canvas" aria-label="graph canvas"></div>
       <div id="toolbar">
-        <button id="rebalanceBtn" title="自动平衡力图">↻</button>
-        <button id="brushBtn" title="框选过滤">⛶</button>
-        <button id="resetViewBtn" title="显示全部">⊞</button>
+        <button id="rebalanceBtn" title="自动平衡力图" aria-label="自动平衡">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/>
+            <path d="M21 3v5h-5"/>
+            <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/>
+            <path d="M8 16H3v5"/>
+          </svg>
+        </button>
+        <button id="brushBtn" title="框选过滤" aria-label="框选">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 7V5a2 2 0 0 1 2-2h2"/>
+            <path d="M17 3h2a2 2 0 0 1 2 2v2"/>
+            <path d="M21 17v2a2 2 0 0 1-2 2h-2"/>
+            <path d="M7 21H5a2 2 0 0 1-2-2v-2"/>
+          </svg>
+        </button>
+        <button id="resetViewBtn" title="显示全部" aria-label="显示全部">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M15 3h6v6"/><path d="m21 3-7 7"/><path d="m3 21 7-7"/><path d="M9 21H3v-6"/>
+          </svg>
+        </button>
+        <span class="tool-sep"></span>
         <select id="algoSelect" title="图算法着色">
           <option value="">算法</option>
           <option value="louvain">Louvain</option>
@@ -61,8 +85,16 @@
         <button class="tab" data-tab="props">属性</button>
       </nav>
       <section id="statsPanel" class="panel">
-        <p>点：<b id="vertexCount">0</b></p>
-        <p>边：<b id="edgeCount">0</b></p>
+        <div class="stat-grid">
+          <div class="stat-card">
+            <span class="stat-value" id="vertexCount">0</span>
+            <span class="stat-label">顶点</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-value" id="edgeCount">0</span>
+            <span class="stat-label">边</span>
+          </div>
+        </div>
       </section>
       <section id="propsPanel" class="panel" hidden>
         <p class="muted" id="propsHint">点击图中某点或某边查看其全部属性</p>

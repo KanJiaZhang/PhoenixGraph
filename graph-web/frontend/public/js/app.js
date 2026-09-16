@@ -1,18 +1,40 @@
 (() => {
   'use strict';
 
-  // ---- vertex type styling (SVG icons + colors) ----
-  const COLORS = { Account: '#2563eb', IP: '#059669', Phone: '#d97706' };
+  // ---- vertex type styling (Lucide stroke icons + refined palette) ----
+  const COLORS = { Account: '#4f46e5', IP: '#0d9488', Phone: '#d97706' };
   const DEFAULT_COLOR = '#64748b';
-  const ICON_PATHS = {
-    Account: 'M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z',
-    IP: 'M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zm6.93 6h-2.95c-.32-1.25-.78-2.45-1.38-3.56 1.84.87 3.32 2.01 4.33 3.56zM12 4.04c.83 1.2 1.48 2.53 1.91 3.96h-3.82c.43-1.43 1.08-2.76 1.91-3.96zM4.26 14C4.1 13.36 4 12.69 4 12s.1-1.36.26-2h3.38c-.08.66-.14 1.32-.14 2 0 .68.06 1.34.14 2H4.26zm.82 2h2.95c.32 1.25.78 2.45 1.38 3.56-1.84-.87-3.32-2.01-4.33-3.56zm2.95-8H5.08c.89-1.55 2.37-2.81 4.33-3.56C8.81 5.55 8.35 6.75 8.03 8zM12 19.96c-.83-1.2-1.48-2.53-1.91-3.96h3.82c-.43 1.43-1.08 2.76-1.91 3.96zM14.34 14H9.66c-.09-.66-.16-1.32-.16-2 0-.68.07-1.35.16-2h4.68c.09.65.16 1.32.16 2 0 .68-.07 1.34-.16 2zm.25 5.56c.6-1.11 1.06-2.31 1.38-3.56h2.95c-.89 1.55-2.37 2.81-4.33 3.56zM16.36 14c.08-.66.14-1.32.14-2 0-.68-.06-1.34-.14-2h3.38c.16.64.26 1.31.26 2s-.1 1.36-.26 2h-3.38z',
-    Phone: 'M15.5 1h-8C6.12 1 5 2.12 5 3.5v17C5 21.88 6.12 23 7.5 23h8c1.38 0 2.5-1.12 2.5-2.5v-17C18 2.12 16.88 1 15.5 1zM12 21.5c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5zM16 18H8V4h8v14z',
+
+  // Lucide icon geometry (MIT), embedded so no CDN is needed at runtime.
+  // Each icon is a list of SVG child elements described as {tag, attrs}.
+  const ICONS = {
+    Account: [
+      { tag: 'circle', attrs: { cx: 12, cy: 8, r: 5 } },
+      { tag: 'path', attrs: { d: 'M20 21a8 8 0 0 0-16 0' } },
+    ],
+    IP: [
+      { tag: 'circle', attrs: { cx: 12, cy: 12, r: 10 } },
+      { tag: 'path', attrs: { d: 'M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20' } },
+      { tag: 'path', attrs: { d: 'M2 12h20' } },
+    ],
+    Phone: [
+      { tag: 'rect', attrs: { width: 14, height: 20, x: 5, y: 2, rx: 2, ry: 2 } },
+      { tag: 'path', attrs: { d: 'M12 18h.01' } },
+    ],
   };
-  const DEFAULT_ICON_PATH = 'M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20z';
+  const DEFAULT_ICON = [
+    { tag: 'path', attrs: { d: 'M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z' } },
+  ];
 
   const colorFor = (label) => COLORS[label] || DEFAULT_COLOR;
-  const iconHref = (label) => (ICON_PATHS[label] ? `#icon-${label}` : '#icon-default');
+  const iconHref = (label) => (ICONS[label] ? `#icon-${label}` : '#icon-default');
+
+  function appendIcon(parent, elements) {
+    for (const el of elements) {
+      const node = parent.append(el.tag);
+      for (const [key, value] of Object.entries(el.attrs)) node.attr(key, value);
+    }
+  }
 
   // merged graph model, keyed by "label::id"
   const graph = { vertices: new Map(), edges: new Map() };
@@ -96,19 +118,17 @@
     defs.append('marker')
       .attr('id', 'arrow')
       .attr('viewBox', '0 -5 10 10')
-      .attr('refX', 20)
+      .attr('refX', 15)
       .attr('refY', 0)
-      .attr('markerWidth', 6)
-      .attr('markerHeight', 6)
+      .attr('markerWidth', 5)
+      .attr('markerHeight', 5)
       .attr('orient', 'auto')
-      .append('path').attr('d', 'M0,-5L10,0L0,5').attr('fill', '#9aa6b5');
+      .append('path').attr('d', 'M0,-5L10,0L0,5').attr('fill', '#a9b4c6');
 
-    for (const [label, d] of Object.entries(ICON_PATHS)) {
-      defs.append('symbol').attr('id', `icon-${label}`).attr('viewBox', '0 0 24 24')
-        .append('path').attr('d', d).attr('fill', '#ffffff');
+    for (const [label, elements] of Object.entries(ICONS)) {
+      appendIcon(defs.append('symbol').attr('id', `icon-${label}`).attr('viewBox', '0 0 24 24'), elements);
     }
-    defs.append('symbol').attr('id', 'icon-default').attr('viewBox', '0 0 24 24')
-      .append('path').attr('d', DEFAULT_ICON_PATH).attr('fill', '#ffffff');
+    appendIcon(defs.append('symbol').attr('id', 'icon-default').attr('viewBox', '0 0 24 24'), DEFAULT_ICON);
 
     svg.call(d3.zoom()
       .scaleExtent([0.2, 6])
@@ -183,14 +203,14 @@
       .on('click', (event, d) => { event.stopPropagation(); selectVertex(d); })
       .on('dblclick', (event, d) => { event.stopPropagation(); expand(d); });
 
-    nodeSel.append('circle').attr('class', 'ring').attr('r', 18);
-    nodeSel.append('circle').attr('class', 'body').attr('r', 13.5).attr('fill', (d) => nodeColor(d));
+    nodeSel.append('circle').attr('class', 'ring').attr('r', 14.4);
+    nodeSel.append('circle').attr('class', 'body').attr('r', 10.8).attr('fill', (d) => nodeColor(d));
     nodeSel.append('use')
       .attr('href', (d) => iconHref(d.label))
-      .attr('x', -6.75).attr('y', -6.75).attr('width', 13.5).attr('height', 13.5);
+      .attr('x', -5.4).attr('y', -5.4).attr('width', 10.8).attr('height', 10.8);
     nodeSel.append('text')
       .attr('class', 'label')
-      .attr('text-anchor', 'middle').attr('dy', 28).attr('font-size', 12).attr('fill', '#475569')
+      .attr('dy', 22)
       .text((d) => String(d.id));
 
     // Drag a node without re-balancing the whole graph: just move + pin it.
@@ -217,12 +237,14 @@
       }));
 
     simulation = d3.forceSimulation(nodes)
-      .force('link', d3.forceLink(links).id((d) => d.key).distance(75))
+      .force('link', d3.forceLink(links).id((d) => d.key).distance(70))
       .force('charge', d3.forceManyBody().strength(-260))
       .force('center', d3.forceCenter(width / 2, height / 2))
       .force('x', d3.forceX(width / 2).strength(0.05))
       .force('y', d3.forceY(height / 2).strength(0.05))
-      .force('collide', d3.forceCollide(30));
+      .force('collide', d3.forceCollide(24))
+      .alphaDecay(0.012)   // gentler cooling -> longer, smoother settle
+      .velocityDecay(0.55); // more friction -> slower node motion
 
     simulation.on('tick', () => {
       linkSel
@@ -262,15 +284,15 @@
     if (!items.length) return;
     const legend = svg.append('g').attr('class', 'legend').attr('transform', 'translate(16, 60)');
     legend.append('rect')
-      .attr('width', 150)
-      .attr('height', items.length * 26 + 12)
-      .attr('rx', 8)
-      .attr('fill', '#ffffff').attr('fill-opacity', 0.92)
-      .attr('stroke', '#dde3ec');
+      .attr('width', 152)
+      .attr('height', items.length * 26 + 14)
+      .attr('rx', 10)
+      .attr('fill', '#ffffff').attr('fill-opacity', 0.95)
+      .attr('stroke', '#e4e9f2');
     items.forEach((item, i) => {
-      const g = legend.append('g').attr('transform', `translate(10, ${10 + i * 26})`);
-      g.append('rect').attr('width', 14).attr('height', 14).attr('rx', 4).attr('fill', item.color);
-      g.append('text').attr('x', 22).attr('y', 12).text(item.label);
+      const g = legend.append('g').attr('transform', `translate(11, ${11 + i * 26})`);
+      g.append('rect').attr('width', 14).attr('height', 14).attr('rx', 5).attr('fill', item.color);
+      g.append('text').attr('x', 22).attr('y', 11.5).text(item.label);
     });
   }
 
@@ -471,7 +493,7 @@
   function rebalance() {
     if (!simulation) return;
     simulation.nodes().forEach((d) => { d.fx = null; d.fy = null; });
-    simulation.alpha(0.85).restart();
+    simulation.alpha(0.6).restart();
   }
 
   // ---- selection + properties ----
