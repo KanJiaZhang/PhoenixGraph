@@ -52,6 +52,8 @@
     brushBtn: document.getElementById('brushBtn'),
     resetViewBtn: document.getElementById('resetViewBtn'),
     algoSelect: document.getElementById('algoSelect'),
+    searchInput: document.getElementById('searchInput'),
+    searchClear: document.getElementById('searchClear'),
     canvas: document.getElementById('canvas'),
     vertexCount: document.getElementById('vertexCount'),
     edgeCount: document.getElementById('edgeCount'),
@@ -263,6 +265,7 @@
     el.vertexCount.textContent = nodes.length;
     el.edgeCount.textContent = links.length;
     highlight();
+    applySearch();
   }
 
   function renderLegend() {
@@ -530,6 +533,73 @@
       selected && selected.type === 'edge' && selected.id === d.id && selected.label === d.label);
   }
 
+  // ---- keyword search (fuzzy) over the displayed subgraph ----
+  function flattenValue(v) {
+    if (v === null || v === undefined) return '';
+    if (Array.isArray(v)) return v.map(flattenValue).join(' ');
+    if (typeof v === 'object') return Object.values(v).map(flattenValue).join(' ');
+    return String(v);
+  }
+
+  // case-insensitive subsequence match, so "pmt" matches "payment" (fuzzy)
+  function fuzzyMatch(query, text) {
+    let qi = 0;
+    for (let i = 0; i < text.length && qi < query.length; i += 1) {
+      if (text.charCodeAt(i) === query.charCodeAt(qi)) qi += 1;
+    }
+    return qi === query.length;
+  }
+
+  function endpointKey(endpoint) {
+    return endpoint && typeof endpoint === 'object' ? endpoint.key : endpoint;
+  }
+
+  function elementHaystack(d, extra) {
+    if (d.__hay === undefined) {
+      const parts = [d.label, d.id, ...extra];
+      for (const [key, value] of Object.entries(d.properties || {})) parts.push(key, flattenValue(value));
+      d.__hay = parts.filter(Boolean).join(' ').toLowerCase();
+    }
+    return d.__hay;
+  }
+
+  function applySearch() {
+    const query = el.searchInput.value.trim().toLowerCase();
+    el.searchClear.hidden = !query;
+    const nodes = root.selectAll('.node');
+    const edges = root.selectAll('.edge');
+    if (!query) {
+      nodes.classed('search-hit', false).classed('search-dim', false);
+      edges.classed('search-hit', false).classed('search-dim', false);
+      return;
+    }
+    const tokens = query.split(/\s+/).filter(Boolean);
+    const hits = (hay) => tokens.every((token) => fuzzyMatch(token, hay));
+
+    const hitNodes = new Set();
+    nodes.each(function (d) { if (hits(elementHaystack(d, []))) hitNodes.add(d.key); });
+
+    const hitEdges = new Set();
+    const adjacent = new Set(); // endpoints of matched edges stay visible
+    edges.each(function (d) {
+      const key = d.label + '::' + d.id;
+      if (hits(elementHaystack(d, [endpointKey(d.source), endpointKey(d.target)]))) {
+        hitEdges.add(key);
+        const s = endpointKey(d.source);
+        const t = endpointKey(d.target);
+        if (s) adjacent.add(s);
+        if (t) adjacent.add(t);
+      }
+    });
+
+    nodes
+      .classed('search-hit', (d) => hitNodes.has(d.key))
+      .classed('search-dim', (d) => !hitNodes.has(d.key) && !adjacent.has(d.key));
+    edges
+      .classed('search-hit', (d) => hitEdges.has(d.label + '::' + d.id))
+      .classed('search-dim', (d) => !hitEdges.has(d.label + '::' + d.id));
+  }
+
   function showProps(rows) {
     el.propsHint.style.display = 'none';
     const html = rows
@@ -632,6 +702,15 @@
     });
     el.algoSelect.addEventListener('change', () => {
       applyAlgorithm(el.algoSelect.value);
+    });
+    el.searchInput.addEventListener('input', applySearch);
+    el.searchInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') { el.searchInput.value = ''; applySearch(); }
+    });
+    el.searchClear.addEventListener('click', () => {
+      el.searchInput.value = '';
+      applySearch();
+      el.searchInput.focus();
     });
     el.resetViewBtn.addEventListener('click', () => {
       viewFilter = null;
