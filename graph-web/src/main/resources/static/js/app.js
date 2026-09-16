@@ -1024,6 +1024,13 @@
       .map(([k, v]) => `<tr><th>${escapeHtml(String(k))}</th><td>${formatValue(v)}</td></tr>`)
       .join('');
     el.propsContent.innerHTML = `<table class="prop-table"><tbody>${html}</tbody></table>`;
+    activateTab('props'); // selecting an element brings its properties into view
+  }
+
+  /** Clears the properties panel back to its placeholder (e.g. after a new query). */
+  function clearProps() {
+    el.propsContent.innerHTML = '';
+    el.propsHint.style.display = '';
   }
 
   function formatValue(v) {
@@ -1070,6 +1077,7 @@
     legendFilter = null;
     pathState = null;
     picked = [];
+    clearProps(); // the previously selected element no longer exists
   }
 
   async function queryCurrent(query) {
@@ -1200,8 +1208,12 @@
   }
 
   function onTabChange(e) {
-    document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t === e.target));
-    const tab = e.target.dataset.tab;
+    activateTab(e.target.dataset.tab);
+  }
+
+  /** Shows the side panel for the given tab ('stats' or 'props'). */
+  function activateTab(tab) {
+    document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === tab));
     document.getElementById('statsPanel').hidden = tab !== 'stats';
     document.getElementById('propsPanel').hidden = tab !== 'props';
   }
