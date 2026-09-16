@@ -114,6 +114,22 @@
       "properties": [
         { "id": 3, "name": "loginTime", "description": "Login time", "type": "LONG" }
       ]
+    },
+    {
+      "id": 5,
+      "name": "IPToAccount",
+      "description": "An IP is linked to an account",
+      "idSchema": { "id": 0, "name": "id", "description": "Edge id", "type": "LONG" },
+      "source": { "id": 1, "name": "source", "description": "IP vertex id", "type": "LONG", "vertex": "IP" },
+      "target": { "id": 2, "name": "target", "description": "Account vertex id", "type": "LONG", "vertex": "Account" },
+      "createdTime": { "id": -2, "name": "createdTime", "description": "Creation time", "type": "LONG" },
+      "lastUpdatedTime": { "id": -1, "name": "lastUpdatedTime", "description": "Last update time", "type": "LONG" },
+      "direction": "DIRECTED",
+      "maxOutgoingEdges": 100,
+      "maxIncomingEdges": 1000,
+      "properties": [
+        { "id": 3, "name": "linkedAt", "description": "Link time", "type": "LONG" }
+      ]
     }
   ]
 }

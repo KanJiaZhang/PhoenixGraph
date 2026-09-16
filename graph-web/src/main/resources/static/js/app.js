@@ -149,6 +149,7 @@
   let svg = null;
   let root = null;
   let simulation = null;
+  let zoomBehavior = null;
   let selected = null;
   let viewFilter = null; // Set of node keys to show; null = all
   let brushMode = false;
@@ -230,13 +231,36 @@
     }
     appendIcon(defs.append('symbol').attr('id', 'icon-default').attr('viewBox', '0 0 24 24'), DEFAULT_ICON);
 
-    svg.call(d3.zoom()
-      .scaleExtent([0.2, 6])
+    zoomBehavior = d3.zoom()
+      .scaleExtent([0.15, 6])
       .filter((event) => {
         if (event.type === 'wheel') return true; // keep wheel zoom
         return !brushMode && !event.ctrlKey && !event.button; // no pan while box-selecting
       })
-      .on('zoom', (event) => root.attr('transform', event.transform)));
+      .on('zoom', (event) => root.attr('transform', event.transform));
+    svg.call(zoomBehavior);
+  }
+
+  // zoom/pan so the whole subgraph is centred and fully visible
+  function fitView(animate = false) {
+    if (!svg || !zoomBehavior || !currentNodes.length) return;
+    const { width, height } = canvasSize();
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const n of currentNodes) {
+      if (n.x < minX) minX = n.x;
+      if (n.x > maxX) maxX = n.x;
+      if (n.y < minY) minY = n.y;
+      if (n.y > maxY) maxY = n.y;
+    }
+    const pad = 72;
+    const dx = Math.max(maxX - minX, 1);
+    const dy = Math.max(maxY - minY, 1);
+    const scale = Math.max(0.15, Math.min((width - pad * 2) / dx, (height - pad * 2) / dy, 2.2));
+    const transform = d3.zoomIdentity
+      .translate(width / 2 - (scale * (minX + maxX)) / 2, height / 2 - (scale * (minY + maxY)) / 2)
+      .scale(scale);
+    if (animate) svg.transition().duration(450).call(zoomBehavior.transform, transform);
+    else svg.call(zoomBehavior.transform, transform);
   }
 
   function canvasSize() {
@@ -300,8 +324,7 @@
       .join('g')
       .attr('class', 'node')
       .classed('pr-highlight', (d) => algoState && algoState.type === 'pagerank' && algoState.topKeys.has(d.key))
-      .on('click', (event, d) => { event.stopPropagation(); selectVertex(d); })
-      .on('dblclick', (event, d) => { event.stopPropagation(); expand(d); });
+      .on('click', onNodeClick);
 
     nodeSel.append('circle').attr('class', 'ring').attr('r', 14.4);
     nodeSel.append('circle').attr('class', 'body').attr('r', 10.8).attr('fill', (d) => nodeColor(d));
@@ -317,7 +340,6 @@
     nodeSel.call(d3.drag()
       .on('start', function (event, d) {
         d.fx = d.x; d.fy = d.y;
-        d3.select(this).raise();
       })
       .on('drag', function (event, d) {
         d.fx = event.x; d.fy = event.y;
@@ -339,14 +361,22 @@
       .force('x', d3.forceX(width / 2).strength(0.05))
       .force('y', d3.forceY(height / 2).strength(0.05))
       .force('collide', d3.forceCollide(24))
-      .alphaDecay(0.012)   // gentler cooling -> longer, smoother settle
-      .velocityDecay(0.55); // more friction -> slower node motion
+      .velocityDecay(0.55)   // more friction -> slower, gentler motion
+      .alphaDecay(0.02)
+      .stop();
+
+    // lay out synchronously so the first paint is already settled, then fit to view
+    for (let i = 0; i < 400; i += 1) simulation.tick();
+    linkSel.each(function (d) { setEdgeGeometry(this, d); });
+    nodeSel.attr('transform', (d) => `translate(${d.x},${d.y})`);
+    for (const n of nodes) positions.set(n.key, { x: n.x, y: n.y });
 
     simulation.on('tick', () => {
       linkSel.each(function (d) { setEdgeGeometry(this, d); });
       nodeSel.attr('transform', (d) => `translate(${d.x},${d.y})`);
       for (const n of nodes) positions.set(n.key, { x: n.x, y: n.y });
     });
+    simulation.on('end', () => fitView(true));
 
     renderLegend();
 
@@ -359,6 +389,7 @@
     applyLegendFilter();
     applyPathFilter();
     applyPickedHighlight();
+    fitView(false);
   }
 
   // stop each line at the node edge so the arrow head stays visible above the node
@@ -822,10 +853,25 @@
   function rebalance() {
     if (!simulation) return;
     simulation.nodes().forEach((d) => { d.fx = null; d.fy = null; });
-    simulation.alpha(0.6).restart();
+    simulation.alpha(0.45).restart();
   }
 
   // ---- selection + properties ----
+  let lastNodeClick = { key: null, at: 0 };
+
+  // single click selects (and toggles a shortest-path pick); a quick second click expands one hop
+  function onNodeClick(event, d) {
+    event.stopPropagation();
+    const now = Date.now();
+    if (lastNodeClick.key === d.key && now - lastNodeClick.at < 380) {
+      lastNodeClick = { key: null, at: 0 };
+      expand(d);
+      return;
+    }
+    lastNodeClick = { key: d.key, at: now };
+    selectVertex(d);
+  }
+
   function selectVertex(d) {
     selected = { type: 'vertex', id: d.id, label: d.label };
     if (picked.includes(d.key)) picked = picked.filter((k) => k !== d.key);
@@ -972,10 +1018,23 @@
   }
 
   // ---- query ----
+  // a new query replaces the canvas content instead of accumulating on top of it
+  function resetGraph() {
+    graph.vertices.clear();
+    graph.edges.clear();
+    positions.clear();
+    selected = null;
+    viewFilter = null;
+    legendFilter = null;
+    pathState = null;
+    picked = [];
+  }
+
   async function queryCurrent(query) {
     setStatus('查询中…');
     try {
       const sub = await runQuery(query);
+      resetGraph();
       const { addedV, addedE } = merge(sub);
       clearAlgo();
       render();

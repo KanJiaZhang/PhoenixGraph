@@ -14,7 +14,7 @@ phoenixgraph:
     host: localhost
     port: 3000
     namespace: test
-    vertex-set: vertices
+    vertex-set: http_demo_v1
     # optional graph schema name; the edge max in-/out-degree is read from the
     # schema file (graph-schema JSON) rather than being hard-coded here.
     schema: payment-graph

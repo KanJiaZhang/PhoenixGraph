@@ -194,6 +194,120 @@ class QueryApiIntegrationTest {
         }
     }
 
+    /**
+     * A richer demo graph for the visualizer, seeded into {@code http_demo_v1}:
+     * account 135 pays 50 accounts, those 50 trade among themselves, and each of
+     * them has 2 IP and 2 Phone associations (plus reverse IPToAccount /
+     * PhoneToAccount links for full edge-type coverage).
+     */
+    @Test
+    void demoStarGraphViaApi() throws Exception {
+        AerospikeClient client = connectOrNull();
+        assumeTrue(client != null, "Aerospike not available, skipping integration test");
+        try (client) {
+            String namespace = env("AEROSPIKE_NAMESPACE", "test");
+            String set = "http_demo_v1";
+            GraphSchema schema = ensureSchemaRegistered();
+            AerospikeVertexStore vertexStore = new AerospikeVertexStore(client, namespace, set);
+            AerospikeEdgeStore edgeStore = new AerospikeEdgeStore(client, namespace, set, schema);
+            truncateSet(client, namespace, set);
+            seedStarGraph(vertexStore, edgeStore, schema);
+
+            QueryService queryService = new QueryService(vertexStore, edgeStore);
+            MockMvc api = MockMvcBuilders.standaloneSetup(new QueryController(queryService)).build();
+
+            // 135 pays exactly 50 one-hop accounts
+            api.perform(post("/api/v1/query")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(query("g.V('135','Account').out('Payment').count()")))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$[0]").value(50));
+
+            // those 50 trade among themselves (ring + 2 cross edges)
+            api.perform(post("/api/v1/query")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(query("g.V('1000','Account').out('Payment').count()")))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$[0]").value(3));
+
+            // 2-hop both() over every edge type renders as a subgraph
+            api.perform(post("/api/v1/query")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("""
+                                    { "graphName": "payment-graph",
+                                      "query": "g.V('135','Account').both().both()",
+                                      "params": {},
+                                      "returnSubgraph": true }
+                                    """))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.vertices.length()")
+                            .value(org.hamcrest.Matchers.greaterThan(200)));
+        }
+    }
+
+    private static void seedStarGraph(AerospikeVertexStore vertexStore, AerospikeEdgeStore edgeStore,
+                                      GraphSchema schema) {
+        VertexSchema account = schema.vertexSchema("Account");
+        VertexSchema ip = schema.vertexSchema("IP");
+        VertexSchema phone = schema.vertexSchema("Phone");
+        EdgeSchema payment = schema.edgeSchema("Payment");
+        EdgeSchema accountToIp = schema.edgeSchema("AccountToIP");
+        EdgeSchema ipToAccount = schema.edgeSchema("IPToAccount");
+        EdgeSchema accountToPhone = schema.edgeSchema("AccountToPhone");
+        EdgeSchema phoneToAccount = schema.edgeSchema("PhoneToAccount");
+        long t = System.currentTimeMillis();
+
+        List<VertexUpsert> vertices = new ArrayList<>();
+        vertices.add(new VertexUpsert("135", account, accountProps("135", t), t, t));
+        for (int i = 0; i < 50; i++) {
+            String acc = String.valueOf(1000 + i);
+            vertices.add(new VertexUpsert(acc, account, accountProps(acc, t), t, t));
+            for (int k = 0; k < 2; k++) {
+                String ipId = String.valueOf(5000 + 2 * i + k);
+                String phoneId = String.valueOf(6000 + 2 * i + k);
+                vertices.add(new VertexUpsert(ipId, ip, ipProps(ipId, t), t, t));
+                vertices.add(new VertexUpsert(phoneId, phone, phoneProps(phoneId, t), t, t));
+            }
+        }
+        assertNoFailures(vertexStore.upsertVertices(vertices));
+
+        List<EdgeUpsert> edges = new ArrayList<>();
+        for (int i = 0; i < 50; i++) {
+            String acc = String.valueOf(1000 + i);
+            edges.add(new EdgeUpsert("pay_c" + i, payment, "135", acc,
+                    Map.of(3, new EdgePropertyValue("SUCCESS", t, t)), t, t));
+        }
+        for (int i = 0; i < 50; i++) {
+            String acc = String.valueOf(1000 + i);
+            edges.add(new EdgeUpsert("pay_r" + i, payment, acc,
+                    String.valueOf(1000 + (i + 1) % 50), Map.of(3, new EdgePropertyValue("SUCCESS", t, t)), t, t));
+            edges.add(new EdgeUpsert("pay_x" + i, payment, acc,
+                    String.valueOf(1000 + (i + 7) % 50), Map.of(3, new EdgePropertyValue("PENDING", t, t)), t, t));
+            edges.add(new EdgeUpsert("pay_y" + i, payment, acc,
+                    String.valueOf(1000 + (i + 13) % 50), Map.of(3, new EdgePropertyValue("SUCCESS", t, t)), t, t));
+        }
+        for (int i = 0; i < 50; i++) {
+            String acc = String.valueOf(1000 + i);
+            String ip0 = String.valueOf(5000 + 2 * i);
+            String ip1 = String.valueOf(5000 + 2 * i + 1);
+            String ph0 = String.valueOf(6000 + 2 * i);
+            String ph1 = String.valueOf(6000 + 2 * i + 1);
+            edges.add(new EdgeUpsert("ati_" + i + "_0", accountToIp, acc, ip0,
+                    Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
+            edges.add(new EdgeUpsert("ati_" + i + "_1", accountToIp, acc, ip1,
+                    Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
+            edges.add(new EdgeUpsert("atp_" + i + "_0", accountToPhone, acc, ph0,
+                    Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
+            edges.add(new EdgeUpsert("atp_" + i + "_1", accountToPhone, acc, ph1,
+                    Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
+            edges.add(new EdgeUpsert("ipa_" + i, ipToAccount, ip0, acc,
+                    Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
+            edges.add(new EdgeUpsert("pta_" + i, phoneToAccount, ph0, acc,
+                    Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
+        }
+        assertNoFailures(edgeStore.upsertEdges(edges));
+    }
+
     private static void truncateSet(AerospikeClient client, String namespace, String set) {
         try {
             client.truncate(new com.aerospike.client.policy.InfoPolicy(), namespace, set, null);
