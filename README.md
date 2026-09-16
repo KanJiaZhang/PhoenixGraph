@@ -2,6 +2,9 @@
 
 A High Scaled and High Performance HTAP Graph Database.
 
+> **Resuming work?** Start with [HANDOVER.md](HANDOVER.md) - current state, how
+> to start the services and what is next.
+
 ## Modules
 
 | Module                | Description                                                     |
