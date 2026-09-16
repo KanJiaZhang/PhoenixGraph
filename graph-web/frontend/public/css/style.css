@@ -115,9 +115,9 @@ body {
 }
 .lang-opt:hover { color: var(--text-2); background: transparent; }
 .lang-opt.active {
-  color: #fff;
-  background: linear-gradient(135deg, var(--accent), var(--accent-2));
-  box-shadow: 0 1px 4px rgba(79, 70, 229, 0.35);
+  color: var(--text-2);
+  background: #fff;
+  box-shadow: var(--shadow-xs);
 }
 .query-mode { display: flex; gap: 8px; align-items: center; }
 .query-mode[hidden] { display: none; }
@@ -409,6 +409,46 @@ button.btn-primary:hover, #queryBtn:hover { filter: brightness(1.07); }
 }
 .prop-table td { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
 
+.export-btn {
+  margin-top: 14px;
+  width: 100%;
+  padding: 9px 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-2);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: none;
+}
+.export-btn:hover { background: #fff; border-color: var(--border-2); color: var(--accent); }
+.export-btn svg { width: 15px; height: 15px; }
+
+/* transient feedback pill */
+#toast {
+  position: absolute;
+  left: 50%;
+  bottom: 22px;
+  transform: translateX(-50%) translateY(8px);
+  z-index: 6;
+  padding: 9px 16px;
+  border-radius: 11px;
+  background: rgba(15, 23, 42, 0.88);
+  color: #fff;
+  font-size: 12.5px;
+  font-weight: 500;
+  box-shadow: var(--shadow-lg);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s, transform 0.2s;
+  white-space: nowrap;
+}
+#toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
 /* ---------- graph elements ---------- */
 .node { cursor: pointer; }
 .node circle.body { stroke: rgba(255, 255, 255, 0.92); stroke-width: 1.4; transition: filter 0.12s; }
@@ -431,9 +471,9 @@ button.btn-primary:hover, #queryBtn:hover { filter: brightness(1.07); }
 .node.selected circle.ring { stroke: var(--danger); }
 .node.pr-highlight circle.ring { stroke: var(--warn); stroke-width: 3.5; stroke-dasharray: 3 2.5; }
 
-.edge { stroke: #a9b4c6; stroke-opacity: 0.5; stroke-width: 1.8; cursor: pointer; transition: stroke-opacity 0.12s, stroke 0.12s; }
+.edge { stroke: #a9b4c6; stroke-opacity: 0.5; stroke-width: 1.44; cursor: pointer; transition: stroke-opacity 0.12s, stroke 0.12s; marker-end: url(#arrow); }
 .edge:hover { stroke-opacity: 0.85; }
-.edge.selected { stroke: var(--danger); stroke-opacity: 1; stroke-width: 3.6; }
+.edge.selected { stroke: var(--danger); stroke-opacity: 1; stroke-width: 2.88; }
 
 /* search highlight: matches glow, the rest dim */
 .node.search-dim { opacity: 0.15; }
@@ -452,14 +492,25 @@ button.btn-primary:hover, #queryBtn:hover { filter: brightness(1.07); }
 .legend-item .swatch { transition: transform 0.15s; transform-box: fill-box; transform-origin: center; }
 .legend-item.active .swatch { transform: scale(1.12); }
 
-/* legend type filter: matching type pops, everything else fades */
-.node.type-dim { opacity: 0.12; }
-.node.type-hit circle.body {
+/* legend filter: selected groups pop, everything else fades */
+.node.legend-dim { opacity: 0.12; }
+.node.legend-hit circle.body {
   stroke: #ffffff;
   stroke-width: 2.6;
   filter: brightness(1.12) drop-shadow(0 0 6px rgba(79, 70, 229, 0.65));
 }
-.edge.type-dim { stroke-opacity: 0.05; }
-.edge.type-hit { stroke-opacity: 0.95; stroke-width: 2.4; }
+.edge.legend-dim { stroke-opacity: 0.05; }
+.edge.legend-hit { stroke-opacity: 0.95; stroke-width: 2.4; }
+
+/* two picked vertices (source / target for shortest path) */
+.node.picked circle.ring { stroke: #8b5cf6; stroke-width: 3.6; }
+
+/* shortest path: all found paths in violet, the shortest one in green */
+.node.path-dim { opacity: 0.1; }
+.edge.path-dim { stroke-opacity: 0.04; }
+.node.path-hit circle.body { stroke: #a78bfa; stroke-width: 2.4; filter: drop-shadow(0 0 5px rgba(139, 92, 246, 0.85)); }
+.edge.path-hit { stroke: #a78bfa; stroke-opacity: 0.9; stroke-width: 2.4; marker-end: url(#arrow-hit); }
+.node.path-shortest circle.body { stroke: #22c55e; stroke-width: 3; filter: drop-shadow(0 0 7px rgba(34, 197, 94, 0.95)); }
+.edge.path-shortest { stroke: #22c55e; stroke-opacity: 1; stroke-width: 3.4; marker-end: url(#arrow-shortest); }
 
 .brush .selection { fill: rgba(79, 70, 229, 0.1); stroke: var(--accent); stroke-width: 1.2; stroke-dasharray: 5 3; }

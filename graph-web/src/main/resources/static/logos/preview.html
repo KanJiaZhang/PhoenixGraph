@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PhoenixGraph — Logo 方案</title>
+  <style>
+    :root { color-scheme: light; }
+    body { margin: 0; padding: 32px; font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+           background: #eef1f8; color: #0f172a; }
+    h1 { font-size: 22px; margin: 0 0 6px; }
+    p.sub { color: #64748b; margin: 0 0 26px; font-size: 13px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 18px; }
+    .card { background: #fff; border: 1px solid #e4e9f2; border-radius: 16px; box-shadow: 0 4px 16px rgba(15,23,42,.06);
+            overflow: hidden; }
+    .card.hl { border-color: #4f46e5; box-shadow: 0 0 0 3px rgba(79,70,229,.18), 0 6px 20px rgba(15,23,42,.08); }
+    .stage { display: flex; align-items: center; gap: 22px; padding: 24px; background:
+            radial-gradient(600px 200px at 20% 0%, #eef2ff, transparent 60%), linear-gradient(180deg,#fbfcff,#f2f5fd); }
+    .stage.dark { background: radial-gradient(600px 200px at 20% 0%, #1e1b4b, #0b1020 70%); }
+    .stage img { display: block; }
+    .meta { padding: 14px 18px; border-top: 1px solid #eef1f7; display: flex; align-items: center; gap: 10px; }
+    .num { width: 26px; height: 26px; flex: none; display: grid; place-items: center; border-radius: 8px;
+           background: linear-gradient(135deg,#4f46e5,#7c3aed); color: #fff; font-weight: 700; font-size: 13px; }
+    .name { font-size: 13px; font-weight: 600; }
+    .desc { font-size: 12px; color: #64748b; }
+    .cur { margin-left: auto; font-size: 11px; font-weight: 700; color: #4f46e5; background: #eef1ff;
+           border-radius: 999px; padding: 3px 9px; }
+    code { background: #f1f5f9; padding: 1px 6px; border-radius: 6px; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <h1>PhoenixGraph — Logo 方案（凤凰 + 图）</h1>
+  <p class="sub">共 8 个方案，文件位于 <code>/logos/logo-N.svg</code>。告诉我编号即可切换。当前使用：<b>#1</b>。</p>
+  <div class="grid" id="grid"></div>
+  <script>
+    const OPTIONS = [
+      ['1', 'Rising Phoenix', '展翅凤凰：翅/身/尾羽为边，节点为圆点（当前使用）'],
+      ['2', 'Emblem Ring', '节点圆环徽章 + 环内凤凰'],
+      ['3', 'Hexagon Phoenix', '六边形图框 + 凤凰（图论感最强）'],
+      ['4', 'Bold Bird', '极简粗线条飞鸟 + 节点'],
+      ['5', 'Flame Chain', '火焰轮廓 + 竖向节点链'],
+      ['6', 'Hub Sun', '中心节点放射（太阳/羽翼）'],
+      ['7', 'Wing V', '对称 V 形双翼 + 脊柱节点'],
+      ['8', 'Spiral Tail', '凤凰 + 螺旋尾羽'],
+    ];
+    const grid = document.getElementById('grid');
+    for (const [n, name, desc] of OPTIONS) {
+      const card = document.createElement('div');
+      card.className = 'card' + (n === '1' ? ' hl' : '');
+      card.innerHTML = `
+        <div class="stage"><img src="logo-${n}.svg" width="96" height="96"><img src="logo-${n}.svg" width="48" height="48"><img src="logo-${n}.svg" width="32" height="32"></div>
+        <div class="stage dark"><img src="logo-${n}.svg" width="48" height="48"><img src="logo-${n}.svg" width="32" height="32"></div>
+        <div class="meta">
+          <span class="num">${n}</span>
+          <div><div class="name">${name}</div><div class="desc">${desc}</div></div>
+          ${n === '1' ? '<span class="cur">当前</span>' : ''}
+        </div>`;
+      grid.appendChild(card);
+    }
+  </script>
+</body>
+</html>

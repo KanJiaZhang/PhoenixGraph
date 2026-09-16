@@ -64,6 +64,12 @@
       noVertexType: '当前图没有顶点类型',
       enterGremlin: '请输入 gremlin 查询',
       noGraph: '没有可用的图实例',
+      shortestPath: '最短路径',
+      exportCsv: '导出 CSV',
+      needTwo: '请先点击两个点，再选择「最短路径」',
+      pickedTwo: '已选 2 个点，选择「最短路径」查看',
+      exported: '已导出',
+      noPath: '两点之间没有路径',
     },
     en: {
       title: 'PhoenixGraph Visualizer',
@@ -91,6 +97,12 @@
       noVertexType: 'This graph has no vertex types',
       enterGremlin: 'Enter a gremlin query',
       noGraph: 'No graph available',
+      shortestPath: 'Shortest path',
+      exportCsv: 'Export CSV',
+      needTwo: 'Pick two vertices first, then choose Shortest path',
+      pickedTwo: '2 vertices picked — choose Shortest path',
+      exported: 'Exported',
+      noPath: 'No path between the two vertices',
     },
   };
   let lang = localStorage.getItem('pg.lang') === 'en' ? 'en' : 'zh';
@@ -124,6 +136,8 @@
     algoSelect: document.getElementById('algoSelect'),
     searchInput: document.getElementById('searchInput'),
     searchClear: document.getElementById('searchClear'),
+    toast: document.getElementById('toast'),
+    exportBtn: document.getElementById('exportBtn'),
     canvas: document.getElementById('canvas'),
     vertexCount: document.getElementById('vertexCount'),
     edgeCount: document.getElementById('edgeCount'),
@@ -141,7 +155,9 @@
   let currentNodes = []; // last rendered nodes (with x/y), for brush mapping
   let currentLinks = []; // last rendered links (for algorithm runs)
   let algoState = null; // {type:'community', communityOf} or {type:'pagerank', topKeys}
-  let typeFilter = new Set(); // vertex labels highlighted by the legend
+  let legendFilter = null; // { mode: 'label'|'community', values: Set<string> }
+  let picked = []; // up to two clicked vertex keys (shortest-path endpoints)
+  let pathState = null; // { pathNodes, pathEdges, shortestNodes, shortestEdges }
   const positions = new Map(); // node key -> {x, y}, so re-renders keep node placement
 
   // status line was removed from the stats tab; keep a console trace for debugging
@@ -188,15 +204,26 @@
     root = svg.append('g');
 
     const defs = svg.append('defs');
-    defs.append('marker')
-      .attr('id', 'arrow')
-      .attr('viewBox', '0 -5 10 10')
-      .attr('refX', 15)
-      .attr('refY', 0)
-      .attr('markerWidth', 5)
-      .attr('markerHeight', 5)
-      .attr('orient', 'auto')
-      .append('path').attr('d', 'M0,-5L10,0L0,5').attr('fill', '#a9b4c6');
+    const addMarker = (id, color) => {
+      defs.append('marker')
+        .attr('id', id)
+        .attr('viewBox', '0 0 10 10')
+        .attr('refX', 8.6)
+        .attr('refY', 5)
+        .attr('markerWidth', 7)
+        .attr('markerHeight', 7)
+        .attr('orient', 'auto')
+        .append('path')
+        .attr('d', 'M1.5 1.9 L8.6 5 L1.5 8.1') // soft chevron head
+        .attr('fill', 'none')
+        .attr('stroke', color)
+        .attr('stroke-width', 2)
+        .attr('stroke-linecap', 'round')
+        .attr('stroke-linejoin', 'round');
+    };
+    addMarker('arrow', '#9aa6ba');
+    addMarker('arrow-hit', '#a78bfa');
+    addMarker('arrow-shortest', '#22c55e');
 
     for (const [label, elements] of Object.entries(ICONS)) {
       appendIcon(defs.append('symbol').attr('id', `icon-${label}`).attr('viewBox', '0 0 24 24'), elements);
@@ -298,11 +325,7 @@
         d3.select(this).attr('transform', `translate(${event.x},${event.y})`);
         // keep the connected edges attached while dragging
         linkSel.each(function (l) {
-          if (l.source === d || l.target === d) {
-            d3.select(this)
-              .attr('x1', l.source.x).attr('y1', l.source.y)
-              .attr('x2', l.target.x).attr('y2', l.target.y);
-          }
+          if (l.source === d || l.target === d) setEdgeGeometry(this, l);
         });
       })
       .on('end', function (event, d) {
@@ -320,11 +343,7 @@
       .velocityDecay(0.55); // more friction -> slower node motion
 
     simulation.on('tick', () => {
-      linkSel
-        .attr('x1', (d) => d.source.x)
-        .attr('y1', (d) => d.source.y)
-        .attr('x2', (d) => d.target.x)
-        .attr('y2', (d) => d.target.y);
+      linkSel.each(function (d) { setEdgeGeometry(this, d); });
       nodeSel.attr('transform', (d) => `translate(${d.x},${d.y})`);
       for (const n of nodes) positions.set(n.key, { x: n.x, y: n.y });
     });
@@ -337,55 +356,242 @@
     el.edgeCount.textContent = links.length;
     highlight();
     applySearch();
-    applyTypeFilter();
+    applyLegendFilter();
+    applyPathFilter();
+    applyPickedHighlight();
   }
 
-  // ---- legend type filter ----
-  function toggleTypeFilter(label) {
-    if (typeFilter.has(label)) typeFilter.delete(label);
-    else typeFilter.add(label);
+  // stop each line at the node edge so the arrow head stays visible above the node
+  const EDGE_NODE_GAP = 13;
+  function setEdgeGeometry(el, l) {
+    const x1 = l.source.x, y1 = l.source.y, x2 = l.target.x, y2 = l.target.y;
+    const dx = x2 - x1, dy = y2 - y1;
+    const len = Math.hypot(dx, dy) || 1;
+    const off = Math.max(0, Math.min(EDGE_NODE_GAP, len / 2 - 0.5));
+    const ux = dx / len, uy = dy / len;
+    el.setAttribute('x1', x1 + ux * off);
+    el.setAttribute('y1', y1 + uy * off);
+    el.setAttribute('x2', x2 - ux * off);
+    el.setAttribute('y2', y2 - uy * off);
+  }
+
+  // ---- legend filter (vertex type or community) ----
+  function toggleLegendFilter(mode, value) {
+    const key = String(value);
+    if (!legendFilter || legendFilter.mode !== mode) legendFilter = { mode, values: new Set() };
+    if (legendFilter.values.has(key)) legendFilter.values.delete(key);
+    else legendFilter.values.add(key);
+    if (!legendFilter.values.size) legendFilter = null;
     renderLegend();
-    applyTypeFilter();
+    applyLegendFilter();
   }
 
   function endpointLabel(endpoint) {
     return endpoint && typeof endpoint === 'object' ? endpoint.label : null;
   }
 
-  function applyTypeFilter() {
+  function applyLegendFilter() {
     if (!root) return;
     const nodes = root.selectAll('.node');
     const edges = root.selectAll('.edge');
-    if (!typeFilter.size) {
-      nodes.classed('type-hit', false).classed('type-dim', false);
-      edges.classed('type-hit', false).classed('type-dim', false);
+    if (!legendFilter) {
+      nodes.classed('legend-hit', false).classed('legend-dim', false);
+      edges.classed('legend-hit', false).classed('legend-dim', false);
       return;
     }
-    const keepEdge = (d) => typeFilter.has(endpointLabel(d.source)) && typeFilter.has(endpointLabel(d.target));
+    const communityOf = algoState && algoState.type === 'community' ? algoState.communityOf : null;
+    const hit = (d) => (legendFilter.mode === 'label'
+      ? legendFilter.values.has(d.label)
+      : !!communityOf && legendFilter.values.has(String(communityOf.get(d.key))));
+    const keepEdge = (d) => hit(d.source) && hit(d.target);
+    nodes.classed('legend-hit', hit).classed('legend-dim', (d) => !hit(d));
+    edges.classed('legend-hit', keepEdge).classed('legend-dim', (d) => !keepEdge(d));
+  }
+
+  function applyPickedHighlight() {
+    if (!root) return;
+    root.selectAll('.node').classed('picked', (d) => picked.includes(d.key));
+  }
+
+  function truncate(text, max) {
+    return text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text;
+  }
+
+  // ---- transient toast ----
+  let toastTimer = null;
+  function toast(message, ms = 2600) {
+    if (!el.toast) return;
+    el.toast.textContent = message;
+    el.toast.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => el.toast.classList.remove('show'), ms);
+  }
+
+  // ---- shortest path between two picked vertices ----
+  const pairKey = (u, v) => (u < v ? `${u}|${v}` : `${v}|${u}`);
+
+  function buildPathGraph(nodes, links) {
+    const adj = new Map();
+    const keySet = new Set(nodes.map((n) => n.key));
+    for (const n of nodes) adj.set(n.key, []);
+    for (const l of links) {
+      const s = endpointKey(l.source);
+      const e = endpointKey(l.target);
+      if (!keySet.has(s) || !keySet.has(e) || s === e) continue;
+      const edge = `${l.label}::${l.id}`;
+      adj.get(s).push({ to: e, edge });
+      adj.get(e).push({ to: s, edge });
+    }
+    return adj;
+  }
+
+  function bfsDistance(adj, from) {
+    const dist = new Map([[from, 0]]);
+    const queue = [from];
+    for (let i = 0; i < queue.length; i += 1) {
+      for (const { to } of adj.get(queue[i]) || []) {
+        if (!dist.has(to)) { dist.set(to, dist.get(queue[i]) + 1); queue.push(to); }
+      }
+    }
+    return dist;
+  }
+
+  // enumerate simple paths up to maxLen (bounded by cap) — small, safe caps
+  function enumeratePaths(adj, from, to, maxLen, cap) {
+    const paths = [];
+    const path = [];
+    const seen = new Set();
+    const edgeTo = new Map();
+    const walk = (u, depth) => {
+      if (paths.length >= cap) return;
+      path.push(u);
+      if (u === to) {
+        paths.push({
+          nodes: path.slice(),
+          edges: path.slice(1).map((v, i) => edgeTo.get(pairKey(path[i], v))),
+        });
+        path.pop();
+        return;
+      }
+      if (depth >= maxLen) { path.pop(); return; }
+      seen.add(u);
+      for (const { to: v, edge } of adj.get(u) || []) {
+        if (seen.has(v)) continue;
+        edgeTo.set(pairKey(u, v), edge);
+        walk(v, depth + 1);
+        if (paths.length >= cap) break;
+      }
+      seen.delete(u);
+      path.pop();
+    };
+    walk(from, 0);
+    return paths;
+  }
+
+  function computeShortestPath() {
+    pathState = null;
+    if (picked.length < 2) { toast(t('needTwo')); return; }
+    const [a, b] = picked;
+    const adj = buildPathGraph(currentNodes, currentLinks);
+    const dist = adj.has(a) ? bfsDistance(adj, a) : new Map();
+    if (!dist.has(b)) { toast(t('noPath')); return; }
+    const shortest = dist.get(b);
+    const paths = enumeratePaths(adj, a, b, shortest + 2, 400);
+    if (!paths.length) { toast(t('noPath')); return; }
+    const pathNodes = new Set();
+    const pathEdges = new Set();
+    const shortestNodes = new Set();
+    const shortestEdges = new Set();
+    for (const p of paths) {
+      const isShortest = p.nodes.length - 1 === shortest;
+      for (const nk of p.nodes) { pathNodes.add(nk); if (isShortest) shortestNodes.add(nk); }
+      for (const ek of p.edges) { if (ek) { pathEdges.add(ek); if (isShortest) shortestEdges.add(ek); } }
+    }
+    pathState = { pathNodes, pathEdges, shortestNodes, shortestEdges };
+    toast(`${t('shortestPath')}: ${shortest} hop · ${paths.length} paths`);
+  }
+
+  function applyPathFilter() {
+    if (!root) return;
+    const nodes = root.selectAll('.node');
+    const edges = root.selectAll('.edge');
+    if (!pathState) {
+      nodes.classed('path-hit', false).classed('path-shortest', false).classed('path-dim', false);
+      edges.classed('path-hit', false).classed('path-shortest', false).classed('path-dim', false);
+      return;
+    }
+    const { pathNodes, pathEdges, shortestNodes, shortestEdges } = pathState;
+    const edgeIdOf = (d) => `${d.label}::${d.id}`;
     nodes
-      .classed('type-hit', (d) => typeFilter.has(d.label))
-      .classed('type-dim', (d) => !typeFilter.has(d.label));
+      .classed('path-shortest', (d) => shortestNodes.has(d.key))
+      .classed('path-hit', (d) => !shortestNodes.has(d.key) && pathNodes.has(d.key))
+      .classed('path-dim', (d) => !pathNodes.has(d.key));
     edges
-      .classed('type-hit', keepEdge)
-      .classed('type-dim', (d) => !keepEdge(d));
+      .classed('path-shortest', (d) => shortestEdges.has(edgeIdOf(d)))
+      .classed('path-hit', (d) => !shortestEdges.has(edgeIdOf(d)) && pathEdges.has(edgeIdOf(d)))
+      .classed('path-dim', (d) => !pathEdges.has(edgeIdOf(d)));
+  }
+
+  // ---- CSV export ----
+  function csvCell(value) {
+    const s = value === null || value === undefined ? ''
+      : (typeof value === 'object' ? JSON.stringify(value) : String(value));
+    return `"${s.replace(/"/g, '""')}"`;
+  }
+
+  function toCsv(rows) { return rows.map((r) => r.map(csvCell).join(',')).join('\r\n'); }
+
+  function downloadCsv(filename, content) {
+    const blob = new Blob(['\ufeff' + content], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  function endpointId(endpoint) {
+    if (endpoint && typeof endpoint === 'object') return endpoint.id;
+    return typeof endpoint === 'string' && endpoint.includes('::') ? endpoint.split('::')[1] : endpoint;
+  }
+
+  function exportCsv() {
+    const vRows = [['id', 'label', 'createdTime', 'lastUpdatedTime', 'properties']];
+    for (const n of currentNodes) vRows.push([n.id, n.label, n.createdTime, n.lastUpdatedTime, n.properties || {}]);
+    const eRows = [['id', 'label', 'source', 'target', 'createdTime', 'lastUpdatedTime', 'properties']];
+    for (const l of currentLinks) {
+      eRows.push([l.id, l.label, endpointId(l.source), endpointId(l.target),
+        l.createdTime, l.lastUpdatedTime, l.properties || {}]);
+    }
+    downloadCsv('phoenixgraph-vertices.csv', toCsv(vRows));
+    downloadCsv('phoenixgraph-edges.csv', toCsv(eRows));
+    toast(`${t('exported')}: ${currentNodes.length} ${t('vertices')} · ${currentLinks.length} ${t('edges')}`);
   }
 
   function renderLegend() {
     if (!svg) return;
     svg.selectAll('.legend').remove();
     const nodes = currentNodes;
+    const communityOf = algoState && algoState.type === 'community' ? algoState.communityOf : null;
     let items = [];
-    if (algoState && algoState.type === 'community') {
+    if (communityOf) {
       const counts = new Map();
       for (const n of nodes) {
-        const cid = algoState.communityOf.get(n.key) ?? 0;
+        const cid = communityOf.get(n.key) ?? 0;
         counts.set(cid, (counts.get(cid) || 0) + 1);
       }
-      items = [...counts.entries()].sort((a, b) => a[0] - b[0])
-        .map(([cid, cnt]) => ({ color: communityColor(cid), label: `${t('community')} ${cid} · ${cnt} ${t('count')}` }));
+      items = [...counts.entries()].sort((a, b) => a[0] - b[0]).map(([cid, cnt]) => ({
+        color: communityColor(cid),
+        label: truncate(`${t('community')} ${cid} · ${cnt} ${t('count')}`, 20),
+        mode: 'community',
+        value: cid,
+      }));
     } else {
       const labels = [...new Set(nodes.map((n) => n.label).filter(Boolean))];
-      items = labels.map((label) => ({ color: colorFor(label), label, type: label }));
+      items = labels.map((label) => ({ color: colorFor(label), label, mode: 'label', value: label }));
     }
     if (!items.length) return;
     const legend = svg.append('g').attr('class', 'legend').attr('transform', 'translate(14, 60)');
@@ -396,14 +602,14 @@
       .attr('fill', '#ffffff').attr('fill-opacity', 0.95)
       .attr('stroke', '#e4e9f2');
     items.forEach((item, i) => {
+      const active = !!legendFilter && legendFilter.mode === item.mode
+        && legendFilter.values.has(String(item.value));
       const g = legend.append('g')
         .attr('class', 'legend-item')
         .attr('transform', `translate(9, ${9 + i * 26})`)
-        .classed('active', !!item.type && typeFilter.has(item.type));
-      if (item.type) {
-        g.on('click', (event) => { event.stopPropagation(); toggleTypeFilter(item.type); });
-        g.on('mousedown', (event) => event.stopPropagation()); // don't start a canvas pan
-      }
+        .classed('active', active);
+      g.on('click', (event) => { event.stopPropagation(); toggleLegendFilter(item.mode, item.value); });
+      g.on('mousedown', (event) => event.stopPropagation()); // don't start a canvas pan
       g.append('rect').attr('class', 'bg').attr('width', 140).attr('height', 22).attr('rx', 7);
       g.append('rect').attr('class', 'swatch')
         .attr('x', 3).attr('y', 4).attr('width', 14).attr('height', 14).attr('rx', 5).attr('fill', item.color);
@@ -544,8 +750,12 @@
   }
 
   function applyAlgorithm(name) {
+    pathState = null;
     if (!name) {
       algoState = null;
+    } else if (name === 'shortestpath') {
+      algoState = null;
+      computeShortestPath();
     } else {
       const adj = buildAdjacency(currentNodes, currentLinks);
       if (name === 'cc' || name === 'louvain') {
@@ -567,11 +777,15 @@
       .attr('fill', (d) => nodeColor(d));
     root.selectAll('.node')
       .classed('pr-highlight', (d) => algoState && algoState.type === 'pagerank' && algoState.topKeys.has(d.key));
+    applyLegendFilter();
+    applyPathFilter();
+    applyPickedHighlight();
     renderLegend();
   }
 
   function clearAlgo() {
     algoState = null;
+    pathState = null;
     el.algoSelect.value = '';
   }
 
@@ -592,12 +806,12 @@
     if (!sel) return;
     const [[x0, y0], [x1, y1]] = sel;
     const t = d3.zoomTransform(root.node());
-    const picked = new Set();
+    const pickedKeys = new Set();
     for (const n of currentNodes) {
       const [sx, sy] = t.apply([n.x, n.y]);
-      if (sx >= x0 && sx <= x1 && sy >= y0 && sy <= y1) picked.add(n.key);
+      if (sx >= x0 && sx <= x1 && sy >= y0 && sy <= y1) pickedKeys.add(n.key);
     }
-    viewFilter = picked.size ? picked : null;
+    viewFilter = pickedKeys.size ? pickedKeys : null;
     brushMode = false;
     el.brushBtn.classList.remove('active');
     clearAlgo();
@@ -614,7 +828,11 @@
   // ---- selection + properties ----
   function selectVertex(d) {
     selected = { type: 'vertex', id: d.id, label: d.label };
+    if (picked.includes(d.key)) picked = picked.filter((k) => k !== d.key);
+    else picked = picked.length >= 2 ? [d.key] : [...picked, d.key];
+    if (picked.length === 2) toast(t('pickedTwo'));
     highlight();
+    applyPickedHighlight();
     showProps([
       [t('type'), d.label],
       ['id', d.id],
@@ -815,6 +1033,7 @@
     el.algoSelect.addEventListener('change', () => {
       applyAlgorithm(el.algoSelect.value);
     });
+    el.exportBtn.addEventListener('click', exportCsv);
     el.searchInput.addEventListener('input', applySearch);
     el.searchInput.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') { el.searchInput.value = ''; applySearch(); }

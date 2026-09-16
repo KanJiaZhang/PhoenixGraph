@@ -111,6 +111,7 @@
           <option value="louvain">Louvain</option>
           <option value="pagerank">PageRank</option>
           <option value="cc" data-i18n="cc">连通分量</option>
+          <option value="shortestpath" data-i18n="shortestPath">最短路径</option>
         </select>
       </div>
       <div id="searchBox">
@@ -124,6 +125,7 @@
           </svg>
         </button>
       </div>
+      <div id="toast" role="status" aria-live="polite"></div>
     </div>
 
     <aside id="sidePanel">
@@ -142,6 +144,12 @@
             <span class="stat-label" data-i18n="edges">边</span>
           </div>
         </div>
+        <button id="exportBtn" class="export-btn" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/>
+          </svg>
+          <span data-i18n="exportCsv">导出 CSV</span>
+        </button>
       </section>
       <section id="propsPanel" class="panel" hidden>
         <p class="muted" id="propsHint" data-i18n="propsHint">点击图中某点或某边查看其全部属性</p>
