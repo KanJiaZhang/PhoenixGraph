@@ -126,10 +126,13 @@ body {
 .gremlin-row textarea {
   flex: 1 1 100%;
   width: 100%;          /* left-to-right, right edge flush with the query button */
-  height: 56px;         /* double the previous compact height */
+  height: 56px;         /* auto-grows with the content up to max-height */
   min-height: 56px;
+  max-height: 280px;
   padding: 8px 11px;
   line-height: 1.5;
+  resize: none;
+  overflow-y: auto;
 }
 @keyframes fadeIn {
   from { opacity: 0; transform: translateY(5px); }
@@ -193,6 +196,7 @@ button.btn-primary, #queryBtn {
   background: linear-gradient(135deg, var(--accent), var(--accent-2));
   box-shadow: 0 2px 8px rgba(79, 70, 229, 0.34), inset 0 1px 0 rgba(255, 255, 255, 0.22);
 }
+#queryBtn { text-transform: uppercase; letter-spacing: 0.6px; }
 button.btn-primary:hover, #queryBtn:hover { filter: brightness(1.07); }
 
 /* ---------- toggle switch ---------- */

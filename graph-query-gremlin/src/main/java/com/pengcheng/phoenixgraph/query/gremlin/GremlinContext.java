@@ -177,12 +177,12 @@ public final class GremlinContext {
                 }
             } else {
                 List<VertexQueryResult> read = graphQuery.readVertices(label, entry.getValue(), List.of());
-                for (int i = 0; i < read.size(); i++) {
-                    VertexQueryResult v = read.get(i);
-                    vertices.add(v == null
-                            ? new Subgraph.Vertex(label, entry.getValue().get(i), Map.of(), 0L, 0L)
-                            : new Subgraph.Vertex(v.vertexName(), v.vertexId(), v.properties(),
-                                    v.createdTime(), v.lastUpdatedTime()));
+                for (VertexQueryResult v : read) {
+                    if (v == null) {
+                        continue; // referenced id that does not exist — never emit a phantom vertex
+                    }
+                    vertices.add(new Subgraph.Vertex(v.vertexName(), v.vertexId(), v.properties(),
+                            v.createdTime(), v.lastUpdatedTime()));
                 }
             }
         }

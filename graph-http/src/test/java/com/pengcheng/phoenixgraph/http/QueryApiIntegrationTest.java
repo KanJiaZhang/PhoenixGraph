@@ -242,6 +242,36 @@ class QueryApiIntegrationTest {
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.vertices.length()")
                             .value(org.hamcrest.Matchers.greaterThan(200)));
+
+            // a queried id that does not exist must not yield a phantom vertex
+            api.perform(post("/api/v1/query")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("""
+                                    { "graphName": "payment-graph",
+                                      "query": "g.V('999999','Account').both().both()",
+                                      "params": {},
+                                      "returnSubgraph": true }
+                                    """))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.vertices.length()").value(0));
+
+            // hub 150 fans out to ~5000 vertices within two hops
+            api.perform(post("/api/v1/query")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(query("g.V('150','Account').both().both().count()")))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$[0]").value(5000));
+
+            api.perform(post("/api/v1/query")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("""
+                                    { "graphName": "payment-graph",
+                                      "query": "g.V('150','Account').both().both()",
+                                      "params": {},
+                                      "returnSubgraph": true }
+                                    """))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.vertices.length()").value(5001));
         }
     }
 
@@ -269,7 +299,7 @@ class QueryApiIntegrationTest {
                 vertices.add(new VertexUpsert(phoneId, phone, phoneProps(phoneId, t), t, t));
             }
         }
-        assertNoFailures(vertexStore.upsertVertices(vertices));
+        assertNoFailures(upsertVerticesChunked(vertexStore, vertices));
 
         List<EdgeUpsert> edges = new ArrayList<>();
         for (int i = 0; i < 50; i++) {
@@ -305,7 +335,57 @@ class QueryApiIntegrationTest {
             edges.add(new EdgeUpsert("pta_" + i, phoneToAccount, ph0, acc,
                     Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
         }
-        assertNoFailures(edgeStore.upsertEdges(edges));
+        assertNoFailures(upsertEdgesChunked(edgeStore, edges));
+
+        // ---- big fan-out hub: account 150 -> 100 accounts, each with 39 IP + 10 Phone links ----
+        // (2-hop both() from 150 reaches ~5000 vertices, for canvas stress testing)
+        List<VertexUpsert> big = new ArrayList<>();
+        big.add(new VertexUpsert("150", account, accountProps("150", t), t, t));
+        for (int i = 0; i < 100; i++) {
+            String acc = String.valueOf(2000 + i);
+            big.add(new VertexUpsert(acc, account, accountProps(acc, t), t, t));
+            for (int k = 0; k < 39; k++) {
+                String ipId = String.valueOf(20000 + i * 39 + k);
+                big.add(new VertexUpsert(ipId, ip, ipProps(ipId, t), t, t));
+            }
+            for (int k = 0; k < 10; k++) { // AccountToPhone caps out-degree at 10
+                String phoneId = String.valueOf(30000 + i * 10 + k);
+                big.add(new VertexUpsert(phoneId, phone, phoneProps(phoneId, t), t, t));
+            }
+        }
+        assertNoFailures(upsertVerticesChunked(vertexStore, big));
+
+        List<EdgeUpsert> bigEdges = new ArrayList<>();
+        for (int i = 0; i < 100; i++) {
+            String acc = String.valueOf(2000 + i);
+            bigEdges.add(new EdgeUpsert("big_c" + i, payment, "150", acc,
+                    Map.of(3, new EdgePropertyValue("SUCCESS", t, t)), t, t));
+            for (int k = 0; k < 39; k++) {
+                bigEdges.add(new EdgeUpsert("big_i" + i + "_" + k, accountToIp, acc,
+                        String.valueOf(20000 + i * 39 + k), Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
+            }
+            for (int k = 0; k < 10; k++) {
+                bigEdges.add(new EdgeUpsert("big_p" + i + "_" + k, accountToPhone, acc,
+                        String.valueOf(30000 + i * 10 + k), Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
+            }
+        }
+        assertNoFailures(upsertEdgesChunked(edgeStore, bigEdges));
+    }
+
+    private static List<WriteOutcome> upsertVerticesChunked(AerospikeVertexStore store, List<VertexUpsert> upserts) {
+        List<WriteOutcome> all = new ArrayList<>();
+        for (int i = 0; i < upserts.size(); i += 500) {
+            all.addAll(store.upsertVertices(upserts.subList(i, Math.min(i + 500, upserts.size()))));
+        }
+        return all;
+    }
+
+    private static List<WriteOutcome> upsertEdgesChunked(AerospikeEdgeStore store, List<EdgeUpsert> upserts) {
+        List<WriteOutcome> all = new ArrayList<>();
+        for (int i = 0; i < upserts.size(); i += 500) {
+            all.addAll(store.upsertEdges(upserts.subList(i, Math.min(i + 500, upserts.size()))));
+        }
+        return all;
     }
 
     private static void truncateSet(AerospikeClient client, String namespace, String set) {

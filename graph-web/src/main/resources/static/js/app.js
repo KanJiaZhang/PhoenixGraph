@@ -70,6 +70,7 @@
       pickedTwo: '已选 2 个点，选择「最短路径」查看',
       exported: '已导出',
       noPath: '两点之间没有路径',
+      emptyResult: '查询结果为空（未找到该点）',
     },
     en: {
       title: 'PhoenixGraph Visualizer',
@@ -103,6 +104,7 @@
       pickedTwo: '2 vertices picked — choose Shortest path',
       exported: 'Exported',
       noPath: 'No path between the two vertices',
+      emptyResult: 'No result (vertex not found)',
     },
   };
   let lang = localStorage.getItem('pg.lang') === 'en' ? 'en' : 'zh';
@@ -293,14 +295,18 @@
     for (const n of nodes) {
       if (!idToKey.has(n.id)) idToKey.set(n.id, n.key);
     }
-    let links = [...graph.edges.values()].map((e) => ({
-      id: e.id, label: e.label,
-      source: idToKey.get(e.source) ?? String(e.source),
-      target: idToKey.get(e.target) ?? String(e.target),
-      properties: e.properties,
-      createdTime: e.createdTime,
-      lastUpdatedTime: e.lastUpdatedTime,
-    }));
+    let links = [];
+    for (const e of graph.edges.values()) {
+      const source = idToKey.get(e.source);
+      const target = idToKey.get(e.target);
+      if (!source || !target) continue; // endpoint is missing from the displayed subgraph
+      links.push({
+        id: e.id, label: e.label, source, target,
+        properties: e.properties,
+        createdTime: e.createdTime,
+        lastUpdatedTime: e.lastUpdatedTime,
+      });
+    }
 
     // box-selection filter: keep only selected nodes + edges between them
     if (viewFilter) {
@@ -354,19 +360,21 @@
         d.fx = event.x; d.fy = event.y;
       }));
 
+    const big = nodes.length > 1000; // scale down forces/iterations for very large subgraphs
     simulation = d3.forceSimulation(nodes)
-      .force('link', d3.forceLink(links).id((d) => d.key).distance(70))
-      .force('charge', d3.forceManyBody().strength(-260))
+      .force('link', d3.forceLink(links).id((d) => d.key).distance(big ? 24 : 70))
+      .force('charge', d3.forceManyBody().strength(big ? -55 : -260))
       .force('center', d3.forceCenter(width / 2, height / 2))
       .force('x', d3.forceX(width / 2).strength(0.05))
       .force('y', d3.forceY(height / 2).strength(0.05))
-      .force('collide', d3.forceCollide(24))
       .velocityDecay(0.55)   // more friction -> slower, gentler motion
       .alphaDecay(0.02)
       .stop();
+    if (!big) simulation.force('collide', d3.forceCollide(24));
 
     // lay out synchronously so the first paint is already settled, then fit to view
-    for (let i = 0; i < 400; i += 1) simulation.tick();
+    const ticks = big ? 180 : 400;
+    for (let i = 0; i < ticks; i += 1) simulation.tick();
     linkSel.each(function (d) { setEdgeGeometry(this, d); });
     nodeSel.attr('transform', (d) => `translate(${d.x},${d.y})`);
     for (const n of nodes) positions.set(n.key, { x: n.x, y: n.y });
@@ -865,6 +873,12 @@
     const now = Date.now();
     if (lastNodeClick.key === d.key && now - lastNodeClick.at < 380) {
       lastNodeClick = { key: null, at: 0 };
+      // the first click of this double-click picked the node — undo it so picking
+      // two shortest-path endpoints and expanding don't interfere
+      if (picked.includes(d.key)) {
+        picked = picked.filter((k) => k !== d.key);
+        applyPickedHighlight();
+      }
       expand(d);
       return;
     }
@@ -1038,6 +1052,7 @@
       const { addedV, addedE } = merge(sub);
       clearAlgo();
       render();
+      if (!graph.vertices.size) toast(t('emptyResult'));
       setStatus(`查询完成：共点 ${graph.vertices.size}、边 ${graph.edges.size}（新增点 ${addedV}、边 ${addedE}）`);
     } catch (err) {
       setStatus(err.message);
@@ -1083,6 +1098,7 @@
     el.gremlinInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) onGremlinQuery();
     });
+    el.gremlinInput.addEventListener('input', autoGrowGremlin); // grow as lines are added
     el.rebalanceBtn.addEventListener('click', rebalance);
     el.brushBtn.addEventListener('click', () => {
       brushMode = !brushMode;
@@ -1143,7 +1159,15 @@
     const gremlin = el.modeToggle.checked;
     el.idPanel.hidden = gremlin;
     el.gremlinPanel.hidden = !gremlin;
-    if (gremlin) el.gremlinInput.focus();
+    if (gremlin) { autoGrowGremlin(); el.gremlinInput.focus(); }
+  }
+
+  // grow the Gremlin textarea with its content (Enter / new lines) up to the CSS max-height
+  function autoGrowGremlin() {
+    const ta = el.gremlinInput;
+    if (!ta) return;
+    ta.style.height = 'auto';
+    ta.style.height = `${Math.min(ta.scrollHeight + 2, 280)}px`;
   }
 
   function onTabChange(e) {
