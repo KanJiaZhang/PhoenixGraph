@@ -65,16 +65,15 @@ body {
 
 .brand { display: flex; align-items: center; gap: 10px; padding-right: 4px; }
 .brand .logo {
-  width: 32px;
-  height: 32px;
+  width: 38px;
+  height: 38px;
   display: grid;
   place-items: center;
-  border-radius: 10px;
-  color: #fff;
-  background: linear-gradient(135deg, var(--accent), var(--accent-2));
-  box-shadow: 0 3px 10px rgba(79, 70, 229, 0.38), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+  border-radius: 12px;
+  background: linear-gradient(150deg, #1e1b4b 0%, #312e81 55%, #4c1d95 100%);
+  box-shadow: 0 4px 14px rgba(49, 46, 129, 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.16);
 }
-.brand .logo svg { width: 18px; height: 18px; }
+.brand .logo svg { width: 30px; height: 30px; }
 .brand-name {
   font-size: 16px;
   font-weight: 700;
@@ -95,6 +94,31 @@ body {
 }
 
 .actions { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+
+/* language segmented switch */
+.lang-switch {
+  display: inline-flex;
+  padding: 2px;
+  border-radius: 9px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+.lang-opt {
+  padding: 4px 9px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  box-shadow: none;
+}
+.lang-opt:hover { color: var(--text-2); background: transparent; }
+.lang-opt.active {
+  color: #fff;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  box-shadow: 0 1px 4px rgba(79, 70, 229, 0.35);
+}
 .query-mode { display: flex; gap: 8px; align-items: center; }
 .query-mode[hidden] { display: none; }
 .query-mode:not([hidden]) { animation: fadeIn 0.24s ease; }
@@ -102,10 +126,10 @@ body {
 .gremlin-row textarea {
   flex: 1 1 100%;
   width: 100%;          /* left-to-right, right edge flush with the query button */
-  height: 28px;         /* ~1/3 of the previous 3-row height */
-  min-height: 28px;
-  padding: 4px 11px;
-  line-height: 1.35;
+  height: 56px;         /* double the previous compact height */
+  min-height: 56px;
+  padding: 8px 11px;
+  line-height: 1.5;
 }
 @keyframes fadeIn {
   from { opacity: 0; transform: translateY(5px); }
@@ -420,5 +444,22 @@ button.btn-primary:hover, #queryBtn:hover { filter: brightness(1.07); }
 
 .legend { pointer-events: none; }
 .legend text { font-size: 12px; font-weight: 550; fill: #3b4759; }
+.legend-item { pointer-events: all; cursor: pointer; }
+.legend-item .bg { fill: transparent; transition: fill 0.15s; }
+.legend-item:hover .bg { fill: rgba(79, 70, 229, 0.08); }
+.legend-item.active .bg { fill: rgba(79, 70, 229, 0.16); }
+.legend-item.active text { fill: var(--accent); font-weight: 700; }
+.legend-item .swatch { transition: transform 0.15s; transform-box: fill-box; transform-origin: center; }
+.legend-item.active .swatch { transform: scale(1.12); }
+
+/* legend type filter: matching type pops, everything else fades */
+.node.type-dim { opacity: 0.12; }
+.node.type-hit circle.body {
+  stroke: #ffffff;
+  stroke-width: 2.6;
+  filter: brightness(1.12) drop-shadow(0 0 6px rgba(79, 70, 229, 0.65));
+}
+.edge.type-dim { stroke-opacity: 0.05; }
+.edge.type-hit { stroke-opacity: 0.95; stroke-width: 2.4; }
 
 .brush .selection { fill: rgba(79, 70, 229, 0.1); stroke: var(--accent); stroke-width: 1.2; stroke-dasharray: 5 3; }

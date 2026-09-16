@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1e1b4b"/>
+      <stop offset="1" stop-color="#4c1d95"/>
+    </linearGradient>
+    <linearGradient id="phxFire" x1="10" y1="44" x2="40" y2="4" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#fbbf24"/>
+      <stop offset="0.45" stop-color="#fb7185"/>
+      <stop offset="1" stop-color="#c084fc"/>
+    </linearGradient>
+  </defs>
+  <rect width="48" height="48" rx="12" fill="url(#bg)"/>
+  <g stroke="url(#phxFire)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <path d="M24 21 15 18 9 11 5 3"/>
+    <path d="M15 18 9 22 4 21"/>
+    <path d="M24 21 33 18 39 11 43 3"/>
+    <path d="M33 18 39 22 44 21"/>
+    <path d="M24 11V34"/>
+    <path d="M24 34 18 42"/>
+    <path d="M24 34V45"/>
+    <path d="M24 34 30 42"/>
+    <path d="M24 11 22 4"/>
+    <path d="M24 11 27 5"/>
+  </g>
+  <path d="M24 11 30 12.5 24 14.5Z" fill="url(#phxFire)"/>
+  <g fill="#ffffff">
+    <circle cx="24" cy="11" r="2.8"/>
+    <circle cx="24" cy="21" r="2.4"/>
+    <circle cx="24" cy="34" r="2.4"/>
+    <circle cx="15" cy="18" r="2"/>
+    <circle cx="33" cy="18" r="2"/>
+    <circle cx="5" cy="3" r="2"/>
+    <circle cx="43" cy="3" r="2"/>
+    <circle cx="9" cy="11" r="1.7"/>
+    <circle cx="39" cy="11" r="1.7"/>
+    <circle cx="18" cy="42" r="1.9"/>
+    <circle cx="30" cy="42" r="1.9"/>
+  </g>
+</svg>

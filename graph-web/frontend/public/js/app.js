@@ -36,6 +36,76 @@
     }
   }
 
+  // ---- i18n (zh / en) ----
+  const I18N = {
+    zh: {
+      title: 'PhoenixGraph 可视化',
+      graph: '图实例',
+      vertexType: '顶点类型',
+      vertexIdPlaceholder: '输入顶点 ID，如 888',
+      gremlinToggle: '切换 Gremlin 查询输入框',
+      query: '查询',
+      rebalance: '自动平衡力图',
+      brush: '框选过滤',
+      showAll: '显示全部',
+      algorithm: '算法',
+      cc: '连通分量',
+      searchPlaceholder: '搜索点 / 边关键词',
+      clearSearch: '清除搜索',
+      stats: '统计',
+      props: '属性',
+      vertices: '顶点',
+      edges: '边',
+      propsHint: '点击图中某点或某边查看其全部属性',
+      type: '类型',
+      community: '社区',
+      count: '点',
+      enterId: '请输入顶点 ID',
+      noVertexType: '当前图没有顶点类型',
+      enterGremlin: '请输入 gremlin 查询',
+      noGraph: '没有可用的图实例',
+    },
+    en: {
+      title: 'PhoenixGraph Visualizer',
+      graph: 'Graph',
+      vertexType: 'Vertex type',
+      vertexIdPlaceholder: 'Vertex ID, e.g. 888',
+      gremlinToggle: 'Toggle Gremlin query input',
+      query: 'Query',
+      rebalance: 'Auto rebalance',
+      brush: 'Box selection',
+      showAll: 'Show all',
+      algorithm: 'Algorithm',
+      cc: 'Components',
+      searchPlaceholder: 'Search vertices / edges',
+      clearSearch: 'Clear search',
+      stats: 'Stats',
+      props: 'Properties',
+      vertices: 'Vertices',
+      edges: 'Edges',
+      propsHint: 'Click a vertex or edge to view all its properties',
+      type: 'Type',
+      community: 'Community',
+      count: 'vertices',
+      enterId: 'Enter a vertex ID',
+      noVertexType: 'This graph has no vertex types',
+      enterGremlin: 'Enter a gremlin query',
+      noGraph: 'No graph available',
+    },
+  };
+  let lang = localStorage.getItem('pg.lang') === 'en' ? 'en' : 'zh';
+  const t = (key) => (I18N[lang] && I18N[lang][key]) || I18N.zh[key] || key;
+
+  function applyI18n() {
+    document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en';
+    document.title = t('title');
+    document.querySelectorAll('[data-i18n]').forEach((n) => { n.textContent = t(n.dataset.i18n); });
+    document.querySelectorAll('[data-i18n-title]').forEach((n) => { n.title = t(n.dataset.i18nTitle); });
+    document.querySelectorAll('[data-i18n-placeholder]').forEach((n) => { n.placeholder = t(n.dataset.i18nPlaceholder); });
+    document.querySelectorAll('.lang-opt').forEach((n) => n.classList.toggle('active', n.dataset.lang === lang));
+    renderLegend();
+  }
+
   // merged graph model, keyed by "label::id"
   const graph = { vertices: new Map(), edges: new Map() };
 
@@ -71,6 +141,7 @@
   let currentNodes = []; // last rendered nodes (with x/y), for brush mapping
   let currentLinks = []; // last rendered links (for algorithm runs)
   let algoState = null; // {type:'community', communityOf} or {type:'pagerank', topKeys}
+  let typeFilter = new Set(); // vertex labels highlighted by the legend
   const positions = new Map(); // node key -> {x, y}, so re-renders keep node placement
 
   // status line was removed from the stats tab; keep a console trace for debugging
@@ -266,9 +337,41 @@
     el.edgeCount.textContent = links.length;
     highlight();
     applySearch();
+    applyTypeFilter();
+  }
+
+  // ---- legend type filter ----
+  function toggleTypeFilter(label) {
+    if (typeFilter.has(label)) typeFilter.delete(label);
+    else typeFilter.add(label);
+    renderLegend();
+    applyTypeFilter();
+  }
+
+  function endpointLabel(endpoint) {
+    return endpoint && typeof endpoint === 'object' ? endpoint.label : null;
+  }
+
+  function applyTypeFilter() {
+    if (!root) return;
+    const nodes = root.selectAll('.node');
+    const edges = root.selectAll('.edge');
+    if (!typeFilter.size) {
+      nodes.classed('type-hit', false).classed('type-dim', false);
+      edges.classed('type-hit', false).classed('type-dim', false);
+      return;
+    }
+    const keepEdge = (d) => typeFilter.has(endpointLabel(d.source)) && typeFilter.has(endpointLabel(d.target));
+    nodes
+      .classed('type-hit', (d) => typeFilter.has(d.label))
+      .classed('type-dim', (d) => !typeFilter.has(d.label));
+    edges
+      .classed('type-hit', keepEdge)
+      .classed('type-dim', (d) => !keepEdge(d));
   }
 
   function renderLegend() {
+    if (!svg) return;
     svg.selectAll('.legend').remove();
     const nodes = currentNodes;
     let items = [];
@@ -279,23 +382,32 @@
         counts.set(cid, (counts.get(cid) || 0) + 1);
       }
       items = [...counts.entries()].sort((a, b) => a[0] - b[0])
-        .map(([cid, cnt]) => ({ color: communityColor(cid), label: `社区 ${cid} · ${cnt} 点` }));
+        .map(([cid, cnt]) => ({ color: communityColor(cid), label: `${t('community')} ${cid} · ${cnt} ${t('count')}` }));
     } else {
       const labels = [...new Set(nodes.map((n) => n.label).filter(Boolean))];
-      items = labels.map((label) => ({ color: colorFor(label), label }));
+      items = labels.map((label) => ({ color: colorFor(label), label, type: label }));
     }
     if (!items.length) return;
-    const legend = svg.append('g').attr('class', 'legend').attr('transform', 'translate(16, 60)');
+    const legend = svg.append('g').attr('class', 'legend').attr('transform', 'translate(14, 60)');
     legend.append('rect')
-      .attr('width', 152)
+      .attr('width', 158)
       .attr('height', items.length * 26 + 14)
-      .attr('rx', 10)
+      .attr('rx', 11)
       .attr('fill', '#ffffff').attr('fill-opacity', 0.95)
       .attr('stroke', '#e4e9f2');
     items.forEach((item, i) => {
-      const g = legend.append('g').attr('transform', `translate(11, ${11 + i * 26})`);
-      g.append('rect').attr('width', 14).attr('height', 14).attr('rx', 5).attr('fill', item.color);
-      g.append('text').attr('x', 22).attr('y', 11.5).text(item.label);
+      const g = legend.append('g')
+        .attr('class', 'legend-item')
+        .attr('transform', `translate(9, ${9 + i * 26})`)
+        .classed('active', !!item.type && typeFilter.has(item.type));
+      if (item.type) {
+        g.on('click', (event) => { event.stopPropagation(); toggleTypeFilter(item.type); });
+        g.on('mousedown', (event) => event.stopPropagation()); // don't start a canvas pan
+      }
+      g.append('rect').attr('class', 'bg').attr('width', 140).attr('height', 22).attr('rx', 7);
+      g.append('rect').attr('class', 'swatch')
+        .attr('x', 3).attr('y', 4).attr('width', 14).attr('height', 14).attr('rx', 5).attr('fill', item.color);
+      g.append('text').attr('x', 25).attr('y', 15).text(item.label);
     });
   }
 
@@ -504,7 +616,7 @@
     selected = { type: 'vertex', id: d.id, label: d.label };
     highlight();
     showProps([
-      ['类型', d.label],
+      [t('type'), d.label],
       ['id', d.id],
       ['createdTime', formatTime(d.createdTime)],
       ['lastUpdatedTime', formatTime(d.lastUpdatedTime)],
@@ -516,7 +628,7 @@
     selected = { type: 'edge', id: d.id, label: d.label };
     highlight();
     showProps([
-      ['类型', d.label],
+      [t('type'), d.label],
       ['id', d.id],
       ['source', d.source && d.source.id !== undefined ? d.source.id : d.source],
       ['target', d.target && d.target.id !== undefined ? d.target.id : d.target],
@@ -657,22 +769,22 @@
 
   function onIdQuery() {
     const id = el.vertexIdInput.value.trim();
-    if (!id) { setStatus('请输入顶点 ID'); return; }
+    if (!id) { setStatus(t('enterId')); return; }
     const vertexType = el.vertexTypeSelect.value;
-    if (!vertexType) { setStatus('当前图没有顶点类型'); return; }
+    if (!vertexType) { setStatus(t('noVertexType')); return; }
     queryCurrent(`g.V('${id}','${vertexType}').both().both()`);
   }
 
   function onGremlinQuery() {
     const q = el.gremlinInput.value.trim();
-    if (!q) { setStatus('请输入 gremlin 查询'); return; }
+    if (!q) { setStatus(t('enterGremlin')); return; }
     queryCurrent(q);
   }
 
   // ---- init ----
   async function init() {
     const graphs = await fetchGraphs();
-    if (!graphs.length) { setStatus('没有可用的图实例'); return; }
+    if (!graphs.length) { setStatus(t('noGraph')); return; }
 
     for (const g of graphs) {
       const opt = document.createElement('option');
@@ -717,9 +829,17 @@
       clearAlgo();
       render();
     });
+    document.querySelectorAll('.lang-opt').forEach((node) => {
+      node.addEventListener('click', () => {
+        lang = node.dataset.lang === 'en' ? 'en' : 'zh';
+        localStorage.setItem('pg.lang', lang);
+        applyI18n();
+      });
+    });
     document.querySelectorAll('.tab').forEach((t) => t.addEventListener('click', onTabChange));
     window.addEventListener('resize', render);
 
+    applyI18n();
     render();
   }
 

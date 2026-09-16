@@ -4,42 +4,78 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>PhoenixGraph 可视化</title>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
   <header id="topbar">
     <div class="brand">
       <span class="logo" aria-hidden="true">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
-          <line x1="8.59" x2="15.42" y1="13.51" y2="17.49"/><line x1="15.41" x2="8.59" y1="6.51" y2="10.49"/>
+        <svg viewBox="0 0 48 48" fill="none">
+          <defs>
+            <linearGradient id="phxFire" x1="10" y1="44" x2="40" y2="4" gradientUnits="userSpaceOnUse">
+              <stop offset="0" stop-color="#fbbf24"/>
+              <stop offset="0.45" stop-color="#fb7185"/>
+              <stop offset="1" stop-color="#c084fc"/>
+            </linearGradient>
+          </defs>
+          <g stroke="url(#phxFire)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M24 21 15 18 9 11 5 3"/>
+            <path d="M15 18 9 22 4 21"/>
+            <path d="M24 21 33 18 39 11 43 3"/>
+            <path d="M33 18 39 22 44 21"/>
+            <path d="M24 11V34"/>
+            <path d="M24 34 18 42"/>
+            <path d="M24 34V45"/>
+            <path d="M24 34 30 42"/>
+            <path d="M24 11 22 4"/>
+            <path d="M24 11 27 5"/>
+          </g>
+          <path d="M24 11 30 12.5 24 14.5Z" fill="url(#phxFire)"/>
+          <g fill="#ffffff">
+            <circle cx="24" cy="11" r="2.8"/>
+            <circle cx="24" cy="21" r="2.4"/>
+            <circle cx="24" cy="34" r="2.4"/>
+            <circle cx="15" cy="18" r="2"/>
+            <circle cx="33" cy="18" r="2"/>
+            <circle cx="5" cy="3" r="2"/>
+            <circle cx="43" cy="3" r="2"/>
+            <circle cx="9" cy="11" r="1.7"/>
+            <circle cx="39" cy="11" r="1.7"/>
+            <circle cx="18" cy="42" r="1.9"/>
+            <circle cx="30" cy="42" r="1.9"/>
+          </g>
         </svg>
       </span>
       <span class="brand-name">PhoenixGraph</span>
     </div>
 
     <div class="field">
-      <label for="graphSelect">图实例</label>
+      <label for="graphSelect" data-i18n="graph">图实例</label>
       <select id="graphSelect"></select>
     </div>
 
     <div class="field query-mode" id="idPanel">
-      <label for="vertexTypeSelect">顶点类型</label>
+      <label for="vertexTypeSelect" data-i18n="vertexType">顶点类型</label>
       <select id="vertexTypeSelect"></select>
-      <input id="vertexIdInput" placeholder="输入顶点 ID，如 888">
+      <input id="vertexIdInput" data-i18n-placeholder="vertexIdPlaceholder" placeholder="输入顶点 ID，如 888">
     </div>
 
     <div class="actions">
-      <label class="switch" title="切换 Gremlin 查询输入框">
+      <div class="lang-switch" role="group" aria-label="Language">
+        <button type="button" class="lang-opt" data-lang="zh">中</button>
+        <button type="button" class="lang-opt" data-lang="en">EN</button>
+      </div>
+      <label class="switch" data-i18n-title="gremlinToggle" title="切换 Gremlin 查询输入框">
         <input type="checkbox" id="modeToggle">
         <span class="slider"></span>
         <span class="switch-label">Gremlin</span>
       </label>
-      <button id="queryBtn" class="btn-primary">查询</button>
+      <button id="queryBtn" class="btn-primary" data-i18n="query">查询</button>
     </div>
 
     <div class="query-mode gremlin-row" id="gremlinPanel" hidden>
-      <textarea id="gremlinInput" rows="1"
+      <textarea id="gremlinInput" rows="2"
                 placeholder="g.V(888,'Account').batch(40).both('Payment').both('Payment')"></textarea>
     </div>
   </header>
@@ -48,7 +84,7 @@
     <div id="canvasWrap">
       <div id="canvas" aria-label="graph canvas"></div>
       <div id="toolbar">
-        <button id="rebalanceBtn" title="自动平衡力图" aria-label="自动平衡">
+        <button id="rebalanceBtn" data-i18n-title="rebalance" title="自动平衡力图" aria-label="rebalance">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/>
             <path d="M21 3v5h-5"/>
@@ -56,7 +92,7 @@
             <path d="M8 16H3v5"/>
           </svg>
         </button>
-        <button id="brushBtn" title="框选过滤" aria-label="框选">
+        <button id="brushBtn" data-i18n-title="brush" title="框选过滤" aria-label="box select">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M3 7V5a2 2 0 0 1 2-2h2"/>
             <path d="M17 3h2a2 2 0 0 1 2 2v2"/>
@@ -64,25 +100,25 @@
             <path d="M7 21H5a2 2 0 0 1-2-2v-2"/>
           </svg>
         </button>
-        <button id="resetViewBtn" title="显示全部" aria-label="显示全部">
+        <button id="resetViewBtn" data-i18n-title="showAll" title="显示全部" aria-label="show all">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M15 3h6v6"/><path d="m21 3-7 7"/><path d="m3 21 7-7"/><path d="M9 21H3v-6"/>
           </svg>
         </button>
         <span class="tool-sep"></span>
-        <select id="algoSelect" title="图算法着色">
-          <option value="">算法</option>
+        <select id="algoSelect" data-i18n-title="algorithm" title="图算法着色">
+          <option value="" data-i18n="algorithm">算法</option>
           <option value="louvain">Louvain</option>
           <option value="pagerank">PageRank</option>
-          <option value="cc">连通分量</option>
+          <option value="cc" data-i18n="cc">连通分量</option>
         </select>
       </div>
       <div id="searchBox">
         <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>
         </svg>
-        <input id="searchInput" type="text" placeholder="搜索点 / 边关键词" autocomplete="off" spellcheck="false">
-        <button id="searchClear" title="清除搜索" aria-label="清除搜索" hidden>
+        <input id="searchInput" type="text" data-i18n-placeholder="searchPlaceholder" placeholder="搜索点 / 边关键词" autocomplete="off" spellcheck="false">
+        <button id="searchClear" data-i18n-title="clearSearch" title="清除搜索" aria-label="clear search" hidden>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M18 6 6 18"/><path d="m6 6 12 12"/>
           </svg>
@@ -92,23 +128,23 @@
 
     <aside id="sidePanel">
       <nav class="tabs">
-        <button class="tab active" data-tab="stats">统计</button>
-        <button class="tab" data-tab="props">属性</button>
+        <button class="tab active" data-tab="stats" data-i18n="stats">统计</button>
+        <button class="tab" data-tab="props" data-i18n="props">属性</button>
       </nav>
       <section id="statsPanel" class="panel">
         <div class="stat-grid">
           <div class="stat-card">
             <span class="stat-value" id="vertexCount">0</span>
-            <span class="stat-label">顶点</span>
+            <span class="stat-label" data-i18n="vertices">顶点</span>
           </div>
           <div class="stat-card">
             <span class="stat-value" id="edgeCount">0</span>
-            <span class="stat-label">边</span>
+            <span class="stat-label" data-i18n="edges">边</span>
           </div>
         </div>
       </section>
       <section id="propsPanel" class="panel" hidden>
-        <p class="muted" id="propsHint">点击图中某点或某边查看其全部属性</p>
+        <p class="muted" id="propsHint" data-i18n="propsHint">点击图中某点或某边查看其全部属性</p>
         <div id="propsContent"></div>
       </section>
     </aside>
