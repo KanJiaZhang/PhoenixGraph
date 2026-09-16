@@ -1,0 +1,3 @@
+# vendored gzip-compressed datasets are binary
+*.txt.gz binary
+*.gz binary

@@ -66,6 +66,14 @@ public class GremlinStepRegistry {
             }
             throw new QueryException("has expects 1 or 2 arguments, got " + args.size());
         });
+        register("filter", args -> {
+            if (args.isEmpty()) {
+                throw new QueryException("filter expects an expression such as "
+                        + "filter(relation.equals('directedBy') || xrelation.equals('directed'))");
+            }
+            // several arguments are treated as OR alternatives
+            return GremlinSteps.filter(String.join(" || ", args));
+        });
         register("values", args -> {
             if (args.isEmpty()) {
                 throw new QueryException("values expects at least one property key");

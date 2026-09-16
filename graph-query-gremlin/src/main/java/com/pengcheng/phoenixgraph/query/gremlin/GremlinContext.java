@@ -216,6 +216,9 @@ public final class GremlinContext {
             }
             recordEdge(edge.edgeName(), edge.edgeId(), source, target, edge.properties(),
                     edge.createdTime(), edge.lastUpdatedTime());
+            // An edge hop only materialises edges; record the far endpoint too so the
+            // subgraph of e.g. bothE() contains the edge's other vertex as well.
+            recordVertex(vertexResolver.neighborVertexName(edge.edgeName(), edge.side()), edge.otherVertexId());
         }
     }
 

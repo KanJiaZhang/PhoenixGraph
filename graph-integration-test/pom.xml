@@ -42,4 +42,20 @@
             <scope>test</scope>
         </dependency>
     </dependencies>
+
+    <build>
+        <testResources>
+            <testResource>
+                <directory>src/test/resources</directory>
+            </testResource>
+            <!-- the knowledge-graph schema is owned by graph-http (it serves it to the UI);
+                 put it on this module's test classpath instead of duplicating the file -->
+            <testResource>
+                <directory>${project.basedir}/../graph-http/src/main/resources</directory>
+                <includes>
+                    <include>kg-entity-graph.json</include>
+                </includes>
+            </testResource>
+        </testResources>
+    </build>
 </project>

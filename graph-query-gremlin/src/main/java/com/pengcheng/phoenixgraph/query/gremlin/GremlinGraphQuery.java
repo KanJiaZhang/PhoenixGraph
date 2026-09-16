@@ -20,7 +20,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * <ul>
  *   <li>vertex hops — {@code out/in/both(edgeName)}</li>
  *   <li>edge hops — {@code outE/inE/bothE(edgeName)}</li>
- *   <li>filter — {@code has(key[, value])}</li>
+ *   <li>filter — {@code has(key[, value])} and {@code filter(expression)}</li>
  *   <li>projection — {@code values(key...)} and {@code elementMap()}</li>
  *   <li>terminal — {@code count()}, {@code limit(n)}, {@code dedup()}</li>
  * </ul>
@@ -210,7 +210,7 @@ public class GremlinGraphQuery {
                 hopsDone++;
                 filterSinceHop = false;
             } else {
-                if (hopsDone >= 1 && name.equals("has")) {
+                if (hopsDone >= 1 && (name.equals("has") || name.equals("filter"))) {
                     filterSinceHop = true;
                 }
                 context.readProperties(compiled.properties[i]);
@@ -295,6 +295,10 @@ public class GremlinGraphQuery {
                 List<String> args = steps.get(j).args();
                 if (!args.isEmpty()) {
                     keys.add(args.get(0));
+                }
+            } else if (name.equals("filter")) {
+                for (String arg : steps.get(j).args()) {
+                    keys.addAll(GremlinFilterExpression.parse(arg).propertyKeys());
                 }
             } else if (name.equals("values")) {
                 keys.addAll(steps.get(j).args());

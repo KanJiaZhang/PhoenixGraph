@@ -1,0 +1,18 @@
+# Knowledge-graph demo profile: switches the HTTP service to the NELL-995
+# knowledge graph (10 Entity0..Entity9 vertex types, all 100 ordered directed
+# relation types, each edge carrying `relation` / `xrelation`).
+#
+# The vertices live in the `kg_nell995_v1` set, seeded by
+# graph-integration-test's KnowledgeGraphIntegrationTest:
+#
+#   AEROSPIKE_NAMESPACE=test ./mvnw -pl graph-integration-test -am test \
+#       -Dtest=KnowledgeGraphIntegrationTest -Dsurefire.failIfNoSpecifiedTests=false
+#
+# Start the service with this profile:
+#
+#   java -jar graph-http/target/graph-http-0.1.0-SNAPSHOT.jar --spring.profiles.active=kg
+#
+phoenixgraph:
+  storage:
+    vertex-set: kg_nell995_v1
+    schema: kg-entity-graph

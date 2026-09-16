@@ -78,6 +78,24 @@ final class GremlinSteps {
 
     // --- filter ---
 
+    /**
+     * Keeps the elements matching a property expression, e.g.
+     * {@code filter(relation.equals('directedBy') || xrelation.equals('directed'))}.
+     * See {@link GremlinFilterExpression} for the grammar.
+     */
+    static GremlinStep filter(String expression) {
+        GremlinFilterExpression predicate = GremlinFilterExpression.parse(expression);
+        return (ctx, in) -> {
+            List<Object> out = new ArrayList<>();
+            for (Object o : in) {
+                if (predicate.test(requireElement(o))) {
+                    out.add(o);
+                }
+            }
+            return out;
+        };
+    }
+
     /** Filters elements: keeps those having {@code key} (and, when given, matching {@code rawValue}). */
     static GremlinStep has(String key, String rawValue) {
         return (ctx, in) -> {

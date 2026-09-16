@@ -14,6 +14,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
@@ -379,6 +380,63 @@ class GremlinGraphQueryTest {
         assertEquals(Map.of("name", "x"), vertex.properties());
         // intermediate vertices n1/n2 were NOT read; only the final s1 was materialized
         assertEquals(List.of("s1"), readVertexIds);
+    }
+
+    @Test
+    void filterKeepsElementsMatchingEitherProperty() {
+        EdgeQueryResult keep = edge("e1", EdgeSide.OUT, "n1",
+                Map.of("relation", "directedBy", "xrelation", "directed"));
+        EdgeQueryResult drop = edge("e2", EdgeSide.OUT, "n2",
+                Map.of("relation", "other", "xrelation", "other"));
+        when(graphQuery.readEdges("v1", "person", "knows", EdgeSide.OUT, List.of("relation", "xrelation")))
+                .thenReturn(List.of(keep, drop));
+
+        List<Object> result = gremlin.execute("g.V('v1', 'person').outE('knows')"
+                + ".filter(relation.equals('directedBy') || xrelation.equals('directed'))");
+
+        assertEquals(1, result.size());
+        assertEquals("e1", ((GremlinEdge) result.get(0)).id());
+    }
+
+    @Test
+    void filterOverAllEdgeClassesProjectsOnlyTheFilteredProperties() {
+        when(graphQuery.readAllEdgesBatch(anyList(), any(), anyList()))
+                .thenAnswer(inv -> {
+                    List<Object> ids = inv.getArgument(0);
+                    List<List<EdgeQueryResult>> out = new ArrayList<>();
+                    for (Object id : ids) {
+                        out.add(List.of(
+                                edge("e-keep-" + id, EdgeSide.OUT, "n-keep-" + id,
+                                        Map.of("relation", "r", "xrelation", "x")),
+                                edge("e-drop-" + id, EdgeSide.OUT, "n-drop-" + id,
+                                        Map.of("relation", "other", "xrelation", "other"))));
+                    }
+                    return out;
+                });
+
+        List<Object> result = gremlin.execute("g.V('v1', 'person').bothE()"
+                + ".filter(relation.equals('r') || xrelation.equals('x'))");
+
+        assertEquals(1, result.size());
+        assertEquals("e-keep-v1", ((GremlinEdge) result.get(0)).id());
+        // the filter keys are the only property bins the edge read has to project
+        verify(graphQuery).readAllEdgesBatch(List.of("v1"), EdgeSide.BOTH, List.of("relation", "xrelation"));
+    }
+
+    @Test
+    void edgeHopSubgraphIncludesTheFarEndpoint() {
+        when(graphQuery.readEdges("v1", "person", "knows", EdgeSide.OUT, List.of()))
+                .thenReturn(List.of(edge("e1", EdgeSide.OUT, "n1", Map.of())));
+        when(graphQuery.readVertex("n1", "person", List.of()))
+                .thenReturn(new VertexQueryResult("person", "n1", Map.of("name", "alice"), 5L, 6L));
+
+        Subgraph subgraph = gremlin.executeSubgraph("g.V('v1', 'person').outE('knows')");
+
+        // start vertex + the edge's other endpoint, so bothE() subgraphs render fully
+        assertEquals(2, subgraph.vertices().size());
+        assertEquals(1, subgraph.edges().size());
+        assertEquals("v1", subgraph.edges().get(0).source());
+        assertEquals("n1", subgraph.edges().get(0).target());
     }
 
     @Test
