@@ -71,6 +71,7 @@
       exported: '已导出',
       noPath: '两点之间没有路径',
       emptyResult: '查询结果为空（未找到该点）',
+      displayName: '显示名',
     },
     en: {
       title: 'PhoenixGraph Visualizer',
@@ -105,6 +106,7 @@
       exported: 'Exported',
       noPath: 'No path between the two vertices',
       emptyResult: 'No result (vertex not found)',
+      displayName: 'Display name',
     },
   };
   let lang = localStorage.getItem('pg.lang') === 'en' ? 'en' : 'zh';
@@ -161,7 +163,30 @@
   let legendFilter = null; // { mode: 'label'|'community', values: Set<string> }
   let picked = []; // up to two clicked vertex keys (shortest-path endpoints)
   let pathState = null; // { pathNodes, pathEdges, shortestNodes, shortestEdges }
+  let displayFields = {}; // vertex label -> display property names (from /api/graphs)
   const positions = new Map(); // node key -> {x, y}, so re-renders keep node placement
+
+  const DISPLAY_LABEL_MAX = 22;
+
+  /**
+   * The text a node is labelled with: the values of the schema's display
+   * properties joined by a space (e.g. "Ada Lovelace", "+86 138-1000"), or the
+   * bare id when the vertex type declares none / the values are missing.
+   */
+  function displayLabel(d) {
+    const fields = displayFields[d.label];
+    if (fields && fields.length) {
+      const props = d.properties || {};
+      const parts = [];
+      for (const field of fields) {
+        const value = props[field];
+        if (value === null || value === undefined || value === '') continue;
+        parts.push(flattenValue(value));
+      }
+      if (parts.length) return truncate(parts.join(' '), DISPLAY_LABEL_MAX);
+    }
+    return String(d.id);
+  }
 
   // status line was removed from the stats tab; keep a console trace for debugging
   function setStatus(msg) { if (msg) console.debug('[PhoenixGraph]', msg); }
@@ -340,7 +365,7 @@
     nodeSel.append('text')
       .attr('class', 'label')
       .attr('dy', 22)
-      .text((d) => String(d.id));
+      .text((d) => displayLabel(d));
 
     // Drag a node without re-balancing the whole graph: just move + pin it.
     nodeSel.call(d3.drag()
@@ -598,8 +623,10 @@
   }
 
   function exportCsv() {
-    const vRows = [['id', 'label', 'createdTime', 'lastUpdatedTime', 'properties']];
-    for (const n of currentNodes) vRows.push([n.id, n.label, n.createdTime, n.lastUpdatedTime, n.properties || {}]);
+    const vRows = [['id', 'label', 'displayName', 'createdTime', 'lastUpdatedTime', 'properties']];
+    for (const n of currentNodes) {
+      vRows.push([n.id, n.label, displayLabel(n), n.createdTime, n.lastUpdatedTime, n.properties || {}]);
+    }
     const eRows = [['id', 'label', 'source', 'target', 'createdTime', 'lastUpdatedTime', 'properties']];
     for (const l of currentLinks) {
       eRows.push([l.id, l.label, endpointId(l.source), endpointId(l.target),
@@ -896,6 +923,7 @@
     showProps([
       [t('type'), d.label],
       ['id', d.id],
+      [t('displayName'), displayLabel(d)],
       ['createdTime', formatTime(d.createdTime)],
       ['lastUpdatedTime', formatTime(d.lastUpdatedTime)],
       ...Object.entries(d.properties || {}),
@@ -1139,6 +1167,7 @@
 
   function onGraphChange(g) {
     currentGraph = g;
+    displayFields = g.displayProperties || {};
     graph.vertices.clear();
     graph.edges.clear();
     selected = null;

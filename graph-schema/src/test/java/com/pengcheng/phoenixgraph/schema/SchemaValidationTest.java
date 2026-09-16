@@ -56,6 +56,41 @@ class SchemaValidationTest {
     }
 
     @Test
+    void validatorWarnsWhenNoDisplayPropertyIsDeclared() {
+        VertexSchema bare = new VertexSchema(1, "Account", null)
+                .property(new VertexPropertySchema(1, "accountType", null, PropertyType.ScalarType.STRING));
+        SchemaValidationResult result = new SchemaValidator()
+                .validateResult(new GraphSchema(1, "g", null).vertex(bare), SchemaConstraints.DEFAULTS);
+
+        assertTrue(result.errors().isEmpty(), () -> "unexpected errors: " + result.errors());
+        assertTrue(result.warnings().stream().anyMatch(w -> w.contains("no display property")));
+    }
+
+    @Test
+    void validatorWarnsWhenDisplayPropertyIsNotScalar() {
+        VertexSchema account = new VertexSchema(1, "Account", null)
+                .property(new VertexPropertySchema(1, "tags", null,
+                        PropertyType.listOf(PropertyType.ScalarType.STRING)).display(true));
+        SchemaValidationResult result = new SchemaValidator()
+                .validateResult(new GraphSchema(1, "g", null).vertex(account), SchemaConstraints.DEFAULTS);
+
+        assertTrue(result.errors().isEmpty(), () -> "unexpected errors: " + result.errors());
+        assertTrue(result.warnings().stream().anyMatch(w -> w.contains("non-scalar type")));
+    }
+
+    @Test
+    void validatorAcceptsScalarDisplayProperties() {
+        VertexSchema account = new VertexSchema(1, "Account", null)
+                .property(new VertexPropertySchema(1, "firstName", null, PropertyType.ScalarType.STRING)
+                        .display(true));
+        SchemaValidationResult result = new SchemaValidator()
+                .validateResult(new GraphSchema(1, "g", null).vertex(account), SchemaConstraints.DEFAULTS);
+
+        assertTrue(result.errors().isEmpty(), () -> "unexpected errors: " + result.errors());
+        assertFalse(result.warnings().stream().anyMatch(w -> w.contains("display")));
+    }
+
+    @Test
     void validatorErrorsForEmptyEnumType() {
         VertexSchema vertex = new VertexSchema(1, "v", null)
                 .property(new VertexPropertySchema(1, "p", null, new PropertyType.EnumType(Set.of())));

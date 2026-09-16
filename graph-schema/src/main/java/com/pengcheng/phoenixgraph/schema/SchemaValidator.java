@@ -32,6 +32,7 @@ public class SchemaValidator {
             checkMetaProperties(errors, "vertex", vertex.name(),
                     vertex.createdTime(), vertex.lastUpdatedTime(), constraints);
             checkDuplicateProperties(errors, "vertex", vertex.name(), vertex.properties());
+            checkDisplayProperties(warnings, vertex);
             for (VertexPropertySchema property : vertex.properties()) {
                 checkSupportedPropertyType(errors, "vertex", vertex.name(), property);
             }
@@ -64,8 +65,7 @@ public class SchemaValidator {
         return errors;
     }
 
-    private void validateAgainstMeta(GraphSchema schema, GraphMetaSchema metaSchema, List<String> errors) {
-        for (VertexSchema vertex : schema.vertexSchemas()) {
+    private void validateAgainstMeta(GraphSchema schema, GraphMetaSchema metaSchema, List<String> errors) {        for (VertexSchema vertex : schema.vertexSchemas()) {
             checkPropertyConstraints(errors, "vertex", vertex.name(), vertex.idSchema(), metaSchema);
             for (VertexPropertySchema property : vertex.properties()) {
                 checkPropertyConstraints(errors, "vertex", vertex.name(), property, metaSchema);
@@ -178,6 +178,27 @@ public class SchemaValidator {
             if (!names.add(property.name())) {
                 errors.add(kind + " schema '" + schemaName + "' has duplicate property name '"
                         + property.name() + "'");
+            }
+        }
+    }
+
+    /**
+     * Warns (never fails) when a vertex schema declares no display property: the
+     * UI then has to fall back to the raw vertex id to label the vertex. Also
+     * warns when a display property is not a scalar (it is still rendered, as text).
+     */
+    private void checkDisplayProperties(List<String> warnings, VertexSchema vertex) {
+        List<VertexPropertySchema> display = vertex.displayProperties();
+        if (display.isEmpty()) {
+            warnings.add("vertex schema '" + vertex.name()
+                    + "' declares no display property; the UI will label its vertices by id");
+            return;
+        }
+        for (VertexPropertySchema property : display) {
+            if (!(property.type() instanceof PropertyType.ScalarType)) {
+                warnings.add("vertex schema '" + vertex.name() + "' display property '"
+                        + property.name() + "' has non-scalar type " + property.type()
+                        + "; the UI renders it as text");
             }
         }
     }

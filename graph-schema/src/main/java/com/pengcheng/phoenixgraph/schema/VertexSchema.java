@@ -120,6 +120,20 @@ public class VertexSchema {
         return List.copyOf(properties);
     }
 
+    /**
+     * Immutable view of the properties flagged as {@link PropertySchema#display() display}
+     * properties, in declaration order. A UI renders their values (joined by a
+     * space) to identify the vertex.
+     */
+    public List<VertexPropertySchema> displayProperties() {
+        return properties.stream().filter(VertexPropertySchema::display).toList();
+    }
+
+    /** Names of the {@link #displayProperties() display properties}, in declaration order. */
+    public List<String> displayPropertyNames() {
+        return displayProperties().stream().map(VertexPropertySchema::name).toList();
+    }
+
     /** Looks up a property (including the id schema) by id, or {@code null} if not found. */
     public VertexPropertySchema property(int id) {
         return propertiesById.get(id);

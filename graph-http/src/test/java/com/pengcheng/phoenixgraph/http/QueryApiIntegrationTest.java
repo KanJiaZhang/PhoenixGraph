@@ -213,6 +213,13 @@ class QueryApiIntegrationTest {
             truncateSet(client, namespace, set);
             seedStarGraph(vertexStore, edgeStore, schema);
 
+            // the schema flags the properties the UI uses to label vertices
+            assertEquals(List.of("firstName", "lastName"),
+                    schema.vertexSchema("Account").displayPropertyNames());
+            assertEquals(List.of("ipAddress"), schema.vertexSchema("IP").displayPropertyNames());
+            assertEquals(List.of("cnCode", "phoneNumber"),
+                    schema.vertexSchema("Phone").displayPropertyNames());
+
             QueryService queryService = new QueryService(vertexStore, edgeStore);
             MockMvc api = MockMvcBuilders.standaloneSetup(new QueryController(queryService)).build();
 
@@ -462,6 +469,12 @@ class QueryApiIntegrationTest {
         assertNoFailures(edgeStore.upsertEdges(extraEdges));
     }
 
+    /** Deterministic name pools for the {@code firstName}/{@code lastName} display properties. */
+    private static final String[] FIRST_NAMES = {
+            "Ada", "Alan", "Grace", "Linus", "Barbara", "Ken", "Margaret", "Dennis", "Radia", "Vint"};
+    private static final String[] LAST_NAMES = {
+            "Lovelace", "Turing", "Hopper", "Torvalds", "Liskov", "Thompson", "Hamilton", "Ritchie", "Perlman", "Cerf"};
+
     private static Map<Integer, VertexPropertyValue> accountProps(String id, long t) {
         Map<Integer, VertexPropertyValue> props = new LinkedHashMap<>();
         props.put(1, new VertexPropertyValue("ACTIVE", t));
@@ -469,7 +482,19 @@ class QueryApiIntegrationTest {
         props.put(3, new VertexPropertyValue("addr-" + id, t));
         props.put(4, new VertexPropertyValue(List.of("Personal", "Business"), t));
         props.put(5, new VertexPropertyValue(Map.of("174", "open", "175", "kyc"), t));
+        props.put(6, new VertexPropertyValue(firstName(id), t)); // display property
+        props.put(7, new VertexPropertyValue(lastName(id), t));  // display property
         return props;
+    }
+
+    /** Deterministic first name derived from the vertex id, so the UI shows readable node labels. */
+    static String firstName(String id) {
+        return FIRST_NAMES[Math.floorMod(id.hashCode(), FIRST_NAMES.length)];
+    }
+
+    /** Deterministic last name derived from the vertex id. */
+    static String lastName(String id) {
+        return LAST_NAMES[Math.floorMod(id.hashCode() / FIRST_NAMES.length, LAST_NAMES.length)];
     }
 
     private static Map<Integer, VertexPropertyValue> ipProps(String id, long t) {
@@ -480,8 +505,8 @@ class QueryApiIntegrationTest {
 
     private static Map<Integer, VertexPropertyValue> phoneProps(String id, long t) {
         Map<Integer, VertexPropertyValue> props = new LinkedHashMap<>();
-        props.put(1, new VertexPropertyValue("138-" + id, t));
-        props.put(2, new VertexPropertyValue("CN", t));
+        props.put(1, new VertexPropertyValue("+86", t));             // display property: cnCode
+        props.put(2, new VertexPropertyValue("138-" + id, t));      // display property
         return props;
     }
 

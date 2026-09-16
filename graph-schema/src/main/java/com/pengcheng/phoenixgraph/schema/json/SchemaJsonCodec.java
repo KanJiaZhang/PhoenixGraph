@@ -102,14 +102,15 @@ public class SchemaJsonCodec {
     private PropertyDto toPropertyDto(PropertySchema property) {
         PropertyConstraints constraints = property.constraints();
         return new PropertyDto(property.id(), property.name(), property.description(), property.type(),
-                constraints.min(), constraints.max(), constraints.minLength(), constraints.maxLength(), null);
+                constraints.min(), constraints.max(), constraints.minLength(), constraints.maxLength(), null,
+                property.display() ? Boolean.TRUE : null);
     }
 
     private PropertyDto toEndpointDto(EdgeEndpointSchema endpoint) {
         PropertyConstraints constraints = endpoint.constraints();
         return new PropertyDto(endpoint.id(), endpoint.name(), endpoint.description(), endpoint.type(),
                 constraints.min(), constraints.max(), constraints.minLength(), constraints.maxLength(),
-                endpoint.vertexName());
+                endpoint.vertexName(), null);
     }
 
     // --- DTO -> domain ---
@@ -140,7 +141,7 @@ public class SchemaJsonCodec {
         if (dto.properties() != null) {
             for (PropertyDto p : dto.properties()) {
                 schema.property(new VertexPropertySchema(p.id(), p.name(), p.description(), p.type(),
-                        toConstraints(p)));
+                        toConstraints(p)).display(Boolean.TRUE.equals(p.display())));
             }
         }
         return schema;
@@ -178,7 +179,7 @@ public class SchemaJsonCodec {
 
     private EdgePropertySchema toEdgeProperty(PropertyDto dto) {
         return new EdgePropertySchema(dto.id(), dto.name(), dto.description(), dto.type(),
-                toConstraints(dto));
+                toConstraints(dto)).display(Boolean.TRUE.equals(dto.display()));
     }
 
     private MetaPropertySchema toMetaProperty(PropertyDto dto, MetaPropertySchema defaultMeta) {

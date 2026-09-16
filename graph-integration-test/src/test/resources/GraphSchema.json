@@ -20,7 +20,9 @@
         { "id": 2, "name": "accountType", "description": "Account type", "type": "STRING" },
         { "id": 3, "name": "primaryAddress", "description": "Primary address", "type": "STRING" },
         { "id": 4, "name": "accountUsage", "description": "Account usage types", "type": { "list": "STRING" } },
-        { "id": 5, "name": "accountLimited", "description": "Account limits / flags", "type": { "map": "STRING" } }
+        { "id": 5, "name": "accountLimited", "description": "Account limits / flags", "type": { "map": "STRING" } },
+        { "id": 6, "name": "firstName", "description": "Account holder first name", "type": "STRING", "display": true },
+        { "id": 7, "name": "lastName", "description": "Account holder last name", "type": "STRING", "display": true }
       ]
     },
     {
@@ -31,7 +33,7 @@
       "createdTime": { "id": -2, "name": "createdTime", "description": "Creation time", "type": "LONG" },
       "lastUpdatedTime": { "id": -1, "name": "lastUpdatedTime", "description": "Last update time", "type": "LONG" },
       "properties": [
-        { "id": 1, "name": "ipAddress", "description": "IP address string", "type": "STRING" }
+        { "id": 1, "name": "ipAddress", "description": "IP address string", "type": "STRING", "display": true }
       ]
     },
     {
@@ -42,8 +44,8 @@
       "createdTime": { "id": -2, "name": "createdTime", "description": "Creation time", "type": "LONG" },
       "lastUpdatedTime": { "id": -1, "name": "lastUpdatedTime", "description": "Last update time", "type": "LONG" },
       "properties": [
-        { "id": 1, "name": "phoneNumber", "description": "Phone number", "type": "STRING", "minLength": 3, "maxLength": 20 },
-        { "id": 2, "name": "countryCode", "description": "Country code", "type": "STRING" }
+        { "id": 1, "name": "cnCode", "description": "Country calling code, e.g. +86", "type": "STRING", "display": true },
+        { "id": 2, "name": "phoneNumber", "description": "Phone number", "type": "STRING", "minLength": 3, "maxLength": 20, "display": true }
       ]
     }
   ],

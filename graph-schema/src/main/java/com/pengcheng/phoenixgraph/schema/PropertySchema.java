@@ -10,6 +10,12 @@ import java.util.Objects;
  * {@code name}, a human-readable {@code description}, a {@link PropertyType}
  * and optional value-level {@link PropertyConstraints}.
  *
+ * <p>A property may additionally be flagged as a <em>display</em> property:
+ * display properties carry the value(s) a UI should show to identify the
+ * element (e.g. an {@code Account}'s {@code firstName}/{@code lastName}, a
+ * {@code Phone}'s {@code cnCode}/{@code phoneNumber}). See
+ * {@link VertexSchema#displayProperties()}.
+ *
  * <p>Concrete subclasses are {@link VertexPropertySchema}, {@link EdgePropertySchema}
  * and {@link MetaPropertySchema}.
  */
@@ -20,6 +26,7 @@ public abstract class PropertySchema {
     private final String description;
     private final PropertyType type;
     private final PropertyConstraints constraints;
+    private boolean display;
 
     protected PropertySchema(int id, String name, String description, PropertyType type) {
         this(id, name, description, type, PropertyConstraints.NONE);
@@ -59,12 +66,27 @@ public abstract class PropertySchema {
         return constraints;
     }
 
+    /**
+     * Whether this property is a display property, i.e. one whose value(s) a UI
+     * should render to identify the owning element. Defaults to {@code false}.
+     */
+    public boolean display() {
+        return display;
+    }
+
+    /** Marks (or unmarks) this property as a display property (fluent). */
+    public PropertySchema display(boolean display) {
+        this.display = display;
+        return this;
+    }
+
     @Override
     public String toString() {
         return getClass().getSimpleName()
                 + "{id=" + id
                 + ", name='" + name + '\''
                 + ", type=" + type
+                + (display ? ", display=true" : "")
                 + '}';
     }
 }

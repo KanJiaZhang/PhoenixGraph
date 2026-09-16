@@ -16,4 +16,10 @@ public class VertexPropertySchema extends PropertySchema {
                                 PropertyConstraints constraints) {
         super(id, name, description, type, constraints);
     }
+
+    @Override
+    public VertexPropertySchema display(boolean display) {
+        super.display(display);
+        return this;
+    }
 }

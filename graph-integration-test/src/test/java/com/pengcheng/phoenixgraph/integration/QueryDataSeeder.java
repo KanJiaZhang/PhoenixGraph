@@ -33,6 +33,12 @@ final class QueryDataSeeder {
     private static final String[] ACCOUNT_STATUS = {"ACTIVE", "FROZEN", "CLOSED"};
     private static final String[] PAYMENT_STATUS = {"PENDING", "SUCCESS", "FAILED"};
 
+    /** Deterministic name pools: the display properties {@code firstName}/{@code lastName}. */
+    private static final String[] FIRST_NAMES = {
+            "Ada", "Alan", "Grace", "Linus", "Barbara", "Ken", "Margaret", "Dennis", "Radia", "Vint"};
+    private static final String[] LAST_NAMES = {
+            "Lovelace", "Turing", "Hopper", "Torvalds", "Liskov", "Thompson", "Hamilton", "Ritchie", "Perlman", "Cerf"};
+
     private QueryDataSeeder() {
     }
 
@@ -92,7 +98,19 @@ final class QueryDataSeeder {
         props.put(3, new VertexPropertyValue("addr-" + (100 + i), now(i)));
         props.put(4, new VertexPropertyValue(accountUsage(i), now(i)));
         props.put(5, new VertexPropertyValue(accountLimited(i), now(i)));
+        props.put(6, new VertexPropertyValue(firstName(i), now(i))); // display property
+        props.put(7, new VertexPropertyValue(lastName(i), now(i)));  // display property
         return props;
+    }
+
+    /** Deterministic first name for vertex index {@code i}. */
+    static String firstName(int i) {
+        return FIRST_NAMES[i % FIRST_NAMES.length];
+    }
+
+    /** Deterministic last name for vertex index {@code i}. */
+    static String lastName(int i) {
+        return LAST_NAMES[(i / FIRST_NAMES.length) % LAST_NAMES.length];
     }
 
     private static List<String> accountUsage(int i) {
@@ -116,8 +134,8 @@ final class QueryDataSeeder {
 
     private static Map<Integer, VertexPropertyValue> phoneProperties(int i) {
         Map<Integer, VertexPropertyValue> props = new LinkedHashMap<>();
-        props.put(1, new VertexPropertyValue("138-" + (1000 + i), now(i)));
-        props.put(2, new VertexPropertyValue(i % 2 == 0 ? "CN" : "US", now(i)));
+        props.put(1, new VertexPropertyValue(i % 2 == 0 ? "+86" : "+1", now(i))); // display property: cnCode
+        props.put(2, new VertexPropertyValue("138-" + (1000 + i), now(i)));       // display property
         return props;
     }
 

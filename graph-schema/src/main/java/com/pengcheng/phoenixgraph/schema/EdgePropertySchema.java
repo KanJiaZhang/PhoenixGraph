@@ -16,4 +16,10 @@ public class EdgePropertySchema extends PropertySchema {
                               PropertyConstraints constraints) {
         super(id, name, description, type, constraints);
     }
+
+    @Override
+    public EdgePropertySchema display(boolean display) {
+        super.display(display);
+        return this;
+    }
 }

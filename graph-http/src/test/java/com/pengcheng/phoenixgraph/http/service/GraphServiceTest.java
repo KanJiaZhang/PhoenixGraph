@@ -12,6 +12,7 @@ import com.pengcheng.phoenixgraph.schema.GraphSchema;
 import com.pengcheng.phoenixgraph.schema.PropertyConstraints;
 import com.pengcheng.phoenixgraph.schema.PropertyType;
 import com.pengcheng.phoenixgraph.schema.VertexPropertySchema;
+import com.pengcheng.phoenixgraph.schema.VertexPropertySchema;
 import com.pengcheng.phoenixgraph.schema.VertexSchema;
 import com.pengcheng.phoenixgraph.storage.WriteOutcome;
 import com.pengcheng.phoenixgraph.storage.aerospike.AerospikeEdgeStore;
@@ -96,6 +97,22 @@ class GraphServiceTest {
         assertEquals("payment-graph", info.name());
         assertEquals(List.of("Account"), info.vertexTypes());
         assertEquals(List.of("Payment"), info.edgeTypes());
+        // the Account schema declares no display property -> empty list, not a missing key
+        assertEquals(List.of(), info.displayProperties().get("Account"));
+    }
+
+    @Test
+    void graphInfoListsDisplayPropertiesPerVertexType() {
+        VertexSchema account = new VertexSchema(1, "Account", "An account")
+                .property(new VertexPropertySchema(1, "firstName", "first name", PropertyType.ScalarType.STRING)
+                        .display(true))
+                .property(new VertexPropertySchema(2, "lastName", "last name", PropertyType.ScalarType.STRING)
+                        .display(true))
+                .property(new VertexPropertySchema(3, "accountType", "type", PropertyType.ScalarType.STRING));
+        GraphSchema graph = new GraphSchema(1, "payment-graph", null).vertex(account);
+
+        assertEquals(List.of("firstName", "lastName"),
+                GraphInfo.of(graph).displayProperties().get("Account"));
     }
 
     @Test
