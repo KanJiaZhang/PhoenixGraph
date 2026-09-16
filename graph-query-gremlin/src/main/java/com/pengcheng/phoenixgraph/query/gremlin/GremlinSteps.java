@@ -54,6 +54,31 @@ final class GremlinSteps {
         return (ctx, in) -> hopVertices(ctx, in, edgeName, EdgeSide.BOTH);
     }
 
+    // --- edge -> vertex ---
+
+    /**
+     * Moves from an edge to its other endpoint (the vertex the edge was reached
+     * from is not carried by the traverser, so only the far end is known). Steps
+     * like {@code bothE(label).filter(...).otherV()} hop to the filtered edges'
+     * neighbours without going through every other edge class.
+     */
+    static GremlinStep otherV() {
+        return (ctx, in) -> {
+            if (in.isEmpty()) {
+                return List.of();
+            }
+            List<EdgeQueryResult> edges = new ArrayList<>(in.size());
+            for (Object o : in) {
+                if (!(o instanceof GremlinEdge edge)) {
+                    throw new QueryException("otherV expects edges but got: " + o);
+                }
+                edges.add(new EdgeQueryResult(edge.label(), String.valueOf(edge.id()), edge.side(),
+                        edge.otherVertexId(), edge.properties(), edge.createdTime(), edge.lastUpdatedTime()));
+            }
+            return new ArrayList<>(readNeighbourVertices(ctx, edges));
+        };
+    }
+
     // --- tuning ---
 
     /** Sets the fan-out batch size for the batched lookups that follow. */
@@ -88,8 +113,11 @@ final class GremlinSteps {
         return (ctx, in) -> {
             List<Object> out = new ArrayList<>();
             for (Object o : in) {
-                if (predicate.test(requireElement(o))) {
+                GremlinElement element = requireElement(o);
+                if (predicate.test(element)) {
                     out.add(o);
+                } else {
+                    ctx.dropElement(element);
                 }
             }
             return out;
@@ -103,13 +131,12 @@ final class GremlinSteps {
             for (Object o : in) {
                 GremlinElement element = requireElement(o);
                 Object value = element.properties().get(key);
-                if (value == null) {
-                    continue;
+                boolean keep = value != null && (rawValue == null || matches(value, rawValue));
+                if (keep) {
+                    out.add(o);
+                } else {
+                    ctx.dropElement(element);
                 }
-                if (rawValue != null && !matches(value, rawValue)) {
-                    continue;
-                }
-                out.add(o);
             }
             return out;
         };
@@ -213,7 +240,7 @@ final class GremlinSteps {
         if (ids.isEmpty()) {
             return List.of();
         }
-        List<List<EdgeQueryResult>> perVertex = ctx.graphQuery().readAllEdgesBatch(ids, dir, edgeProperties);
+        List<List<EdgeQueryResult>> perVertex = ctx.readAllEdgeClassesBatched(ids, dir, edgeProperties);
         List<EdgeQueryResult> all = new ArrayList<>();
         for (int i = 0; i < ids.size(); i++) {
             ctx.recordEdges(ids.get(i), perVertex.get(i));
@@ -250,7 +277,6 @@ final class GremlinSteps {
 
         GremlinVertex[] result = new GremlinVertex[edges.size()];
         List<String> readProperties = ctx.readProperties();
-        int batchSize = ctx.batchSize();
         for (Map.Entry<String, List<Integer>> group : groups.entrySet()) {
             String name = group.getKey();
             List<Integer> indices = group.getValue();
@@ -262,23 +288,20 @@ final class GremlinSteps {
                 }
                 continue;
             }
-            for (int start = 0; start < indices.size(); start += batchSize) {
-                int end = Math.min(start + batchSize, indices.size());
-                List<Integer> chunk = indices.subList(start, end);
-                List<Object> chunkIds = new ArrayList<>(chunk.size());
-                for (int idx : chunk) {
-                    chunkIds.add(ids[idx]);
-                }
-                List<VertexQueryResult> vertices = ctx.readVerticesCached(name, chunkIds, readProperties);
-                for (int k = 0; k < chunk.size(); k++) {
-                    int idx = chunk.get(k);
-                    VertexQueryResult vertex = vertices.get(k);
-                    ctx.recordVertex(name, ids[idx]);
-                    result[idx] = vertex == null
-                            ? new GremlinVertex(name, ids[idx], Map.of(), 0L, 0L)
-                            : new GremlinVertex(vertex.vertexName(), vertex.vertexId(), vertex.properties(),
-                                    vertex.createdTime(), vertex.lastUpdatedTime());
-                }
+            // the context splits this into batches and reads them in parallel
+            List<Object> groupIds = new ArrayList<>(indices.size());
+            for (int idx : indices) {
+                groupIds.add(ids[idx]);
+            }
+            List<VertexQueryResult> vertices = ctx.readVerticesCached(name, groupIds, readProperties);
+            for (int k = 0; k < indices.size(); k++) {
+                int idx = indices.get(k);
+                VertexQueryResult vertex = vertices.get(k);
+                ctx.recordVertex(name, ids[idx]);
+                result[idx] = vertex == null
+                        ? new GremlinVertex(name, ids[idx], Map.of(), 0L, 0L)
+                        : new GremlinVertex(vertex.vertexName(), vertex.vertexId(), vertex.properties(),
+                                vertex.createdTime(), vertex.lastUpdatedTime());
             }
         }
         return List.of(result);

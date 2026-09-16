@@ -19,7 +19,9 @@ import java.util.concurrent.ConcurrentHashMap;
  * applies the parsed steps in order. Supported built-in steps:
  * <ul>
  *   <li>vertex hops — {@code out/in/both(edgeName)}</li>
- *   <li>edge hops — {@code outE/inE/bothE(edgeName)}</li>
+ *   <li>vertex hops — {@code out/in/both(edgeName)}</li>
+ *   <li>edge hops — {@code outE/inE/bothE(edgeName)}, plus {@code otherV()} to hop
+ *       from an edge to its far endpoint ({@code bothE().filter(...).otherV()})</li>
  *   <li>filter — {@code has(key[, value])} and {@code filter(expression)}</li>
  *   <li>projection — {@code values(key...)} and {@code elementMap()}</li>
  *   <li>terminal — {@code count()}, {@code limit(n)}, {@code dedup()}</li>
@@ -42,6 +44,7 @@ public class GremlinGraphQuery {
     private boolean cacheEnabled = true;
     private boolean adaptiveBatchEnabled = true;
     private int maxBatchSize = GremlinContext.DEFAULT_MAX_BATCH_SIZE;
+    private int parallelism = GremlinContext.DEFAULT_PARALLELISM;
 
     public GremlinGraphQuery(GraphQuery graphQuery) {
         this(graphQuery, NeighborVertexResolver.none());
@@ -83,6 +86,21 @@ public class GremlinGraphQuery {
             throw new IllegalArgumentException("max batch size must be >= 1");
         }
         this.maxBatchSize = maxBatchSize;
+        return this;
+    }
+
+    /**
+     * How many storage read batches a query may issue concurrently ({@code 1} =
+     * sequential). Multi-seed queries and wide fan-outs are split into batches of
+     * at most {@code batch(n)} ids and read in parallel. Defaults to
+     * {@link GremlinContext#DEFAULT_PARALLELISM}.
+     */
+    public GremlinGraphQuery parallelism(int parallelism) {
+        if (parallelism < 1) {
+            throw new IllegalArgumentException("parallelism must be >= 1");
+        }
+        this.parallelism = parallelism;
+        compiledCache.clear();
         return this;
     }
 
@@ -188,6 +206,7 @@ public class GremlinGraphQuery {
         context.cacheEnabled(cacheEnabled);
         context.adaptiveBatchEnabled(adaptiveBatchEnabled);
         context.maxBatchSize(maxBatchSize);
+        context.parallelism(parallelism);
         return context;
     }
 
@@ -317,7 +336,8 @@ public class GremlinGraphQuery {
 
     private static boolean isHop(String name) {
         return name.equals("out") || name.equals("in") || name.equals("both")
-                || name.equals("outE") || name.equals("inE") || name.equals("bothE");
+                || name.equals("outE") || name.equals("inE") || name.equals("bothE")
+                || name.equals("otherV");
     }
 
     private static boolean isMeta(String name) {
@@ -338,7 +358,8 @@ public class GremlinGraphQuery {
             }
             return out;
         }
-        List<VertexQueryResult> vertices = context.readVerticesCached(vertexName, vertexIds, properties);
+        // the seed ids are read in parallel batches (one request per id for a handful of seeds)
+        List<VertexQueryResult> vertices = context.readSeedVertices(vertexName, vertexIds, properties);
         List<Object> out = new ArrayList<>(vertices.size());
         for (VertexQueryResult vertex : vertices) {
             if (vertex == null) {

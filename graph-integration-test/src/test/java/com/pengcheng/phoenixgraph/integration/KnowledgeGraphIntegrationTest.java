@@ -203,8 +203,28 @@ class KnowledgeGraphIntegrationTest {
         assertEquals(1 + stats.neighbours(hubId).size(), subgraph.vertices().size());
         assertTrue(subgraph.vertices().stream().anyMatch(v -> v.id().equals(hubId)));
 
+        // 7. otherV() hops from the filtered edges to their neighbours (one per edge),
+        //    and the unfiltered edges must not leak into the subgraph
+        long neighbours = (long) (Number) gremlin.execute("g.V('" + hubId + "', '" + label + "').bothE()"
+                + ".filter(relation.equals('" + hubRelation + "') || xrelation.equals('" + hubRelation + "'))"
+                + ".otherV().count()").get(0);
+        assertEquals(filtered, neighbours, "otherV() should yield one vertex per surviving edge");
+        Subgraph filteredSubgraph = gremlin.executeSubgraph("g.V('" + hubId + "', '" + label + "').bothE()"
+                + ".filter(relation.equals('" + hubRelation + "') || xrelation.equals('" + hubRelation + "'))");
+        assertEquals(filtered, filteredSubgraph.edges().size(), "filtered edges only");
+
+        // 8. several seeds in one query, read in parallel batches of batch(20)
+        List<String> seedIds = stats.vertexIdsNamed(stats.nameOf(hubId));
+        String seeds = seedIds.stream().map(id -> "'" + id + "'").collect(java.util.stream.Collectors.joining(","));
+        long multiSeed = (long) (Number) gremlin.execute("g.V(" + seeds + ", '" + label + "').batch(20)"
+                + ".bothE().count()").get(0);
+        int expectedSeeded = seedIds.stream().mapToInt(stats::degree).sum();
+        assertEquals(expectedSeeded, multiSeed, "bothE() over " + seedIds.size() + " seeds");
+
         System.out.println("[kg] hub vertex id      : " + hubId + "   (degree " + degree
                 + ", relation '" + hubRelation + "')");
+        System.out.println("[kg] multi-seed query   : g.V(" + seeds + ", '" + label + "').batch(20).bothE()"
+                + "   -> " + multiSeed + " edges over " + seedIds.size() + " seeds");
         System.out.println("[kg] hub query          : g.V('" + hubId + "', '" + label + "').bothE()");
         System.out.println("[kg] relation query     : g.V('" + hubId + "', '" + label + "').bothE()"
                 + ".filter(relation.equals('" + hubRelation + "') || xrelation.equals('" + hubRelation + "'))");
@@ -284,6 +304,15 @@ class KnowledgeGraphIntegrationTest {
 
         Set<String> neighbours(String vertexId) {
             return neighbours.getOrDefault(vertexId, Set.of());
+        }
+
+        /** Every vertex id sharing the given entity name (one per relation shard). */
+        List<String> vertexIdsNamed(String name) {
+            return nameById.entrySet().stream()
+                    .filter(e -> e.getValue().equals(name))
+                    .map(Map.Entry::getKey)
+                    .sorted()
+                    .toList();
         }
 
         String nameOf(String vertexId) {

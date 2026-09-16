@@ -12,6 +12,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.Future;
+import java.util.function.Function;
 
 /**
  * Execution context handed to every {@link GremlinStep}: the storage query layer,
@@ -22,14 +27,24 @@ import java.util.Set;
  * vertex or of a vertex's edges (per edge class + direction) is stored, and
  * later reads of the same key reuse it. Duplicate ids within one batch are also
  * collapsed so only one storage query is issued per unique id.
+ *
+ * <p>Every multi-id read is split into batches of at most {@link #batchSize()}
+ * and the batches are issued in parallel (up to {@link #parallelism()} at a
+ * time), so a query seeded with several vertices - e.g.
+ * {@code g.V(id1, id2, id3, 'Entity').batch(20).bothE(...)} - fans out
+ * concurrently instead of one batch after another. A single batch is read inline,
+ * so small queries pay nothing for the parallel path.
  */
 public final class GremlinContext {
 
-    /** Default fan-out batch size (parallel lookups are on by default). */
-    public static final int DEFAULT_BATCH_SIZE = 10;
+    /** Default fan-out batch size ({@code batch(n)} overrides it; parallel lookups are on by default). */
+    public static final int DEFAULT_BATCH_SIZE = 20;
 
     /** Upper bound for the adaptive batch size. */
     public static final int DEFAULT_MAX_BATCH_SIZE = 100;
+
+    /** Default number of storage reads issued concurrently. */
+    public static final int DEFAULT_PARALLELISM = Math.max(1, Math.min(8, Runtime.getRuntime().availableProcessors()));
 
     /** Fan-out divisor: the adaptive batch size is {@code fanOut / DIVISOR}, clamped. */
     static final int ADAPTIVE_DIVISOR = 5;
@@ -40,12 +55,14 @@ public final class GremlinContext {
     private final Map<EdgeCacheKey, List<EdgeQueryResult>> edgeCache = new LinkedHashMap<>();
     private int batchSize = DEFAULT_BATCH_SIZE;
     private int maxBatchSize = DEFAULT_MAX_BATCH_SIZE;
+    private int parallelism = DEFAULT_PARALLELISM;
     private boolean adaptiveBatchEnabled = true;
     private boolean explicitBatchSize = false;
     private List<String> readProperties = List.of(); // empty = all, null = skip read
     private boolean cacheEnabled = true;
     private boolean collectSubgraph = false;
     private final Map<String, VertexRef> subgraphVertices = new LinkedHashMap<>();
+    private final Map<String, VertexRef> edgeEndpointVertices = new LinkedHashMap<>();
     private final Map<String, Subgraph.Edge> subgraphEdges = new LinkedHashMap<>();
 
     private record EdgeCacheKey(Object vertexId, String edgeName, EdgeSide direction) {
@@ -96,6 +113,95 @@ public final class GremlinContext {
             throw new IllegalArgumentException("max batch size must be >= 1");
         }
         this.maxBatchSize = maxBatchSize;
+    }
+
+    /** How many storage read batches may run concurrently ({@code 1} = sequential). */
+    public int parallelism() {
+        return parallelism;
+    }
+
+    public void parallelism(int parallelism) {
+        if (parallelism < 1) {
+            throw new IllegalArgumentException("parallelism must be >= 1");
+        }
+        this.parallelism = parallelism;
+    }
+
+    /**
+     * Splits the ids into batches of exactly {@link #batchSize()} ids: {@code batch(n)}
+     * is the storage request size, so it is honoured as given. The batches are
+     * issued in parallel by {@link #readBatches}.
+     */
+    public List<List<Object>> batches(List<Object> ids) {
+        return split(ids, Math.max(1, batchSize));
+    }
+
+    /**
+     * Splits the <em>seed</em> ids to fill up to {@link #parallelism()} concurrent
+     * reads: a batch is never larger than {@link #batchSize()}, but with few ids it
+     * is smaller, so {@code g.V(id1, id2, id3)} reads each seed in its own request
+     * (in parallel) instead of one batch after another.
+     */
+    public List<List<Object>> seedBatches(List<Object> ids) {
+        if (ids.isEmpty()) {
+            return List.of();
+        }
+        int target = (ids.size() + parallelism - 1) / parallelism;
+        return split(ids, Math.max(1, Math.min(batchSize, target)));
+    }
+
+    private static List<List<Object>> split(List<Object> ids, int size) {
+        if (ids.isEmpty()) {
+            return List.of();
+        }
+        List<List<Object>> batches = new ArrayList<>((ids.size() + size - 1) / size);
+        for (int start = 0; start < ids.size(); start += size) {
+            batches.add(List.copyOf(ids.subList(start, Math.min(start + size, ids.size()))));
+        }
+        return batches;
+    }
+
+    /**
+     * Reads every batch with {@code reader}, up to {@link #parallelism()} at a time,
+     * and returns the results in batch order. A single batch (or
+     * {@code parallelism(1)}) runs inline, and a failure is rethrown as it was
+     * thrown by the reader.
+     */
+    <R> List<R> readBatches(List<List<Object>> batches, Function<List<Object>, R> reader) {
+        if (batches.isEmpty()) {
+            return List.of();
+        }
+        if (batches.size() == 1 || parallelism <= 1) {
+            List<R> sequential = new ArrayList<>(batches.size());
+            for (List<Object> batch : batches) {
+                sequential.add(reader.apply(batch));
+            }
+            return sequential;
+        }
+        List<Callable<R>> tasks = new ArrayList<>(batches.size());
+        for (List<Object> batch : batches) {
+            tasks.add(() -> reader.apply(batch));
+        }
+        List<Future<R>> futures = ForkJoinPool.commonPool().invokeAll(tasks);
+        List<R> results = new ArrayList<>(futures.size());
+        for (Future<R> future : futures) {
+            try {
+                results.add(future.get());
+            } catch (ExecutionException e) {
+                Throwable cause = e.getCause();
+                if (cause instanceof RuntimeException runtime) {
+                    throw runtime;
+                }
+                if (cause instanceof Error error) {
+                    throw error;
+                }
+                throw new IllegalStateException("Batched read failed", cause);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("Batched read interrupted", e);
+            }
+        }
+        return results;
     }
 
     /**
@@ -149,6 +255,23 @@ public final class GremlinContext {
         subgraphVertices.putIfAbsent(key(label, id), new VertexRef(label, id));
     }
 
+    /**
+     * Drops an element from the collected subgraph because a filter step discarded
+     * it, so {@code bothE().filter(...)} renders the filtered edges instead of every
+     * edge it had to read to evaluate the filter.
+     */
+    public void dropElement(GremlinElement element) {
+        if (!collectSubgraph || element == null) {
+            return;
+        }
+        String key = key(element.label(), element.id());
+        if (element instanceof GremlinEdge) {
+            subgraphEdges.remove(key);
+        } else {
+            subgraphVertices.remove(key);
+        }
+    }
+
     /** Records an edge touched by the traversal (deduplicated by label + id). */
     public void recordEdge(String label, Object id, Object source, Object target,
                            Map<String, Object> properties, long createdTime, long lastUpdatedTime) {
@@ -164,8 +287,23 @@ public final class GremlinContext {
         if (!collectSubgraph) {
             return Subgraph.EMPTY;
         }
+        // vertices reached only as an edge's far endpoint stay in the subgraph while
+        // a surviving edge still references them (a dropped edge must not leave a
+        // dangling node behind)
+        Map<Object, List<VertexRef>> endpointsById = new LinkedHashMap<>();
+        for (VertexRef ref : edgeEndpointVertices.values()) {
+            endpointsById.computeIfAbsent(ref.id(), k -> new ArrayList<>()).add(ref);
+        }
+        Map<String, VertexRef> verticesToRead = new LinkedHashMap<>(subgraphVertices);
+        for (Subgraph.Edge edge : subgraphEdges.values()) {
+            for (Object endpoint : List.of(edge.source(), edge.target())) {
+                for (VertexRef ref : endpointsById.getOrDefault(endpoint, List.of())) {
+                    verticesToRead.putIfAbsent(key(ref.label(), ref.id()), ref);
+                }
+            }
+        }
         Map<String, List<Object>> idsByLabel = new LinkedHashMap<>();
-        for (VertexRef ref : subgraphVertices.values()) {
+        for (VertexRef ref : verticesToRead.values()) {
             idsByLabel.computeIfAbsent(ref.label(), k -> new ArrayList<>()).add(ref.id());
         }
         List<Subgraph.Vertex> vertices = new ArrayList<>();
@@ -216,9 +354,11 @@ public final class GremlinContext {
             }
             recordEdge(edge.edgeName(), edge.edgeId(), source, target, edge.properties(),
                     edge.createdTime(), edge.lastUpdatedTime());
-            // An edge hop only materialises edges; record the far endpoint too so the
-            // subgraph of e.g. bothE() contains the edge's other vertex as well.
-            recordVertex(vertexResolver.neighborVertexName(edge.edgeName(), edge.side()), edge.otherVertexId());
+            // An edge hop only materialises edges; remember the far endpoint so a
+            // surviving edge can still bring its other vertex into the subgraph.
+            String endpointLabel = vertexResolver.neighborVertexName(edge.edgeName(), edge.side());
+            edgeEndpointVertices.putIfAbsent(key(endpointLabel, edge.otherVertexId()),
+                    new VertexRef(endpointLabel, edge.otherVertexId()));
         }
     }
 
@@ -229,8 +369,22 @@ public final class GremlinContext {
      */
     public List<VertexQueryResult> readVerticesCached(String vertexName, List<Object> vertexIds,
                                                       List<String> propertyNames) {
+        return readVertices(vertexName, vertexIds, propertyNames, false);
+    }
+
+    /**
+     * Reads the seed vertices of {@code g.V(...)}: same as {@link #readVerticesCached}
+     * but the ids are split to use the available parallelism (see {@link #seedBatches}).
+     */
+    public List<VertexQueryResult> readSeedVertices(String vertexName, List<Object> vertexIds,
+                                                    List<String> propertyNames) {
+        return readVertices(vertexName, vertexIds, propertyNames, true);
+    }
+
+    private List<VertexQueryResult> readVertices(String vertexName, List<Object> vertexIds,
+                                                 List<String> propertyNames, boolean seed) {
         if (!cacheEnabled) {
-            return graphQuery.readVertices(vertexName, vertexIds, propertyNames);
+            return readVerticesBatched(vertexName, vertexIds, propertyNames, seed);
         }
         if (vertexIds.isEmpty()) {
             return List.of();
@@ -256,7 +410,7 @@ public final class GremlinContext {
         }
 
         if (!toFetch.isEmpty()) {
-            List<VertexQueryResult> fetched = graphQuery.readVertices(vertexName, toFetch, propertyNames);
+            List<VertexQueryResult> fetched = readVerticesBatched(vertexName, toFetch, propertyNames, seed);
             for (int i = 0; i < toFetch.size(); i++) {
                 VertexQueryResult vertex = fetched.get(i);
                 vertexCache.put(toFetch.get(i), vertex);
@@ -269,6 +423,57 @@ public final class GremlinContext {
             out.add(byId.get(id));
         }
         return out;
+    }
+
+    /** Reads the vertices of many ids in parallel batches, preserving the request order. */
+    public List<VertexQueryResult> readVerticesBatched(String vertexName, List<Object> vertexIds,
+                                                       List<String> propertyNames) {
+        return readVerticesBatched(vertexName, vertexIds, propertyNames, false);
+    }
+
+    private List<VertexQueryResult> readVerticesBatched(String vertexName, List<Object> vertexIds,
+                                                        List<String> propertyNames, boolean seed) {
+        if (vertexIds.isEmpty()) {
+            return List.of();
+        }
+        List<List<Object>> batches = seed ? seedBatches(vertexIds) : batches(vertexIds);
+        List<List<VertexQueryResult>> results = readBatches(batches,
+                batch -> graphQuery.readVertices(vertexName, batch, propertyNames));
+        List<VertexQueryResult> all = new ArrayList<>(vertexIds.size());
+        for (List<VertexQueryResult> part : results) {
+            all.addAll(part);
+        }
+        return all;
+    }
+
+    /**
+     * Reads the edges of every edge class for the given vertices, in parallel
+     * batches; the result has one entry per input vertex, in request order.
+     */
+    public List<List<EdgeQueryResult>> readAllEdgeClassesBatched(List<Object> vertexIds, EdgeSide direction,
+                                                                 List<String> propertyNames) {
+        if (vertexIds.isEmpty()) {
+            return List.of();
+        }
+        List<List<List<EdgeQueryResult>>> results = readBatches(batches(vertexIds),
+                batch -> graphQuery.readAllEdgesBatch(batch, direction, propertyNames));
+        List<List<EdgeQueryResult>> all = new ArrayList<>(vertexIds.size());
+        for (List<List<EdgeQueryResult>> part : results) {
+            all.addAll(part);
+        }
+        return all;
+    }
+
+    /** Reads the edges of one edge class for many vertices in parallel batches (request order). */
+    private List<List<EdgeQueryResult>> readEdgesBatched(String edgeName, EdgeSide direction,
+                                                         List<Object> vertexIds, List<String> propertyNames) {
+        List<List<List<EdgeQueryResult>>> results = readBatches(batches(vertexIds),
+                batch -> graphQuery.readEdgesBatch(edgeName, direction, batch, propertyNames));
+        List<List<EdgeQueryResult>> all = new ArrayList<>(vertexIds.size());
+        for (List<List<EdgeQueryResult>> part : results) {
+            all.addAll(part);
+        }
+        return all;
     }
 
     /** Reads the edges of one vertex for an edge class + direction, with caching. */
@@ -297,15 +502,10 @@ public final class GremlinContext {
                                                          List<Object> vertexIds, List<String> propertyNames) {
         if (!cacheEnabled) {
             List<EdgeQueryResult> all = new ArrayList<>();
-            for (int start = 0; start < vertexIds.size(); start += batchSize) {
-                int end = Math.min(start + batchSize, vertexIds.size());
-                List<Object> chunk = vertexIds.subList(start, end);
-                List<List<EdgeQueryResult>> fetched = graphQuery.readEdgesBatch(
-                        edgeName, direction, chunk, propertyNames);
-                for (int i = 0; i < chunk.size(); i++) {
-                    recordEdges(chunk.get(i), fetched.get(i));
-                    all.addAll(fetched.get(i));
-                }
+            List<List<EdgeQueryResult>> fetched = readEdgesBatched(edgeName, direction, vertexIds, propertyNames);
+            for (int i = 0; i < vertexIds.size(); i++) {
+                recordEdges(vertexIds.get(i), fetched.get(i));
+                all.addAll(fetched.get(i));
             }
             return all;
         }
@@ -330,18 +530,14 @@ public final class GremlinContext {
             }
         }
 
-        for (int start = 0; start < missing.size(); start += batchSize) {
-            int end = Math.min(start + batchSize, missing.size());
-            List<List<EdgeQueryResult>> fetched = graphQuery.readEdgesBatch(
-                    edgeName, direction, missing.subList(start, end), propertyNames);
-            for (int i = start; i < end; i++) {
-                Object id = missing.get(i);
-                EdgeCacheKey key = new EdgeCacheKey(id, edgeName, direction);
-                List<EdgeQueryResult> edges = fetched.get(i - start);
-                edgeCache.put(key, edges);
-                byKey.put(key, edges);
-                recordEdges(id, edges);
-            }
+        List<List<EdgeQueryResult>> fetched = readEdgesBatched(edgeName, direction, missing, propertyNames);
+        for (int i = 0; i < missing.size(); i++) {
+            Object id = missing.get(i);
+            EdgeCacheKey key = new EdgeCacheKey(id, edgeName, direction);
+            List<EdgeQueryResult> edges = fetched.get(i);
+            edgeCache.put(key, edges);
+            byKey.put(key, edges);
+            recordEdges(id, edges);
         }
 
         List<EdgeQueryResult> all = new ArrayList<>();

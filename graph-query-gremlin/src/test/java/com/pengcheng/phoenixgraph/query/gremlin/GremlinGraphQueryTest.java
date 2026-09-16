@@ -14,6 +14,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -189,7 +190,7 @@ class GremlinGraphQueryTest {
 
     @Test
     void fanOutUsesNativeBatchReadChunkedByBatchSize() {
-        List<List<Object>> batches = new ArrayList<>();
+        List<List<Object>> batches = java.util.Collections.synchronizedList(new ArrayList<>());
         GraphQuery fanOut = batchTrackingGraph(30, batches);
         GremlinGraphQuery query = new GremlinGraphQuery(fanOut,
                 NeighborVertexResolver.of(Map.of("knows", "p"), Map.of()));
@@ -202,7 +203,7 @@ class GremlinGraphQueryTest {
 
     @Test
     void batchOneReadsNeighboursOneAtATime() {
-        List<List<Object>> batches = new ArrayList<>();
+        List<List<Object>> batches = java.util.Collections.synchronizedList(new ArrayList<>());
         GraphQuery fanOut = batchTrackingGraph(5, batches);
         GremlinGraphQuery query = new GremlinGraphQuery(fanOut,
                 NeighborVertexResolver.of(Map.of("knows", "p"), Map.of()));
@@ -220,6 +221,143 @@ class GremlinGraphQueryTest {
     }
 
     @Test
+    void severalSeedIdsAreReadInOneBatchPerSeedInParallel() {
+        List<List<Object>> seedBatches = java.util.Collections.synchronizedList(new ArrayList<>());
+        GraphQuery fanOut = seedTrackingGraph(seedBatches);
+        GremlinGraphQuery query = new GremlinGraphQuery(fanOut,
+                NeighborVertexResolver.of(Map.of("knows", "p"), Map.of()));
+
+        List<Object> result = query.execute("g.V('a','b','c','p').batch(20).values('name')");
+
+        // every seed becomes its own read request (at most batch(20) ids per request)
+        assertEquals(3, result.size());
+        assertEquals(List.of(1, 1, 1), seedBatches.stream().map(List::size).sorted().toList());
+    }
+
+    @Test
+    void seedBatchesNeverExceedTheConfiguredBatchSize() {
+        List<List<Object>> seedBatches = java.util.Collections.synchronizedList(new ArrayList<>());
+        GraphQuery fanOut = seedTrackingGraph(seedBatches);
+        GremlinGraphQuery query = new GremlinGraphQuery(fanOut,
+                NeighborVertexResolver.of(Map.of("knows", "p"), Map.of()));
+        StringBuilder ids = new StringBuilder();
+        for (int i = 0; i < 100; i++) {
+            ids.append("'s").append(i).append("',");
+        }
+
+        query.execute("g.V(" + ids + "'p').batch(20).values('name')");
+
+        // 100 seeds with batch(20): one request per parallel slot, each at most 20 ids
+        assertTrue(seedBatches.size() <= GremlinContext.DEFAULT_PARALLELISM,
+                "expected at most " + GremlinContext.DEFAULT_PARALLELISM + " requests, got " + seedBatches.size());
+        assertTrue(seedBatches.stream().allMatch(b -> b.size() <= 20));
+        assertEquals(100, seedBatches.stream().mapToInt(List::size).sum());
+    }
+
+    @Test
+    void sequentialParallelismReadsOneBatchAtATime() {
+        List<List<Object>> seedBatches = java.util.Collections.synchronizedList(new ArrayList<>());
+        GraphQuery fanOut = seedTrackingGraph(seedBatches);
+        GremlinGraphQuery query = new GremlinGraphQuery(fanOut,
+                        NeighborVertexResolver.of(Map.of("knows", "p"), Map.of()))
+                .parallelism(1);
+
+        List<Object> result = query.execute("g.V('a','b','c','p').batch(20).values('name')");
+
+        // parallelism(1) is the escape hatch back to a single batch for the seeds
+        assertEquals(3, result.size());
+        assertEquals(List.of(3), seedBatches.stream().map(List::size).toList());
+    }
+
+    @Test
+    void filteredElementsAreDroppedFromTheSubgraph() {
+        EdgeQueryResult keep = new EdgeQueryResult("knows", "e1", EdgeSide.OUT, "n1",
+                Map.of("relation", "r"), 1L, 2L);
+        EdgeQueryResult drop = new EdgeQueryResult("knows", "e2", EdgeSide.OUT, "n2",
+                Map.of("relation", "other"), 1L, 2L);
+        when(graphQuery.readEdges("v1", "person", "knows", EdgeSide.OUT,
+                List.of("relation"))).thenReturn(List.of(keep, drop));
+        when(graphQuery.readVertex("n1", "person", List.of()))
+                .thenReturn(new VertexQueryResult("person", "n1", Map.of(), 5L, 6L));
+
+        Subgraph subgraph = gremlin.executeSubgraph(
+                "g.V('v1', 'person').outE('knows').filter(relation.equals('r'))");
+
+        // the dropped edge takes its exclusive endpoint with it
+        assertEquals(1, subgraph.edges().size());
+        assertEquals("e1", subgraph.edges().get(0).id());
+        assertEquals(java.util.Set.of("v1", "n1"),
+                subgraph.vertices().stream().map(v -> (String) v.id()).collect(java.util.stream.Collectors.toSet()));
+    }
+
+    @Test
+    void otherVHopsToTheFarEndpointOfAnEdge() {
+        EdgeQueryResult keep = new EdgeQueryResult("knows", "e1", EdgeSide.OUT, "n1",
+                Map.of("relation", "r"), 1L, 2L);
+        EdgeQueryResult drop = new EdgeQueryResult("knows", "e2", EdgeSide.OUT, "n2",
+                Map.of("relation", "other"), 1L, 2L);
+        when(graphQuery.readEdges("v1", "person", "knows", EdgeSide.OUT,
+                List.of("relation"))).thenReturn(List.of(keep, drop));
+        // the @BeforeEach readVertices answer delegates to readVertex per id
+        when(graphQuery.readVertex("n1", "person", List.of()))
+                .thenReturn(new VertexQueryResult("person", "n1", Map.of("name", "alice"), 5L, 6L));
+
+        List<Object> result = gremlin.execute(
+                "g.V('v1', 'person').outE('knows').filter(relation.equals('r')).otherV()");
+
+        assertEquals(1, result.size());
+        GremlinVertex vertex = (GremlinVertex) result.get(0);
+        assertEquals("n1", vertex.id());
+        assertEquals("person", vertex.label());
+        assertEquals(Map.of("name", "alice"), vertex.properties());
+    }
+
+    @Test
+    void otherVRejectsNonEdgeTraversers() {
+        when(graphQuery.readVertex("v1", "person", List.of()))
+                .thenReturn(new VertexQueryResult("person", "v1", Map.of("name", "alice"), 1L, 2L));
+
+        assertThrows(QueryException.class,
+                () -> gremlin.execute("g.V('v1', 'person').otherV()"));
+    }
+
+    private static GraphQuery seedTrackingGraph(List<List<Object>> seedBatches) {
+        return new GraphQuery() {
+            @Override
+            public VertexQueryResult readVertex(Object vertexId, String vertexName, List<String> propertyNames) {
+                return new VertexQueryResult("p", vertexId, Map.of(), 1L, 2L);
+            }
+
+            @Override
+            public List<VertexQueryResult> readVertices(String vertexName, List<Object> vertexIds,
+                                                        List<String> propertyNames) {
+                seedBatches.add(vertexIds);
+                List<VertexQueryResult> out = new ArrayList<>(vertexIds.size());
+                for (Object vertexId : vertexIds) {
+                    out.add(new VertexQueryResult("p", vertexId, Map.of(), 1L, 2L));
+                }
+                return out;
+            }
+
+            @Override
+            public List<EdgeQueryResult> readEdges(Object vertexId, String vertexName, String edgeName,
+                                                   EdgeSide direction, List<String> propertyNames) {
+                return List.of();
+            }
+
+            @Override
+            public List<List<EdgeQueryResult>> readEdgesBatch(String edgeName, EdgeSide direction,
+                                                              List<Object> vertexIds, List<String> propertyNames) {
+                List<List<EdgeQueryResult>> out = new ArrayList<>();
+                for (Object id : vertexIds) {
+                    out.add(List.of());
+                }
+                return out;
+            }
+        };
+    }
+
+    @Test
     void barrierStepIsAccepted() {
         EdgeQueryResult e1 = edge("e1", EdgeSide.OUT, "n1", Map.of());
         when(graphQuery.readEdges("v1", "person", "knows", EdgeSide.OUT, List.of()))
@@ -233,7 +371,7 @@ class GremlinGraphQueryTest {
 
     @Test
     void fanOutUsesNativeBatchReadForEdges() {
-        List<List<Object>> edgeBatches = new ArrayList<>();
+        List<List<Object>> edgeBatches = java.util.Collections.synchronizedList(new ArrayList<>());
         GraphQuery fanOut = edgeBatchTrackingGraph(30, edgeBatches);
         GremlinGraphQuery query = new GremlinGraphQuery(fanOut,
                 NeighborVertexResolver.of(Map.of("knows", "p"), Map.of()));
@@ -246,7 +384,7 @@ class GremlinGraphQueryTest {
 
     @Test
     void adaptiveBatchSizeScalesSecondHopToFirstHopFanOut() {
-        List<List<Object>> edgeBatches = new ArrayList<>();
+        List<List<Object>> edgeBatches = java.util.Collections.synchronizedList(new ArrayList<>());
         GraphQuery fanOut = edgeBatchTrackingGraph(100, edgeBatches);
         GremlinGraphQuery query = new GremlinGraphQuery(fanOut,
                 NeighborVertexResolver.of(Map.of("knows", "p"), Map.of()));
@@ -260,7 +398,7 @@ class GremlinGraphQueryTest {
 
     @Test
     void explicitBatchSizeIsNotOverriddenByAdaptiveTuning() {
-        List<List<Object>> edgeBatches = new ArrayList<>();
+        List<List<Object>> edgeBatches = java.util.Collections.synchronizedList(new ArrayList<>());
         GraphQuery fanOut = edgeBatchTrackingGraph(100, edgeBatches);
         GremlinGraphQuery query = new GremlinGraphQuery(fanOut,
                 NeighborVertexResolver.of(Map.of("knows", "p"), Map.of()));
@@ -274,7 +412,7 @@ class GremlinGraphQueryTest {
 
     @Test
     void filterKeepsDefaultBatchSizeOnSecondHop() {
-        List<List<Object>> edgeBatches = new ArrayList<>();
+        List<List<Object>> edgeBatches = java.util.Collections.synchronizedList(new ArrayList<>());
         GraphQuery fanOut = new GraphQuery() {
             @Override
             public VertexQueryResult readVertex(Object vertexId, String vertexName, List<String> propertyNames) {
@@ -318,8 +456,8 @@ class GremlinGraphQueryTest {
 
         query.execute("g.V('v1', 'p').out('knows').has('kind', 'keep').outE('created')");
 
-        // has() filter reduced 100 -> 30, so the second hop keeps the default batch size 10
-        assertEquals(List.of(10, 10, 10), edgeBatches.stream().map(List::size).toList());
+        // has() filter reduced 100 -> 30, so the second hop keeps the default batch size (20)
+        assertEquals(List.of(10, 20), edgeBatches.stream().map(List::size).sorted().toList());
     }
 
     @Test
@@ -781,7 +919,7 @@ class GremlinGraphQueryTest {
 
     @Test
     void edgeReadsAreDedupedAndCached() {
-        List<List<Object>> edgeBatches = new ArrayList<>();
+        List<List<Object>> edgeBatches = java.util.Collections.synchronizedList(new ArrayList<>());
         GraphQuery gq = new GraphQuery() {
             @Override
             public VertexQueryResult readVertex(Object id, String name, List<String> props) {

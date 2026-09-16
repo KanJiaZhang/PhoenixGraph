@@ -84,7 +84,7 @@
       title: 'PhoenixGraph 可视化',
       graph: '图实例',
       vertexType: '顶点类型',
-      vertexIdPlaceholder: '输入顶点 ID，如 888',
+      vertexIdPlaceholder: '输入顶点 ID，多个用逗号分隔，如 888, 1000, 1001',
       gremlinToggle: '切换 Gremlin 查询输入框',
       query: '查询',
       rebalance: '自动平衡力图',
@@ -127,7 +127,7 @@
       title: 'PhoenixGraph Visualizer',
       graph: 'Graph',
       vertexType: 'Vertex type',
-      vertexIdPlaceholder: 'Vertex ID, e.g. 888',
+      vertexIdPlaceholder: 'Vertex ID(s), comma separated, e.g. 888, 1000, 1001',
       gremlinToggle: 'Toggle Gremlin query input',
       query: 'Query',
       rebalance: 'Auto rebalance',
@@ -1249,12 +1249,25 @@
     }
   }
 
+  /**
+   * Splits the id input into ids: comma / full-width comma / semicolon / whitespace
+   * separated, so several seed vertices can be queried at once.
+   */
+  function parseIds(raw) {
+    return String(raw == null ? '' : raw)
+      .split(/[,，;；\s]+/)
+      .map((id) => id.trim())
+      .filter(Boolean);
+  }
+
   function onIdQuery() {
-    const id = el.vertexIdInput.value.trim();
-    if (!id) { setStatus(t('enterId')); return; }
+    const ids = parseIds(el.vertexIdInput.value);
+    if (!ids.length) { setStatus(t('enterId')); return; }
     const vertexType = el.vertexTypeSelect.value;
     if (!vertexType) { setStatus(t('noVertexType')); return; }
-    queryCurrent(`g.V('${id}','${vertexType}').both().both()`);
+    const quoted = ids.map((id) => `'${id}'`).join(',');
+    setStatus(`${ids.length} seed id(s): ${quoted}`);
+    queryCurrent(`g.V(${quoted},'${vertexType}').both().both()`);
   }
 
   function onGremlinQuery() {

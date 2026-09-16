@@ -11,10 +11,10 @@ import java.util.Objects;
  * Registry mapping Gremlin step names to {@link GremlinStep} factories.
  *
  * <p>The built-in steps are {@code out}/{@code in}/{@code both} (vertex hops),
- * {@code outE}/{@code inE}/{@code bothE} (edge hops), {@code has},
- * {@code values}, {@code elementMap}, {@code count}, {@code limit} and
- * {@code dedup}. Custom steps (code snippets) can be added with
- * {@link #register(String, StepFactory)}.
+ * {@code outE}/{@code inE}/{@code bothE} (edge hops), {@code otherV} (edge to its
+ * far endpoint), {@code has}, {@code filter}, {@code values}, {@code elementMap},
+ * {@code count}, {@code limit} and {@code dedup}. Custom steps (code snippets) can
+ * be added with {@link #register(String, StepFactory)}.
  */
 public class GremlinStepRegistry {
 
@@ -55,6 +55,12 @@ public class GremlinStepRegistry {
         register("outE", args -> GremlinSteps.outE(optionalSingle(args, "outE")));
         register("inE", args -> GremlinSteps.inE(optionalSingle(args, "inE")));
         register("bothE", args -> GremlinSteps.bothE(optionalSingle(args, "bothE")));
+        register("otherV", args -> {
+            if (!args.isEmpty()) {
+                throw new QueryException("otherV expects no arguments, got " + args.size());
+            }
+            return GremlinSteps.otherV();
+        });
         register("batch", args -> GremlinSteps.batch(positiveInt(single(args, "batch"))));
         register("barrier", args -> GremlinSteps.barrier(positiveInt(single(args, "barrier"))));
         register("has", args -> {
