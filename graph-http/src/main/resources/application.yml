@@ -14,7 +14,11 @@ phoenixgraph:
     host: localhost
     port: 3000
     namespace: test
+    # primary graph: used by the write endpoints
     vertex-set: http_demo_v1
-    # optional graph schema name; the edge max in-/out-degree is read from the
-    # schema file (graph-schema JSON) rather than being hard-coded here.
     schema: payment-graph
+    # further graphs served by the same instance; the UI lists all of them and
+    # each one reads its own Aerospike vertex set
+    graphs:
+      - schema: kg-entity-graph
+        vertex-set: kg_nell995_v2

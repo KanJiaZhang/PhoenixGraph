@@ -20,23 +20,30 @@ import java.util.regex.Pattern;
 /**
  * Executes Gremlin traversal queries against Aerospike.
  *
- * <p>Each {@code graphName} gets one cached {@link GremlinGraphQuery} engine
- * (which in turn caches compiled queries). {@code ${paramName}} placeholders in
- * the query string are substituted from the request's {@code params} map before
- * execution.
+ * <p>The graph name in the request selects the schema and the vertex set (see
+ * {@link GraphResolver}): one {@link GremlinGraphQuery} engine is cached per
+ * graph, and each engine caches its own compiled queries. {@code ${paramName}}
+ * placeholders in the query string are substituted from the request's
+ * {@code params} map before execution.
  */
 @Service
 public class QueryService {
 
     private static final Pattern PARAMETER = Pattern.compile("\\$\\{([^}]+)}");
 
-    private final AerospikeVertexStore vertexStore;
-    private final AerospikeEdgeStore edgeStore;
+    private final GraphResolver graphs;
     private final Map<String, GremlinGraphQuery> engines = new ConcurrentHashMap<>();
 
-    public QueryService(AerospikeVertexStore vertexStore, AerospikeEdgeStore edgeStore) {
-        this.vertexStore = Objects.requireNonNull(vertexStore, "vertexStore");
-        this.edgeStore = Objects.requireNonNull(edgeStore, "edgeStore");
+    public QueryService(GraphResolver graphs) {
+        this.graphs = Objects.requireNonNull(graphs, "graphs");
+    }
+
+    /**
+     * A service over a single pair of stores: every graph name shares them and
+     * schemas are looked up by name in {@link GraphSchemaManagers}.
+     */
+    public static QueryService ambient(AerospikeVertexStore vertexStore, AerospikeEdgeStore edgeStore) {
+        return new QueryService(GraphResolver.ambient(vertexStore, edgeStore));
     }
 
     /** Substitutes {@code ${...}} parameters and executes the query, returning the raw traversers. */
@@ -52,16 +59,24 @@ public class QueryService {
     }
 
     private GremlinGraphQuery engineFor(String graphName) {
+        return engines.computeIfAbsent(requireName(graphName), name -> {
+            GraphBinding binding = graphs.require(name);
+            AerospikeGraphQuery graphQuery = new AerospikeGraphQuery(
+                    binding.vertexStore(), binding.edgeStore(), binding.schema());
+            return new GremlinGraphQuery(graphQuery, NeighborVertexResolver.from(binding.schema()));
+        });
+    }
+
+    private static String requireName(String graphName) {
         if (graphName == null || graphName.isBlank()) {
             throw new IllegalArgumentException("graphName must not be blank");
         }
-        return engines.computeIfAbsent(graphName, this::buildEngine);
+        return graphName;
     }
 
-    private GremlinGraphQuery buildEngine(String graphName) {
-        GraphSchema schema = GraphSchemaManagers.manager().load(graphName);
-        AerospikeGraphQuery graphQuery = new AerospikeGraphQuery(vertexStore, edgeStore, schema);
-        return new GremlinGraphQuery(graphQuery, NeighborVertexResolver.from(schema));
+    /** The graphs this instance serves (drives the UI's graph dropdown). */
+    public List<GraphSchema> graphs() {
+        return graphs.schemas();
     }
 
     /** Replaces every {@code ${key}} with {@code params[key]}; throws when a key is missing. */

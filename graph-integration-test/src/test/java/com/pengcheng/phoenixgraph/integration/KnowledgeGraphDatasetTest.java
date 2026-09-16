@@ -28,16 +28,43 @@ class KnowledgeGraphDatasetTest {
     }
 
     @Test
-    void composedIdsAlwaysLandInAnEntitySchema() {
+    void composedIdsAreShardedByRelation() {
         KnowledgeGraphDataset dataset = KnowledgeGraphDataset.load();
 
-        for (int id = 0; id < dataset.entityNames().size(); id++) {
-            String name = dataset.entityName(id);
-            int slot = KnowledgeGraphIds.slot(name);
-            assertTrue(slot >= 0 && slot < KnowledgeGraphIds.ENTITY_COUNT, "slot for " + name);
-            assertEquals(slot + "_" + name, KnowledgeGraphIds.composeId(name));
-            assertEquals("Entity" + slot, KnowledgeGraphIds.vertexLabel(name));
+        Set<Integer> shards = new java.util.TreeSet<>();
+        for (KnowledgeGraphDataset.Triple triple : dataset.triples()) {
+            String relation = dataset.relationName(triple.relationId());
+            int shard = KnowledgeGraphIds.shard(relation);
+            assertTrue(shard >= 0 && shard < KnowledgeGraphIds.SHARD_COUNT, "shard for " + relation);
+            shards.add(shard);
+
+            // both endpoints of a triple are stored in the shard of its relation,
+            // so the edges of one relation never leave that shard
+            String head = dataset.entityName(triple.headId());
+            String tail = dataset.entityName(triple.tailId());
+            assertEquals(head + "_" + shard, KnowledgeGraphIds.composeId(head, relation));
+            assertEquals(tail + "_" + shard, KnowledgeGraphIds.composeId(tail, relation));
         }
+        assertEquals(KnowledgeGraphIds.SHARD_COUNT, shards.size(), "all shards are used");
+    }
+
+    @Test
+    void everyEntityPairAndRelationProducesAKnownEdgeSchema() {
+        KnowledgeGraphDataset dataset = KnowledgeGraphDataset.load();
+
+        Set<String> edgeLabels = new TreeSet<>();
+        Set<String> vertexLabels = new TreeSet<>();
+        for (KnowledgeGraphDataset.Triple triple : dataset.triples()) {
+            edgeLabels.add(KnowledgeGraphIds.EDGE_LABEL);
+            vertexLabels.add(KnowledgeGraphIds.VERTEX_LABEL);
+            // the id is always composed from the relation's shard, never from the name
+            assertTrue(KnowledgeGraphIds.composeId(dataset.entityName(triple.headId()),
+                    dataset.relationName(triple.relationId())).endsWith(
+                    "_" + KnowledgeGraphIds.shard(dataset.relationName(triple.relationId()))));
+        }
+        // one vertex schema and one edge schema, regardless of the data
+        assertEquals(Set.of("Entity"), vertexLabels);
+        assertEquals(Set.of("Entity_Entity"), edgeLabels);
     }
 
     @Test
@@ -82,32 +109,16 @@ class KnowledgeGraphDatasetTest {
     }
 
     @Test
-    void everyEntityPairAndRelationProducesAKnownEdgeSchema() {
-        KnowledgeGraphDataset dataset = KnowledgeGraphDataset.load();
-
-        Set<String> edgeLabels = new TreeSet<>();
-        for (KnowledgeGraphDataset.Triple triple : dataset.triples()) {
-            edgeLabels.add(KnowledgeGraphIds.edgeLabel(dataset.entityName(triple.headId()),
-                    dataset.entityName(triple.tailId())));
-        }
-        // all 100 ordered EntityI_EntityJ combinations are actually used, including
-        // the 10 self-referencing ones
-        assertEquals(100, edgeLabels.size());
-        assertTrue(edgeLabels.contains("Entity0_Entity0"));
-    }
-
-    @Test
-    void evenlySampledTriplesKeepEveryEdgeSchema() {
+    void evenlySampledTriplesKeepEveryShard() {
         KnowledgeGraphDataset dataset = KnowledgeGraphDataset.load();
         List<KnowledgeGraphDataset.Triple> sampled = KnowledgeGraphSeeder.sample(dataset.triples(), 5_000);
 
         assertEquals(5_000, sampled.size());
-        Set<String> edgeLabels = new TreeSet<>();
+        Set<Integer> shards = new TreeSet<>();
         for (KnowledgeGraphDataset.Triple triple : sampled) {
-            edgeLabels.add(KnowledgeGraphIds.edgeLabel(dataset.entityName(triple.headId()),
-                    dataset.entityName(triple.tailId())));
+            shards.add(KnowledgeGraphIds.shard(dataset.relationName(triple.relationId())));
         }
-        assertEquals(100, edgeLabels.size());
+        assertEquals(KnowledgeGraphIds.SHARD_COUNT, shards.size());
     }
 
     private static void assertInverseOf(KnowledgeGraphDataset dataset, int[] inverse,

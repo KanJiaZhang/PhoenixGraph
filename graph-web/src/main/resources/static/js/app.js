@@ -2,8 +2,26 @@
   'use strict';
 
   // ---- vertex type styling (Lucide stroke icons + refined palette) ----
-  const COLORS = { Account: '#4f46e5', IP: '#0d9488', Phone: '#d97706' };
-  const DEFAULT_COLOR = '#64748b';
+  const COLORS = {
+    Account: '#4f46e5',
+    IP: '#0d9488',
+    Phone: '#d97706',
+    Entity: '#6366f1',
+  };
+  // Bright fallback palette: unknown vertex types cycle through it instead of all
+  // sharing one grey, so a single-type graph still reads as vividly as payment-graph.
+  const PALETTE = [
+    '#6366f1', '#06b6d4', '#f59e0b', '#ec4899', '#10b981',
+    '#8b5cf6', '#ef4444', '#0ea5e9', '#84cc16', '#f97316',
+  ];
+  // Relation shards: an id ending in "_<n>" (the knowledge graph's
+  // floorMod(relation.hashCode(), 10) suffix) gets its own bright colour, which
+  // also makes the ten shards visible at a glance.
+  const SHARD_COLORS = [
+    '#6366f1', '#06b6d4', '#f59e0b', '#ec4899', '#10b981',
+    '#8b5cf6', '#ef4444', '#0ea5e9', '#84cc16', '#f97316',
+  ];
+  const DEFAULT_COLOR = '#6366f1';
 
   // Lucide icon geometry (MIT), embedded so no CDN is needed at runtime.
   // Each icon is a list of SVG child elements described as {tag, attrs}.
@@ -21,12 +39,36 @@
       { tag: 'rect', attrs: { width: 14, height: 20, x: 5, y: 2, rx: 2, ry: 2 } },
       { tag: 'path', attrs: { d: 'M12 18h.01' } },
     ],
+    Entity: [
+      { tag: 'circle', attrs: { cx: 5.5, cy: 5.5, r: 2.5 } },
+      { tag: 'circle', attrs: { cx: 18.5, cy: 18.5, r: 2.5 } },
+      { tag: 'path', attrs: { d: 'M7.5 7.5 16.5 16.5' } },
+    ],
   };
   const DEFAULT_ICON = [
     { tag: 'path', attrs: { d: 'M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z' } },
   ];
 
-  const colorFor = (label) => COLORS[label] || DEFAULT_COLOR;
+  /**
+   * The colour of a vertex: an explicit colour per vertex type, the relation
+   * shard encoded in the id ("_<n>"), or a bright colour from the palette picked
+   * deterministically from the label so a graph with unknown types stays vivid.
+   */
+  function colorFor(label, id) {
+    if (COLORS[label]) return COLORS[label];
+    const shard = shardOf(id);
+    if (shard !== null) return SHARD_COLORS[shard % SHARD_COLORS.length];
+    const text = String(label || '');
+    let hash = 0;
+    for (let i = 0; i < text.length; i += 1) hash = (hash * 31 + text.charCodeAt(i)) | 0;
+    return PALETTE[Math.abs(hash) % PALETTE.length];
+  }
+
+  /** The trailing "_<digit>" of an id (the knowledge graph's relation shard), or null. */
+  function shardOf(id) {
+    const match = /_(\d)$/.exec(String(id == null ? '' : id));
+    return match ? Number(match[1]) : null;
+  }
   const iconHref = (label) => (ICONS[label] ? `#icon-${label}` : '#icon-default');
 
   function appendIcon(parent, elements) {
@@ -57,6 +99,14 @@
       vertices: '顶点',
       edges: '边',
       propsHint: '点击图中某点或某边查看其全部属性',
+      queryErrorTitle: 'Gremlin 查询失败',
+      queryErrorHint: '请检查 Gremlin Query 是否写正确',
+      errorMessage: '错误信息',
+      errorQuery: '出错查询',
+      errorStackTrace: '异常堆栈',
+      copy: '复制',
+      copied: '已复制',
+      close: '关闭',
       type: '类型',
       community: '社区',
       count: '点',
@@ -92,6 +142,14 @@
       vertices: 'Vertices',
       edges: 'Edges',
       propsHint: 'Click a vertex or edge to view all its properties',
+      queryErrorTitle: 'Gremlin query failed',
+      queryErrorHint: 'Please check that the Gremlin query is written correctly',
+      errorMessage: 'Error',
+      errorQuery: 'Failing query',
+      errorStackTrace: 'Stack trace',
+      copy: 'Copy',
+      copied: 'Copied',
+      close: 'Close',
       type: 'Type',
       community: 'Community',
       count: 'vertices',
@@ -147,6 +205,14 @@
     edgeCount: document.getElementById('edgeCount'),
     propsHint: document.getElementById('propsHint'),
     propsContent: document.getElementById('propsContent'),
+    errorModal: document.getElementById('errorModal'),
+    errorMessage: document.getElementById('errorModalMessage'),
+    errorQuery: document.getElementById('errorModalQuery'),
+    errorQueryRow: document.getElementById('errorModalQueryRow'),
+    errorTrace: document.getElementById('errorModalTrace'),
+    errorTraceBox: document.getElementById('errorModalTraceBox'),
+    errorHint: document.getElementById('errorModalHint'),
+    errorCopy: document.getElementById('errorModalCopy'),
   };
 
   let currentGraph = null;
@@ -204,10 +270,79 @@
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ graphName: currentGraph.name, query, params: {}, returnSubgraph: true }),
     });
-    if (!res.ok) {
-      throw new Error('查询失败: ' + (await res.text()));
-    }
+    if (!res.ok) throw await queryError(res, query);
     return res.json();
+  }
+
+  /**
+   * Builds an Error carrying the backend's error payload (message, exception and
+   * stack trace), so the UI can show what exactly went wrong with the query.
+   */
+  async function queryError(res, query) {
+    const raw = await res.text();
+    let payload = null;
+    try {
+      payload = raw ? JSON.parse(raw) : null;
+    } catch (ignored) {
+      payload = null;
+    }
+    const message = (payload && payload.error) || raw || `HTTP ${res.status}`;
+    const error = new Error(message);
+    error.detail = {
+      status: res.status,
+      query,
+      message,
+      exception: (payload && payload.exception) || null,
+      stackTrace: (payload && payload.stackTrace) || [],
+      hint: (payload && payload.hint) || null,
+    };
+    return error;
+  }
+
+  /** Shows the failing query, the error message and its stack trace in a modal. */
+  function showQueryError(error) {
+    if (!el.errorModal) return;
+    const detail = (error && error.detail) || { message: String((error && error.message) || error) };
+    el.errorMessage.textContent = detail.message || '';
+    el.errorQuery.textContent = detail.query || '';
+    el.errorQueryRow.hidden = !detail.query;
+
+    const frames = [];
+    if (detail.exception) {
+      frames.push(detail.message ? `${detail.exception}: ${detail.message}` : detail.exception);
+    }
+    for (const line of (detail.stackTrace || [])) {
+      if (!frames.includes(line)) frames.push(line);
+    }
+    el.errorTrace.textContent = frames.join('\n');
+    el.errorTraceBox.hidden = frames.length === 0;
+    el.errorTraceBox.open = false;
+    el.errorHint.textContent = detail.hint ? `${t('queryErrorHint')} — ${detail.hint}` : t('queryErrorHint');
+
+    el.errorModal.hidden = false;
+    el.errorCopy.focus();
+  }
+
+  function closeModal(id) {
+    const node = document.getElementById(id);
+    if (node) node.hidden = true;
+  }
+
+  /** The text of the currently shown error, for the copy button. */
+  function errorReport() {
+    const lines = [el.errorMessage.textContent];
+    if (!el.errorQueryRow.hidden) lines.push('', `${t('errorQuery')}: ${el.errorQuery.textContent}`);
+    if (!el.errorTraceBox.hidden) lines.push('', el.errorTrace.textContent);
+    return lines.join('\n');
+  }
+
+  async function copyText(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+      toast(t('copied'));
+    } catch (ignored) {
+      toast(t('copied'));
+    }
   }
 
   // ---- subgraph merge ----
@@ -454,6 +589,12 @@
     return endpoint && typeof endpoint === 'object' ? endpoint.label : null;
   }
 
+  /** Legend group of a vertex: its type, plus the relation shard when the id carries one. */
+  function legendKey(d) {
+    const shard = shardOf(d.id);
+    return shard === null ? String(d.label) : `${d.label} · #${shard}`;
+  }
+
   function applyLegendFilter() {
     if (!root) return;
     const nodes = root.selectAll('.node');
@@ -465,7 +606,7 @@
     }
     const communityOf = algoState && algoState.type === 'community' ? algoState.communityOf : null;
     const hit = (d) => (legendFilter.mode === 'label'
-      ? legendFilter.values.has(d.label)
+      ? legendFilter.values.has(legendKey(d))
       : !!communityOf && legendFilter.values.has(String(communityOf.get(d.key))));
     const keepEdge = (d) => hit(d.source) && hit(d.target);
     nodes.classed('legend-hit', hit).classed('legend-dim', (d) => !hit(d));
@@ -656,8 +797,19 @@
         value: cid,
       }));
     } else {
-      const labels = [...new Set(nodes.map((n) => n.label).filter(Boolean))];
-      items = labels.map((label) => ({ color: colorFor(label), label, mode: 'label', value: label }));
+      // one entry per legend group: the vertex type, split further by relation shard
+      // when the id carries a "_<n>" suffix (so a sharded graph shows its shards)
+      const groups = new Map();
+      for (const n of nodes) {
+        const key = legendKey(n);
+        if (!groups.has(key)) groups.set(key, { key, node: n });
+      }
+      items = [...groups.values()].map((g) => ({
+        color: colorFor(g.node.label, g.node.id),
+        label: truncate(g.key, 20),
+        mode: 'label',
+        value: g.key,
+      }));
     }
     if (!items.length) return;
     const legend = svg.append('g').attr('class', 'legend').attr('transform', 'translate(14, 60)');
@@ -694,7 +846,7 @@
       const cid = algoState.communityOf.get(d.key);
       return communityColor(cid == null ? 0 : cid);
     }
-    return colorFor(d.label);
+    return colorFor(d.label, d.id);
   }
 
   function buildAdjacency(nodes, links) {
@@ -1063,6 +1215,7 @@
       setStatus(`扩展完成：新增点 ${addedV}、边 ${addedE}（共点 ${graph.vertices.size}、边 ${graph.edges.size}）`);
     } catch (err) {
       setStatus('扩展失败: ' + err.message);
+      showQueryError(err);
     }
   }
 
@@ -1092,6 +1245,7 @@
       setStatus(`查询完成：共点 ${graph.vertices.size}、边 ${graph.edges.size}（新增点 ${addedV}、边 ${addedE}）`);
     } catch (err) {
       setStatus(err.message);
+      showQueryError(err);
     }
   }
 
@@ -1167,6 +1321,17 @@
       });
     });
     document.querySelectorAll('.tab').forEach((t) => t.addEventListener('click', onTabChange));
+    document.querySelectorAll('[data-close]').forEach((node) => {
+      node.addEventListener('click', () => closeModal(node.dataset.close));
+    });
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && el.errorModal && !el.errorModal.hidden) {
+        closeModal('errorModal');
+      }
+    });
+    if (el.errorCopy) {
+      el.errorCopy.addEventListener('click', () => copyText(errorReport()));
+    }
     window.addEventListener('resize', render);
 
     applyI18n();

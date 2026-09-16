@@ -16,7 +16,7 @@
 - **当前默认数据**：set `http_demo_v1`（`application.yml` 的 `phoenixgraph.storage.vertex-set` 默认值；`QueryApiIntegrationTest#demoStarGraphViaApi` 播种，先 `truncate`）：  - **小图 hub 135** → 50 个一跳 Account（1000..1049），这 50 个互相交易（环 `i→i+1` + `i→i+7` + `i→i+13`，共 150 条 Payment），每账户 2 IP + 2 Phone，并含反向 `IPToAccount`/`PhoneToAccount`；`g.V('135','Account').both().both()` 子图 = **251 点 / 500 边**。
   - **大图 hub 150**（5000 点压测）→ 100 个一跳 Account（2000..2099），每账户 39 IP + 10 Phone（`AccountToPhone` 出度上限 10）；`g.V('150','Account').both().both()` = **5000** 跳 / 子图 **5001 点 / 5000 边**（JSON ~1.5MB，后端 ~0.5s）。
 - **旧数据**：set `http_rich_v2`（由 `layeredBothHopQueryViaApi` 播种）：888 分层图，两跳 `both()` 子图 421 点 / 430 边。
-- **知识图谱数据**：set `kg_nell995_v1` + schema `kg-entity-graph`（NELL-995，74432 点 / 149678 边，见第 12 节）；graph-http 用 `--spring.profiles.active=kg` 启动即切到它。
+- **知识图谱数据**：set `kg_nell995_v2` + schema `kg-entity-graph`（NELL-995，113,553 点 / 149,678 边，按 relation 分片，见第 12/13 节）。**默认 `application.yml` 同时加载 payment-graph 与 kg-entity-graph**，UI 下拉框可切换。
 - **Account 节点含 List/Map 属性**（见第 9 节踩坑）：`accountUsage`(id=4, list<string>) 与 `accountLimited`(id=5, map<string>)。
 
 ---
@@ -219,69 +219,98 @@ benchmark 类（`graph-integration-test` 下）：`GremlinQueryLatencyTest`、`G
 
 ---
 
-## 12. 知识图谱 Demo（NELL-995 → `kg-entity-graph`）
+## 12. 知识图谱 Demo（NELL-995 → `kg-entity-graph`，按 relation 分片）
 
-**目标**：把一份真实知识图谱三元组数据装进「10 种 Entity 点 + 两两有向边」的结构，并按 `hash%10` 拼 id 查询。
+**建模（v2，本轮改）**：只有 **一种点 `Entity`**、**一种有向边 `Entity_Entity`**；把「同一个实体」按 **relation 的 hash** 分片到 10 份，让每个分片自己承担一部分关系，避免所有边挤在一条点上。
 
 ### Schema（`graph-http/src/main/resources/kg-entity-graph.json`，由脚本生成）
 
 - 生成脚本：`node tools/generate-kg-schema.js`（改结构就改脚本重跑；**不要手改 JSON**）。
-- **10 个点 schema**：`Entity0..Entity9`；属性 `name`（id=1，**display 字段**，标签就用它）、`type`（id=2，值为 `EntityK`）；id schema 类型为 **STRING**。
-- **100 条边 schema**：所有**有序**对 `EntityI_EntityJ`（含 `I==J` 自环 10 个，因为数据里确实有 14866 条同类三元组）；`direction=DIRECTED`；`maxOutgoingEdges=2000`、`maxIncomingEdges=2000`（需求里的「出度/入度 2000」按 schema 声明实现）；边属性 `relation`（id=3）、`xrelation`（id=4）。
-- 每个三元组只存**一条有向边** `head→tail`（`AerospikeEdgeStore.upsertEdges` 会同时写到 head 的 out bin 和 tail 的 in bin），所以从两端都能查到同一条边。
+- **1 个点 schema**：`Entity`；属性 `name`（id=1，**display 字段**）、`shard`（id=2，LONG）；id schema 类型 **STRING**。
+- **1 条边 schema**：`Entity_Entity`，`DIRECTED`，`maxOutgoingEdges=2000` / `maxIncomingEdges=2000`；边属性 `relation`（id=3）、`xrelation`（id=4）。
+- 每个三元组只存**一条有向边** `head→tail`（`AerospikeEdgeStore.upsertEdges` 同时写 head 的 out bin 与 tail 的 in bin），两端都能查到。
 
-### id 方案（`KnowledgeGraphIds`）
+### id 方案（`KnowledgeGraphIds`）——按 relation 分片
 
 ```text
-slot     = floorMod(name.hashCode(), 10)      // 0..9，用 floorMod 避免负 hash
-vertexId = slot + "_" + name                  // 例：6_concept_dateliteral_n2010
-label    = "Entity" + slot                    // 例：Entity6
-edgeLabel= 源点label + "_" + 目标点label      // 例：Entity1_Entity6
+shard    = floorMod(relation.hashCode(), 10)   // 0..9，用 floorMod 避免负 hash
+vertexId = entityName + "_" + shard            // 例：concept_mammal_animals_2
+label    = "Entity"                            // 只有一种点
+edge     = "Entity_Entity"                     // 只有一种边
 ```
 
-查询时客户端要自己拼 id；一条 node 命令即可：
-
-```bash
-node -e "const h=s=>{let x=0;for(const c of s)x=(Math.imul(31,x)+c.charCodeAt(0))|0;return ((x%10)+10)%10};console.log(h(process.argv[1])+'_'+process.argv[1])" "concept_dateliteral_n2010"
-```
+- 三元组 `(h, r, t)` 的**源点和目标点用同一个 shard**（都来自 `r`），所以**一个关系的所有边都落在同一对分片里**，10 个分片之间互不相连。
+- 同一个实体名会在它参与的每个 shard 里各出现一次（实测 149,678 条三元组 → **113,553 个点**）。
+- 查询时客户端自己拼 id，一条命令：
+  ```bash
+  node -e "const h=s=>{let x=0;for(const c of s)x=(Math.imul(31,x)+c.charCodeAt(0))|0;return ((x%10)+10)%10};console.log(process.argv[1]+'_'+h(process.argv[2]))" "concept_mammal_animals" "concept:specializationof"
+  ```
 
 ### xrelation（反向关系）
 
-`xrelation = inverse(relation)`，由数据集**自动推导**（`KnowledgeGraphDataset.deriveInverseRelations`）：统计 `(h,r,t)` 与 `(t,r',h)` 共现，取最大支持度（≥10）的 `r'` 作为反向；**只接受互为最优的配对**（保证 `inverse` 是**对合**：`inverse(inverse(r))==r`），其余关系视为自反（对称）。
-
-- 结果：200 个关系里 **6 对**真反向（如 `concept:bookwriter ↔ concept:agentcreated`、`concept:worksfor ↔ concept:organizationhiredperson`），其余 188 个自反（如 `concept:teamplaysagainstteam`）。
-- 对合性是关键：这样 `filter(relation.equals(R) || xrelation.equals(R))` 才能从**任意一端**、**任意方向**命中关系 R。
+`xrelation = inverse(relation)`，由数据集**自动推导**（`KnowledgeGraphDataset.deriveInverseRelations`）：统计 `(h,r,t)` 与 `(t,r',h)` 共现，取支持度最大（≥10）的 `r'` 作为反向；**只接受互为最优的配对**（保证 `inverse` 是**对合**：`inverse(inverse(r))==r`），其余视为自反。结果：200 个关系里 **6 对**真反向（`bookwriter↔agentcreated`、`worksfor↔organizationhiredperson`…），188 个自反。对合性保证 `filter(relation.equals(R) || xrelation.equals(R))` 能从任意一端、任意方向命中 R。
 
 ### 数据集
 
-- 上游：`thunlp/OpenKE` 的 `benchmarks/NELL-995`（75492 实体 / 200 关系 / 149678 三元组）。
-- 本地：`graph-integration-test/src/test/resources/kg/nell995/{entity2id,relation2id,train2id}.txt.gz`（gzip 后 1.5MB，含 `README.md` 说明来源）；重新下载：`./tools/download-nell995-dataset.sh`。
-- 读取：`KnowledgeGraphDataset.load()`（`/kg/nell995`），`KnowledgeGraphDatasetTest` 校验规模、id 方案、逆关系对合性（不需要 Aerospike，跑得飞快）。
+- 上游 `thunlp/OpenKE` 的 `benchmarks/NELL-995`（75,492 实体 / 200 关系 / 149,678 三元组）。
+- 本地：`graph-integration-test/src/test/resources/kg/nell995/*.txt.gz`（gzip 1.5MB + `README.md`）；重下：`./tools/download-nell995-dataset.sh`。
+- `KnowledgeGraphDatasetTest` 校验规模、分片规则、逆关系对合性（**不需要 Aerospike**，秒级）。
 
-### 播种与查询
+### 播种
 
 ```bash
-# 全量播种（74432 点 / 149678 边，8 线程约 75s；已播种会自动跳过，KG_RESEED=true 强制重播）
+# 全量（113,553 点 / 149,678 边，8 线程约 58s；已播种自动跳过，KG_RESEED=true 强制）
 AEROSPIKE_NAMESPACE=test ./mvnw -pl graph-integration-test -am test \
     -Dtest=KnowledgeGraphIntegrationTest -Dsurefire.failIfNoSpecifiedTests=false
-# 小样本冒烟（5000 条，写进独立 set kg_nell995_v1_s5000，避免和全量混用）
+# 小样本冒烟（写进独立 set kg_nell995_v2_s5000）
 KG_TRIPLE_LIMIT=5000 ... 同上
 ```
 
-- 环境变量：`KG_TRIPLE_LIMIT`（0=全量，默认 0）、`KG_PARALLELISM`（默认 8）、`KG_RESEED`、`AEROSPIKE_VERTEX_SET`。
-- 播种实现 `KnowledgeGraphSeeder`：点按 500/批、边按 1000/批；多线程并发写会产生同 bin 的 generation 冲突，所以 store 用 `maxWriteAttempts=10` + 每个 chunk **失败重发 4 次**，并且用**静默 BusinessLog/ErrorLog**（否则 30 万次 bin 写会刷满日志）。
-- 查询端：`graph-http` 用 `--spring.profiles.active=kg`（`application-kg.yml` 把 `vertex-set=kg_nell995_v1`、`schema=kg-entity-graph`），graph-web 无需改动（代理不变）。
+环境变量：`KG_TRIPLE_LIMIT`（0=全量，默认 0）、`KG_PARALLELISM`（默认 8）、`KG_RESEED`、`AEROSPIKE_VERTEX_SET`。
+`KnowledgeGraphSeeder`：点 500/批、边 1000/批；并发写同 bin 会 generation 冲突，所以 store 用 `maxWriteAttempts=10` + 每 chunk 失败重发 4 次 + **静默 BusinessLog/ErrorLog**。
 
-**可直接粘贴到可视化界面的两个例子**（实测）：
+### 可直接粘贴到可视化界面（实测）
 
 | 用途 | vertex id | gremlin |
 |---|---|---|
-| 正常大小子图（41 点 / 40 边） | `6_concept_dateliteral_n2010`（Entity6） | `g.V('6_concept_dateliteral_n2010','Entity6').bothE()` |
-| 关系过滤（只留 atdate） | 同上 | `g.V('6_concept_dateliteral_n2010','Entity6').bothE().filter(relation.equals('concept:atdate') || xrelation.equals('concept:atdate'))` |
-| 压测大点（2411 度 → 2090 点 / 2411 边，~0.8s） | `1_concept_book_new`（Entity1） | `g.V('1_concept_book_new','Entity1').bothE()` |
+| **推荐**（41 点 / 40 边） | `concept_mammal_animals_2` | `g.V('concept_mammal_animals_2','Entity').bothE()` |
+| 关系过滤 | 同上 | `g.V('concept_mammal_animals_2','Entity').bothE().filter(relation.equals('concept:specializationof') \|\| xrelation.equals('concept:specializationof'))` |
+| 压测大点（2237 度） | `concept_book_new_9` | `g.V('concept_book_new_9','Entity').bothE()` |
 
-### 相关改动（本轮顺带做的引擎能力）
+> 注意：`bothE()`（无参）在这种建模下比 `both('Entity_Entity')` 更直观；两者等价（只有一种边）。
 
-- 新增 `filter(表达式)` 步骤 + `GremlinFilterExpression`（见第 4 节），并把 filter 的键并入读取投影计划。
-- `GremlinContext.recordEdges` 现在**同时记录边的另一端点**：以前 `bothE()` 的子图只有起点，前端会因为端点缺失把边丢掉；现在 `bothE()` 能直接出完整子图。
-- 自适应 batch 把 `filter` 视同 `has`（过滤后不再放大 batch）。
+---
+
+## 13. 多图实例 + 查询错误回传（本轮新增）
+
+### 多图共存（payment-graph 与 kg-entity-graph 同时加载）
+
+- `phoenixgraph.storage.graphs` 声明**附加图**（每个图一个 Aerospike set），主图仍是 `schema` / `vertex-set`：
+  ```yaml
+  phoenixgraph.storage:
+    vertex-set: http_demo_v1
+    schema: payment-graph
+    graphs:
+      - schema: kg-entity-graph
+        vertex-set: kg_nell995_v2
+  ```
+- 新增 `GraphProperties`（配置项）、`GraphBinding`（schema + 该 set 的 vertex/edge store）、`GraphResolver`（`require(name)` / `schemas()`）、`GraphRegistry`（按配置顺序保存，`Map.copyOf` 会乱序所以用 `LinkedHashMap + unmodifiableMap`）。
+- `QueryService` 按 graphName 取 binding 并**每个图缓存一个 `GremlinGraphQuery`**；`QueryService.ambient(vs, es)` 是给单图/测试用的静态工厂（**注意：Spring 会因两个构造器报 “No default constructor found”，所以做成静态工厂而不是重载构造器**）。
+- `SchemaController` 改为从 `QueryService.graphs()`（即 registry）取，所以 `/api/v1/graphs` 按配置顺序返回两个图，UI 下拉框直接能切。
+- 只想跑知识图谱：`--spring.profiles.active=kg`（`application-kg.yml` 覆盖成单图）。
+
+### 查询错误 → UI 弹窗
+
+- 后端 `ApiExceptionHandler`（`@RestControllerAdvice`）：`QueryException` / `IllegalArgumentException` → **400**，其它异常 → **500**，body 统一为
+  ```json
+  { "error": "...", "exception": "全类名", "stackTrace": ["...", "..."], "hint": "Check the Gremlin query syntax and the request parameters" }
+  ```
+- `ProxyController` 本来就把上游错误 body 原样转发，所以 graph-web 侧不用改。
+- 前端 `runQuery()` 非 2xx 时 `await queryError(res, query)` 组装 `Error.detail`（status/query/message/exception/stackTrace/hint），`showQueryError()` 弹出**模态框**：错误信息（红）、出错查询原文、可折叠的深色堆栈、提示语「请检查 Gremlin Query 是否写正确」，带「复制 / 关闭」，支持 Esc、点遮罩、右上角 × 关闭。i18n 新增 `queryErrorTitle/queryErrorHint/errorMessage/errorQuery/errorStackTrace/copy/copied/close`。
+
+### 前端配色（默认视图更亮）
+
+- `COLORS` 增加 `Entity: '#6366f1'`；`DEFAULT_COLOR` 从灰 `#64748b` 改为亮 `#6366f1`。
+- 新增 `PALETTE`（10 色亮色）与 `SHARD_COLORS`（10 色，与 PALETTE 同色系），`DEFAULT_ICON` 之外给 `Entity` 加了「两个圆 + 连线」的图标。
+- `colorFor(label, id)` 三级优先：已知类型固定色 → id 结尾 `_<数字>`（知识图谱的 relation 分片）取 `SHARD_COLORS[shard]` → 未知类型按 label hash 从 `PALETTE` 取色（不再全灰）。
+- 图例同步支持分片：`legendKey(d)` = `label` 或 `label · #shard`，点击过滤按该分组（payment-graph 无 `_<数字>` 后缀，行为不变）。

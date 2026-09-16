@@ -1,10 +1,10 @@
 package com.pengcheng.phoenixgraph.integration;
 
 import com.aerospike.client.AerospikeClient;
+import com.pengcheng.phoenixgraph.query.aerospike.AerospikeGraphQuery;
 import com.pengcheng.phoenixgraph.query.gremlin.GremlinGraphQuery;
 import com.pengcheng.phoenixgraph.query.gremlin.NeighborVertexResolver;
 import com.pengcheng.phoenixgraph.query.gremlin.Subgraph;
-import com.pengcheng.phoenixgraph.query.aerospike.AerospikeGraphQuery;
 import com.pengcheng.phoenixgraph.schema.EdgeSchema;
 import com.pengcheng.phoenixgraph.schema.GraphSchema;
 import com.pengcheng.phoenixgraph.schema.VertexSchema;
@@ -18,37 +18,42 @@ import org.junit.jupiter.api.Test;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * End-to-end test of the knowledge-graph layout: seeds a triple dataset into the
- * {@code kg-entity-graph} schema (10 {@code Entity0..Entity9} vertex types, all 100
- * ordered relation types, each edge carrying {@code relation} / {@code xrelation})
- * and then queries it the way the UI does.
+ * {@code kg-entity-graph} schema (a single {@code Entity} vertex type and a single
+ * directed {@code Entity_Entity} relation type) and then queries it the way the UI
+ * does.
  *
- * <p>Size is controlled by {@code KG_TRIPLE_LIMIT} (default
- * {@value #DEFAULT_TRIPLE_LIMIT} evenly-sampled triples, {@code 0} = the whole
- * dataset) and the writer thread count by {@code KG_PARALLELISM}. Seeding is
- * skipped when the set already contains the data; set {@code KG_RESEED=true} to
- * force it.
+ * <p>Vertices are sharded by relation: an endpoint of {@code (head, relation, tail)}
+ * is stored as {@code name + "_" + floorMod(relation.hashCode(), 10)}, so all edges
+ * of a relation live in one shard.
+ *
+ * <p>Size is controlled by {@code KG_TRIPLE_LIMIT} (default {@value #DEFAULT_TRIPLE_LIMIT}
+ * = the whole dataset, {@code 0}) and the writer thread count by
+ * {@code KG_PARALLELISM}. Seeding is skipped when the set already contains the
+ * data; set {@code KG_RESEED=true} to force it.
  */
 class KnowledgeGraphIntegrationTest {
 
     private static final String GRAPH_NAME = "kg-entity-graph";
-    private static final String DEFAULT_SET = "kg_nell995_v1";
+    private static final String DEFAULT_SET = "kg_nell995_v2";
 
     /**
      * Triples to seed: {@code 0} = the whole dataset. A positive value seeds an
-     * evenly-spaced sample into its own set ({@code kg_nell995_v1_s<N>}) so a
+     * evenly-spaced sample into its own set ({@code kg_nell995_v2_s<N>}) so a
      * sampled set can never be mistaken for the full one.
      */
     private static final int DEFAULT_TRIPLE_LIMIT = 0;
@@ -68,7 +73,7 @@ class KnowledgeGraphIntegrationTest {
 
             KnowledgeGraphDataset dataset = KnowledgeGraphDataset.load();
             GraphSchema schema = loadSchema();
-            // silent logs (a full seed writes ~300k bins) and more retries: parallel
+            // silent logs (a full seed writes ~700k bins) and more retries: parallel
             // writers race on the per-vertex edge bins, which is resolved by re-writing
             BusinessLog silentBusiness = entry -> {
             };
@@ -103,143 +108,152 @@ class KnowledgeGraphIntegrationTest {
 
     private void assertSchemaShape(GraphSchema schema) {
         assertEquals(GRAPH_NAME, schema.name());
-        assertEquals(KnowledgeGraphIds.ENTITY_COUNT, schema.vertexSchemas().size());
-        for (int i = 0; i < KnowledgeGraphIds.ENTITY_COUNT; i++) {
-            VertexSchema vertex = schema.vertexSchema("Entity" + i);
-            assertNotNull(vertex, "missing vertex schema Entity" + i);
-            // id + name + type, with `name` flagged as the display property
-            assertEquals(List.of("name", "type"),
-                    vertex.properties().stream().map(p -> p.name()).toList());
-            assertEquals(List.of("name"), vertex.displayPropertyNames());
-        }
+        assertEquals(1, schema.vertexSchemas().size());
+        VertexSchema entity = schema.vertexSchema(KnowledgeGraphIds.VERTEX_LABEL);
+        assertNotNull(entity, "missing the Entity vertex schema");
+        assertEquals(List.of("name", "shard"), entity.properties().stream().map(p -> p.name()).toList());
+        assertEquals(List.of("name"), entity.displayPropertyNames());
 
-        int expectedEdges = KnowledgeGraphIds.ENTITY_COUNT * KnowledgeGraphIds.ENTITY_COUNT;
-        assertEquals(expectedEdges, schema.edgeSchemas().size());
-        for (EdgeSchema edge : schema.edgeSchemas()) {
-            assertEquals(2000, edge.maxOutgoingEdges(), edge.name());
-            assertEquals(2000, edge.maxIncomingEdges(), edge.name());
-            assertEquals(List.of("relation", "xrelation"),
-                    edge.properties().stream().map(p -> p.name()).toList());
-            // the edge schema name encodes the two endpoint kinds
-            assertEquals(edge.source().vertexName() + "_" + edge.target().vertexName(), edge.name());
-        }
+        assertEquals(1, schema.edgeSchemas().size());
+        EdgeSchema edge = schema.edgeSchema(KnowledgeGraphIds.EDGE_LABEL);
+        assertNotNull(edge, "missing the Entity_Entity edge schema");
+        assertEquals(List.of("relation", "xrelation"), edge.properties().stream().map(p -> p.name()).toList());
+        assertEquals(2000, edge.maxOutgoingEdges());
+        assertEquals(2000, edge.maxIncomingEdges());
+        assertEquals(KnowledgeGraphIds.VERTEX_LABEL, edge.source().vertexName());
+        assertEquals(KnowledgeGraphIds.VERTEX_LABEL, edge.target().vertexName());
     }
 
     private void assertIdScheme(KnowledgeGraphDataset dataset) {
-        for (int entityId = 0; entityId < 200; entityId++) {
-            String name = dataset.entityName(entityId);
-            int slot = KnowledgeGraphIds.slot(name);
-            assertTrue(slot >= 0 && slot < KnowledgeGraphIds.ENTITY_COUNT, "slot out of range for " + name);
-            assertEquals(slot + "_" + name, KnowledgeGraphIds.composeId(name));
-            assertEquals("Entity" + slot, KnowledgeGraphIds.vertexLabel(name));
+        Set<Integer> shards = new LinkedHashSet<>();
+        for (KnowledgeGraphDataset.Triple triple : dataset.triples()) {
+            String relation = dataset.relationName(triple.relationId());
+            int shard = KnowledgeGraphIds.shard(relation);
+            assertTrue(shard >= 0 && shard < KnowledgeGraphIds.SHARD_COUNT, "shard out of range for " + relation);
+            // both endpoints of a triple land in the shard of its relation
+            assertEquals(shard, KnowledgeGraphIds.shard(relation));
+            String head = dataset.entityName(triple.headId());
+            String tail = dataset.entityName(triple.tailId());
+            assertEquals(head + "_" + shard, KnowledgeGraphIds.composeId(head, relation));
+            assertEquals(tail + "_" + shard, KnowledgeGraphIds.composeId(tail, relation));
+            shards.add(shard);
+            if (shards.size() == KnowledgeGraphIds.SHARD_COUNT && triple.headId() > 5000) {
+                break;
+            }
         }
-        // negative hash codes must still map into 0..9
-        assertTrue(KnowledgeGraphIds.slot("polyglot") >= 0);
+        assertEquals(KnowledgeGraphIds.SHARD_COUNT, shards.size(), "every shard should be used");
     }
 
     private void assertQueries(KnowledgeGraphDataset dataset, int tripleLimit, GraphSchema schema,
                                AerospikeVertexStore vertexStore, AerospikeEdgeStore edgeStore) {
         List<KnowledgeGraphDataset.Triple> triples = KnowledgeGraphSeeder.sample(dataset.triples(), tripleLimit);
         Stats stats = Stats.of(dataset, triples);
-        int hubEntityId = stats.hubEntityId();
-        String hubName = dataset.entityName(hubEntityId);
-        String hubId = KnowledgeGraphIds.composeId(hubName);
-        String hubLabel = KnowledgeGraphIds.vertexLabel(hubName);
+        String hubId = stats.hubVertexId();
+        String hubName = stats.nameOf(hubId);
         int hubRelationId = stats.hubRelationId();
         String hubRelation = dataset.relationName(hubRelationId);
 
         AerospikeGraphQuery graphQuery = new AerospikeGraphQuery(vertexStore, edgeStore, schema);
         GremlinGraphQuery gremlin = new GremlinGraphQuery(graphQuery, NeighborVertexResolver.from(schema));
+        String label = KnowledgeGraphIds.VERTEX_LABEL;
 
-        // 1. the vertex is stored under its composed id, in its Entity<slot> schema
+        // 1. the vertex is stored under its composed id, carrying name + shard
         List<Object> values = gremlin.execute(
-                "g.V('" + hubId + "', '" + hubLabel + "').values('name','type')");
-        assertEquals(List.of(hubName, hubLabel), values);
+                "g.V('" + hubId + "', '" + label + "').values('name','shard')");
+        assertEquals(hubName, values.get(0));
+        assertEquals((long) stats.shardOf(hubId), ((Number) values.get(1)).longValue());
 
-        // 2. every incident edge is reachable through bothE() (all 100 relation types)
-        int degree = stats.degree(hubEntityId);
+        // 2. every incident edge of the shard is reachable
+        int degree = stats.degree(hubId);
         long edgeCount = (long) (Number) gremlin.execute(
-                "g.V('" + hubId + "', '" + hubLabel + "').bothE().count()").get(0);
-        assertEquals(degree, edgeCount, "bothE() degree of " + hubName);
+                "g.V('" + hubId + "', '" + label + "').bothE().count()").get(0);
+        assertEquals(degree, edgeCount, "bothE() degree of " + hubId);
 
         // 3. relation filter: relation.equals(R) || xrelation.equals(R) finds the
         //    relation from either endpoint, in this direction or the reverse one
-        int matchesRelation = stats.incidentWithRelation(hubEntityId, hubRelationId);
+        int matchesRelation = stats.incidentWithRelation(hubId, hubRelationId);
         int inverseRelationId = stats.inverseRelationId(hubRelationId);
         // when a relation is its own reverse the two sets coincide, so never add it twice
         int matchesReverse = inverseRelationId == hubRelationId
-                ? 0 : stats.incidentWithRelation(hubEntityId, inverseRelationId);
-        long filtered = (long) (Number) gremlin.execute("g.V('" + hubId + "', '" + hubLabel + "').bothE()"
+                ? 0 : stats.incidentWithRelation(hubId, inverseRelationId);
+        long filtered = (long) (Number) gremlin.execute("g.V('" + hubId + "', '" + label + "').bothE()"
                 + ".filter(relation.equals('" + hubRelation + "') || xrelation.equals('" + hubRelation + "'))"
                 + ".count()").get(0);
         assertEquals(matchesRelation + matchesReverse, filtered,
                 "filtered edge count for relation " + hubRelation);
 
-        long forwardOnly = (long) (Number) gremlin.execute("g.V('" + hubId + "', '" + hubLabel + "').bothE()"
+        long forwardOnly = (long) (Number) gremlin.execute("g.V('" + hubId + "', '" + label + "').bothE()"
                 + ".filter(relation.equals('" + hubRelation + "')).count()").get(0);
         assertEquals(matchesRelation, forwardOnly, "forward-only count for relation " + hubRelation);
-        assertTrue(filtered >= forwardOnly);
 
         // 4. the same filter over the traversers themselves, as the UI issues it
-        List<Object> edges = gremlin.execute("g.V('" + hubId + "', '" + hubLabel + "').bothE()"
+        List<Object> edges = gremlin.execute("g.V('" + hubId + "', '" + label + "').bothE()"
                 + ".filter(relation.equals('" + hubRelation + "') || xrelation.equals('" + hubRelation + "'))");
         assertEquals(filtered, edges.size());
 
-        // 5. the subgraph for the visualisation contains the hub and every neighbour
-        Subgraph subgraph = gremlin.executeSubgraph(
-                "g.V('" + hubId + "', '" + hubLabel + "').bothE()");
+        // 5. every relation shard is loaded
+        for (int shard = 0; shard < KnowledgeGraphIds.SHARD_COUNT; shard++) {
+            long shardEdges = stats.triplesInShard(shard);
+            assertTrue(shardEdges > 0, "shard " + shard + " has no edges in the sample");
+        }
+
+        // 6. the subgraph for the visualisation contains the hub and every neighbour
+        Subgraph subgraph = gremlin.executeSubgraph("g.V('" + hubId + "', '" + label + "').bothE()");
         assertEquals(degree, subgraph.edges().size());
-        assertEquals(1 + stats.neighbours(hubEntityId).size(), subgraph.vertices().size());
+        assertEquals(1 + stats.neighbours(hubId).size(), subgraph.vertices().size());
         assertTrue(subgraph.vertices().stream().anyMatch(v -> v.id().equals(hubId)));
 
-        System.out.println("[kg] hub vertex id      : " + hubId + "   (label " + hubLabel + ")");
-        System.out.println("[kg] hub query          : g.V('" + hubId + "', '" + hubLabel + "').bothE()");
-        System.out.println("[kg] relation query     : g.V('" + hubId + "', '" + hubLabel + "').bothE()"
+        System.out.println("[kg] hub vertex id      : " + hubId + "   (degree " + degree
+                + ", relation '" + hubRelation + "')");
+        System.out.println("[kg] hub query          : g.V('" + hubId + "', '" + label + "').bothE()");
+        System.out.println("[kg] relation query     : g.V('" + hubId + "', '" + label + "').bothE()"
                 + ".filter(relation.equals('" + hubRelation + "') || xrelation.equals('" + hubRelation + "'))");
-        System.out.println("[kg] hub degree         : " + degree + " (" + stats.neighbours(hubEntityId).size()
-                + " distinct neighbours), relation '" + hubRelation + "' edges " + matchesRelation
-                + " + reverse " + matchesReverse);
 
         // a right-sized neighbourhood for the visualiser (the hub is a stress test)
-        int demoEntityId = stats.demoEntityId();
-        String demoName = dataset.entityName(demoEntityId);
-        String demoId = KnowledgeGraphIds.composeId(demoName);
-        String demoLabel = KnowledgeGraphIds.vertexLabel(demoName);
-        long demoEdges = (long) (Number) gremlin.execute(
-                "g.V('" + demoId + "', '" + demoLabel + "').bothE().count()").get(0);
-        Subgraph demo = gremlin.executeSubgraph("g.V('" + demoId + "', '" + demoLabel + "').bothE()");
-        assertEquals(demoEdges, demo.edges().size());
+        String demoId = stats.demoVertexId();
+        String demoName = stats.nameOf(demoId);
+        Subgraph demo = gremlin.executeSubgraph("g.V('" + demoId + "', '" + label + "').bothE()");
+        assertEquals(stats.degree(demoId), demo.edges().size());
         assertTrue(demo.vertices().size() > 1);
-        System.out.println("[kg] demo vertex id     : " + demoId + "   (label " + demoLabel + ")");
-        System.out.println("[kg] demo name          : " + demoName);
-        System.out.println("[kg] demo query         : g.V('" + demoId + "', '" + demoLabel + "').bothE()");
+        System.out.println("[kg] demo vertex id     : " + demoId + "   (name " + demoName + ")");
+        System.out.println("[kg] demo query         : g.V('" + demoId + "', '" + label + "').bothE()");
         System.out.println("[kg] demo subgraph      : " + demo.vertices().size() + " vertices, "
                 + demo.edges().size() + " edges");
     }
 
     // --- in-memory expectations computed from the same dataset sample ---
 
-    /** Degree / relation statistics of the seeded sample. */
-    private record Stats(Map<Integer, Integer> degree, Map<Integer, Map<Integer, Integer>> incident,
-                         Map<Integer, java.util.Set<Integer>> neighbours, int[] inverse, int hubEntityId,
-                         int hubRelationId, int demoEntityId) {
+    /** Degree / relation statistics of the seeded vertices. */
+    private record Stats(Map<String, Integer> degree, Map<String, Map<Integer, Integer>> incident,
+                         Map<String, Set<String>> neighbours, Map<String, String> nameById,
+                         Map<String, Integer> shardById, int[] inverse, String hubVertexId,
+                         int hubRelationId, String demoVertexId) {
 
         static Stats of(KnowledgeGraphDataset dataset, List<KnowledgeGraphDataset.Triple> triples) {
-            Map<Integer, Integer> degree = new HashMap<>();
-            Map<Integer, Map<Integer, Integer>> incident = new HashMap<>();
-            Map<Integer, java.util.Set<Integer>> neighbours = new HashMap<>();
+            Map<String, Integer> degree = new HashMap<>();
+            Map<String, Map<Integer, Integer>> incident = new HashMap<>();
+            Map<String, Set<String>> neighbours = new HashMap<>();
+            Map<String, String> nameById = new HashMap<>();
+            Map<String, Integer> shardById = new HashMap<>();
             for (KnowledgeGraphDataset.Triple triple : triples) {
-                degree.merge(triple.headId(), 1, Integer::sum);
-                degree.merge(triple.tailId(), 1, Integer::sum);
-                incident.computeIfAbsent(triple.headId(), k -> new HashMap<>())
-                        .merge(triple.relationId(), 1, Integer::sum);
-                incident.computeIfAbsent(triple.tailId(), k -> new HashMap<>())
-                        .merge(triple.relationId(), 1, Integer::sum);
-                neighbours.computeIfAbsent(triple.headId(), k -> new java.util.HashSet<>()).add(triple.tailId());
-                neighbours.computeIfAbsent(triple.tailId(), k -> new java.util.HashSet<>()).add(triple.headId());
+                String relation = dataset.relationName(triple.relationId());
+                int shard = KnowledgeGraphIds.shard(relation);
+                String head = KnowledgeGraphIds.composeId(dataset.entityName(triple.headId()), relation);
+                String tail = KnowledgeGraphIds.composeId(dataset.entityName(triple.tailId()), relation);
+                nameById.put(head, dataset.entityName(triple.headId()));
+                nameById.put(tail, dataset.entityName(triple.tailId()));
+                shardById.put(head, shard);
+                shardById.put(tail, shard);
+                for (String vertex : List.of(head, tail)) {
+                    degree.merge(vertex, 1, Integer::sum);
+                    incident.computeIfAbsent(vertex, k -> new HashMap<>())
+                            .merge(triple.relationId(), 1, Integer::sum);
+                }
+                neighbours.computeIfAbsent(head, k -> new HashSet<>()).add(tail);
+                neighbours.computeIfAbsent(tail, k -> new HashSet<>()).add(head);
             }
-            int hub = degree.entrySet().stream()
-                    .max(Map.Entry.comparingByValue())
+            String hub = degree.entrySet().stream()
+                    .max(Comparator.comparingInt(Map.Entry::getValue))
                     .orElseThrow(() -> new IllegalStateException("no triples sampled"))
                     .getKey();
             int hubRelation = incident.get(hub).entrySet().stream()
@@ -247,28 +261,42 @@ class KnowledgeGraphIntegrationTest {
                     .orElseThrow()
                     .getKey();
             // a vertex whose neighbourhood renders nicely (a few dozen nodes)
-            int demo = degree.entrySet().stream()
+            String demo = degree.entrySet().stream()
                     .filter(e -> e.getValue() >= 15 && e.getValue() <= 80)
-                    .min(java.util.Comparator.comparingInt(e -> Math.abs(e.getValue() - 40)))
+                    .min(Comparator.comparingInt(e -> Math.abs(e.getValue() - 40)))
                     .map(Map.Entry::getKey)
                     .orElse(hub);
-            return new Stats(degree, incident, neighbours, dataset.inverseRelations(), hub, hubRelation, demo);
+            return new Stats(degree, incident, neighbours, nameById, shardById,
+                    dataset.inverseRelations(), hub, hubRelation, demo);
         }
 
-        int degree(int entityId) {
-            return degree.getOrDefault(entityId, 0);
+        int degree(String vertexId) {
+            return degree.getOrDefault(vertexId, 0);
         }
 
-        int incidentWithRelation(int entityId, int relationId) {
-            return incident.getOrDefault(entityId, Map.of()).getOrDefault(relationId, 0);
+        int incidentWithRelation(String vertexId, int relationId) {
+            return incident.getOrDefault(vertexId, Map.of()).getOrDefault(relationId, 0);
         }
 
         int inverseRelationId(int relationId) {
             return inverse[relationId];
         }
 
-        java.util.Set<Integer> neighbours(int entityId) {
-            return neighbours.getOrDefault(entityId, java.util.Set.of());
+        Set<String> neighbours(String vertexId) {
+            return neighbours.getOrDefault(vertexId, Set.of());
+        }
+
+        String nameOf(String vertexId) {
+            return nameById.getOrDefault(vertexId, vertexId);
+        }
+
+        int shardOf(String vertexId) {
+            return shardById.getOrDefault(vertexId, -1);
+        }
+
+        /** Number of sampled triples whose relation falls into the given shard. */
+        long triplesInShard(int shard) {
+            return shardById.values().stream().filter(s -> s == shard).count();
         }
     }
 

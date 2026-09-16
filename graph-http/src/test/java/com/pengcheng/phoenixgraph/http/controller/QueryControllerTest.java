@@ -1,6 +1,7 @@
 package com.pengcheng.phoenixgraph.http.controller;
 
 import com.pengcheng.phoenixgraph.http.service.QueryService;
+import com.pengcheng.phoenixgraph.query.QueryException;
 import com.pengcheng.phoenixgraph.query.gremlin.Subgraph;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -73,5 +74,45 @@ class QueryControllerTest {
                 .andExpect(jsonPath("$.edges[0].target").value("1001"));
 
         verify(queryService).querySubgraph("payment-graph", "g.V(888,'Account').out('Payment')", Map.of());
+    }
+
+    @Test
+    void failedQueryReturnsMessageExceptionAndStackTrace() throws Exception {
+        when(queryService.querySubgraph("payment-graph", "g.V(1,'Account').nope()", Map.of()))
+                .thenThrow(new QueryException("Unknown Gremlin step: nope"));
+
+        mockMvc.perform(post("/api/v1/query")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                { "graphName": "payment-graph",
+                                  "query": "g.V(1,'Account').nope()",
+                                  "params": {},
+                                  "returnSubgraph": true }
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value("Unknown Gremlin step: nope"))
+                .andExpect(jsonPath("$.exception")
+                        .value("com.pengcheng.phoenixgraph.query.QueryException"))
+                .andExpect(jsonPath("$.hint").isNotEmpty())
+                .andExpect(jsonPath("$.stackTrace[0]").value(
+                        "com.pengcheng.phoenixgraph.query.QueryException: Unknown Gremlin step: nope"))
+                .andExpect(jsonPath("$.stackTrace.length()").value(org.hamcrest.Matchers.greaterThan(3)));
+    }
+
+    @Test
+    void unknownGraphReturnsBadRequestWithAvailableGraphs() throws Exception {
+        when(queryService.query("nope", "g.V('1','Account')", Map.of()))
+                .thenThrow(new IllegalArgumentException("Unknown graph 'nope'; available graphs: payment-graph"));
+
+        mockMvc.perform(post("/api/v1/query")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                { "graphName": "nope",
+                                  "query": "g.V('1','Account')",
+                                  "params": {} }
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error").value(
+                        "Unknown graph 'nope'; available graphs: payment-graph"));
     }
 }

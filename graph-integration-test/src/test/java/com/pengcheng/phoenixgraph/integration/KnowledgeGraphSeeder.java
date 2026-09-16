@@ -27,13 +27,14 @@ import java.util.function.IntConsumer;
  * Writes a {@link KnowledgeGraphDataset} into the {@code kg-entity-graph}
  * storage layout.
  *
- * <p>Every dataset entity becomes one vertex in its
- * {@code Entity<slot>} schema ({@link KnowledgeGraphIds}), and every triple
- * becomes one <em>directed</em> edge of schema
- * {@code Entity<headSlot>_Entity<tailSlot>} carrying
- * {@code relation} (the forward name) and {@code xrelation} (its reverse name).
- * Each edge is stored on both endpoints (out bin on the head, in bin on the
- * tail), so a single edge answers queries from either end.
+ * <p>Every dataset entity becomes one vertex per <em>relation shard</em> it takes
+ * part in ({@link KnowledgeGraphIds}): the id is
+ * {@code name + "_" + floorMod(relation.hashCode(), 10)}, so all edges of a
+ * relation are stored in one shard. Every triple becomes one <em>directed</em>
+ * edge of the single {@code Entity_Entity} schema carrying {@code relation} (the
+ * forward name) and {@code xrelation} (its reverse name). Each edge is stored on
+ * both endpoints (out bin on the head, in bin on the tail), so a single edge
+ * answers queries from either end.
  */
 final class KnowledgeGraphSeeder {
 
@@ -55,8 +56,10 @@ final class KnowledgeGraphSeeder {
 
     /** Whether the dataset has already been written (checked through one well-known vertex). */
     static boolean alreadySeeded(AerospikeVertexStore vertexStore, KnowledgeGraphDataset dataset) {
-        String name = dataset.entityName(0);
-        return vertexStore.readVertex(KnowledgeGraphIds.composeId(name)) != null;
+        KnowledgeGraphDataset.Triple first = dataset.triples().get(0);
+        String name = dataset.entityName(first.headId());
+        return vertexStore.readVertex(KnowledgeGraphIds.composeId(name,
+                dataset.relationName(first.relationId()))) != null;
     }
 
     /**
@@ -109,46 +112,49 @@ final class KnowledgeGraphSeeder {
 
     private static List<VertexUpsert> buildVertices(KnowledgeGraphDataset dataset, GraphSchema schema,
                                                     List<KnowledgeGraphDataset.Triple> triples, long now) {
-        Set<Integer> used = new LinkedHashSet<>();
+        // one vertex per (entity, relation shard): the same entity appears once per
+        // shard it takes part in, which is what spreads the edges over ten groups
+        Map<String, int[]> used = new LinkedHashMap<>(); // vertexId -> {entityId, shard}
         for (KnowledgeGraphDataset.Triple triple : triples) {
-            used.add(triple.headId());
-            used.add(triple.tailId());
+            String relation = dataset.relationName(triple.relationId());
+            int shard = KnowledgeGraphIds.shard(relation);
+            used.putIfAbsent(KnowledgeGraphIds.composeId(dataset.entityName(triple.headId()), shard),
+                    new int[] {triple.headId(), shard});
+            used.putIfAbsent(KnowledgeGraphIds.composeId(dataset.entityName(triple.tailId()), shard),
+                    new int[] {triple.tailId(), shard});
         }
         List<VertexUpsert> vertices = new ArrayList<>(used.size());
         long tick = 0;
-        for (int entityId : used) {
-            String name = dataset.entityName(entityId);
-            String label = KnowledgeGraphIds.vertexLabel(name);
+        for (Map.Entry<String, int[]> entry : used.entrySet()) {
+            String name = dataset.entityName(entry.getValue()[0]);
             long timestamp = now + tick++;
             Map<Integer, VertexPropertyValue> properties = new LinkedHashMap<>();
-            properties.put(1, new VertexPropertyValue(name, timestamp));          // name (display property)
-            properties.put(2, new VertexPropertyValue(label, timestamp));         // type
-            vertices.add(new VertexUpsert(KnowledgeGraphIds.composeId(name),
-                    schema.vertexSchema(label), properties, timestamp, timestamp));
+            properties.put(1, new VertexPropertyValue(name, timestamp));                  // name (display)
+            properties.put(2, new VertexPropertyValue((long) entry.getValue()[1], timestamp)); // shard
+            vertices.add(new VertexUpsert(entry.getKey(), schema.vertexSchema(KnowledgeGraphIds.VERTEX_LABEL),
+                    properties, timestamp, timestamp));
         }
         return vertices;
     }
 
     private static List<EdgeUpsert> buildEdges(KnowledgeGraphDataset dataset, GraphSchema schema,
                                                List<KnowledgeGraphDataset.Triple> triples, long now) {
+        EdgeSchema edgeSchema = schema.edgeSchema(KnowledgeGraphIds.EDGE_LABEL);
+        if (edgeSchema == null) {
+            throw new IllegalStateException("Missing edge schema: " + KnowledgeGraphIds.EDGE_LABEL);
+        }
         List<EdgeUpsert> edges = new ArrayList<>(triples.size());
         for (int i = 0; i < triples.size(); i++) {
             KnowledgeGraphDataset.Triple triple = triples.get(i);
-            String head = dataset.entityName(triple.headId());
-            String tail = dataset.entityName(triple.tailId());
-            String edgeLabel = KnowledgeGraphIds.edgeLabel(head, tail);
-            EdgeSchema edgeSchema = schema.edgeSchema(edgeLabel);
-            if (edgeSchema == null) {
-                throw new IllegalStateException("Dataset produced an edge of unknown schema: " + edgeLabel);
-            }
+            String relation = dataset.relationName(triple.relationId());
             long timestamp = now + (i % 1000);
             Map<Integer, EdgePropertyValue> properties = new LinkedHashMap<>();
-            properties.put(3, new EdgePropertyValue(dataset.relationName(triple.relationId()),
-                    timestamp, timestamp));
+            properties.put(3, new EdgePropertyValue(relation, timestamp, timestamp));
             properties.put(4, new EdgePropertyValue(dataset.inverseRelationName(triple.relationId()),
                     timestamp, timestamp));
             edges.add(new EdgeUpsert("e" + i, edgeSchema,
-                    KnowledgeGraphIds.composeId(head), KnowledgeGraphIds.composeId(tail),
+                    KnowledgeGraphIds.composeId(dataset.entityName(triple.headId()), relation),
+                    KnowledgeGraphIds.composeId(dataset.entityName(triple.tailId()), relation),
                     properties, timestamp, timestamp));
         }
         return edges;

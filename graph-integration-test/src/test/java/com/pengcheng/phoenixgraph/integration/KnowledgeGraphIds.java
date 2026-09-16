@@ -3,51 +3,58 @@ package com.pengcheng.phoenixgraph.integration;
 /**
  * The knowledge graph's vertex-id scheme.
  *
- * <p>Every entity is identified by its <em>name</em>, but is stored under a
- * composed id that folds the name into one of the {@value #ENTITY_COUNT}
- * {@code Entity0..Entity9} vertex schemas:
+ * <p>There is a single vertex schema ({@value #VERTEX_LABEL}) and a single edge
+ * schema ({@value #EDGE_LABEL}). An entity is <em>sharded by the relation</em>:
+ * for a triple {@code (head, relation, tail)} both endpoints are stored under
  *
  * <pre>{@code
- * slot      = floorMod(name.hashCode(), 10)      // 0 .. 9  (always positive)
- * vertexId  = slot + "_" + name                  // e.g. "3_concept:athleteplayssport"
- * label     = "Entity" + slot                    // e.g. "Entity3"
+ * shard    = floorMod(relation.hashCode(), 10)     // 0 .. 9 (always positive)
+ * vertexId = entityName + "_" + shard              // e.g. "concept:athlete_5"
  * }</pre>
  *
+ * <p>Because the shard comes from the relation, all edges of one relation land in
+ * a single pair of shards and the relations are spread over ten disjoint groups
+ * of {@code Entity} vertices instead of piling up on one record per entity.
+ *
  * <p>{@link Math#floorMod(int, int)} is used instead of {@code hashCode() % 10}
- * so that negative hash codes still map into {@code 0..9}. The same helpers are
+ * so that negative hash codes still map into {@code 0..9}. The same helper is
  * used when seeding and when composing a query id, so the two always agree.
  */
 public final class KnowledgeGraphIds {
 
-    /** Number of {@code Entity0..Entity9} vertex schemas. */
-    public static final int ENTITY_COUNT = 10;
+    /** Name of the single vertex schema. */
+    public static final String VERTEX_LABEL = "Entity";
 
-    /** Separator between the type slot and the name inside a composed id. */
+    /** Name of the single edge schema. */
+    public static final String EDGE_LABEL = "Entity_Entity";
+
+    /** Number of relation shards. */
+    public static final int SHARD_COUNT = 10;
+
+    /** Separator between the entity name and the relation shard. */
     public static final String SEPARATOR = "_";
 
     private KnowledgeGraphIds() {
     }
 
-    /** The {@code Entity} slot (0..9) an entity name maps to. */
-    public static int slot(String name) {
-        if (name == null) {
+    /** The relation shard (0..9) a relation name maps to. */
+    public static int shard(String relation) {
+        if (relation == null) {
+            throw new IllegalArgumentException("relation must not be null");
+        }
+        return Math.floorMod(relation.hashCode(), SHARD_COUNT);
+    }
+
+    /** The stored vertex id of an entity name in the shard of the given relation. */
+    public static String composeId(String entityName, String relation) {
+        return composeId(entityName, shard(relation));
+    }
+
+    /** The stored vertex id of an entity name in the given shard. */
+    public static String composeId(String entityName, int shard) {
+        if (entityName == null) {
             throw new IllegalArgumentException("entity name must not be null");
         }
-        return Math.floorMod(name.hashCode(), ENTITY_COUNT);
-    }
-
-    /** The vertex schema name holding the entity, e.g. {@code Entity3}. */
-    public static String vertexLabel(String name) {
-        return "Entity" + slot(name);
-    }
-
-    /** The stored vertex id of an entity name, e.g. {@code 3_concept:athlete}. */
-    public static String composeId(String name) {
-        return slot(name) + SEPARATOR + name;
-    }
-
-    /** The edge schema name connecting two entity names, e.g. {@code Entity3_Entity7}. */
-    public static String edgeLabel(String sourceName, String targetName) {
-        return vertexLabel(sourceName) + SEPARATOR + vertexLabel(targetName);
+        return entityName + SEPARATOR + shard;
     }
 }

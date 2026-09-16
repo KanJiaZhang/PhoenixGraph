@@ -158,6 +158,47 @@
     </aside>
   </main>
 
+  <div id="errorModal" class="modal" hidden>
+    <div class="modal-backdrop" data-close="errorModal"></div>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="errorModalTitle">
+      <header class="modal-head">
+        <span class="modal-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/>
+            <path d="M12 9v4"/><path d="M12 17h.01"/>
+          </svg>
+        </span>
+        <h2 id="errorModalTitle" data-i18n="queryErrorTitle">Gremlin 查询失败</h2>
+        <button type="button" class="modal-close" data-close="errorModal" title="Close">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M18 6 6 18"/><path d="m6 6 12 12"/>
+          </svg>
+        </button>
+      </header>
+      <p class="modal-hint" id="errorModalHint" data-i18n="queryErrorHint">
+        请检查 Gremlin Query 是否写正确
+      </p>
+      <div class="modal-body">
+        <div class="modal-row">
+          <span class="modal-key" data-i18n="errorMessage">错误信息</span>
+          <code class="modal-message" id="errorModalMessage"></code>
+        </div>
+        <div class="modal-row" id="errorModalQueryRow">
+          <span class="modal-key" data-i18n="errorQuery">出错查询</span>
+          <pre class="modal-query" id="errorModalQuery"></pre>
+        </div>
+        <details class="modal-trace" id="errorModalTraceBox">
+          <summary data-i18n="errorStackTrace">异常堆栈</summary>
+          <pre id="errorModalTrace"></pre>
+        </details>
+      </div>
+      <footer class="modal-foot">
+        <button type="button" class="btn" id="errorModalCopy" data-i18n="copy">复制</button>
+        <button type="button" class="btn btn-primary" data-close="errorModal" data-i18n="close">关闭</button>
+      </footer>
+    </div>
+  </div>
+
   <script src="/vendor/d3/d3.min.js"></script>
   <script src="js/app.js"></script>
 </body>

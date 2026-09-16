@@ -1,18 +1,12 @@
-# Knowledge-graph demo profile: switches the HTTP service to the NELL-995
-# knowledge graph (10 Entity0..Entity9 vertex types, all 100 ordered directed
-# relation types, each edge carrying `relation` / `xrelation`).
-#
-# The vertices live in the `kg_nell995_v1` set, seeded by
-# graph-integration-test's KnowledgeGraphIntegrationTest:
-#
-#   AEROSPIKE_NAMESPACE=test ./mvnw -pl graph-integration-test -am test \
-#       -Dtest=KnowledgeGraphIntegrationTest -Dsurefire.failIfNoSpecifiedTests=false
-#
-# Start the service with this profile:
+# Knowledge-graph-only profile: serves the NELL-995 knowledge graph as the only
+# graph (10-way relation sharding over a single Entity vertex type). The default
+# profile already serves it *alongside* payment-graph; this profile is for a
+# lighter instance that only needs the knowledge graph.
 #
 #   java -jar graph-http/target/graph-http-0.1.0-SNAPSHOT.jar --spring.profiles.active=kg
 #
 phoenixgraph:
   storage:
-    vertex-set: kg_nell995_v1
+    vertex-set: kg_nell995_v2
     schema: kg-entity-graph
+    graphs: []

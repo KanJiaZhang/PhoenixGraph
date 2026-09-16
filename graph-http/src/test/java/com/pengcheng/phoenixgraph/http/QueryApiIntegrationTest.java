@@ -58,7 +58,7 @@ class QueryApiIntegrationTest {
             AerospikeEdgeStore edgeStore = new AerospikeEdgeStore(client, namespace, set, schema);
 
             GraphService graphService = new GraphService(vertexStore, edgeStore, schema, new ObjectMapper());
-            QueryService queryService = new QueryService(vertexStore, edgeStore);
+            QueryService queryService = QueryService.ambient(vertexStore, edgeStore);
             MockMvc api = MockMvcBuilders.standaloneSetup(
                     new BatchController(graphService), new QueryController(queryService)).build();
 
@@ -120,7 +120,7 @@ class QueryApiIntegrationTest {
             truncateSet(client, namespace, "http_rich_v2"); // drop stale data from earlier seed versions
             seedLayeredGraph(vertexStore, edgeStore, schema);
 
-            QueryService queryService = new QueryService(vertexStore, edgeStore);
+            QueryService queryService = QueryService.ambient(vertexStore, edgeStore);
             MockMvc api = MockMvcBuilders.standaloneSetup(new QueryController(queryService)).build();
 
             // one-hop both: 888 has 100 out-Payment edges and no in-Payment edges
@@ -220,7 +220,7 @@ class QueryApiIntegrationTest {
             assertEquals(List.of("cnCode", "phoneNumber"),
                     schema.vertexSchema("Phone").displayPropertyNames());
 
-            QueryService queryService = new QueryService(vertexStore, edgeStore);
+            QueryService queryService = QueryService.ambient(vertexStore, edgeStore);
             MockMvc api = MockMvcBuilders.standaloneSetup(new QueryController(queryService)).build();
 
             // 135 pays exactly 50 one-hop accounts

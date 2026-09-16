@@ -2,10 +2,13 @@
 /*
  * Generates the knowledge-graph schema (graph-http/src/main/resources/kg-entity-graph.json):
  *
- *   - 10 vertex schemas Entity0 .. Entity9, each with `name` (display property) and `type`
- *   - all 100 ordered (EntityI, EntityJ) pairs as DIRECTED edge schemas `EntityI_EntityJ`
- *     (including I == J), each declaring max out-/in-degree 2000 and the `relation` /
- *     `xrelation` properties (xrelation = the reverse relation name)
+ *   - ONE vertex schema `Entity` with `name` (display property) and `shard`
+ *   - ONE DIRECTED edge schema `Entity_Entity` (max out-/in-degree 2000) carrying
+ *     the `relation` / `xrelation` properties (xrelation = the reverse relation name)
+ *
+ * Vertices are sharded by relation: an entity's vertex id is
+ * `name + "_" + floorMod(relation.hashCode(), 10)`, so the edges of a relation all
+ * live in a single shard (see KnowledgeGraphIds).
  *
  * Usage: node tools/generate-kg-schema.js
  */
@@ -14,44 +17,41 @@
 const fs = require('fs');
 const path = require('path');
 
-const ENTITY_COUNT = 10;
 const MAX_DEGREE = 2000;
 const OUT = path.join(__dirname, '..', 'graph-http', 'src', 'main', 'resources', 'kg-entity-graph.json');
 
-const idSchema = (kind) => ({ id: 0, name: 'id', description: `${kind} id`, type: 'STRING' });
-const createdTime = () => ({ id: -2, name: 'createdTime', description: 'Creation time', type: 'LONG' });
-const lastUpdatedTime = () => ({ id: -1, name: 'lastUpdatedTime', description: 'Last update time', type: 'LONG' });
+const obj = (o) => `{ ${Object.entries(o).map(([k, v]) => `"${k}": ${JSON.stringify(v)}`).join(', ')} }`;
 
-const vertexSchemas = [];
-for (let i = 0; i < ENTITY_COUNT; i++) {
-  vertexSchemas.push({
-    id: i + 1,
-    name: `Entity${i}`,
-    description: `Knowledge graph entity of kind Entity${i}`,
-    idSchema: idSchema('Entity'),
-    createdTime: createdTime(),
-    lastUpdatedTime: lastUpdatedTime(),
-    properties: [
-      { id: 1, name: 'name', description: 'Entity name (its knowledge-graph id)', type: 'STRING', display: true },
-      { id: 2, name: 'type', description: `Entity kind (Entity${i})`, type: 'STRING' },
-    ],
-  });
-}
-
-const edgeSchemas = [];
-let edgeId = 0;
-for (let i = 0; i < ENTITY_COUNT; i++) {
-  for (let j = 0; j < ENTITY_COUNT; j++) {
-    edgeId++;
-    edgeSchemas.push({
-      id: edgeId,
-      name: `Entity${i}_Entity${j}`,
-      description: `Directed relation from Entity${i} to Entity${j}`,
+const schema = {
+  id: 2,
+  name: 'kg-entity-graph',
+  description: 'One Entity vertex type, relation-sharded by floorMod(relation.hashCode(), 10); '
+    + `directed Entity_Entity relations (max out-/in-degree ${MAX_DEGREE}) carrying relation/xrelation`,
+  constraints: { idSchemaIndex: 0, createdTimeIndex: -2, lastUpdatedTimeIndex: -1 },
+  vertexSchemas: [
+    {
+      id: 1,
+      name: 'Entity',
+      description: 'A knowledge-graph entity, replicated per relation shard',
+      idSchema: { id: 0, name: 'id', description: 'Entity id (name_shard)', type: 'STRING' },
+      createdTime: { id: -2, name: 'createdTime', description: 'Creation time', type: 'LONG' },
+      lastUpdatedTime: { id: -1, name: 'lastUpdatedTime', description: 'Last update time', type: 'LONG' },
+      properties: [
+        { id: 1, name: 'name', description: 'Entity name', type: 'STRING', display: true },
+        { id: 2, name: 'shard', description: 'Relation shard (floorMod(relation.hashCode(), 10))', type: 'LONG' },
+      ],
+    },
+  ],
+  edgeSchemas: [
+    {
+      id: 1,
+      name: 'Entity_Entity',
+      description: 'A directed relation between two entities',
       idSchema: { id: 0, name: 'id', description: 'Edge id', type: 'STRING' },
-      source: { id: 1, name: 'source', description: 'Source vertex id', type: 'STRING', vertex: `Entity${i}` },
-      target: { id: 2, name: 'target', description: 'Target vertex id', type: 'STRING', vertex: `Entity${j}` },
-      createdTime: createdTime(),
-      lastUpdatedTime: lastUpdatedTime(),
+      source: { id: 1, name: 'source', description: 'Source vertex id', type: 'STRING', vertex: 'Entity' },
+      target: { id: 2, name: 'target', description: 'Target vertex id', type: 'STRING', vertex: 'Entity' },
+      createdTime: { id: -2, name: 'createdTime', description: 'Creation time', type: 'LONG' },
+      lastUpdatedTime: { id: -1, name: 'lastUpdatedTime', description: 'Last update time', type: 'LONG' },
       direction: 'DIRECTED',
       maxOutgoingEdges: MAX_DEGREE,
       maxIncomingEdges: MAX_DEGREE,
@@ -59,22 +59,10 @@ for (let i = 0; i < ENTITY_COUNT; i++) {
         { id: 3, name: 'relation', description: 'Forward relation name', type: 'STRING' },
         { id: 4, name: 'xrelation', description: 'Reverse relation name', type: 'STRING' },
       ],
-    });
-  }
-}
-
-const schema = {
-  id: 2,
-  name: 'kg-entity-graph',
-  description: `${ENTITY_COUNT} Entity vertex types and all ${ENTITY_COUNT * ENTITY_COUNT} ordered relation types `
-    + `(directed, max out-/in-degree ${MAX_DEGREE}) carrying relation/xrelation`,
-  constraints: { idSchemaIndex: 0, createdTimeIndex: -2, lastUpdatedTimeIndex: -1 },
-  vertexSchemas,
-  edgeSchemas,
+    },
+  ],
 };
 
-// hand-formatted so the committed file stays readable (one property / short object per line)
-const obj = (o) => `{ ${Object.entries(o).map(([k, v]) => `"${k}": ${JSON.stringify(v)}`).join(', ')} }`;
 const lines = [];
 lines.push('{');
 lines.push(`  "id": ${schema.id},`);
@@ -82,7 +70,7 @@ lines.push(`  "name": ${JSON.stringify(schema.name)},`);
 lines.push(`  "description": ${JSON.stringify(schema.description)},`);
 lines.push(`  "constraints": ${obj(schema.constraints)},`);
 lines.push('  "vertexSchemas": [');
-vertexSchemas.forEach((v, i) => {
+schema.vertexSchemas.forEach((v, i) => {
   lines.push('    {');
   lines.push(`      "id": ${v.id},`);
   lines.push(`      "name": ${JSON.stringify(v.name)},`);
@@ -91,15 +79,13 @@ vertexSchemas.forEach((v, i) => {
   lines.push(`      "createdTime": ${obj(v.createdTime)},`);
   lines.push(`      "lastUpdatedTime": ${obj(v.lastUpdatedTime)},`);
   lines.push('      "properties": [');
-  v.properties.forEach((p, k) => {
-    lines.push(`        ${obj(p)}${k < v.properties.length - 1 ? ',' : ''}`);
-  });
+  v.properties.forEach((p, k) => lines.push(`        ${obj(p)}${k < v.properties.length - 1 ? ',' : ''}`));
   lines.push('      ]');
-  lines.push(`    }${i < vertexSchemas.length - 1 ? ',' : ''}`);
+  lines.push(`    }${i < schema.vertexSchemas.length - 1 ? ',' : ''}`);
 });
 lines.push('  ],');
 lines.push('  "edgeSchemas": [');
-edgeSchemas.forEach((e, i) => {
+schema.edgeSchemas.forEach((e, i) => {
   lines.push('    {');
   lines.push(`      "id": ${e.id},`);
   lines.push(`      "name": ${JSON.stringify(e.name)},`);
@@ -113,14 +99,12 @@ edgeSchemas.forEach((e, i) => {
   lines.push(`      "maxOutgoingEdges": ${e.maxOutgoingEdges},`);
   lines.push(`      "maxIncomingEdges": ${e.maxIncomingEdges},`);
   lines.push('      "properties": [');
-  e.properties.forEach((p, k) => {
-    lines.push(`        ${obj(p)}${k < e.properties.length - 1 ? ',' : ''}`);
-  });
+  e.properties.forEach((p, k) => lines.push(`        ${obj(p)}${k < e.properties.length - 1 ? ',' : ''}`));
   lines.push('      ]');
-  lines.push(`    }${i < edgeSchemas.length - 1 ? ',' : ''}`);
+  lines.push(`    }${i < schema.edgeSchemas.length - 1 ? ',' : ''}`);
 });
 lines.push('  ]');
 lines.push('}');
 
 fs.writeFileSync(OUT, lines.join('\n') + '\n', 'utf8');
-console.log(`wrote ${OUT}: ${vertexSchemas.length} vertex schemas, ${edgeSchemas.length} edge schemas`);
+console.log(`wrote ${OUT}: ${schema.vertexSchemas.length} vertex schema, ${schema.edgeSchemas.length} edge schema`);
