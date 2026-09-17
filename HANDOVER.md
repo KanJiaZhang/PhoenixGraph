@@ -1,230 +1,230 @@
 # Handover — resume here
 
-状态：**vector search 已端到端可用**（HNSW 引擎 + schema 声明 + 写入即索引 +
-**属性过滤下沉** + **索引重建**），工作树干净，`./mvnw test` **全绿**。
+> 本文件是**断点续做手记**：今天做了什么（结论）、现场怎么恢复、明天从哪继续。
+> 详细设计与实测数据在 `CONTEXT.md`（今天新增 **第 21–26 节**）。
 
-- `7d6f147` — HNSW 向量索引：分层图 + `nearest(k)` 查询（手工/加载器建索引）
-- `e6af92e` — schema `isVector` 声明 + 自动建层边 + 写入即索引 + 入口点 1 分钟缓存
-- `ec69940` — `HANDOVER.md`
-- 追加（第 17 节）：重复边 id 记 bizlog、`POST /api/v1/vector-index/rebuild` 重建索引、
-  一个点类型只能有一个向量属性、demo 数据加 `bucket`(INT)/`category`(STRING) 属性、
-  `efSearch` 默认 50、`has`/`filter` 下沉进 HNSW 搜索
-- 追加（第 18 节）：有向边布局验证（source 存 out-bin、target 存 in-bin，两跳四组合全通）、
-  修复 `@PathVariable` 未命名导致 `GET|DELETE /vertices/{id}` 等接口 400/500 的 bug
-- 追加（第 26 节）：查询行内控件改为中线对齐（示例框不再贴顶）；大点双击扩展自动改为「宽窗口 + limit(200)」
-  有界查询（新增窗口读 cap 下推：createdBetween(a,b) 后紧跟的 limit(k) 进存储，聚合表读到 k 条即停）；
-  顺带修掉扩展合并错响应形状的既有 bug
-- 追加（第 25 节）：**Aerospike-Edge**（大点用聚合边表：每种边两张表 + 三层索引 + 离线批量导入；
-  查询用新增 `createdBetween(from,to)` 窗口逐级下降并与内联合并；demo 30 万笔收款，1 天窗口 limit 500 ✓；
-  近线更新/删除/重聚合列入 TODO）
-- 追加（第 24 节）：示例框回到查询框同一行靠右（宽度仍为 1/3）；浮窗只在结果为非点非边时显示（点/边列表自动隐藏）；
-  「结果」tab 改为仅 Cypher 且查询过之后才出现
-- 追加（第 23 节）：示例框与查询框同列；修复 RocksDB 子图**只有点没有边**（子图 id 统一为文本）；
-  geo step 改名 `circle`、半径改米、`limit` 下推进索引搜索（不再先取全部再截断）；
-  edge target 新增 `isNull`（只存出边、没有指向，含校验/存储/查询/子图）
-- 追加（第 22 节）：**GEO 查询**（schema 里 `isGeo` 声明 + Google S2 cell 索引表，两种 RocksDB 方案共用；
-  Gremlin 新增 `circle(pointJson[, radiusMeters])` step，结果最近优先并带 `distanceMeters`；Aerospike 侧
-  best-effort 建 geo2dsphere 索引 + 扫描兜底）；新增 240 家店的 geo demo 图并实测 1km→159 家
-- 追加（第 21 节）：**RocksDB 两种存储实现**（schema 里用 \`storage.type\` 选择：\`Aerospike\` 默认 /
-  \`RocksDB-Inline\` / \`RocksDB-Edge\`）；新增 \`graph-storage-rocksdb\`（共享底座）、
-  \`graph-storage-rocksdb-inline\`、\`graph-storage-rocksdb-edge\` 三个模块；两个方案都实现 \`GraphQuery\`，
-  Gremlin/Cypher/批读/并行/按需属性/缓存全部复用；payment-graph 数据装进两个 RocksDB 实例后 UI/API 可查
-- 追加（第 20.4/20.5 节）：修复 `limit()` 截断属性投影的 bug（`values()` 紧跟 `limit()` 取不到值）、
-  浮窗改为优先展示查询结果值（重复值折叠成「ACTIVE + 350 项」）、示例下拉改为查询框 1/3 宽并居中于其下方
-- 追加（第 20 节）：UI 示例查询收进小按钮（默认隐藏）、
-  查询结果值浮窗（HTTP `includeResult` 一次执行同时返回答案与子图，且兼容旧的子图响应形状）
-- 追加（第 19 节）：**新模块 `graph-query-cypher`**（openCypher 子集：`MATCH`/`WHERE`/`RETURN` + 聚合），
-  HTTP 增加 `language` 字段（`${name}` 与 `$name` 两种参数写法），UI 增加语言选择 / 示例查询下拉 /
-  「结果」表格 tab；`Subgraph` 与 `NeighborVertexResolver` 下沉到 `graph-query` 共用
-
-> 详细设计与实测数据在 `CONTEXT.md`：**第 15 节**（HNSW 引擎、SIFT Demo、召回实测）、
-> **第 16 节**（schema 驱动、自动建边、写入路径、缓存、配置、验证）、
-> **第 17 节**（过滤下沉、索引重建、schema 约束、demo 属性、实测对比）。
+**最后一次会话：2026-09-17（周三）· 8 个提交 `623d174 → 94c713e` · 工作树干净 · `./mvnw test` 19 模块全绿
+（432 个模块内测试 + 50 个集成测试，0 失败）· 三个服务在跑。**
 
 ---
 
-## 1. 明天第一件事：过滤结果的可控性与代价
+## 0. 今日结论（按提交顺序）
 
-**现状（已完成）**：`g.V(id,'Vector').nearest(20).has('bucket', 3)` 会把 `has` 下沉进搜索，
-返回"最近的 20 个 **bucket=3** 的向量"；实测 10k SIFT（10% 选择率，ef=50）：
-**recall@20 = 0.998 / 419ms**，而"先取 20 再过滤"只有 **0.143**（`nearest(20)` 里平均只有 4 个命中）。
+| 提交 | 任务 | 结论 |
+|---|---|---|
+| `6c515bf` `998c41e` | UI：示例查询收进小按钮；查询结果值浮窗 | 示例框默认隐藏、按钮展开；HTTP 新增 `includeResult`，一次执行同时返回答案与子图（兼容旧形状）；浮窗优先展示"值"而不是数量 |
+| `ea80390` | 修复 `limit()` 截断属性投影 | `values()` 紧跟 `limit()` 取不到值 → `neededProperties` 不再把 `limit` 当终结步骤；示例框改为查询框 1/3 宽 |
+| `623d174` | **RocksDB 两种存储实现**（第 21 节） | schema 用 `storage.type` 选实现；新增 `graph-storage-rocksdb`（共享底座）+ `-inline` + `-edge` 三模块；两方案都实现 `GraphQuery`，Gremlin/Cypher/批读/并行/按需属性/缓存**全部复用**；payment-graph 数据装进两个 RocksDB 实例，UI/API 可查（`limit`/`degree`/`region`/`time window` 语义见文档） |
+| `6dd20c1` | **GEO 查询**（第 22 节） | schema `isGeo` 声明 + Google S2 cell 索引表（一属性一表，键 `cellId:vertexId`，由顶点写入自动维护）；Gremlin `circle(...)`（原 `geoNear`）+ 结果带距离；Aerospike 侧 best-effort geo2dsphere 索引 + 扫描兜底；240 家店 demo，1km → 159 家 |
+| `97555a5` | 四项修正（第 23 节） | ①示例框与查询框同列 ②**修复 RocksDB 子图"只有点没有边"**（子图 id 统一为文本，根因是"种子用查询里的字符串 id、顶点用存储里的原生 id"）③`geoNear`→`circle`、半径改**米**、`limit` **下推进**索引搜索（不再先取全部再截断）④edge target 新增 **`isNull`**（只存出边、无指向；含校验/存储/查询/子图） |
+| `45cf550` `e9d1a3b` | UI 三处（第 24 节） | 示例框回到同一行靠右（1/3 宽）；浮窗只在**非点非边**结果时出现；「结果」tab 仅 Cypher 且查询过之后才出现 |
+| `0cfa4cd` | **Aerospike-Edge**（第 25 节） | 大点用**聚合边表**：每种边两张表（`Edge_Out`/`Edge_In`）+ 键 `点id\|min\|max\|层级` + 三层索引 + **离线批量导入**（生成所有 KV 后批量写，绝不逐条更新）；查询用新增 `createdBetween(from,to)` **逐级下降**并与内联边 **merge**；demo hub **30 万笔**收款，1 天窗口 `limit(500)` ✓；近线更新/删除/重聚合列入 TODO |
+| `94c713e` | UI 修正（第 26 节） | 查询行内控件**中线对齐**；**双击大点自动改为有界扩展**（宽窗口 + `limit(200)`，服务端新增**窗口读 cap 下推**：`createdBetween(a,b)` 后紧跟的 `limit(k)` 折进窗口，聚合表读到 k 条即停，30 万条 5.8s → 200 条 114ms）；顺带修掉"扩展合并错响应形状"的既有 bug |
 
-**下一步可选**：
-1. **选择率来源**：现在靠"声明值 + 实测通过率 + 翻倍重试"。如果给 `HnswFilter` 传准确的选择率
-   （属性统计/采样），第一次就能取对候选表大小，省掉重试（现在最多 4 次遍历）。
-2. **多条件组合的选择率**：`has(a).has(b)` 现在按独立假设乘不起来（实测通过率会纠正），
-   但可以先按单项选择率估个初值。
-3. **带过滤的召回/延迟目标**：把 `maxEf` 暴露成查询参数（如 `nearest(20, 200, 'maxEf=1000')`），
-   让调用方能在"准"与"快"之间选。
-4. **属性与向量相关时的表现**：17.4 记了一个坑 —— 属性若与向量空间强相关（合成数据里一个簇
-   共用一个 bucket），任何过滤方案都会退化。真实数据要先看相关性，再定过量取数倍率。
-5. **批量重建的并行化**：`rebuild` 现在是顺序插入（601 点 27s / 10k 点约 15 分钟），
-   可以按层并行或按批次并行（层内边互不干扰，但同一 bin 有竞争）。
+今天新增/变更的关键能力（一句话版）：
 
-其它未做：删除点后的 un-index、`nearest` 的多向量属性支持（已被 schema 校验禁止）。
+- **存储可选**：`Aerospike`（默认）/ `Aerospike-Edge` / `RocksDB-Inline` / `RocksDB-Edge`，schema 里 `storage.type` 声明；
+  四者都实现同一个 `GraphQuery` 端口 → 查询层零改动。
+- **新 Gremlin step**：`circle(点JSON[, 半径米])`（地理）、`createdBetween(from, to[, cap])`（时间窗）、
+  `nearest(k[, ef])`（向量，早先）、以及 `limit` 自动下推到 `circle` / 窗口读。
+- **schema 新字段**：`isGeo`（+`geoLevel`/`geoMaxCells`）、edge target 的 `isNull`、`storage`。
+- **UI**：语言切换、示例查询（按钮 + 按图分组）、结果表格 tab（Cypher 专属）、值浮窗、大点有界扩展。
 
 ---
 
-## 2. 环境启动
+## 1. 现场状态（明天开机即用）
+
+### 1.1 正在跑的服务
+
+| 端口 | 进程 | 内容 |
+|---|---|---|
+| **8081** | `graph-http`（默认 profile） | **9 个图**：`payment-graph`、`payment-graph-rocksdb-inline`、`payment-graph-rocksdb-edge`、`geo-merchants-rocksdb-inline`、`geo-merchants-rocksdb-edge`、`payment-graph-as-edge`、`kg-entity-graph`、`hnsw-sift`、`hnsw-dynamic` |
+| **8080** | `graph-web` | UI（`/api/graphs` 列图、`/api/query` 代理到 8081） |
+| **8083** | `graph-http --spring.profiles.active=hnsw-dynamic` | 写入即索引的向量 demo（REST 写点 → 立即可 `nearest`） |
+
+起停（`jps -l | grep graph-` 看 PID；Windows 下 `taskkill /F /PID <pid>`）：
 
 ```bash
-# 1) Aerospike（本机，namespace=test）
-#    已在跑就不用动：localhost:3000
-
-# 2) 打包
 ./mvnw -q -pl graph-http,graph-web -am -DskipTests package
-
-# 3) 三个实例（8081 = 多图读；8083 = 写入即索引 Demo；8080 = web UI）
-java -jar graph-http/target/graph-http-0.1.0-SNAPSHOT.jar                     # 8081
-java -jar graph-http/target/graph-http-0.1.0-SNAPSHOT.jar \
-     --spring.profiles.active=hnsw-dynamic --server.port=8083                 # 8083
-java -jar graph-web/target/graph-web-0.1.0-SNAPSHOT.jar                       # 8080
-
-# 4) 健康检查
-curl -s http://localhost:8081/api/v1/graphs
+java -jar graph-http/target/graph-http-0.1.0-SNAPSHOT.jar
+java -jar graph-web/target/graph-web-0.1.0-SNAPSHOT.jar
+java -jar graph-http/target/graph-http-0.1.0-SNAPSHOT.jar --spring.profiles.active=hnsw-dynamic --server.port=8083
+# 健康检查
+curl -s localhost:8081/api/v1/graphs | head -c 200
 ```
 
-profile：默认（8081）同时挂 `payment-graph` / `kg-entity-graph` / `hnsw-sift` / `hnsw-dynamic`；
-`--spring.profiles.active=hnsw` 只挂 `hnsw-sift`；`=hnsw-dynamic` 把动态向量图作为**主图**（写接口在这里）。
+### 1.2 数据（Aerospike namespace `test` + 本地 RocksDB 目录）
 
-### Aerospike 数据（namespace `test`）
-
-| set | 内容 |
+| 位置 | 内容 |
 |---|---|
-| `http_demo_v1` | payment-graph 星形图（Account/IP/Phone） |
-| `kg_nell995_v2` | NELL-995 知识图谱（1 种点 `Entity` + 1 种边，按 relation 分 10 片），59k 点 / 150k 边 |
-| `hnsw_sift_v1` | **SIFT small 10,000×128**，`Vector` 点 + `vector_0..vector_14`，**10,001 个点**（多出的 `20000` = 行 5000 的副本，REST 写入 Demo） |
-| `hnsw_dynamic_v1` | 600×128，`Doc` + `embedding`（schema **零层边**，服务启动时自动建 `embedding_0..embedding_10`） |
-| `hnsw_meta` | 每个向量属性一条元数据记录：`hnsw:Vector`、`hnsw:Doc`…（入口点 + metric/m/ef/dims/size/topLevel） |
+| `http_demo_v1` | payment-graph 星形图（Aerospike，hub `135`） |
+| `kg_nell995_v2` | NELL-995 知识图谱（1 种点 `Entity` + 1 种边，按 relation 分 10 片），11.3 万点 / 15 万边 |
+| `hnsw_sift_v1` | SIFT small 10,000×128（`Vector` + `vector_0..vector_14`），10,001 点 |
+| `hnsw_dynamic_v1` | 600×128（`Doc` + `embedding`，schema 零层边，启动自动建） |
+| `payment_as_edge_v1` | **今日新增**：`payment-graph-as-edge` 的 51 个点 + hub `9000001` 的 **30 万笔**收款（聚合边表 `_edge_out_1`/`_edge_in_1`/`_edgeheads`），其中 5 笔内联改写为 `REFUNDED` |
+| `.rocksdb/`（仓库根，21MB，已 gitignore） | `payment-graph-rocksdb-inline`、`payment-graph-rocksdb-edge`（各 151 点/400 边）、`geo-merchants-rocksdb-inline`、`geo-merchants-rocksdb-edge`（各 240 商户 + S2 geo 索引） |
+
+**重新播种（数据丢了才需要）**：
+
+```bash
+# RocksDB 四个实例（payment ×2 + geo ×2）
+./mvnw -q -pl graph-integration-test -am test -Dtest='RocksDbLiveLoadTest' \
+       -Drocksdb.live.dir=D:/workspace/eclipse/PhoenixGraph/.rocksdb -Dsurefire.failIfNoSpecifiedTests=false
+
+# Aerospike-Edge 的 30 万笔 demo（约 4 秒；写入前会 truncate 边表与 hub 表）
+./mvnw -q -pl graph-integration-test -am test -Dtest='AerospikeEdgeLiveLoadTest' \
+       -Daerospike.asEdge.set=payment_as_edge_v1 -Dsurefire.failIfNoSpecifiedTests=false
+```
+
+### 1.3 明天的 demo 查询（都能直接用）
+
+```groovy
+// 1) 大点按时间窗查询（Aerospike-Edge，文档里的那条）
+g.V('9000001','Account').createdBetween('2025-06-01','2025-06-02').inE('Payment').limit(500)   // 500 条
+// 2) 大点双击扩展走的就是这句（宽窗口 + cap）
+g.V('9000001','Account').createdBetween('1970-01-01T00:00:00','2100-01-01T00:00:00').both().limit(200)
+// 3) 地理：1km 内最近的商户（两个 RocksDB geo 实例一致）
+g.V('1','Merchant').circle('{"lat":31.2304,"lon":121.4737,"radius":1000}').limit(10)
+// 4) 向量
+g.V('4242','Vector').nearest(20)
+// 5) RocksDB payment 实例（与 Aerospike 结果一致）
+g.V('135','Account').out('Payment').count()      // 50
+// 6) 有向边 + nullable target demo
+g.V('1','Merchant').outE('Opens')                // 3 条 otherVertexId=null 的"未定对手方"边
+```
+
+---
+
+## 2. 明天第一件事（按优先级）
+
+1. **Aerospike-Edge 近线更新（今天明确列入 TODO，第 25.7 节）** —— 读路径已正确（内联 + 聚合 merge ✓），
+   待补写入侧：
+   1. **删除墓碑**：边删除时聚合表里的副本仍在 → 写内联墓碑（`deleted=true` + lastUpdatedTime）并在 merge 时过滤，
+      或周期重写受影响 chunk；
+   2. **窗口外新增边的增量重聚合**：root 的 `min/max` 只在导入时算过，之后窗口外新增大量边需插入新 chunk 并刷新父层 span；
+   3. **重聚合/压缩任务**：把内联里已稳定的边折叠进 level-0、刷新上层、清理墓碑（分钟级延迟可接受）。
+2. **HNSW 过滤的可控性与代价**（沿用上一轮遗留，第 17 节）：
+   选择率来源（统计/采样代替"实测通过率+翻倍重试"）、多条件选择率初值、`maxEf` 暴露成查询参数、
+   属性与向量相关时的退化验证。
+3. **前端单一源**：`graph-web/frontend/public` 与 `src/main/resources/static` 仍是**拷贝关系** ✗（今天多次同步），
+   建议改成一个源 + 构建时拷贝，避免漂移。
+4. **Docker 验证**：本机无法访问 Docker Hub（`auth.docker.io` 超时），待有外网时跑 `docker compose up --build`；
+   可把 KG/HNSW/RocksDB/Aerospike-Edge 的播种脚本化进镜像。
+5. **Logo**：凤凰 Logo 仍用 `#1`，选定后替换 `index.html` brand SVG + `favicon.svg`（+ `logos/` 内 8 个文件）。
 
 ---
 
 ## 3. 常用命令
 
 ```bash
-# 全部测试
-AEROSPIKE_HOST=localhost AEROSPIKE_PORT=3000 AEROSPIKE_NAMESPACE=test ./mvnw test
-
-# HNSW 集成测试（复用已建索引 ≈2min；HNSW_FORCE=true 重建 ≈15min）
+# 全部测试（约 6.5 分钟；Aerospike 不在会自动 skip 集成测试）
 AEROSPIKE_HOST=localhost AEROSPIKE_PORT=3000 AEROSPIKE_NAMESPACE=test \
-HNSW_DATASET_DIR=/tmp/siftsmall_dl/siftsmall HNSW_VERTEX_SET=hnsw_sift_v1 \
-  ./mvnw -pl graph-integration-test -am test -Dtest=HnswGraphIntegrationTest -Dsurefire.failIfNoSpecifiedTests=false
-#   其它 env：HNSW_LIMIT(0=全部) HNSW_M HNSW_EF_CONSTRUCTION HNSW_EF_SEARCH
-#             HNSW_DYNAMIC_SET(hnsw_dynamic_v1) HNSW_DYNAMIC_LIMIT(600)
+AEROSPIKE_VERTEX_SET=vertices_probe_clean HNSW_DATASET_DIR=/tmp/siftsmall_dl/siftsmall \
+  ./mvnw test -Dsurefire.failIfNoSpecifiedTests=false
 
-# 数据集 / schema 生成
-tools/download-siftsmall-dataset.sh                      # → .datasets/siftsmall
-node tools/generate-hnsw-schema.js --size 10000 --m 15 --dimensions 128    # hnsw-sift.json
-node tools/generate-hnsw-schema.js --size 600 --layers 0 --vertex Doc --vector-property embedding \
-  --graph hnsw-dynamic --id 8 --metric COSINE --m 8 --ef-construction 64 --ef-search 24 \
-  --out graph-http/src/main/resources/hnsw-dynamic.json
+# 定向集成测试
+./mvnw -pl graph-integration-test -am test -Dtest=AerospikeEdgeIntegrationTest -Dsurefire.failIfNoSpecifiedTests=false
+./mvnw -pl graph-integration-test -am test -Dtest=RocksDbStorageIntegrationTest  -Dsurefire.failIfNoSpecifiedTests=false
+./mvnw -pl graph-integration-test -am test -Dtest=GeoQueryIntegrationTest        -Dsurefire.failIfNoSpecifiedTests=false
+./mvnw -pl graph-integration-test -am test -Dtest=HnswGraphIntegrationTest \
+       -DHNSW_VERTEX_SET=hnsw_sift_v1 -DHNSW_DATASET_DIR=/tmp/siftsmall_dl/siftsmall \
+       -Dsurefire.failIfNoSpecifiedTests=false          # HNSW_FORCE=true 才会重建索引（≈15min）
 
-# 前端改动后（frontend/public → graph-web/src/main/resources/static）
-cp graph-web/frontend/public/{index.html,css/style.css,js/app.js} graph-web/src/main/resources/static/
+# schema / 数据集生成工具
+node tools/generate-hnsw-schema.js --size 10000 --ef-search 50
+node tools/generate-kg-schema.js
+tools/download-siftsmall-dataset.sh        # → .datasets/siftsmall（gitignore）
+
+# 前端改动后必须同步静态副本（现仍是拷贝关系）
+cp graph-web/frontend/public/index.html graph-web/src/main/resources/static/index.html
+cp graph-web/frontend/public/css/style.css graph-web/src/main/resources/static/css/style.css
+cp graph-web/frontend/public/js/app.js  graph-web/src/main/resources/static/js/app.js
 ```
 
-### 演示查询
-
-```groovy
-// 10k SIFT（8081，graphName=hnsw-sift）
-g.V('4242','Vector').nearest(20)                 // 20 个最近向量
-g.V('4242','Vector').nearest(20, 200)            // 候选表 200：recall@20 0.988 → 0.989
-g.V('4242','Vector').nearest(20).has('bucket', 3)      // 下沉过滤：20 个全都是 bucket=3（recall 0.998）
-g.V('4242','Vector').nearest(20).has('category','music')  // 字符串属性同理
-g.V('4242','Vector').nearest(20).has('bucket', 3).values('name')
-g.V('4242','Vector').both().both()               // 层次结构可视化（走全部层边）
-
-// 动态向量图（8083 可写，graphName=hnsw-dynamic）
-// 写入：POST /api/v1/vertices  {id, vertexSchemaName:"Doc",
-//        properties:[{index:1,value:"name"},{index:2,value:[...128 floats]}]}
-g.V('900','Doc').nearest(20)                     // 写完立刻可查
-```
-
-### 向量索引运维接口
+**向量索引运维接口**（详见第 16/17 节）：
 
 ```bash
-# 每个向量索引的配置与状态（graph/vertex/property、metric/m/ef、层数、size、topLevel、入口点）
-curl -s http://localhost:8081/api/v1/vector-index
-
-# 重建：清空层边数据 + 删元数据 + 重新加载数据建新边（601 点约 27s，10k 点约 15 分钟）
-curl -s -X POST http://localhost:8083/api/v1/vector-index/rebuild \
-  -H 'content-type: application/json' -d '{"graph":"hnsw-dynamic"}'
-# → [{"graph":"hnsw-dynamic","vertex":"Doc","property":"embedding","vertices":601,
-#     "layers":11,"links":13821,"pruned":7468,"seconds":26.9}]
+curl -s localhost:8081/api/v1/vector-index                     # 配置与状态
+curl -s -X POST localhost:8081/api/v1/vector-index/rebuild \
+     -H 'content-type: application/json' -d '{"graph":"hnsw-dynamic"}'
 ```
 
 ---
 
-## 4. 关键设计要点（改代码前先看这些）
+## 4. 关键设计要点（改代码前先看）
 
-- **层方案**：`topLevel(size) = ceil(log2 size)`，层 `0..topLevel` → `topLevel+1` 个双向边类
-  （4096 → `vector_0..vector_12`；10k → `..vector_14`）。点的层 = `floor(-log2 u)`（id 的哈希决定，
-  确定性）→ 底层含全部点、顶层约 1 个点。
-- **边类命名** = `<向量属性名>_<层>`（`VectorIndexSchemas.layerEdgeName`），**id 稳定**（已存在的保留，
-  新的取 max+1）—— 因为 Aerospike bin 名是 `ve_<edgeSchemaId>_<dir>`。
-- **每层度数**：HNSW 自己裁到 `m`（第 0 层 `2m`），schema 声明 `2×` 作兜底。
-- **写入批量**：一次插入的所有 link/unlink 缓冲后**各一次** `upsertEdges`/`deleteEdges`
-  （store 内部按 (vertex,bin) 聚合，每 bin 一次读改写）—— 构建速度关键，别退回逐边写。
-- **读路径**：搜索每次展开 ≈ 2 次往返（邻居列表 + 向量批读），10k 图上 ef=30 ≈ 65ms/查询。
-- **入口点**：单条 Aerospike 记录（`hnsw_meta/hnsw:<Type>`），`CachedHnswMetadataStore` 缓存
-  1 分钟；每次搜索前合并远端入口点 → 多实例共享同一索引。
-- **配置优先级**：`metric`/`m`/`efConstruction` 建过索引后以**元数据**为准；`efSearch` 始终取
-  **schema**（默认 30），`nearest(k, ef)` 可临时覆盖。
-- **构建是单写者**：`HnswIndex.insert` 加了 `synchronized`；查询用各自会话，可并发。
+### 4.1 存储与查询分层（今天的基础）
+
+- `GraphQuery`（`graph-query`）= 唯一读端口：`readVertex/readVertices/readEdges/readEdgesBatch/readAllEdgesBatch`
+  + `readEdgesWithin(...[, maxResults])`（时间窗 + cap）+ `geoNear(...)`；
+  **四种存储都实现它** → Gremlin / Cypher / 批读 / 并行 seed / 按需属性 / 缓存全部复用。
+- `Subgraph` / `NeighborVertexResolver` / `SchemaProjections` / `TimeRange` 都在公共模块（`graph-query` / `graph-storage`）；
+  `Subgraph` 的 **id 统一为文本**（否则同一张子图里点与边的 id 类型不一致 → UI 画不出边）。
+- 顶点写的**版本语义**：每个 property 的 `lastUpdatedTime` 即"版本"，只允许新版本覆盖；
+  RocksDB 两方案与 Aerospike 完全一致（含"搬家重建 geo 索引"）。
+- **`limit` 下推**（今天的性能关键）：`circle(...)` 与 `createdBetween(...)` 之后紧跟的 `limit(k)`
+  在**编译期**折进 step 参数 → 存储侧带 cap 读取：S2 索引用 k 大小的堆、聚合边表读到 k 条即停。
+
+### 4.2 各存储方案的边界
+
+| 方案 | 点 | 边 | 限制/特性 |
+|---|---|---|---|
+| `Aerospike` | 顶点记录 | 记录内 `ve_<schemaId>_<dir>` bin（内联） | 受出入度上限与记录大小限制；per-property CAS |
+| `Aerospike-Edge` | 同 Aerospike | **聚合边表**：`Edge_Out`/`Edge_In`，键 `点id\|min\|max\|层级`，level0 ≤2000 条/CDT，逐层折叠到 root | 大点读**必须**给窗口（`createdBetween`）；与内联 merge；批量导入写 |
+| `RocksDB-Inline` | 每点类型一张表，键 `hash(id):id` | 每边类型一张表，按 Aerospike bin 名存该点全部边 | 度数上限（淘汰最旧，按端独立）；旧写不回退 |
+| `RocksDB-Edge` | 同上 | 每边类型一张边表，键 `hash(vertexId):dir:vertexId:createdTime:edgeId` | 无度数上限；时间窗是 range scan；`both` = 两迭代器 |
+
+### 4.3 其他（沿用）
+
+- HNSW：层方案/层边命名 `<属性名>_<层>`（id 稳定）/度数/schema `2×` 兜底/入口点 1 分钟缓存/
+  `metric·m·efConstruction` 以元数据为准、`efSearch` 取 schema。
+- 知识图谱：一种点 + 一种有向边，id 按 `floorMod(relation.hashCode(), 10)` 分 10 片。
+- HTTP：`language`（gremlin/cypher）、`${name}` 文本替换 + `$name` 原生参数、错误回传
+  `{error, exception, stackTrace[], hint}`、多图 `GraphResolver/GraphRegistry`。
+- UI：查询**替换**（不累加）画布；双击扩展 380ms 手动判定；`includeResult` 让"值浮窗"与"子图"一次拿到。
 
 ---
 
 ## 5. 已知问题 / 限制
 
-1. ~~既有测试冲突 `Duplicate key e2`~~ **已修**：`GraphVerifier` 遇到重复 edge id 时
-   **后写胜出 + 记一条带完整两边数据的 bizlog**，`./mvnw test` 现在**全绿**（CONTEXT 第 17.1 节）。
-   共享 set 里的脏数据还在，想彻底干净可以给写接口测试单独 set（未做，不影响测试）。
-2. **没有 un-index，但有 rebuild**：删除点后邻居列表里仍可能残留该 id（`nearest` 读不到会跳过，
-   不报错）；元数据 `size` 是写入路径每次插入都会发布的快照。要清理结构就用
-   `POST /api/v1/vector-index/rebuild` —— 它**走层 0 + 扫描**重新加载全部被索引的点
-   （`sendKey` 已打开，新写入的记录扫描可寻址），删层边、删元数据、重建、换掉缓存索引；
-   10k 图目前 10,001 个点（多出的一个是写入 Demo），集成测试按 `existing.size() >= size` 判定可复用。
-3. **一个点类型只能有一个向量属性**：schema 校验直接报错（CONTEXT 17.3）；`hnsw:<Type>:<prop>`
-   的多属性 key 逻辑保留为防御性代码。
-4. **过滤查询的代价**：候选表按 `k/selectivity` 放大（10% 选择率、k=20、ef=50 → 约 3× 普通查询延迟）。
-   选择率若由调用方给准（属性统计/采样），可省掉"不够再放大"的重复遍历。
-5. **暂不支持**：多 Aerospike 节点并行写、`efConstruction` 在线调大、重建的并行化。
-6. 前端 `graph-web/frontend/public` 与 `graph-web/src/main/resources/static` 仍是**拷贝关系**（需手动同步）。
+1. **Aerospike-Edge 写入侧 gap**（见 §2.1）：删除、窗口外新增、重聚合未做（读路径已 merge，正确性 OK）。
+2. **前端两处源**（`frontend/public` vs `static/`）靠手工 `cp` 同步。
+3. **Docker 未实测**（本机无外网到 Docker Hub）。
+4. 内存图算法（pagerank/louvain/cc）只支持**同构点**。
+5. Gremlin / Cypher 均为**子集**：Cypher 不支持 `WITH/UNWIND/OPTIONAL MATCH/UNION/变长关系命名/shortestPath`；
+   Gremlin 无 `group/order/project` 等（`order by` 在 Cypher 有）。
+6. RocksDB 为**单进程**占用目录（同一目录不能多实例同时打开）。
+7. Aerospike 的 geo 二级索引在社区版不可用 → geo 查询退化为扫描（RocksDB 侧是真索引）。
+8. UI 双击扩展对超大点显示的是"窗口内最早的 200 条"（不是随机/最新）——按时间序可预期，文档已说明。
 
 ---
 
-## 6. 代码地图（今天的改动）
+## 6. 代码地图（今天新增/改动）
 
-```
-graph-schema/…/VectorIndexConfig.java      向量属性配置（metric/m/efConstruction/efSearch + 默认值校验）
-graph-schema/…/VectorIndexSchemas.java     isVector 检测、层边命名、按需建边（id 稳定）
-graph-schema/…/PropertySchema.java         isVector()/vector(…)/vectorConfig()
-graph-schema/…/json/{PropertyDto,SchemaJsonCodec}.java   isVector/metric/m/efConstruction/efSearch 读写
-graph-schema/…/SchemaValidator.java        向量属性校验（数字 list、list<object> warning、多向量 warning）
+**新增模块**：`graph-storage-rocksdb`（共享底座：键/区域/CF/属性编解码/顶点表/条带锁/LRU/`S2Cells`/`RocksDbGeoIndex`）、
+`graph-storage-rocksdb-inline`、`graph-storage-rocksdb-edge`。
 
-graph-hnsw/…/HnswIndex.java                建/查核心；dynamicSize + provisioner + 入口点合并刷新
-                                           +  filteredPass/searchLayerFiltered（has/filter 下沉）
-graph-hnsw/…/HnswFilter.java               下沉谓词端口（propertyNames / selectivity / test / maxEf）
-graph-hnsw/…/HnswElements.java             elements(ids, extraProperties)：向量+过滤属性一次批读
-graph-hnsw/…/HnswLayerProvisioner.java     按需建层的回调端口
-graph-hnsw/…/CachedHnswMetadataStore.java  入口点缓存（TTL=1min，write 直写穿透）
-graph-hnsw/…/HnswLevels.java               层方案（属性名感知的边名）
-graph-hnsw/…/HnswStore|GraphQueryHnswStore 邻居读写端口（linkBatch/unlinkBatch 批量）
+**新增类（要点）**
+- RocksDB：`RocksDbHandle/RocksDbKeys/RocksDbHash/RocksDbVertexTable/RocksDbGeoIndex/S2Cells/RocksDbInlineStore/RocksDbInlineGraphQuery/RocksDbEdgeStore/RocksDbEdgeGraphQuery/RocksDbTimeRange→TimeRange`
+- Aerospike-Edge：`AerospikeEdgeChunks`（键/分层/折叠/窗口选择）、`AerospikeEdgeChunkStore`（读写/逐级下降/cap/hub 缓存）、
+  `AerospikeEdgeBulkImporter`（批量导入）、`AerospikeEdgeGraphQuery`（内联 + 聚合 merge）
+- 公共：`TimeRange`（`graph-storage`）、`GeoPoint/GeoSearch/GeoHit`（`graph-schema.geo`）、`GeoIndexConfig/GeoIndexSchemas`、
+  `GraphStorageType/GraphStorageSchema`、`SchemaProjections`（含"计算属性"`distanceMeters`）、edge `isNull`
+- Gremlin：`circle` / `createdBetween`（含 cap 下推）、`GremlinQuery` 解析器改为**引号感知**（JSON 参数）
+- HTTP：`GraphBinding.graphQuery`、`RocksDbGraphStores`、`Aerospike-Edge` 分支、`GraphInfo.storage/geoProperties`
+- 集成测试/工具：`PaymentGraphRocksDbLoader`、`GeoMerchantDataLoader`、`AerospikeEdgeDemoLoader`、
+  `RocksDbStorageIntegrationTest`、`GeoQueryIntegrationTest`、`AerospikeEdgeIntegrationTest`、`*LiveLoadTest`
 
-graph-query-aerospike/…/AerospikeHnswStore.java          层边读写（读容错：层不存在=空）
-graph-query-aerospike/…/AerospikeHnswMetadataStore.java  元数据记录（forVertex/自定义 key）
-graph-query-aerospike/…/AerospikeHnswIndexFactory.java   schema 驱动打开索引（provisioner + TTL + 配置合并）
+**schema 资源**（`graph-http/src/main/resources/`）：`payment-graph.json`、`payment-graph-rocksdb-{inline,edge}.json`、
+`geo-merchants-rocksdb-{inline,edge}.json`、`payment-graph-as-edge.json`、`kg-entity-graph.json`、
+`hnsw-sift.json`、`hnsw-dynamic.json`；profile：`application-rocksdb.yml`、`application-hnsw.yml`。
 
-graph-query-gremlin/…/GremlinSteps.java    nearest(k[,ef]) 步骤（顺带记录底层连边供 UI 画图）
-graph-http/…/controller/VectorIndexController.java  GET /api/v1/vector-index + POST …/rebuild
-graph-http/…/service/VectorIndexManager.java  每图每属性的索引（读写共用）、启动建层、写入后索引、rebuild
-graph-http/…/service/GraphService.java        写路径触发索引；QueryService 注册索引给引擎
-graph-http/src/main/resources/hnsw-sift.json / hnsw-dynamic.json / application*.yml
+---
 
-graph-integration-test/…/HnswDatasetLoader.java          向量 + bucket/category 属性导入（seedAttributes）
-graph-integration-test/…/HnswGraphIntegrationTest.java   10k 加载建图 + 写入驱动 + 过滤对比 三场景
-graph-integration-test/…/GraphVerifier.java              重复 edge id → bizlog（不再抛异常）
-tools/generate-hnsw-schema.js, tools/download-siftsmall-dataset.sh
-```
+## 7. 文档索引
 
-重启前若改了 schema JSON 或 `application*.yml`，记得重新 `package` 再启动（jar 里带资源）。
+| 文档 | 内容 |
+|---|---|
+| `README.md` | 模块表、四种存储对比、Geo search、时间窗大点读法、两种查询语言 |
+| `CONTEXT.md` | **第 21 节** RocksDB 两实现；**第 22 节** GEO；**第 23 节** 四项修正；**第 24 节** UI 三处；**第 25 节** Aerospike-Edge（含 25.7 TODO）；**第 26 节** UI 居中 + 大点有界扩展；更早：第 15–20 节（HNSW/向量索引/UI） |
+| `HANDOVER.md` | 本文件（结论 / 现场 / 明天第一件事 / 命令 / 设计要点 / 限制 / 代码地图） |
