@@ -228,3 +228,37 @@ curl -s -X POST localhost:8081/api/v1/vector-index/rebuild \
 | `README.md` | 模块表、四种存储对比、Geo search、时间窗大点读法、两种查询语言 |
 | `CONTEXT.md` | **第 21 节** RocksDB 两实现；**第 22 节** GEO；**第 23 节** 四项修正；**第 24 节** UI 三处；**第 25 节** Aerospike-Edge（含 25.7 TODO）；**第 26 节** UI 居中 + 大点有界扩展；更早：第 15–20 节（HNSW/向量索引/UI） |
 | `HANDOVER.md` | 本文件（结论 / 现场 / 明天第一件事 / 命令 / 设计要点 / 限制 / 代码地图） |
+
+---
+
+## 8. 怎么查历史（含完整思考与输出）
+
+**结论类**：本文件 §0（今天的结论）+ `CONTEXT.md` §21–26（设计与实测）+ `git log --oneline --since=…`（改动本身）。
+这三处只有**结论**，没有推理过程。
+
+**完整过程类**：pi 把每一轮会话存成 JSONL（含用户输入、模型的 thinking、每次工具调用与输出、以及历次压缩摘要）：
+
+```
+C:\Users\Pengshan Zhang\.pi\agent\sessions\--D--workspace-eclipse-PhoenixGraph--\
+    2026-09-13T14-07-54-067Z_01a09b18-92d3-70dc-ad7c-211a2b191f78.jsonl    ← 本次会话（跨 09-13 … 09-17）
+```
+
+- 记录类型：`message`（`user` / `assistant`（`text` + `thinking` + `toolCall`）/ `toolResult`）、`compaction`（6 条，每次上下文压缩的完整摘要）、
+  `model_change`、`custom`；本会话共 **5256 条**。
+- 在 pi 里看：`/session`（当前会话信息）、`/tree`（对话树、可跳回任意节点）、`/resume` 或 `pi -r`（历史会话选择器）、
+  **`/export out.html`（导出成可读 HTML，含全部思考与工具输出）**、`/share`（私有 gist 链接）。
+- 转成 Markdown（本仓库自带工具，无需联网）：
+
+```bash
+# 今天一整天（本地时区），含思考、工具调用与输出、压缩摘要
+node tools/session-export.mjs --from 2026-09-17 --to 2026-09-17 --out .sessions/2026-09-17-full.md
+
+# 只看问答（思考压到 1.2k 字符、不含工具输出）
+node tools/session-export.mjs --from 2026-09-17 --thinking brief --tools none \
+     --out .sessions/2026-09-17-answers-only.md
+
+# 常用开关：--session <路径|id|latest> --thinking full|brief|none --tools full|brief|none --max-chars N
+```
+
+已导出到 `'.sessions/`（已 gitignore，不入库）：`2026-09-17-full.md`（1.4 MB，14 个用户轮次 / 965 个助手轮次 / 369 段思考 /
+368 段工具输出 / 2 次压缩摘要）、`2026-09-17-answers-only.md`（0.6 MB，速读用）。
