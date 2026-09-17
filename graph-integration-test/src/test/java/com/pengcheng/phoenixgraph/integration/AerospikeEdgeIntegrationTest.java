@@ -203,6 +203,26 @@ class AerospikeEdgeIntegrationTest {
     }
 
     @Test
+    void aCappedWindowReadStopsAtTheCap() {
+        long day = 24L * 60 * 60 * 1000;
+        TimeRange year = TimeRange.of(startTime, startTime + 366L * day);
+        // the whole year is 5000 edges; a capped read keeps the first ones (the tables are ordered
+        // by creation time, so the cap is what a UI expansion asks for)
+        assertEquals(200, query.readEdgesWithin(AerospikeEdgeDemoLoader.HUB, "Account", "Payment",
+                EdgeSide.IN, year, List.of("status"), 200).size());
+        assertEquals(7, query.readEdgesWithin(AerospikeEdgeDemoLoader.HUB, "Account", "Payment",
+                EdgeSide.IN, year, List.of(), 7).size());
+        assertEquals(HUB_EDGES, query.readEdgesWithin(AerospikeEdgeDemoLoader.HUB, "Account", "Payment",
+                EdgeSide.IN, year, List.of()).size(), "0 means no cap");
+
+        // and the Gremlin form pushes a following limit into the window
+        List<Object> count = gremlin.execute("g.V('" + AerospikeEdgeDemoLoader.HUB + "','Account')"
+                + ".createdBetween('1970-01-01T00:00:00','2100-01-01T00:00:00').both().limit(50).count()");
+        assertTrue(((Number) count.get(0)).intValue() <= 500,
+                "a bounded expansion of a hub stays small: " + count);
+    }
+
+    @Test
     void aHubWithoutAWindowSaysToAddOne() {
         QueryException error = assertThrows(QueryException.class,
                 () -> query.readEdges(AerospikeEdgeDemoLoader.HUB, "Account", "Payment", EdgeSide.IN, List.of()));

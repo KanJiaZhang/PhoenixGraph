@@ -150,6 +150,24 @@ public interface GraphQuery {
     }
 
     /**
+     * Windowed read that keeps at most {@code maxResults} edges ({@code 0} = all of them).
+     *
+     * <p>The cap is what makes "expand this hub in the UI" cheap: the aggregated tables are
+     * ordered by creation time, so a capped read stops as soon as it has that many edges
+     * instead of materialising a year of a hub's history.
+     */
+    default List<EdgeQueryResult> readEdgesWithin(Object vertexId, String vertexName, String edgeName,
+                                                  EdgeSide direction, TimeRange range,
+                                                  List<String> propertyNames, int maxResults) {
+        List<EdgeQueryResult> edges = readEdgesWithin(vertexId, vertexName, edgeName, direction, range,
+                propertyNames);
+        if (maxResults <= 0 || edges.size() <= maxResults) {
+            return edges;
+        }
+        return List.copyOf(edges.subList(0, maxResults));
+    }
+
+    /**
      * Batched form of {@link #readEdgesWithin}: the window applies to every vertex of the batch.
      * The default reads them one by one; a backend whose tables are already ordered by time can
      * override it with something smarter.
@@ -157,9 +175,16 @@ public interface GraphQuery {
     default List<List<EdgeQueryResult>> readEdgesBatchWithin(String edgeName, EdgeSide direction,
                                                              TimeRange range, List<Object> vertexIds,
                                                              List<String> propertyNames) {
+        return readEdgesBatchWithin(edgeName, direction, range, vertexIds, propertyNames, 0);
+    }
+
+    /** Batched form of {@link #readEdgesWithin(Object, String, String, EdgeSide, TimeRange, List, int)}. */
+    default List<List<EdgeQueryResult>> readEdgesBatchWithin(String edgeName, EdgeSide direction,
+                                                             TimeRange range, List<Object> vertexIds,
+                                                             List<String> propertyNames, int maxResults) {
         List<List<EdgeQueryResult>> out = new ArrayList<>(vertexIds.size());
         for (Object vertexId : vertexIds) {
-            out.add(readEdgesWithin(vertexId, null, edgeName, direction, range, propertyNames));
+            out.add(readEdgesWithin(vertexId, null, edgeName, direction, range, propertyNames, maxResults));
         }
         return out;
     }
@@ -171,7 +196,17 @@ public interface GraphQuery {
      */
     default List<List<EdgeQueryResult>> readAllEdgesBatchWithin(List<Object> vertexIds, EdgeSide direction,
                                                                TimeRange range, List<String> propertyNames) {
-        return readAllEdgesBatch(vertexIds, direction, propertyNames);
+        return readAllEdgesBatchWithin(vertexIds, direction, range, propertyNames, 0);
+    }
+
+    /**
+     * Capped form of the all-classes window read. The cap applies <b>per edge class</b> (a class
+     * is what one read covers), which already bounds what a UI expansion collects.
+     */
+    default List<List<EdgeQueryResult>> readAllEdgesBatchWithin(List<Object> vertexIds, EdgeSide direction,
+                                                               TimeRange range, List<String> propertyNames,
+                                                               int maxResults) {
+        return readAllEdgesBatchWithin(vertexIds, direction, range, propertyNames);
     }
 
     /**

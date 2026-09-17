@@ -259,11 +259,29 @@ public final class GremlinContext {
     /** The creation-time window the following edge reads use ({@link TimeRange#ALL} = none). */
     private TimeRange edgeTimeRange = TimeRange.ALL;
 
+    /** The most edges one class of one vertex may contribute ({@code 0} = no cap). */
+    private int edgeReadLimit;
+
     /** Sets the window a {@code createdBetween} step declared. */
     public void edgeTimeRange(TimeRange range) {
+        edgeTimeRange(range, 0);
+    }
+
+    /**
+     * Sets the window and the per-class cap the following edge reads use. The cap is what a
+     * {@code limit} after the edge step becomes for a hub: the aggregated tables are ordered by
+     * creation time, so a capped read stops early instead of materialising the whole window.
+     */
+    public void edgeTimeRange(TimeRange range, int maxResults) {
         this.edgeTimeRange = range == null ? TimeRange.ALL : range;
+        this.edgeReadLimit = Math.max(maxResults, 0);
         // a different window reads different edges: the per-query caches must not answer for it
         edgeCache.clear();
+    }
+
+    /** The per-class cap of a windowed edge read ({@code 0} = no cap). */
+    public int edgeReadLimit() {
+        return edgeReadLimit;
     }
 
     /** The window the following edge reads use. */
@@ -501,7 +519,8 @@ public final class GremlinContext {
         }
         List<List<List<EdgeQueryResult>>> results = readBatches(batches(vertexIds),
                 batch -> hasEdgeTimeRange()
-                        ? graphQuery.readAllEdgesBatchWithin(batch, direction, edgeTimeRange, propertyNames)
+                        ? graphQuery.readAllEdgesBatchWithin(batch, direction, edgeTimeRange, propertyNames,
+                                edgeReadLimit)
                         : graphQuery.readAllEdgesBatch(batch, direction, propertyNames));
         List<List<EdgeQueryResult>> all = new ArrayList<>(vertexIds.size());
         for (List<List<EdgeQueryResult>> part : results) {
@@ -516,7 +535,7 @@ public final class GremlinContext {
         List<List<List<EdgeQueryResult>>> results = readBatches(batches(vertexIds),
                 batch -> hasEdgeTimeRange()
                         ? graphQuery.readEdgesBatchWithin(edgeName, direction, edgeTimeRange, batch,
-                                propertyNames)
+                                propertyNames, edgeReadLimit)
                         : graphQuery.readEdgesBatch(edgeName, direction, batch, propertyNames));
         List<List<EdgeQueryResult>> all = new ArrayList<>(vertexIds.size());
         for (List<List<EdgeQueryResult>> part : results) {
@@ -537,7 +556,7 @@ public final class GremlinContext {
         }
         List<EdgeQueryResult> result = hasEdgeTimeRange()
                 ? graphQuery.readEdgesWithin(vertexId, vertexName, edgeName, direction, edgeTimeRange,
-                        propertyNames)
+                        propertyNames, edgeReadLimit)
                 : graphQuery.readEdges(vertexId, vertexName, edgeName, direction, propertyNames);
         if (cacheEnabled) {
             edgeCache.put(key, result);

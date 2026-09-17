@@ -243,6 +243,53 @@ public class GremlinGraphQuery {
     }
 
     /**
+     * Rewrites {@code createdBetween(a, b) ... <hop> [has|filter] limit(k)} so the window carries
+     * the cap ({@code createdBetween(a, b, k)}) and the limit step goes away.
+     *
+     * <p>A hub's edges live in the aggregated tables, where a read walks the chunks in creation
+     * time: with the cap the read stops after k edges instead of materialising the whole window,
+     * which is what a UI expansion needs. The traversers are the same k edges either way.
+     */
+    private static List<GremlinQuery.Step> pushLimitsIntoWindow(List<GremlinQuery.Step> steps) {
+        List<GremlinQuery.Step> out = new ArrayList<>(steps.size());
+        for (int i = 0; i < steps.size(); i++) {
+            GremlinQuery.Step step = steps.get(i);
+            if (!step.name().equals("createdBetween") || step.args().size() > 2) {
+                out.add(step);
+                continue;
+            }
+            int hop = -1;
+            for (int j = i + 1; j < steps.size(); j++) {
+                if (isHop(steps.get(j).name())) {
+                    hop = j;
+                    break;
+                }
+            }
+            if (hop < 0) {
+                out.add(step);
+                continue;
+            }
+            int next = hop + 1;
+            while (next < steps.size() && isFilter(steps.get(next).name())) {
+                next++;
+            }
+            if (next >= steps.size() || !steps.get(next).name().equals("limit")) {
+                out.add(step);
+                continue;
+            }
+            List<String> args = new ArrayList<>(step.args());
+            args.add(steps.get(next).args().get(0));
+            out.add(new GremlinQuery.Step("createdBetween", List.copyOf(args)));
+            // everything up to the limit stays, the limit itself is now the window's cap
+            for (int j = i + 1; j < next; j++) {
+                out.add(steps.get(j));
+            }
+            i = next;
+        }
+        return out;
+    }
+
+    /**
      * Rewrites {@code circle(...)} followed by {@code limit(k)} into one {@code circle} step
      * carrying the limit ({@code circle(pointJson, radiusMeters, k)}), so the limit is applied
      * inside the index search rather than after every hit was read.
@@ -281,6 +328,9 @@ public class GremlinGraphQuery {
         // many hits while it walks the index, so the vertex reads, the collected subgraph and
         // the rendered graph stop at the limit instead of covering the whole circle
         parsedSteps = pushLimitsIntoCircle(parsedSteps);
+        // a limit after the first hop of a windowed traversal becomes the window's cap, so the
+        // aggregated tables stop reading once they have that many edges
+        parsedSteps = pushLimitsIntoWindow(parsedSteps);
         // a nearest step absorbs the has/filter conditions directly following it: they
         // are evaluated inside the graph walk, so the search returns the closest k that
         // *match* instead of the k closest of which some happen to match

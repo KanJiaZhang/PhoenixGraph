@@ -140,6 +140,7 @@
       valueRows: '行',
       valueItems: '项',
       valueDistinct: '个不同值',
+      hubBounded: '该点是聚合大点，已只读取最近的 {n} 条边',
       valueCopy: '复制结果值',
     },
     en: {
@@ -194,6 +195,7 @@
       valueRows: 'row(s)',
       valueItems: 'item(s)',
       valueDistinct: 'distinct',
+      hubBounded: 'This vertex is a hub whose edges live in the aggregated tables; only its newest {n} edges were read',
       valueCopy: 'Copy the value',
     },
   };
@@ -1336,15 +1338,56 @@
   }
 
   // ---- double-click expansion: one more hop over every edge type (both) ----
+  // A hub keeps its edges in the aggregated edge tables (Aerospike-Edge) and can only be read
+  // inside a creation-time window, so an expansion of such a vertex asks for a bounded slice:
+  // a window wide enough to hold anything, plus a cap the storage stops at (the tables are
+  // ordered by creation time). The window's two dates are the widest the step accepts.
+  const HUB_WINDOW = { from: '1970-01-01T00:00:00', to: '2100-01-01T00:00:00' };
+  const HUB_EDGE_LIMIT = 200;
+
+  /** Whether an error says the vertex lives in the aggregated tables and needs a window. */
+  function needsTimeWindow(error) {
+    const message = String((error && error.message) || error || '');
+    return message.includes('createdBetween') || message.includes('creation-time window');
+  }
+
+  /** The bounded form of a traversal: the same steps, inside a window, capped. */
+  function boundedByWindow(query, limit) {
+    const seed = query.match(/^g\.V\(([^)]*)\)/);
+    if (!seed) return null;
+    const steps = query.slice(seed[0].length);
+    return `g.V(${seed[1]}).createdBetween('${HUB_WINDOW.from}','${HUB_WINDOW.to}')`
+      + `${steps}.limit(${limit})`;
+  }
+
+  /**
+   * Runs a traversal the UI built itself (an expansion), retrying it bounded when the vertex
+   * turned out to be a hub: the retry reads the oldest {@link HUB_EDGE_LIMIT} edges of the
+   * window and says so, instead of failing with the storage's explanation.
+   */
+  async function runExpansionQuery(query, label) {
+    try {
+      return { result: await runQuery(query), bounded: false };
+    } catch (err) {
+      const bounded = needsTimeWindow(err) ? boundedByWindow(query, HUB_EDGE_LIMIT) : null;
+      if (!bounded) throw err;
+      setStatus(`${label}：该点是大点，改为读取最近的 ${HUB_EDGE_LIMIT} 条（可用 createdBetween 指定时间范围）`);
+      toast(t('hubBounded').replace('{n}', String(HUB_EDGE_LIMIT)));
+      return { result: await runQuery(bounded), bounded: true };
+    }
+  }
+
   async function expand(d) {
     const query = `g.V('${d.id}','${d.label}').both()`;
     setStatus(`扩展 ${d.id}: ${query}`);
     try {
-      const sub = await runQuery(query);
-      const { addedV, addedE } = merge(sub);
+      const { result, bounded } = await runExpansionQuery(query, `扩展 ${d.id}`);
+      // the response carries the subgraph next to the traversers: merge the subgraph part
+      const { addedV, addedE } = merge(responseSubgraph(result));
       clearAlgo();
       render();
-      setStatus(`扩展完成：新增点 ${addedV}、边 ${addedE}（共点 ${graph.vertices.size}、边 ${graph.edges.size}）`);
+      setStatus(`扩展完成：新增点 ${addedV}、边 ${addedE}（共点 ${graph.vertices.size}、边 ${graph.edges.size}）`
+        + (bounded ? `（大点，仅读取前 ${HUB_EDGE_LIMIT} 条）` : ''));
     } catch (err) {
       setStatus('扩展失败: ' + err.message);
       showQueryError(err);
@@ -1367,35 +1410,58 @@
     hideValue();
   }
 
-  async function queryCurrent(query) {
-    setStatus('查询中…');
+  /**
+   * Runs a query the UI generated; when the seed is a hub the storage asks for a time window and
+   * this retries it bounded (see {@link runExpansionQuery}) instead of showing an error.
+   */
+  async function queryCurrentBounded(query) {
     try {
-      const result = await runQuery(query);
-      // Cypher answers with columns/rows plus the subgraph; Gremlin with the subgraph,
-      // optionally next to the traversers it produced (includeResult)
-      const subgraph = responseSubgraph(result);
-      resetGraph();
-      const { addedV, addedE } = merge(subgraph);
-      // a Cypher answer brings rows, which is also what makes the result tab available
-      if (result && result.columns) {
-        rowsReady = true;
-        refreshRowsTab();
-        showRows(result.columns, result.rows || []);
-      } else {
-        clearRows();
+      const { result, bounded } = await runExpansionQuery(query, '查询');
+      if (!bounded) {
+        showQueryResult(result, query);
+        return;
       }
-      const value = responseValue(result);
-      showValue(value, result);
-      clearAlgo();
-      render();
-      const empty = !graph.vertices.size && !(result && result.rows && result.rows.length);
-      if (empty) toast(t('emptyResult'));
-      const rows = result && result.rows ? `、行 ${result.rows.length}` : '';
-      setStatus(`查询完成：共点 ${graph.vertices.size}、边 ${graph.edges.size}${rows}（新增点 ${addedV}、边 ${addedE}）`);
+      showQueryResult(result, query);
+      setStatus(`查询完成（大点，仅读取前 ${HUB_EDGE_LIMIT} 条）`);
     } catch (err) {
       setStatus(err.message);
       showQueryError(err);
     }
+  }
+
+  async function queryCurrent(query) {
+    setStatus('查询中…');
+    try {
+      showQueryResult(await runQuery(query), query);
+    } catch (err) {
+      setStatus(err.message);
+      showQueryError(err);
+    }
+  }
+
+  /** Puts one answer on the canvas: the subgraph, the rows tab and the value window. */
+  function showQueryResult(result, query) {
+    // Cypher answers with columns/rows plus the subgraph; Gremlin with the subgraph,
+    // optionally next to the traversers it produced (includeResult)
+    const subgraph = responseSubgraph(result);
+    resetGraph();
+    const { addedV, addedE } = merge(subgraph);
+    // a Cypher answer brings rows, which is also what makes the result tab available
+    if (result && result.columns) {
+      rowsReady = true;
+      refreshRowsTab();
+      showRows(result.columns, result.rows || []);
+  } else {
+      clearRows();
+    }
+    const value = responseValue(result);
+    showValue(value, result);
+    clearAlgo();
+    render();
+    const empty = !graph.vertices.size && !(result && result.rows && result.rows.length);
+    if (empty) toast(t('emptyResult'));
+    const rows = result && result.rows ? `、行 ${result.rows.length}` : '';
+    setStatus(`查询完成：共点 ${graph.vertices.size}、边 ${graph.edges.size}${rows}（新增点 ${addedV}、边 ${addedE}）`);
   }
 
   /** The subgraph part of a response (the response itself is one for a plain Gremlin query). */
@@ -1564,7 +1630,7 @@
     if (!vertexType) { setStatus(t('noVertexType')); return; }
     const quoted = ids.map((id) => `'${id}'`).join(',');
     setStatus(`${ids.length} seed id(s): ${quoted}`);
-    queryCurrent(`g.V(${quoted},'${vertexType}').both().both()`);
+    queryCurrentBounded(`g.V(${quoted},'${vertexType}').both().both()`);
   }
 
   function onGremlinQuery() {

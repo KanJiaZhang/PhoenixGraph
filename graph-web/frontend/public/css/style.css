@@ -122,9 +122,9 @@ body {
 .query-mode { display: flex; gap: 8px; align-items: center; }
 .query-mode[hidden] { display: none; }
 .query-mode:not([hidden]) { animation: fadeIn 0.24s ease; }
-/* the query box and the example picker share one row: the picker sits to its right, at the
-   same width it had as its own row */
-.gremlin-row { flex-basis: 100%; order: 99; width: 100%; flex-direction: row; align-items: flex-start; }
+/* the query box and the example picker share one row, both centred on its middle line: the
+   picker keeps the one-third width it had as its own row */
+.gremlin-row { flex-basis: 100%; order: 99; width: 100%; flex-direction: row; align-items: center; }
 .gremlin-row textarea {
   flex: 1 1 0;
   min-width: 0;         /* shrink with the row instead of overflowing it */
@@ -672,8 +672,8 @@ button.btn-primary:hover, #queryBtn:hover { filter: brightness(1.07); }
   font-weight: 600;
 }
 .lang-select { margin-right: 4px; }
-/* one third of the row, on its right, vertically aligned with the query box */
-.example-select { flex: 0 0 auto; width: calc(100% / 3); align-self: flex-start; margin-top: 0; }
+/* one third of the row, on its right, centred against the query box */
+.example-select { flex: 0 0 auto; width: calc(100% / 3); align-self: center; margin-top: 0; }
 #gremlinInput.cypher { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 
 .rows-wrap { overflow: auto; max-height: calc(100% - 8px); }

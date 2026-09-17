@@ -90,12 +90,14 @@ public class GremlinStepRegistry {
             return GremlinSteps.values(args);
         });
         register("createdBetween", args -> {
-            if (args.size() != 2) {
+            if (args.size() < 2 || args.size() > 3) {
                 throw new QueryException("createdBetween expects createdBetween(from, to), got "
                         + args.size() + " arguments");
             }
             try {
-                return GremlinSteps.createdBetween(TimeRange.parse(args.get(0), args.get(1)));
+                TimeRange range = TimeRange.parse(args.get(0), args.get(1));
+                int cap = args.size() > 2 ? positiveInt(args.get(2)) : 0;
+                return GremlinSteps.createdBetween(range, cap);
             } catch (IllegalArgumentException e) {
                 throw new QueryException(e.getMessage(), e);
             }

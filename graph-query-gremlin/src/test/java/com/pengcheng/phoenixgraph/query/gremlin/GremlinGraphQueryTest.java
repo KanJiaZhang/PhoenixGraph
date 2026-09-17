@@ -359,6 +359,36 @@ class GremlinGraphQueryTest {
     }
 
     @Test
+    void aLimitAfterAWindowedHopBecomesTheWindowCap() {
+        // a hub's edges live in aggregated tables: createdBetween(...).both().limit(k) must tell
+        // the storage to stop after k edges instead of materialising the whole window
+        when(graphQuery.readEdgesWithin(eq("v1"), any(), eq("knows"), eq(EdgeSide.BOTH), any(), anyList(),
+                eq(7)))
+                .thenReturn(List.of());
+
+        GremlinGraphQuery engine = new GremlinGraphQuery(graphQuery, resolver);
+        assertEquals(List.of(), engine.execute("g.V('v1','person')"
+                + ".createdBetween('2025-01-01','2025-02-01').both('knows').limit(7)"));
+
+        // the window really was bounded by the two dates and carried the cap
+        org.mockito.ArgumentCaptor<com.pengcheng.phoenixgraph.storage.TimeRange> windows =
+                org.mockito.ArgumentCaptor.forClass(com.pengcheng.phoenixgraph.storage.TimeRange.class);
+        verify(graphQuery).readEdgesWithin(eq("v1"), any(), eq("knows"), eq(EdgeSide.BOTH), windows.capture(),
+                anyList(), eq(7));
+        assertEquals(com.pengcheng.phoenixgraph.storage.TimeRange.parse("2025-01-01", "2025-02-01"),
+                windows.getValue());
+
+        // without the limit the cap is 0 (everything inside the window)
+        org.mockito.Mockito.clearInvocations(graphQuery);
+        when(graphQuery.readEdgesWithin(eq("v1"), any(), eq("knows"), eq(EdgeSide.BOTH), any(), anyList(),
+                eq(0)))
+                .thenReturn(List.of());
+        engine.execute("g.V('v1','person').createdBetween('2025-01-01','2025-02-01').both('knows')");
+        verify(graphQuery).readEdgesWithin(eq("v1"), any(), eq("knows"), eq(EdgeSide.BOTH), any(), anyList(),
+                eq(0));
+    }
+
+    @Test
     void aLimitAfterCircleIsPushedIntoTheSearch() {
         when(graphQuery.supportsGeoSearch()).thenReturn(true);
         when(graphQuery.geoNear(eq("person"), eq("location"), any())).thenAnswer(inv -> {

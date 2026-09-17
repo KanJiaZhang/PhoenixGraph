@@ -93,6 +93,13 @@ public class AerospikeEdgeGraphQuery implements GraphQuery {
     public List<EdgeQueryResult> readEdgesWithin(Object vertexId, String vertexName, String edgeName,
                                                  EdgeSide direction, TimeRange range,
                                                  List<String> propertyNames) {
+        return readEdgesWithin(vertexId, vertexName, edgeName, direction, range, propertyNames, 0);
+    }
+
+    @Override
+    public List<EdgeQueryResult> readEdgesWithin(Object vertexId, String vertexName, String edgeName,
+                                                 EdgeSide direction, TimeRange range,
+                                                 List<String> propertyNames, int maxResults) {
         Objects.requireNonNull(vertexId, "vertexId");
         Objects.requireNonNull(direction, "direction");
         EdgeSchema edgeSchema = requireEdge(edgeName);
@@ -101,9 +108,10 @@ public class AerospikeEdgeGraphQuery implements GraphQuery {
 
         Map<String, EdgeQueryResult> merged = new LinkedHashMap<>();
         for (EdgeSide side : sides(edgeSchema, direction)) {
-            // 1. the aggregated tables: only the chunks whose span overlaps the window
+            // 1. the aggregated tables: the chunks whose span overlaps the window, in time order,
+            //    stopping at the cap (what a UI expansion asks for)
             for (StoredEdgeValue edge : chunks.readWindow(edgeSchema, directionCode(edgeSchema, side),
-                    vertexId, window)) {
+                    vertexId, window, maxResults)) {
                 merge(merged, toResult(edgeName, edge, side, requested));
             }
             // 2. the vertex record: the few edges that live (or were updated) there
@@ -122,6 +130,9 @@ public class AerospikeEdgeGraphQuery implements GraphQuery {
         // a window read answers in creation-time order
         results.sort(Comparator.comparingLong(EdgeQueryResult::createdTime)
                 .thenComparing(EdgeQueryResult::edgeId));
+        if (maxResults > 0 && results.size() > maxResults) {
+            return List.copyOf(results.subList(0, maxResults));
+        }
         return results;
     }
 
@@ -151,14 +162,14 @@ public class AerospikeEdgeGraphQuery implements GraphQuery {
     @Override
     public List<List<EdgeQueryResult>> readEdgesBatchWithin(String edgeName, EdgeSide direction,
                                                             TimeRange range, List<Object> vertexIds,
-                                                            List<String> propertyNames) {
+                                                            List<String> propertyNames, int maxResults) {
         Objects.requireNonNull(vertexIds, "vertexIds");
         if (vertexIds.isEmpty()) {
             return List.of();
         }
         List<List<EdgeQueryResult>> out = new ArrayList<>(vertexIds.size());
         for (Object vertexId : vertexIds) {
-            out.add(readEdgesWithin(vertexId, null, edgeName, direction, range, propertyNames));
+            out.add(readEdgesWithin(vertexId, null, edgeName, direction, range, propertyNames, maxResults));
         }
         return out;
     }
@@ -173,6 +184,17 @@ public class AerospikeEdgeGraphQuery implements GraphQuery {
     @Override
     public List<List<EdgeQueryResult>> readAllEdgesBatchWithin(List<Object> vertexIds, EdgeSide direction,
                                                                TimeRange range, List<String> propertyNames) {
+        return readAllEdgesBatchWithin(vertexIds, direction, range, propertyNames, 0);
+    }
+
+    /**
+     * Every edge class inside a window, with the per-class cap a {@code limit} of the query
+     * became: each class stops reading once it has that many edges.
+     */
+    @Override
+    public List<List<EdgeQueryResult>> readAllEdgesBatchWithin(List<Object> vertexIds, EdgeSide direction,
+                                                               TimeRange range, List<String> propertyNames,
+                                                               int maxResults) {
         Objects.requireNonNull(vertexIds, "vertexIds");
         if (vertexIds.isEmpty()) {
             return List.of();
@@ -183,7 +205,8 @@ public class AerospikeEdgeGraphQuery implements GraphQuery {
         }
         for (EdgeSchema edgeSchema : schema.edgeSchemas()) {
             List<List<EdgeQueryResult>> byEdge =
-                    readEdgesBatchWithin(edgeSchema.name(), direction, range, vertexIds, propertyNames);
+                    readEdgesBatchWithin(edgeSchema.name(), direction, range, vertexIds, propertyNames,
+                            maxResults);
             for (int i = 0; i < vertexIds.size(); i++) {
                 perVertex.get(i).addAll(byEdge.get(i));
             }

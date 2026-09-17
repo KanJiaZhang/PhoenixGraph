@@ -110,6 +110,18 @@ public final class AerospikeEdgeChunkStore {
      */
     public List<StoredEdgeValue> readWindow(EdgeSchema edgeSchema, int directionCode, Object vertexId,
                                             TimeRange range) {
+        return readWindow(edgeSchema, directionCode, vertexId, range, 0);
+    }
+
+    /**
+     * Reads the edges of one vertex inside a window, keeping at most {@code maxResults} of them.
+     *
+     * <p>The chunks are walked in creation-time order and the read stops as soon as the cap is
+     * reached, so "expand this hub" reads the oldest few hundred edges of the window instead of
+     * every chunk that overlaps it.
+     */
+    public List<StoredEdgeValue> readWindow(EdgeSchema edgeSchema, int directionCode, Object vertexId,
+                                            TimeRange range, int maxResults) {
         HubInfo hub = hub(edgeSchema, directionCode, vertexId);
         if (hub == null || hub.isEmpty()) {
             return List.of();
@@ -129,22 +141,23 @@ public final class AerospikeEdgeChunkStore {
 
         List<AerospikeEdgeChunks.ChunkRecord> chunks = new ArrayList<>();
         if (hub.levels() <= 1) {
-            chunks.add(new AerospikeEdgeChunks.ChunkRecord(0, from, to, null, null));
-        } else {
-            descend(set, vertexId, hub.levels() - 1, hub.minCreatedTime(), hub.maxCreatedTime(),
-                    from, to, chunks);
+            throw new IllegalStateException("Vertex '" + vertexId + "' has " + hub.edgeCount()
+                    + " edges but its tables declare " + hub.levels() + " level(s)");
         }
+        descend(set, vertexId, hub.levels() - 1, hub.minCreatedTime(), hub.maxCreatedTime(),
+                from, to, chunks);
 
+        int cap = maxResults > 0 ? Math.min(maxResults, MAX_WINDOW_EDGES) : MAX_WINDOW_EDGES;
         List<StoredEdgeValue> edges = new ArrayList<>();
         for (AerospikeEdgeChunks.ChunkRecord chunk : chunks) {
-            if (edges.size() >= MAX_WINDOW_EDGES) {
+            if (edges.size() >= cap) {
                 break;
             }
             Record record = client.get(null, chunkKey(set, vertexId, chunk));
             if (record == null || record.bins == null) {
                 continue;
             }
-            readEdges(record, from, to, edges);
+            readEdges(record, from, to, edges, cap);
         }
         edges.sort((a, b) -> {
             int byTime = Long.compare(a.createdTime(), b.createdTime());
@@ -187,12 +200,15 @@ public final class AerospikeEdgeChunkStore {
     }
 
     @SuppressWarnings("unchecked")
-    private void readEdges(Record record, long from, long to, List<StoredEdgeValue> out) {
+    private void readEdges(Record record, long from, long to, List<StoredEdgeValue> out, int cap) {
         Object raw = record.bins.get(AerospikeEdgeChunks.EDGES_BIN);
         if (!(raw instanceof Map<?, ?> edges)) {
             return;
         }
         for (Map.Entry<?, ?> entry : edges.entrySet()) {
+            if (out.size() >= cap) {
+                return;
+            }
             String edgeId = String.valueOf(entry.getKey());
             StoredEdgeValue edge = AerospikeEdgeStore.deserializeEdgeValue(edgeId, entry.getValue());
             if (edge.createdTime() >= from && edge.createdTime() <= to) {

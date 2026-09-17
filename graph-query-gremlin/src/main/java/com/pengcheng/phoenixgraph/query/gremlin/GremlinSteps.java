@@ -164,9 +164,9 @@ final class GremlinSteps {
      * <p>Bounds are epoch millis or a UTC date; {@code *} (or an empty argument) leaves a side
      * open. Backends without such tables simply ignore the window.
      */
-    static GremlinStep createdBetween(TimeRange range) {
+    static GremlinStep createdBetween(TimeRange range, int maxResults) {
         return (ctx, in) -> {
-            ctx.edgeTimeRange(range);
+            ctx.edgeTimeRange(range, maxResults);
             return in;
         };
     }

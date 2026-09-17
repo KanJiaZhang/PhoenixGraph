@@ -11,6 +11,9 @@
   `efSearch` 默认 50、`has`/`filter` 下沉进 HNSW 搜索
 - 追加（第 18 节）：有向边布局验证（source 存 out-bin、target 存 in-bin，两跳四组合全通）、
   修复 `@PathVariable` 未命名导致 `GET|DELETE /vertices/{id}` 等接口 400/500 的 bug
+- 追加（第 26 节）：查询行内控件改为中线对齐（示例框不再贴顶）；大点双击扩展自动改为「宽窗口 + limit(200)」
+  有界查询（新增窗口读 cap 下推：createdBetween(a,b) 后紧跟的 limit(k) 进存储，聚合表读到 k 条即停）；
+  顺带修掉扩展合并错响应形状的既有 bug
 - 追加（第 25 节）：**Aerospike-Edge**（大点用聚合边表：每种边两张表 + 三层索引 + 离线批量导入；
   查询用新增 `createdBetween(from,to)` 窗口逐级下降并与内联合并；demo 30 万笔收款，1 天窗口 limit 500 ✓；
   近线更新/删除/重聚合列入 TODO）

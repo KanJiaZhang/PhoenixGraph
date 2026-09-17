@@ -1478,3 +1478,70 @@ UI：图下拉出现 `payment-graph-as-edge · Aerospike-Edge` ✓，示例菜�
 3. **重聚合/压缩任务**：把内联中已经稳定的边折叠进 level 0 chunk、刷新上层 span、清理墓碑 ✓（近线任务，允许分钟级延迟 ✓）。
 
 因此，"内联 vs 批量导入" 目前是**读时合并（无 gap 的正确性）** ✓，写入侧的自动化补齐列入上述 TODO ✓。
+
+---
+
+## 26. UI 修正：查询行居中、大点双击扩展自动限流
+
+### 26.1 示例下拉与查询框在同一行的中线上
+
+`.gremlin-row` 的 `align-items` 由 `flex-start` 改为 **`center`**，示例框 `align-self: center` ——
+两者现在共用同一行的中线（此前下拉贴着顶部 ✗），宽度仍为行的 **1/3** ✓。
+
+headless Edge 实测（真实点击 `#modeToggle` + `#examplesBtn`）：
+
+```
+sameRow true, pickerOnTheRight true, pickerWidth 468, ratio 0.333,
+centreOffset 0, centred true
+```
+
+### 26.2 双击大点：自动改用「窗口 + limit」的有界扩展
+
+`payment-graph-aerospike-edge` 里的大点（30 万条收款在聚合边表里）双击时报错
+「需要指定开始结束时间」✗ —— 因为 `Aerospike-Edge` 的读必须有窗口 ✓，而扩展查询 `g.V(id,'Label').both()` 没有窗口 ✓。
+
+处理方式（前端自动、无需用户改语句）：
+
+1. 先按原样扩展；若错误信息表示需要时间窗口（含 `createdBetween` / `creation-time window` ✓）→ **自动重试有界版本**：
+   ```
+   g.V('9000001','Account')
+     .createdBetween('1970-01-01T00:00:00','2100-01-01T00:00:00')   // 足够宽的有限窗口
+     .both().limit(200)
+   ```
+   并 toast 提示「该点是聚合大点，已只读取最近的 200 条边」✓（i18n ✓）；
+2. 同一个 helper 也用于「按 id 扩展」（工具栏 `g.V(ids,'Type').both().both()` ✓）。
+
+**为什么这样够快**（关键在服务端）：新增了 **窗口读的 cap 下推** ——
+`createdBetween(...)` 之后第一个 hop 紧跟的 `limit(k)` 会被编译期合并进窗口（`createdBetween(a,b,k)` ✓），
+`GremlinContext` 把 cap 随窗口一起传给存储 ✓，存储的新增重载
+`readEdgesWithin(..., maxResults)` / `readEdgesBatchWithin(..., maxResults)` / `readAllEdgesBatchWithin(..., maxResults)`
+（默认实现 = 读完再截断，其它后端零改动 ✓）在**聚合表按 createdTime 有序**的前提下**读到 k 条就停** ✓，
+所以不会再为一个"展开"把整年 30 万条边读出来 ✗。
+
+线上实测（8081）：
+
+| 查询 | 结果 |
+|---|---|
+| `both()`（无窗口） | 报错并提示加 `createdBetween` ✓ |
+| `createdBetween(1970,2100).both().limit(200)` | **200 条 / 200 边 / 114 ms** ✓（下推前：30 万条 / 5776 ms ✗） |
+| `createdBetween('2025-06-01','2025-06-02').both().limit(200)` | 200 条 / 50 ms ✓ |
+
+真实 UI 实测（headless Edge 驱动：选中 `payment-graph-as-edge` → 查 `g.V('9000001','Account')` → 画布上双击该点）：
+
+```
+before: {v:1, e:0}  ->  after: {v:51, e:200}
+modalOpen false      （不再弹错误窗 ✓）
+toast: 该点是聚合大点，已只读取最近的 200 条边 ✓
+```
+
+顺带修掉一个**既有回归**：`includeResult` 之后扩展查询的响应是 `{result, subgraph}`，
+而 `expand()` 一直把整个响应当子图合并 ✗ → 普通点的双击扩展其实什么都没加 ✗；
+现在统一走 `responseSubgraph(result)` ✓（有本轮实测覆盖 ✓）。
+
+### 26.3 测试与验证
+
+- `GremlinGraphQueryTest`（+1）：`createdBetween(a,b).both().limit(k)` 时存储收到 **cap=k** 与正确窗口；
+  无 `limit` 时 cap=0 ✓；
+- `AerospikeEdgeIntegrationTest`（+1）：cap=200 / 7 的窗口读分别返回 200 / 7 条，cap=0 返回整年 5000 条 ✓；
+  Gremlin 形式 `…createdBetween('1970-01-01T00:00:00','2100-01-01T00:00:00').both().limit(50).count()` 有界 ✓；
+- 全量 `./mvnw test`：**19 个模块 BUILD SUCCESS**。
