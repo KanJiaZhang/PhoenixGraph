@@ -12,10 +12,10 @@
 - 追加（第 18 节）：有向边布局验证（source 存 out-bin、target 存 in-bin，两跳四组合全通）、
   修复 `@PathVariable` 未命名导致 `GET|DELETE /vertices/{id}` 等接口 400/500 的 bug
 - 追加（第 23 节）：示例框与查询框同列；修复 RocksDB 子图**只有点没有边**（子图 id 统一为文本）；
-  geo step 改名 、半径改米、 下推进索引搜索（不再先取全部再截断）；
-  edge target 新增 （只存出边、没有指向，含校验/存储/查询/子图）
+  geo step 改名 `circle`、半径改米、`limit` 下推进索引搜索（不再先取全部再截断）；
+  edge target 新增 `isNull`（只存出边、没有指向，含校验/存储/查询/子图）
 - 追加（第 22 节）：**GEO 查询**（schema 里 `isGeo` 声明 + Google S2 cell 索引表，两种 RocksDB 方案共用；
-  Gremlin 新增 `geoNear(pointJson[, radiusKm])` step，结果最近优先并带 `distanceKm`；Aerospike 侧
+  Gremlin 新增 `circle(pointJson[, radiusMeters])` step，结果最近优先并带 `distanceMeters`；Aerospike 侧
   best-effort 建 geo2dsphere 索引 + 扫描兜底）；新增 240 家店的 geo demo 图并实测 1km→159 家
 - 追加（第 21 节）：**RocksDB 两种存储实现**（schema 里用 \`storage.type\` 选择：\`Aerospike\` 默认 /
   \`RocksDB-Inline\` / \`RocksDB-Edge\`）；新增 \`graph-storage-rocksdb\`（共享底座）、
