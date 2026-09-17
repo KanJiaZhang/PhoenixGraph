@@ -121,9 +121,9 @@ public class SchemaValidator {
     }
 
     /**
-     * Vector properties: an embedding must be a numeric list, and every vector
-     * property gets its own layer edge classes (named after the property, e.g.
-     * {@code vector_0}, {@code embedding_0}).
+     * Vector properties: an embedding must be a numeric list, and a vertex type may
+     * declare at most one of them (the layer edge classes are named after the
+     * property, and a query step resolves the index by vertex type).
      */
     private void checkVectorProperties(List<String> errors, List<String> warnings, VertexSchema vertex) {
         List<String> vectorProperties = new ArrayList<>();
@@ -145,9 +145,11 @@ public class SchemaValidator {
             }
         }
         if (vectorProperties.size() > 1) {
-            warnings.add("vertex schema '" + vertex.name() + "' declares " + vectorProperties.size()
+            // one index per vertex type: the query step resolves the index by type, and
+            // two vector properties would be ambiguous
+            errors.add("vertex schema '" + vertex.name() + "' declares " + vectorProperties.size()
                     + " vector properties (" + String.join(", ", vectorProperties)
-                    + "): each one gets its own layer edge classes");
+                    + "); a vertex type may have at most one (isVector=true)");
         }
     }
 

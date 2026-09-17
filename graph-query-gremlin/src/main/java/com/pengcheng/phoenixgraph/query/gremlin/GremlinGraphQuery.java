@@ -1,5 +1,6 @@
 package com.pengcheng.phoenixgraph.query.gremlin;
 
+import com.pengcheng.phoenixgraph.hnsw.HnswFilter;
 import com.pengcheng.phoenixgraph.hnsw.HnswIndex;
 import com.pengcheng.phoenixgraph.query.QueryException;
 import com.pengcheng.phoenixgraph.query.storage.GraphQuery;
@@ -13,6 +14,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Supplier;
 
 /**
  * Executes Gremlin-style traversals over a {@link GraphQuery} storage backend.
@@ -44,6 +46,7 @@ public class GremlinGraphQuery {
     private final GremlinStepRegistry registry;
     private final Map<String, String> logics = new LinkedHashMap<>();
     private final Map<String, HnswIndex> hnswIndexes = new LinkedHashMap<>();
+    private Supplier<Map<String, HnswIndex>> hnswIndexSource;
     private final Map<String, CompiledQuery> compiledCache = new ConcurrentHashMap<>();
     private boolean cacheEnabled = true;
     private boolean adaptiveBatchEnabled = true;
@@ -71,8 +74,28 @@ public class GremlinGraphQuery {
             }
             int k = positiveInt(args.get(0), "nearest");
             int ef = args.size() > 1 ? positiveInt(args.get(1), "nearest") : 0;
-            return GremlinSteps.nearest(hnswIndexes::get, k, ef);
+            return GremlinSteps.nearest(vertexType -> resolvedHnswIndexes().get(vertexType), k, ef);
         });
+    }
+
+    /**
+     * Resolves the vector indexes through a supplier instead of a fixed map, so a
+     * long-lived engine always searches the indexes a service currently holds
+     * (after a rebuild, for instance) without being recreated.
+     */
+    public GremlinGraphQuery hnswIndexSource(Supplier<Map<String, HnswIndex>> source) {
+        this.hnswIndexSource = source;
+        compiledCache.clear();
+        return this;
+    }
+
+    private Map<String, HnswIndex> resolvedHnswIndexes() {
+        Supplier<Map<String, HnswIndex>> source = hnswIndexSource;
+        if (source == null) {
+            return hnswIndexes;
+        }
+        Map<String, HnswIndex> resolved = source.get();
+        return resolved == null ? hnswIndexes : resolved;
     }
 
     /**
@@ -95,7 +118,7 @@ public class GremlinGraphQuery {
 
     /** The HNSW indexes registered for vector search, keyed by vertex type. */
     public Map<String, HnswIndex> hnswIndexes() {
-        return Map.copyOf(hnswIndexes);
+        return Map.copyOf(resolvedHnswIndexes());
     }
 
     private static int positiveInt(String value, String stepName) {
@@ -190,16 +213,56 @@ public class GremlinGraphQuery {
             parsedSteps.addAll(expandLogic(query.logic()));
         }
         parsedSteps = optimizeSteps(parsedSteps);
-        List<String>[] properties = planProperties(parsedSteps);
-        List<String> startProperties = startProperties(parsedSteps);
-        List<GremlinStep> steps = new ArrayList<>(parsedSteps.size());
-        List<String> stepNames = new ArrayList<>(parsedSteps.size());
-        for (GremlinQuery.Step step : parsedSteps) {
-            steps.add(registry.resolve(step.name(), step.args()));
+        // a nearest step absorbs the has/filter conditions directly following it: they
+        // are evaluated inside the graph walk, so the search returns the closest k that
+        // *match* instead of the k closest of which some happen to match
+        List<GremlinQuery.Step> plannedSteps = new ArrayList<>(parsedSteps.size());
+        List<HnswFilter> pushedFilters = new ArrayList<>(parsedSteps.size());
+        for (int i = 0; i < parsedSteps.size(); i++) {
+            GremlinQuery.Step step = parsedSteps.get(i);
+            if (!step.name().equals("nearest")) {
+                plannedSteps.add(step);
+                pushedFilters.add(null);
+                continue;
+            }
+            List<GremlinQuery.Step> conditions = new ArrayList<>();
+            int next = i + 1;
+            while (next < parsedSteps.size() && isFilter(parsedSteps.get(next).name())) {
+                conditions.add(parsedSteps.get(next));
+                next++;
+            }
+            plannedSteps.add(step);
+            pushedFilters.add(conditions.isEmpty() ? null : GremlinSteps.hnswFilter(conditions));
+            i = next - 1; // the conditions became part of the nearest step
+        }
+        List<String>[] properties = planProperties(plannedSteps);
+        List<String> startProperties = startProperties(plannedSteps);
+        List<GremlinStep> steps = new ArrayList<>(plannedSteps.size());
+        List<String> stepNames = new ArrayList<>(plannedSteps.size());
+        for (int i = 0; i < plannedSteps.size(); i++) {
+            GremlinQuery.Step step = plannedSteps.get(i);
+            HnswFilter pushed = pushedFilters.get(i);
+            steps.add(pushed == null ? registry.resolve(step.name(), step.args())
+                    : nearestStep(step, pushed));
             stepNames.add(step.name());
         }
         return new CompiledQuery(query.vertexIds(), query.vertexName(), properties, startProperties,
                 stepNames, steps);
+    }
+
+    /** Resolves a {@code nearest} step that carries pushed-down conditions. */
+    private GremlinStep nearestStep(GremlinQuery.Step step, HnswFilter filter) {
+        if (step.args().isEmpty() || step.args().size() > 2) {
+            throw new QueryException("nearest expects nearest(k) or nearest(k, ef), got "
+                    + step.args().size() + " arguments");
+        }
+        int k = positiveInt(step.args().get(0), "nearest");
+        int ef = step.args().size() > 1 ? positiveInt(step.args().get(1), "nearest") : 0;
+        return GremlinSteps.nearest(vertexType -> resolvedHnswIndexes().get(vertexType), k, ef, filter);
+    }
+
+    private static boolean isFilter(String name) {
+        return name.equals("has") || name.equals("filter");
     }
 
     /**

@@ -1,5 +1,6 @@
 package com.pengcheng.phoenixgraph.query.gremlin;
 
+import com.pengcheng.phoenixgraph.hnsw.HnswFilter;
 import com.pengcheng.phoenixgraph.hnsw.HnswIndex;
 import com.pengcheng.phoenixgraph.hnsw.HnswLevels;
 import com.pengcheng.phoenixgraph.hnsw.HnswSearchResult;
@@ -101,6 +102,22 @@ final class GremlinSteps {
      * @param ef       candidate list size ({@code <= 0} = the index' configured {@code efSearch})
      */
     static GremlinStep nearest(Function<String, HnswIndex> indexes, int k, int ef) {
+        return nearest(indexes, k, ef, null);
+    }
+
+    /**
+     * Vector search with a pushed-down predicate: the conditions of the {@code has}/
+     * {@code filter} steps directly following {@code nearest} are evaluated
+     * <em>inside</em> the graph walk (see {@link HnswFilter}) instead of after it, so
+     * the walk keeps expanding through non-matching vertices and returns the closest
+     * {@code k} that match, rather than "the k closest, of which some match".
+     *
+     * @param indexes vertex type name to HNSW index
+     * @param k       number of neighbours
+     * @param ef      candidate list size ({@code <= 0} = the index' configured {@code efSearch})
+     * @param filter  predicate pushed into the search, or {@code null}
+     */
+    static GremlinStep nearest(Function<String, HnswIndex> indexes, int k, int ef, HnswFilter filter) {
         return (ctx, in) -> {
             List<Object> out = new ArrayList<>();
             Set<Object> seen = new LinkedHashSet<>();
@@ -115,7 +132,7 @@ final class GremlinSteps {
                 }
                 int candidates = ef > 0 ? ef : index.config().efSearch();
                 Set<Object> hits = new LinkedHashSet<>();
-                for (HnswSearchResult hit : index.searchById(vertex.id(), k, candidates)) {
+                for (HnswSearchResult hit : index.searchById(vertex.id(), k, candidates, filter)) {
                     if (seen.add(hit.vertexId())) {
                         hits.add(hit.vertexId());
                     }
@@ -124,6 +141,69 @@ final class GremlinSteps {
                 out.addAll(readVertices(ctx, vertex.label(), new ArrayList<>(hits)));
             }
             return out;
+        };
+    }
+
+    /**
+     * Builds the predicate a {@code nearest} step pushes into the search from the
+     * {@code has}/{@code filter} steps that follow it. The semantics are the ones of
+     * those steps (a missing property does not match, {@code has} compares numbers
+     * numerically), and the property keys they read are declared so the search can
+     * batch-load them together with the vectors.
+     */
+    static HnswFilter hnswFilter(List<GremlinQuery.Step> conditions) {
+        record Condition(String key, String value) {
+        }
+        List<Condition> hasConditions = new ArrayList<>();
+        List<GremlinFilterExpression> expressions = new ArrayList<>();
+        Set<String> keys = new LinkedHashSet<>();
+        for (GremlinQuery.Step step : conditions) {
+            if (step.name().equals("has")) {
+                String key = step.args().get(0);
+                hasConditions.add(new Condition(key, step.args().size() > 1 ? step.args().get(1) : null));
+                keys.add(key);
+            } else if (step.name().equals("filter")) {
+                GremlinFilterExpression expression =
+                        GremlinFilterExpression.parse(String.join(" || ", step.args()));
+                expressions.add(expression);
+                keys.addAll(expression.propertyKeys());
+            }
+        }
+        List<String> propertyNames = List.copyOf(keys);
+        return new HnswFilter() {
+            @Override
+            public List<String> propertyNames() {
+                return propertyNames;
+            }
+
+            @Override
+            public boolean test(Object vertexId, Map<String, Object> properties) {
+                for (Condition condition : hasConditions) {
+                    Object stored = properties.get(condition.key());
+                    if (stored == null) {
+                        return false;
+                    }
+                    if (condition.value() != null && !matches(stored, condition.value())) {
+                        return false;
+                    }
+                }
+                if (!expressions.isEmpty()) {
+                    GremlinElement element = new GremlinVertex("", vertexId, properties, 0L, 0L);
+                    for (GremlinFilterExpression expression : expressions) {
+                        if (!expression.test(element)) {
+                            return false;
+                        }
+                    }
+                }
+                return true;
+            }
+
+            @Override
+            public String describe() {
+                return conditions.stream()
+                        .map(step -> step.name() + "(" + String.join(",", step.args()) + ")")
+                        .reduce((a, b) -> a + " && " + b).orElse("none");
+            }
         };
     }
 

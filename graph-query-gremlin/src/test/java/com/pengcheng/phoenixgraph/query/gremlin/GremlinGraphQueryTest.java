@@ -2,8 +2,7 @@ package com.pengcheng.phoenixgraph.query.gremlin;
 
 import com.pengcheng.phoenixgraph.hnsw.HeapHnswVectorSource;
 import com.pengcheng.phoenixgraph.hnsw.HnswIndex;
-import com.pengcheng.phoenixgraph.hnsw.InMemoryHnswStore;
-import com.pengcheng.phoenixgraph.query.QueryException;
+import com.pengcheng.phoenixgraph.hnsw.InMemoryHnswStore;import com.pengcheng.phoenixgraph.query.QueryException;
 import com.pengcheng.phoenixgraph.query.storage.EdgeQueryResult;
 import com.pengcheng.phoenixgraph.query.storage.EdgeSide;
 import com.pengcheng.phoenixgraph.query.storage.GraphQuery;
@@ -312,6 +311,59 @@ class GremlinGraphQueryTest {
 
         assertEquals(1, gremlin.execute("g.V('v1', 'person').nearest(1, 32)").size());
         assertThrows(QueryException.class, () -> gremlin.execute("g.V('v1', 'person').nearest(1, 32, 7)"));
+    }
+
+    @Test
+    void nearestPushesTheFollowingHasConditionIntoTheSearch() {
+        // six points on a line, every second one in bucket 0. The two closest to v0
+        // are v1 (bucket 1) and v2 (bucket 0): post-filtering would leave one result,
+        // pushing the condition down finds v2 and v4.
+        HeapHnswVectorSource source = new HeapHnswVectorSource();
+        for (int i = 0; i < 6; i++) {
+            source.put("v" + i, new float[] {i, 0f});
+            source.putProperties("v" + i, Map.of("bucket", i % 2 == 0 ? 0 : 1, "name", "doc" + i));
+        }
+        HnswIndex index = HnswIndex.builder().vertexName("person").vectorProperty("vector")
+                .store(new InMemoryHnswStore()).vectors(source).size(6).build();
+        index.insertAll(List.of("v0", "v1", "v2", "v3", "v4", "v5"));
+        gremlin.hnswIndex(index);
+        when(graphQuery.readVertex("v2", "person", List.of()))
+                .thenReturn(new VertexQueryResult("person", "v2", Map.of("bucket", 0, "name", "doc2"), 1L, 1L));
+        when(graphQuery.readVertex("v4", "person", List.of()))
+                .thenReturn(new VertexQueryResult("person", "v4", Map.of("bucket", 0, "name", "doc4"), 1L, 1L));
+        when(graphQuery.readVertex("v1", "person", List.of()))
+                .thenReturn(new VertexQueryResult("person", "v1", Map.of("bucket", 1, "name", "doc1"), 1L, 1L));
+
+        List<Object> pushed = gremlin.execute("g.V('v0', 'person').nearest(2).has('bucket', 0)");
+
+        assertEquals(2, pushed.size(), "the walk keeps going until it has k matches");
+        assertEquals(List.of("v2", "v4"), pushed.stream().map(o -> ((GremlinVertex) o).id()).toList());
+
+        // without the push-down only the neighbours that happen to match survive
+        List<Object> plain = gremlin.execute("g.V('v0', 'person').nearest(2).values('bucket')");
+        assertEquals(List.of(1, 0), plain);
+    }
+
+    @Test
+    void nearestPushesFilterExpressionsDownToo() {
+        HeapHnswVectorSource source = new HeapHnswVectorSource();
+        for (int i = 0; i < 6; i++) {
+            source.put("v" + i, new float[] {i, 0f});
+            source.putProperties("v" + i, Map.of("bucket", i % 2 == 0 ? 0 : 1));
+        }
+        HnswIndex index = HnswIndex.builder().vertexName("person").vectorProperty("vector")
+                .store(new InMemoryHnswStore()).vectors(source).size(6).build();
+        index.insertAll(List.of("v0", "v1", "v2", "v3", "v4", "v5"));
+        gremlin.hnswIndex(index);
+        when(graphQuery.readVertex("v2", "person", List.of()))
+                .thenReturn(new VertexQueryResult("person", "v2", Map.of("bucket", 0), 1L, 1L));
+        when(graphQuery.readVertex("v4", "person", List.of()))
+                .thenReturn(new VertexQueryResult("person", "v4", Map.of("bucket", 0), 1L, 1L));
+
+        List<Object> result = gremlin.execute("g.V('v0', 'person').nearest(2).filter(bucket.equals('0'))");
+
+        assertEquals(2, result.size());
+        assertEquals(List.of("v2", "v4"), result.stream().map(o -> ((GremlinVertex) o).id()).toList());
     }
 
     @Test

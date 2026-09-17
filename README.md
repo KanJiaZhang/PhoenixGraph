@@ -35,6 +35,7 @@ layered search as a Gremlin step:
 g.V('4242', 'Vector').nearest(20)          // 20 nearest vectors of that id
 g.V('4242', 'Vector').nearest(20, 200)     // wider candidate list (more accurate)
 g.V('4242', 'Vector').nearest(20).values('name')
+g.V('4242', 'Vector').nearest(20).has('bucket', 3)   // the filter is pushed into the search
 ```
 
 See `CONTEXT.md` ("HNSW vector index" and the schema-driven index section) for the

@@ -15,6 +15,7 @@ import com.pengcheng.phoenixgraph.storage.aerospike.VertexPropertyValue;
 import java.util.LinkedHashMap;
 import com.pengcheng.phoenixgraph.hnsw.HnswConfig;
 import com.pengcheng.phoenixgraph.hnsw.HnswIndex;
+import com.pengcheng.phoenixgraph.hnsw.HnswFilter;
 import com.pengcheng.phoenixgraph.hnsw.HnswInsertResult;
 import com.pengcheng.phoenixgraph.hnsw.HnswLevels;
 import com.pengcheng.phoenixgraph.hnsw.HnswMetadata;
@@ -336,6 +337,9 @@ class HnswGraphIntegrationTest {
         verifyGroundTruthAgrees(dataset, exact);
         verifySearchQuality(index, dataset, hnswConfig, "warm", exact);
         verifyColdReader(client, config, vertexStore, edgeStore, schema, metadataStore, dataset, hnswConfig, exact);
+        verifyFilteredSearch(client, config, vertexStore, edgeStore, schema, dataset, hnswConfig);
+        // after the attributes (a fresh write, which stores the record key)
+        verifyScanReloadsTheDataset(vertexStore, size);
         verifyGremlinSearch(client, config, vertexStore, edgeStore, schema, dataset, size);
     }
 
@@ -577,6 +581,157 @@ class HnswGraphIntegrationTest {
                 new AerospikeGraphQuery(vertexStore, edgeStore, schema), edgeStore, schema, client,
                 config.namespace(), METADATA_SET,
                 VectorIndexSchemas.vectorProperty(schema, "Vector", "vector"), CachedHnswMetadataStore.DEFAULT_TTL);
+    }
+
+    /**
+     * The rebuild path can reload the dataset with one scan: the ids come from the
+     * record keys, which a write stores since the reload feature exists. Records
+     * written before that are reachable by walking layer 0 instead (what the rebuild
+     * falls back to), so this check runs after the attributes were written.
+     */
+    private void verifyScanReloadsTheDataset(AerospikeVertexStore vertexStore, int size) {
+        int vectorIndex = HnswDatasetLoader.VECTOR_PROPERTY;
+        long start = System.currentTimeMillis();
+        List<com.pengcheng.phoenixgraph.storage.aerospike.StoredVertex> scanned =
+                vertexStore.scanVerticesWithProperty(vectorIndex, List.of(vectorIndex));
+        System.out.printf("[hnsw] scan reloaded %d vertices (expected %d) in %.1fs%n",
+                scanned.size(), size, (System.currentTimeMillis() - start) / 1000.0);
+        assertTrue(scanned.size() >= size, "the scan returns the loaded dataset");
+        assertTrue(scanned.stream().allMatch(vertex -> vertex.properties().get(vectorIndex) != null),
+                "every scanned vertex carries its vector");
+    }
+
+    /**
+     * Filtered vector search: a predicate on the demo attributes is pushed into the
+     * walk, so the answer is "the closest k vectors in the bucket", not "the k closest
+     * vectors, of which a few are in the bucket".
+     */
+    private void verifyFilteredSearch(AerospikeClient client, IntegrationConfig config,
+                                      AerospikeVertexStore vertexStore, AerospikeEdgeStore edgeStore,
+                                      GraphSchema schema, HnswDatasetLoader.Dataset dataset,
+                                      HnswConfig hnswConfig) {
+        int size = dataset.size();
+        if (!HnswDatasetLoader.attributesLoaded(vertexStore, size)) {
+            long seedStart = System.currentTimeMillis();
+            int written = HnswDatasetLoader.seedAttributes(vertexStore, schema.vertexSchema("Vector"), size, 200,
+                    rows -> {
+                        if (rows % 2000 == 0) {
+                            System.out.println("[hnsw] attributes on " + rows + "/" + size + " rows");
+                        }
+                    });
+            System.out.printf("[hnsw] loaded the demo attributes on %d rows in %.1fs%n", written,
+                    (System.currentTimeMillis() - seedStart) / 1000.0);
+        } else {
+            System.out.println("[hnsw] demo attributes already present");
+        }
+
+        HnswIndex index = AerospikeHnswIndexFactory.open(
+                new AerospikeGraphQuery(vertexStore, edgeStore, schema), edgeStore, schema, client,
+                config.namespace(), METADATA_SET,
+                VectorIndexSchemas.vectorProperty(schema, "Vector", "vector"),
+                CachedHnswMetadataStore.DEFAULT_TTL);
+        int ef = hnswConfig.efSearch();
+
+        double pushedRecall = 0;
+        double postRecall = 0;
+        double pushedMillis = 0;
+        double postMillis = 0;
+        int queries = 0;
+        for (int bucket = 0; bucket < HnswDatasetLoader.ATTRIBUTE_VALUES; bucket++) {
+            int rowsChecked = 0;
+            for (int row = bucket; row < size && rowsChecked < 8; row += HnswDatasetLoader.ATTRIBUTE_VALUES) {
+                rowsChecked++;
+                queries++;
+                float[] query = dataset.vectors().get(row);
+                HnswFilter filter = bucketFilter(bucket, 1.0 / HnswDatasetLoader.ATTRIBUTE_VALUES);
+                List<Long> expected = exactFiltered(dataset, query, K, bucket);
+
+                long start = System.nanoTime();
+                List<HnswSearchResult> filtered = index.search(query, K, ef, filter);
+                pushedMillis += (System.nanoTime() - start) / 1e6;
+                pushedRecall += (double) filtered.stream()
+                        .filter(hit -> expected.contains(asLong(hit.vertexId()))).count()
+                        / Math.min(K, expected.size());
+
+                start = System.nanoTime();
+                List<HnswSearchResult> plain = index.search(query, K, ef);
+                postMillis += (System.nanoTime() - start) / 1e6;
+                postRecall += (double) plain.stream()
+                        .filter(hit -> expected.contains(asLong(hit.vertexId()))).count()
+                        / Math.min(K, expected.size());
+            }
+        }
+        pushedRecall /= queries;
+        postRecall /= queries;
+        pushedMillis /= queries;
+        postMillis /= queries;
+        System.out.printf("[hnsw] filtered search (bucket, %.0f%% selectivity, ef=%d, %d queries):%n"
+                        + "         pushed down : recall@%d=%.3f, %.1f ms/query%n"
+                        + "         post-filter : recall@%d=%.3f, %.1f ms/query%n",
+                100.0 / HnswDatasetLoader.ATTRIBUTE_VALUES, ef, queries,
+                K, pushedRecall, pushedMillis, K, postRecall, postMillis);
+        assertTrue(pushedRecall >= 0.9, "pushed-down filtered recall@" + K + " = " + pushedRecall);
+        assertTrue(pushedRecall > postRecall + 0.4,
+                "pushing the filter down must beat post-filtering: " + pushedRecall + " vs " + postRecall);
+
+        // the same through the query language: has(...) directly after nearest(...)
+        GremlinGraphQuery gremlin = new GremlinGraphQuery(
+                new AerospikeGraphQuery(vertexStore, edgeStore, schema), NeighborVertexResolver.from(schema));
+        gremlin.hnswIndex(index);
+        int bucket = 3;
+        long row = bucket + HnswDatasetLoader.ATTRIBUTE_VALUES * 500L;
+        List<Object> found = gremlin.execute("g.V('" + row + "', 'Vector').nearest(" + K
+                + ").has('bucket', " + bucket + ")");
+        assertEquals(K, found.size(), "the walk keeps going until it has k matching neighbours");
+        assertTrue(found.stream().allMatch(traverser -> ((GremlinVertex) traverser).properties()
+                .get("bucket") instanceof Number number && number.intValue() == bucket),
+                "every returned vertex is in the bucket");
+        List<Object> byCategory = gremlin.execute("g.V('" + row + "', 'Vector').nearest(" + K
+                + ").has('category', '" + HnswDatasetLoader.categoryOf((int) row) + "')");
+        assertEquals(K, byCategory.size(), "string attributes work the same way");
+        System.out.printf("[hnsw] gremlin has() : g.V('%d','Vector').nearest(%d).has('bucket',%d) -> %d vertices%n",
+                row, K, bucket, found.size());
+    }
+
+    /** The demo bucket predicate, reading the {@code bucket} property the search loads for it. */
+    private static HnswFilter bucketFilter(int bucket, double selectivity) {
+        return new HnswFilter() {
+            @Override
+            public List<String> propertyNames() {
+                return List.of("bucket");
+            }
+
+            @Override
+            public double selectivity() {
+                return selectivity;
+            }
+
+            @Override
+            public boolean test(Object vertexId, Map<String, Object> properties) {
+                Object value = properties.get("bucket");
+                return value instanceof Number number && number.intValue() == bucket;
+            }
+
+            @Override
+            public String describe() {
+                return "bucket=" + bucket;
+            }
+        };
+    }
+
+    /** Exact nearest neighbours within one bucket (brute force over the dataset). */
+    private static List<Long> exactFiltered(HnswDatasetLoader.Dataset dataset, float[] query, int k, int bucket) {
+        List<long[]> scored = new ArrayList<>(dataset.size() / HnswDatasetLoader.ATTRIBUTE_VALUES);
+        for (int row = bucket; row < dataset.size(); row += HnswDatasetLoader.ATTRIBUTE_VALUES) {
+            scored.add(new long[] {HnswMetric.L2.distance(query, dataset.vectors().get(row)) == 0
+                    ? 0 : (long) HnswMetric.L2.distance(query, dataset.vectors().get(row)), row});
+        }
+        scored.sort((a, b) -> Long.compare(a[0], b[0]));
+        List<Long> out = new ArrayList<>(k);
+        for (int i = 0; i < Math.min(k, scored.size()); i++) {
+            out.add(scored.get(i)[1]);
+        }
+        return out;
     }
 
     private static GraphSchema loadSchema() throws IOException {

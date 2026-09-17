@@ -49,7 +49,19 @@
           "metric": "L2",
           "m": 15,
           "efConstruction": 100,
-          "efSearch": 30
+          "efSearch": 50
+        },
+        {
+          "id": 3,
+          "name": "bucket",
+          "description": "Demo bucket (0..9)",
+          "type": "INT"
+        },
+        {
+          "id": 4,
+          "name": "category",
+          "description": "Demo category (10 values)",
+          "type": "STRING"
         }
       ]
     }

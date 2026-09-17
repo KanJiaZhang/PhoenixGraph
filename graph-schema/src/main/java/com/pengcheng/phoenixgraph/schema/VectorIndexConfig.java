@@ -10,7 +10,7 @@ import java.util.Set;
  * <p>Declared on the property in the schema JSON, e.g.
  * <pre>
  * { "id": 2, "name": "embedding", "type": { "list": "DOUBLE" }, "isVector": true,
- *   "metric": "COSINE", "m": 15, "efConstruction": 100, "efSearch": 30 }
+ *   "metric": "COSINE", "m": 15, "efConstruction": 100, "efSearch": 50 }
  * </pre>
  * Everything except {@code isVector} is optional: the defaults below are used when
  * a field is absent. {@code metric}/{@code m}/{@code efConstruction} describe how
@@ -29,9 +29,9 @@ public record VectorIndexConfig(String metric, int m, int efConstruction, int ef
 
     public static final int DEFAULT_M = 15;
     public static final int DEFAULT_EF_CONSTRUCTION = 100;
-    public static final int DEFAULT_EF_SEARCH = 30;
+    public static final int DEFAULT_EF_SEARCH = 50;
 
-    /** {@code L2} distance, {@code m = 15}, {@code efConstruction = 100}, {@code efSearch = 30}. */
+    /** {@code L2} distance, {@code m = 15}, {@code efConstruction = 100}, {@code efSearch = 50}. */
     public static final VectorIndexConfig DEFAULT =
             new VectorIndexConfig("L2", DEFAULT_M, DEFAULT_EF_CONSTRUCTION, DEFAULT_EF_SEARCH);
 

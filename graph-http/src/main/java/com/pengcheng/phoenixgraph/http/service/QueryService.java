@@ -73,7 +73,8 @@ public class QueryService {
             // step (the index is shared with the write path, so freshly written
             // vertices are searchable immediately)
             if (vectorIndexes != null) {
-                vectorIndexes.indexesOf(name).forEach(engine::hnswIndex);
+                // resolved per query, so a rebuilt index is used without restarting
+                engine.hnswIndexSource(() -> vectorIndexes.indexesOf(name));
             } else if (binding.hasKeyValueAccess()) {
                 AerospikeHnswIndexFactory.open(graphQuery, binding.edgeStore(), binding.schema(),
                                 binding.client(), binding.namespace(), AerospikeHnswIndexFactory.DEFAULT_METADATA_SET,

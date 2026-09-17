@@ -32,6 +32,10 @@ import java.util.Objects;
  * (they describe how the graph was built, while {@code efSearch} is a query-time
  * knob).
  *
+ * <p>The index is ready to be written to (that is what the write path uses it for)
+ * and publishes every insert, so a reader on another instance sees the new entry
+ * points within the metadata TTL.
+ *
  * <p>Layer edge classes are created on demand while the index grows
  * ({@link HnswLayerProvisioner} + {@code dynamicSize}), so a schema only has to
  * declare the vector property. The metadata record (entry points, size, layer
@@ -111,6 +115,9 @@ public final class AerospikeHnswIndexFactory {
                 .config(config(property.config(), metadata))
                 .dynamicSize(true)
                 .provisioner(provisioner(schema))
+                // an index fed by writes publishes every insert (size and entry points),
+                // so another instance picks the new vertex up within the metadata TTL
+                .metadataWriteInterval(1)
                 .build();
     }
 

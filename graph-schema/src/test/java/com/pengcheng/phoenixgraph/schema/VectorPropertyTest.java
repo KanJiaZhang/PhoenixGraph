@@ -53,7 +53,7 @@ class VectorPropertyTest {
         assertEquals("L2", defaults.metric());
         assertEquals(15, defaults.m());
         assertEquals(100, defaults.efConstruction());
-        assertEquals(30, defaults.efSearch(), "the documented default candidate list size");
+        assertEquals(50, defaults.efSearch(), "the documented default candidate list size");
 
         // metric names are normalised, partial configurations filled in
         assertEquals("COSINE", VectorIndexConfig.of("cosine", null, null, null).metric());
@@ -149,20 +149,29 @@ class VectorPropertyTest {
                         new PropertyType.ListType(PropertyType.ScalarType.STRING)).vector(true)));
         assertFalse(new SchemaValidator().validate(stringList, SchemaConstraints.defaults()).isEmpty());
 
-        // list<object> works but is warned about, and two vectors per type are reported
+        // list<object> works but is warned about
         GraphSchema objects = new GraphSchema(1, "g", null);
         objects.vertex(new VertexSchema(1, "Doc", null,
                 new VertexPropertySchema(0, "id", null, PropertyType.ScalarType.STRING),
                 MetaPropertySchema.createdTime(), MetaPropertySchema.lastUpdatedTime())
-                .property(new VertexPropertySchema(1, "a", null,
-                        new PropertyType.ListType(PropertyType.ScalarType.OBJECT)).vector(true))
-                .property(new VertexPropertySchema(2, "b", null,
-                        new PropertyType.ListType(PropertyType.ScalarType.DOUBLE)).vector(true)));
+                .property(new VertexPropertySchema(1, "embedding", null,
+                        new PropertyType.ListType(PropertyType.ScalarType.OBJECT)).vector(true)));
         SchemaValidationResult result = new SchemaValidator().validateResult(objects, SchemaConstraints.defaults());
         assertEquals(List.of(), result.errors());
         assertTrue(result.warnings().stream().anyMatch(w -> w.contains("list<object>")), result.warnings().toString());
-        assertTrue(result.warnings().stream().anyMatch(w -> w.contains("2 vector properties")),
-                result.warnings().toString());
+
+        // at most one vector property per vertex type
+        GraphSchema twoVectors = new GraphSchema(1, "g", null);
+        twoVectors.vertex(new VertexSchema(1, "Doc", null,
+                new VertexPropertySchema(0, "id", null, PropertyType.ScalarType.STRING),
+                MetaPropertySchema.createdTime(), MetaPropertySchema.lastUpdatedTime())
+                .property(new VertexPropertySchema(1, "a", null,
+                        new PropertyType.ListType(PropertyType.ScalarType.DOUBLE)).vector(true))
+                .property(new VertexPropertySchema(2, "b", null,
+                        new PropertyType.ListType(PropertyType.ScalarType.DOUBLE)).vector(true)));
+        List<String> twoVectorErrors =
+                new SchemaValidator().validate(twoVectors, SchemaConstraints.defaults());
+        assertTrue(twoVectorErrors.stream().anyMatch(e -> e.contains("at most one")), twoVectorErrors.toString());
     }
 
     /** A schema with one {@code Doc} vertex type and an {@code embedding} vector property. */

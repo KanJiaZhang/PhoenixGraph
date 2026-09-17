@@ -1,39 +1,40 @@
 # Handover — resume here
 
-状态：**vector search 已端到端可用**（HNSW 引擎 + schema 声明 + 写入即索引），
-今天的两个提交已推到 `develop`，工作树干净。
+状态：**vector search 已端到端可用**（HNSW 引擎 + schema 声明 + 写入即索引 +
+**属性过滤下沉** + **索引重建**），工作树干净，`./mvnw test` **全绿**。
 
 - `7d6f147` — HNSW 向量索引：分层图 + `nearest(k)` 查询（手工/加载器建索引）
 - `e6af92e` — schema `isVector` 声明 + 自动建层边 + 写入即索引 + 入口点 1 分钟缓存
+- `ec69940` — `HANDOVER.md`
+- 追加（第 17 节）：重复边 id 记 bizlog、`POST /api/v1/vector-index/rebuild` 重建索引、
+  一个点类型只能有一个向量属性、demo 数据加 `bucket`(INT)/`category`(STRING) 属性、
+  `efSearch` 默认 50、`has`/`filter` 下沉进 HNSW 搜索
 
 > 详细设计与实测数据在 `CONTEXT.md`：**第 15 节**（HNSW 引擎、SIFT Demo、召回实测）、
-> **第 16 节**（schema 驱动、自动建边、写入路径、缓存、配置、验证）。
+> **第 16 节**（schema 驱动、自动建边、写入路径、缓存、配置、验证）、
+> **第 17 节**（过滤下沉、索引重建、schema 约束、demo 属性、实测对比）。
 
 ---
 
-## 1. 明天第一件事：向量检索 + 属性过滤
+## 1. 明天第一件事：过滤结果的可控性与代价
 
-**要回答的问题**：在满足属性条件（`status=ACTIVE`、`category=X`、`price<100` …）的点里，
-**如何保证**能查到最近的约 20 个相似向量？
+**现状（已完成）**：`g.V(id,'Vector').nearest(20).has('bucket', 3)` 会把 `has` 下沉进搜索，
+返回"最近的 20 个 **bucket=3** 的向量"；实测 10k SIFT（10% 选择率，ef=50）：
+**recall@20 = 0.998 / 419ms**，而"先取 20 再过滤"只有 **0.143**（`nearest(20)` 里平均只有 4 个命中）。
 
-**为什么现在的写法不保证**：`…nearest(20).has('category','x')` 是"先取 20 个再过滤"，
-命中数取决于属性在这些邻居里的分布，极端情况一个都不剩。
+**下一步可选**：
+1. **选择率来源**：现在靠"声明值 + 实测通过率 + 翻倍重试"。如果给 `HnswFilter` 传准确的选择率
+   （属性统计/采样），第一次就能取对候选表大小，省掉重试（现在最多 4 次遍历）。
+2. **多条件组合的选择率**：`has(a).has(b)` 现在按独立假设乘不起来（实测通过率会纠正），
+   但可以先按单项选择率估个初值。
+3. **带过滤的召回/延迟目标**：把 `maxEf` 暴露成查询参数（如 `nearest(20, 200, 'maxEf=1000')`），
+   让调用方能在"准"与"快"之间选。
+4. **属性与向量相关时的表现**：17.4 记了一个坑 —— 属性若与向量空间强相关（合成数据里一个簇
+   共用一个 bucket），任何过滤方案都会退化。真实数据要先看相关性，再定过量取数倍率。
+5. **批量重建的并行化**：`rebuild` 现在是顺序插入（601 点 27s / 10k 点约 15 分钟），
+   可以按层并行或按批次并行（层内边互不干扰，但同一 bin 有竞争）。
 
-**四条路**（`CONTEXT.md §16.7` 亦有）：
-
-1. **放大候选 + 后过滤** `nearest(k×f).has(...).limit(k)` —— 今天就能用；`f` 难定，最坏退化。
-2. **把过滤下沉进搜索（推荐正解）**：给 `HnswIndex.search` 加 `Predicate<Object>`（满足性判据，
-   属性可批量读），不满足的候选不进结果表但**仍参与扩张**；`ef` 按选择率放大到约 `k/selectivity`，
-   并在候选表提前收敛时给出策略（继续扩张 / 返回不足 k 个 + 标记）。
-   落点：`HnswIndex.searchLayer` / `selectNeighbours`、`GremlinSteps.nearest`
-   （后面紧跟 `has`/`filter` 时自动把条件传下去）、`GremlinGraphQuery.neededProperties`。
-3. **预过滤 + 候选集内精确检索**：先用属性把候选压小再精确算，最准；需要属性索引支撑。
-4. **向量+属性联合索引**（按热点维度分层建索引）：成本高，只在维度固定且少时值得。
-
-**建议顺序**：先做 (2)，把 (1) 作为文档化兜底方案；(3)(4) 视过滤维度稳定性再定。
-
-从零开始的话，可先跑一个对照实验量化问题：在 10k SIFT 图上加一个低基数属性（如 `bucket=0..9`），
-比较 `nearest(20).has(bucket)` 与"下沉过滤 + ef 放大"的召回/延迟。
+其它未做：删除点后的 un-index、`nearest` 的多向量属性支持（已被 schema 校验禁止）。
 
 ---
 
@@ -99,15 +100,30 @@ cp graph-web/frontend/public/{index.html,css/style.css,js/app.js} graph-web/src/
 
 ```groovy
 // 10k SIFT（8081，graphName=hnsw-sift）
-g.V('4242','Vector').nearest(20)                 // 20 个最近向量（19/20 与 ground truth 精确一致，多出的是写入 Demo 的副本）
-g.V('4242','Vector').nearest(20, 200)            // 候选表 200：recall@20 0.983 → 0.989
-g.V('4242','Vector').nearest(20).values('name')
+g.V('4242','Vector').nearest(20)                 // 20 个最近向量
+g.V('4242','Vector').nearest(20, 200)            // 候选表 200：recall@20 0.988 → 0.989
+g.V('4242','Vector').nearest(20).has('bucket', 3)      // 下沉过滤：20 个全都是 bucket=3（recall 0.998）
+g.V('4242','Vector').nearest(20).has('category','music')  // 字符串属性同理
+g.V('4242','Vector').nearest(20).has('bucket', 3).values('name')
 g.V('4242','Vector').both().both()               // 层次结构可视化（走全部层边）
 
 // 动态向量图（8083 可写，graphName=hnsw-dynamic）
 // 写入：POST /api/v1/vertices  {id, vertexSchemaName:"Doc",
 //        properties:[{index:1,value:"name"},{index:2,value:[...128 floats]}]}
 g.V('900','Doc').nearest(20)                     // 写完立刻可查
+```
+
+### 向量索引运维接口
+
+```bash
+# 每个向量索引的配置与状态（graph/vertex/property、metric/m/ef、层数、size、topLevel、入口点）
+curl -s http://localhost:8081/api/v1/vector-index
+
+# 重建：清空层边数据 + 删元数据 + 重新加载数据建新边（601 点约 27s，10k 点约 15 分钟）
+curl -s -X POST http://localhost:8083/api/v1/vector-index/rebuild \
+  -H 'content-type: application/json' -d '{"graph":"hnsw-dynamic"}'
+# → [{"graph":"hnsw-dynamic","vertex":"Doc","property":"embedding","vertices":601,
+#     "layers":11,"links":13821,"pruned":7468,"seconds":26.9}]
 ```
 
 ---
@@ -133,17 +149,20 @@ g.V('900','Doc').nearest(20)                     // 写完立刻可查
 
 ## 5. 已知问题 / 限制
 
-1. **既有测试冲突（非本次引入）**：`./mvnw test` 全量跑时 `AerospikeIntegrationTest` 报
-   `Duplicate key e2` —— `graph-http` 的 `QueryApiIntegrationTest` 通过 REST 往共享默认 set 写了
-   Payment `e2`（干净 worktree 上同样复现）。修法二选一：给写接口测试单独 set；或各集成测试类
-   各用独立 set（给 `AerospikeIntegrationTest` 直接 truncate 会误伤同模块其它测试）。
-2. **没有 un-index**：删除点后邻居列表里仍可能残留该 id（`nearest` 读不到会跳过，不报错），
-   元数据 `size` 也只增不减 → 重建请用 `HNSW_FORCE=true`（会 truncate + 重新播种 + 重建）。因此
-   10k 图现在是 10,001 个点，集成测试按 `existing.size() >= size` 判定可复用。
-3. **一个点类型多个向量属性**：查询步骤只用第一个（`VectorIndexManager.indexesOf(graph)` 的 key 是点类型）；
-   其余用 `AerospikeHnswIndexFactory.open(..., property, ttl)` 单独取（元数据 key 为 `hnsw:<Type>:<prop>`）。
-4. **暂不支持**：`latency` 高时的多 Aerospike 节点并行写、删除后回收层边、`efConstruction` 在线调大。
-5. 前端 `graph-web/frontend/public` 与 `graph-web/src/main/resources/static` 仍是**拷贝关系**（需手动同步）。
+1. ~~既有测试冲突 `Duplicate key e2`~~ **已修**：`GraphVerifier` 遇到重复 edge id 时
+   **后写胜出 + 记一条带完整两边数据的 bizlog**，`./mvnw test` 现在**全绿**（CONTEXT 第 17.1 节）。
+   共享 set 里的脏数据还在，想彻底干净可以给写接口测试单独 set（未做，不影响测试）。
+2. **没有 un-index，但有 rebuild**：删除点后邻居列表里仍可能残留该 id（`nearest` 读不到会跳过，
+   不报错）；元数据 `size` 是写入路径每次插入都会发布的快照。要清理结构就用
+   `POST /api/v1/vector-index/rebuild` —— 它**走层 0 + 扫描**重新加载全部被索引的点
+   （`sendKey` 已打开，新写入的记录扫描可寻址），删层边、删元数据、重建、换掉缓存索引；
+   10k 图目前 10,001 个点（多出的一个是写入 Demo），集成测试按 `existing.size() >= size` 判定可复用。
+3. **一个点类型只能有一个向量属性**：schema 校验直接报错（CONTEXT 17.3）；`hnsw:<Type>:<prop>`
+   的多属性 key 逻辑保留为防御性代码。
+4. **过滤查询的代价**：候选表按 `k/selectivity` 放大（10% 选择率、k=20、ef=50 → 约 3× 普通查询延迟）。
+   选择率若由调用方给准（属性统计/采样），可省掉"不够再放大"的重复遍历。
+5. **暂不支持**：多 Aerospike 节点并行写、`efConstruction` 在线调大、重建的并行化。
+6. 前端 `graph-web/frontend/public` 与 `graph-web/src/main/resources/static` 仍是**拷贝关系**（需手动同步）。
 
 ---
 
@@ -157,6 +176,9 @@ graph-schema/…/json/{PropertyDto,SchemaJsonCodec}.java   isVector/metric/m/efC
 graph-schema/…/SchemaValidator.java        向量属性校验（数字 list、list<object> warning、多向量 warning）
 
 graph-hnsw/…/HnswIndex.java                建/查核心；dynamicSize + provisioner + 入口点合并刷新
+                                           +  filteredPass/searchLayerFiltered（has/filter 下沉）
+graph-hnsw/…/HnswFilter.java               下沉谓词端口（propertyNames / selectivity / test / maxEf）
+graph-hnsw/…/HnswElements.java             elements(ids, extraProperties)：向量+过滤属性一次批读
 graph-hnsw/…/HnswLayerProvisioner.java     按需建层的回调端口
 graph-hnsw/…/CachedHnswMetadataStore.java  入口点缓存（TTL=1min，write 直写穿透）
 graph-hnsw/…/HnswLevels.java               层方案（属性名感知的边名）
@@ -167,11 +189,14 @@ graph-query-aerospike/…/AerospikeHnswMetadataStore.java  元数据记录（for
 graph-query-aerospike/…/AerospikeHnswIndexFactory.java   schema 驱动打开索引（provisioner + TTL + 配置合并）
 
 graph-query-gremlin/…/GremlinSteps.java    nearest(k[,ef]) 步骤（顺带记录底层连边供 UI 画图）
-graph-http/…/service/VectorIndexManager.java  每图每属性的索引（读写共用）、启动建层、写入后索引
+graph-http/…/controller/VectorIndexController.java  GET /api/v1/vector-index + POST …/rebuild
+graph-http/…/service/VectorIndexManager.java  每图每属性的索引（读写共用）、启动建层、写入后索引、rebuild
 graph-http/…/service/GraphService.java        写路径触发索引；QueryService 注册索引给引擎
 graph-http/src/main/resources/hnsw-sift.json / hnsw-dynamic.json / application*.yml
 
-graph-integration-test/…/HnswGraphIntegrationTest.java   10k 加载建图 + 写入驱动两场景
+graph-integration-test/…/HnswDatasetLoader.java          向量 + bucket/category 属性导入（seedAttributes）
+graph-integration-test/…/HnswGraphIntegrationTest.java   10k 加载建图 + 写入驱动 + 过滤对比 三场景
+graph-integration-test/…/GraphVerifier.java              重复 edge id → bizlog（不再抛异常）
 tools/generate-hnsw-schema.js, tools/download-siftsmall-dataset.sh
 ```
 

@@ -570,3 +570,93 @@ node tools/generate-hnsw-schema.js --size 600 --layers 0 --vertex Doc --vector-p
 4. **落库为向量 + 属性联合索引**：把热点过滤属性编码进层边/元数据（如按 category 分层建索引）—— 成本高，除非过滤维度固定且少。
 
 建议顺序：先把 (1) 做成"文档化的近似方案"，同时把 (2) 的 `Predicate` 下沉做进 `HnswIndex.search`（`GremlinSteps.nearest` 之后紧跟 `has`/`filter` 时自动把条件传下去，并给出 `ef` 放大策略），(3)(4) 视过滤维度稳定性再定。
+
+---
+
+## 17. 属性过滤的向量检索 + 索引重建 + schema 约束收紧
+
+这一节是第 16 节之后的五件事：重复边 id 只记 bizlog、索引重建、一个点类型只能有一个向量属性、给测试索引数据加 string/int 业务属性、以及把属性过滤**下沉**进 HNSW 搜索。
+
+### 17.1 重复边 id 记 bizlog，不再让验证崩掉（要求 1）
+
+`GraphVerifier` 原本把顶点 1001 两个 edge class 的出边用 `Collectors.toMap(edgeId, ...)` 合并，遇到"老数据 + 新数据共用一个 edge id"（`QueryApiIntegrationTest` 通过 REST 往共享默认 set 写过的 Payment `e2`）直接抛 `IllegalStateException: Duplicate key e2`。
+
+现在：**后出现的条目胜出**（两个 bin 的读取顺序是确定的，即当前 schema 的那份胜出），重复的 id 写一条 **business log**，里面带上两边完整数据：
+
+```
+BusinessLogEntry[operation=verifyGraph, target=1001, success=false, details={
+  edgeId=e2,
+  kept=otherVertex=2001, lastUpdatedTime=…, createdTime=…, properties={1=…},
+  duplicate=otherVertex=1002, lastUpdatedTime=…, createdTime=…, properties={5=…,6=…,3=…},
+  reason=duplicate edge id in the out-edges of one vertex}]
+```
+
+运维拿到这条日志就能定位要清理的记录；测试不再因脏数据而红（`AerospikeIntegrationTest` 现在 2/2 通过）。
+
+### 17.2 重建索引（要求 2）
+
+`POST /api/v1/vector-index/rebuild`（body 可选 `{graph, vertexSchemaName, vectorProperty}`，缺省=主图/该点类型唯一的向量属性）+ `GET /api/v1/vector-index` 列出每个向量索引的配置与状态。
+
+`VectorIndexManager.rebuild(...)` 的步骤：
+
+1. **重新加载数据**：ids 有两个来源 —
+   - **走底层图**：从元数据入口点 BFS **layer 0**（`neighboursBatch`，批量读）。layer 0 按构造包含全部被索引过的点，所以**老数据（记录里没存 key）也能全部枚举**；
+   - **扫描**：`AerospikeVertexStore.scanVerticesWithProperty(...)`（一次 scan，`sendKey` 取回记录 key）。为此**写策略统一打开 `sendKey`**（`WritePolicy`/`BatchWritePolicy`），新写入的记录自带 key，scan 就能直接给出 id —— 两条来源取并集，因此"建索引之后又批量导入的点"也会被重建纳入。
+   - 向量按 500 一批 `readVertices(...)` 读回堆内存（`HeapHnswVectorSource`），构建期间零额外读。
+2. **删除旧索引**：`AerospikeEdgeStore.clearEdgeClasses(layerSchemas, ids)` —— 每个点一次 `put`，把该属性所有层的 3 个方向 bin 写成**空 map**（`RecordExistsAction.UPDATE_ONLY`，不存在的点不会凭空建记录），然后 `AerospikeHnswMetadataStore.delete()` 删元数据记录。
+3. **重建边**：用 schema/元数据里的配置（metric/m/efConstruction 以元数据为准）新建 `HnswIndex`（`overwrite(true)` + 堆向量源），按序插入，最后一并 flush 元数据。
+4. **换血**：`indexesByGraph` 丢弃该图重新打开，且 `QueryService` 的引擎通过 `hnswIndexSource(...)` **按查询实时解析索引**（不再是构造时固定一份），所以重建后无需重启/重建引擎，下一次查询就用新图。
+
+实测（8083 动态图）：`{"vertices":601,"layers":11,"links":13821,"pruned":7468,"seconds":26.9}`，重建后 `nearest(3)` 返回与重建前完全相同的邻居；601 而不是 600 —— 多出来的那个正是**建索引之后**通过 REST 写进来的点，说明重新加载没有被"旧索引范围"限制住。
+
+### 17.3 一个点类型只能有一个向量属性（要求 3）
+
+`SchemaValidator` 把"同一个点类型声明多个 `isVector` 属性"从 warning 改成 **error**：
+
+```
+vertex schema 'Doc' declares 2 vector properties (a, b); a vertex type may have at most one (isVector=true)
+```
+
+理由：层边以属性名命名，查询步骤按点类型解析索引，两个向量属性会有歧义。`VectorIndexSchemas`/工厂里的多属性 key 逻辑（`hnsw:<Type>:<prop>`）保留为防御性代码，但正常输入进不到那里。
+
+### 17.4 给测试索引数据加业务属性（要求 4.1）
+
+`tools/generate-hnsw-schema.js` 新增 `--bucket-values` / `--category-values`（默认 10/10），给向量点类型加上：
+
+| 属性 | 类型 | 取值 | 选择性 |
+|---|---|---|---|
+| `bucket` (id 3) | INT | `row % 10` | 10% |
+| `category` (id 4) | STRING | `CATEGORIES[(row / 3) % 10]`（不同分区） | 10% |
+
+`HnswDatasetLoader.seedAttributes(store, schema, rows, batch, progress)` **单独导入**这两个属性（只写 bins，不碰向量），集成测试在跑过滤实验前调用一次（10,000 行 14s），并且写属性时顺带把记录 key 存进 Aerospike（见 17.2）。
+
+> 踩过的坑（值得记住）：单元测试里我最初用 `i % 10` 生成 bucket，而合成数据是 20 个簇（`i % 20`）—— 于是**同一个簇里所有点的 bucket 相同**，过滤属性与向量空间强相关。这种情况下"最近 100 个里符合过滤条件的 = 0"，任何过滤方案都会退化。真实业务里属性与向量往往是**弱相关**的，所以过滤器实验必须用**与几何无关**的属性（集成测试用真实 SIFT 行号取模，单元测试改用固定种子 PRNG）。
+
+### 17.5 `efSearch` 默认回到 50（要求 4.2）
+
+`VectorIndexConfig.DEFAULT_EF_SEARCH = 50`、`HnswConfig.defaults()` 也是 50；schema 里不写就用这个值，`nearest(k, ef)` 仍可临时覆盖。`hnsw-sift.json` 现在显式写 `efSearch: 50`。
+
+### 17.6 把 `has` / `filter` 下沉进 HNSW 搜索（要求 4.3）
+
+**问题**：`g.V(id,'Vector').nearest(20).has('bucket', 3)` 若按"先取 20 个最近、再筛"，10% 选择率下平均只剩 2 个（实测 10k 图上 `nearest(20)` 里只有 4 个 bucket=3）。
+
+**做法**（三层）：
+
+1. **`HnswFilter` 端口**（graph-hnsw）：`propertyNames()`（搜索要顺带批读哪些属性）+ `selectivity()`（0=未知，搜索自己估）+ `test(vertexId, properties)`；`maxEf(ef,k)` 给候选表上限（默认 `max(ef,k)×20`）。
+2. **搜索下沉**（`HnswIndex.searchLayerFiltered`）：候选表保存**最好的 efTarget 个候选（匹配与否都算）**，结果只从匹配的里面取；**不匹配的点照样进候选表、照样被扩张**（"不满足的候选不进结果表但仍参与扩张"）。
+   - `efTarget` 初始 = `clamp(ceil(k / selectivity), ef, maxEf)`（**ef 按选择率放大到 k/selectivity**），selectivity 未知时先用 `max(ef,k)`；
+   - 一次遍历后若匹配数 < k，用**实测通过率**重新估 `k/passRate` 并放大（至少翻倍）重试，最多 4 次、上限 `maxEf`；通过率为 0 时不做无意义推断，直接翻倍增长；
+   - 被检查的顶点数有硬上限（`maxEf × 6`，下限 1000），所以"什么都匹配不上"的过滤器只会**少给结果**，不会变成全图扫描。
+   - 顺带把向量与过滤属性**合并成一次批读**（`HnswVectorSource.elements(ids, extraProperties)` → `GraphQueryVectorSource` 一次 `readVertices` 投多个 bin），过滤查询的每节点往返次数与不带过滤时相同。
+3. **查询语言自动下沉**（`GremlinGraphQuery.compile`）：`nearest` **后面紧跟**的 `has`/`filter` 步骤被吸收成过滤谓词（`GremlinSteps.hnswFilter(conditions)`，语义与那两个步骤一致：属性缺失=不匹配、数字按数值比较），并从计划里移除；`nearest` 之后隔了别的步骤（如 `values`）就不下沉，保持原语义（"这 20 个里符合条件的"）。
+
+**实测**（10,000×128 SIFT，`bucket` 10% 选择率，ef=50，k=20，各 80 条查询，对**过滤后的精确 top-20**算召回）：
+
+| 方案 | recall@20 | 延迟 |
+|---|---|---|
+| **下沉过滤** | **0.998** | 419 ms/查询（候选表放大到 200，约 3× 普通查询） |
+| 先取 20 再过滤 | 0.143 | 137 ms/查询（快，但答案基本是错的） |
+
+单元测试（2000 点合成数据，PRNG 属性）`pushed-down=0.990 vs post-filter=0.108`；查询语言侧 `g.V('4242','Vector').nearest(20).has('bucket',3)` → **20 个点全部 bucket=3**（`nearest(20)` 原始结果里只有 4 个），字符串属性 `has('category','music')` 同理。
+
+**取舍**：过滤越狠，候选表越大、越慢（`k/selectivity` 是硬道理）。目前是"先按声明的选择率一次到位、不够再按实测通过率放大"；如果调用方能给准确的选择率（统计信息/采样），第一次就能取到正确大小、避免重试。

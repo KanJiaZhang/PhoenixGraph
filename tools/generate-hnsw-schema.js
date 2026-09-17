@@ -15,6 +15,7 @@
  *
  * Usage:
  *   node tools/generate-hnsw-schema.js [--size 10000] [--m 15] [--dimensions 128]
+ *                                      [--bucket-values 10] [--category-values 10]
  *                                      [--ef-construction 100] [--ef-search 30]
  *                                      [--metric L2] [--layers auto]
  *                                      [--vertex Vector] [--out <path>]
@@ -29,6 +30,8 @@ function parseArgs(argv) {
     size: 10000,
     m: 15,
     dimensions: 128,
+    'bucket-values': 10,
+    'category-values': 10,
     'ef-construction': 100,
     'ef-search': 30,
     metric: 'L2',
@@ -86,6 +89,16 @@ function main() {
             efConstruction: args['ef-construction'],
             efSearch: args['ef-search'],
           }),
+      // business attributes over the same vectors, for filtered vector search:
+      // assert 'bucket' (int) and 'category' (string), both at
+      // 1/bucket-values selectivity. They are independent of the vector geometry,
+      // which is the case plain nearest-neighbour + post-filter cannot serve.
+      ...(args['bucket-values'] > 0
+          ? [property(3, 'bucket', `Demo bucket (0..${args['bucket-values'] - 1})`, 'INT')]
+          : []),
+      ...(args['category-values'] > 0
+          ? [property(4, 'category', `Demo category (${args['category-values']} values)`, 'STRING')]
+          : []),
     ],
   };
 
@@ -132,6 +145,10 @@ function main() {
       (layerCount === top + 1 ? '' : ' (the rest are created on demand)'));
   console.log(`  vector property '${args['vector-property']}': isVector=true, metric=${args.metric}, ` +
       `m=${args.m}, efConstruction=${args['ef-construction']}, efSearch=${args['ef-search']}`);
+  if (args['bucket-values'] > 0 || args['category-values'] > 0) {
+    console.log(`  attributes: bucket(INT, ${args['bucket-values']}), ` +
+        `category(STRING, ${args['category-values']}) - load them with HnswDatasetLoader.seedAttributes`);
+  }
 }
 
 main();

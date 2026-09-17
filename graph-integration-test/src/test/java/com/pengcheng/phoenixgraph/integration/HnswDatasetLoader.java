@@ -3,6 +3,7 @@ package com.pengcheng.phoenixgraph.integration;
 import com.pengcheng.phoenixgraph.hnsw.VectorCodec;
 import com.pengcheng.phoenixgraph.schema.VertexSchema;
 import com.pengcheng.phoenixgraph.storage.aerospike.AerospikeVertexStore;
+import com.pengcheng.phoenixgraph.storage.aerospike.StoredVertex;
 import com.pengcheng.phoenixgraph.storage.aerospike.VertexPropertyValue;
 import com.pengcheng.phoenixgraph.storage.aerospike.VertexUpsert;
 
@@ -39,7 +40,36 @@ final class HnswDatasetLoader {
     /** Property index of the vector in the HNSW demo schema. */
     static final int VECTOR_PROPERTY = 2;
 
+    /** Property index of the demo {@code bucket} attribute (INT). */
+    static final int BUCKET_PROPERTY = 3;
+
+    /** Property index of the demo {@code category} attribute (STRING). */
+    static final int CATEGORY_PROPERTY = 4;
+
+    /** Number of distinct demo buckets / categories. */
+    static final int ATTRIBUTE_VALUES = 10;
+
+    /** Category names of the demo attribute (one per bucket value). */
+    static final String[] CATEGORIES = {
+            "sports", "news", "music", "film", "science",
+            "history", "travel", "food", "tech", "nature"};
+
     private HnswDatasetLoader() {
+    }
+
+    /**
+     * Business attribute values of a row: a numeric bucket and a string category,
+     * both spread evenly (1 in {@value #ATTRIBUTE_VALUES}) but over <em>different</em>
+     * partitions of the dataset, so filtering on one of them is independent of the
+     * vector geometry - the situation where "nearest k, then filter" loses most of
+     * the matches.
+     */
+    static int bucketOf(int row) {
+        return row % ATTRIBUTE_VALUES;
+    }
+
+    static String categoryOf(int row) {
+        return CATEGORIES[(row / 3) % CATEGORIES.length];
     }
 
     /** The loaded dataset: base vectors (rows to index), queries and ground truth. */
@@ -144,5 +174,43 @@ final class HnswDatasetLoader {
     /** Display name of a row, e.g. {@code sift-4242}. */
     static String nameOf(int row) {
         return "sift-" + row;
+    }
+
+    /**
+     * Writes the demo attributes ({@code bucket}, {@code category}) onto the already
+     * loaded rows, in batches - a separate load, as asked for: the vectors are not
+     * touched, only the two bins are added.
+     *
+     * @param rows     number of rows to annotate (row {@code i} gets the attributes of
+     *                 {@link #bucketOf(int)}/{@link #categoryOf(int)})
+     * @param progress called with the number of rows updated so far (every batch)
+     * @return the number of rows written
+     */
+    static int seedAttributes(AerospikeVertexStore vertexStore, VertexSchema schema, int rows,
+                              int batchSize, IntConsumer progress) {
+        int written = 0;
+        for (int start = 0; start < rows; start += batchSize) {
+            int end = Math.min(start + batchSize, rows);
+            for (int row = start; row < end; row++) {
+                long now = System.currentTimeMillis();
+                Map<Integer, VertexPropertyValue> properties = new LinkedHashMap<>();
+                properties.put(BUCKET_PROPERTY, new VertexPropertyValue(bucketOf(row), now));
+                properties.put(CATEGORY_PROPERTY, new VertexPropertyValue(categoryOf(row), now));
+                vertexStore.upsertVertex(Dataset.idOf(row), properties, now, now);
+            }
+            written = end;
+            if (progress != null) {
+                progress.accept(written);
+            }
+        }
+        return written;
+    }
+
+    /** Whether the demo attributes are present (checked on the last row). */
+    static boolean attributesLoaded(AerospikeVertexStore vertexStore, int rows) {
+        StoredVertex vertex = vertexStore.readVertex(Dataset.idOf(rows - 1),
+                List.of(BUCKET_PROPERTY, CATEGORY_PROPERTY));
+        return vertex != null && vertex.properties().get(BUCKET_PROPERTY) != null
+                && vertex.properties().get(CATEGORY_PROPERTY) != null;
     }
 }

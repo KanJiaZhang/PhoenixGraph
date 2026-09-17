@@ -14,6 +14,7 @@ import java.util.Map;
 public final class HeapHnswVectorSource implements HnswVectorSource {
 
     private final Map<Object, float[]> vectors = new LinkedHashMap<>();
+    private final Map<Object, Map<String, Object>> properties = new LinkedHashMap<>();
     private int dimensions;
 
     /** Empty source; add vectors with {@link #put(Object, float[])}. */
@@ -31,6 +32,14 @@ public final class HeapHnswVectorSource implements HnswVectorSource {
         }
         vectors.put(vertexId, vector);
         dimensions = Math.max(dimensions, vector.length);
+        return this;
+    }
+
+    /** Stores (or replaces) the properties of a vertex (used by filters in tests). */
+    public HeapHnswVectorSource putProperties(Object vertexId, Map<String, Object> values) {
+        if (values != null) {
+            properties.put(vertexId, values);
+        }
         return this;
     }
 
@@ -55,6 +64,27 @@ public final class HeapHnswVectorSource implements HnswVectorSource {
             out.add(vectors.get(vertexId));
         }
         return out;
+    }
+
+    @Override
+    public HnswElements elements(List<Object> vertexIds, List<String> extraProperties) {
+        List<float[]> loaded = vectors(vertexIds);
+        List<Map<String, Object>> values = new ArrayList<>(vertexIds.size());
+        for (Object vertexId : vertexIds) {
+            Map<String, Object> all = properties.get(vertexId);
+            if (all == null || extraProperties == null || extraProperties.isEmpty()) {
+                values.add(Map.of());
+                continue;
+            }
+            Map<String, Object> selected = new LinkedHashMap<>();
+            for (String property : extraProperties) {
+                if (all.containsKey(property)) {
+                    selected.put(property, all.get(property));
+                }
+            }
+            values.add(selected);
+        }
+        return new HnswElements(loaded, values);
     }
 
     @Override

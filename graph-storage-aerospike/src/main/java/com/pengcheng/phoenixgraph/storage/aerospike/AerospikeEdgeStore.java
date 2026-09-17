@@ -735,6 +735,52 @@ public class AerospikeEdgeStore implements AdjacentEdgeStore {
         return readEdgeMap(record, edgeBin(edgeSchemaId, directionCode));
     }
 
+    /**
+     * Removes the edge bins of the given edge classes from every listed vertex
+     * (all three directions), i.e. drops the attached edges without touching the
+     * vertices or any other edge class.
+     *
+     * <p>Intended for maintenance: rebuilding an index starts by clearing its layer
+     * bins so no stale link survives. One {@code operate} call per vertex removes
+     * every bin at once; a bin that is not present is a no-op.
+     *
+     * @param edgeSchemas edge classes to clear
+     * @param vertexIds   vertices whose bins are cleared
+     * @return the number of vertices the operation was issued for
+     */
+    public int clearEdgeClasses(List<EdgeSchema> edgeSchemas, List<Object> vertexIds) {
+        Objects.requireNonNull(edgeSchemas, "edgeSchemas");
+        Objects.requireNonNull(vertexIds, "vertexIds");
+        if (edgeSchemas.isEmpty() || vertexIds.isEmpty()) {
+            return 0;
+        }
+        // an empty CDT map is exactly what a vertex without edges on that layer looks
+        // like, and writing it needs no read-modify-write
+        List<Bin> bins = new ArrayList<>(edgeSchemas.size() * 3);
+        for (EdgeSchema edgeSchema : edgeSchemas) {
+            for (int dir : new int[] {EDGE_DIR_BOTH, EDGE_DIR_IN, EDGE_DIR_OUT}) {
+                bins.add(new Bin(edgeBin(edgeSchema.id(), dir), new LinkedHashMap<String, Object>()));
+            }
+        }
+        Bin[] emptyBins = bins.toArray(new Bin[0]);
+        WritePolicy policy = new WritePolicy();
+        policy.recordExistsAction = RecordExistsAction.UPDATE_ONLY;
+        int cleared = 0;
+        for (Object vertexId : vertexIds.stream().distinct().toList()) {
+            try {
+                client.put(policy, key(vertexId), emptyBins);
+                cleared++;
+            } catch (AerospikeException e) {
+                errorLog.record(BusinessLogEntry.failure("clearEdgeClasses", String.valueOf(vertexId),
+                        Map.of("edgeClasses", edgeSchemas.stream().map(EdgeSchema::name).toList(),
+                                "error", e.toString())));
+            }
+        }
+        businessLog.record(BusinessLogEntry.success("clearEdgeClasses", "batch:" + vertexIds.size(),
+                Map.of("vertices", cleared, "edgeClasses", edgeSchemas.size(), "bins", edgeSchemas.size() * 3)));
+        return cleared;
+    }
+
     /** Hard-deletes an edge: removes the in-edge and out-edge from both endpoints. */
     public WriteOutcome deleteEdge(Object edgeId, EdgeSchema edgeSchema, Object source, Object destination) {
         String id = String.valueOf(edgeId);

@@ -14,6 +14,7 @@ import com.aerospike.client.policy.BatchPolicy;
 import com.aerospike.client.policy.BatchWritePolicy;
 import com.aerospike.client.policy.GenerationPolicy;
 import com.aerospike.client.policy.RecordExistsAction;
+import com.aerospike.client.policy.ScanPolicy;
 import com.aerospike.client.policy.WritePolicy;
 import com.pengcheng.phoenixgraph.core.Property;
 import com.pengcheng.phoenixgraph.core.Vertex;
@@ -133,6 +134,9 @@ public class AerospikeVertexStore implements VertexStore {
     static WritePolicy createOnlyPolicy() {
         WritePolicy policy = new WritePolicy();
         policy.recordExistsAction = RecordExistsAction.CREATE_ONLY;
+        // keep the user key on the record: a scan can then return the id instead of
+        // only the digest, which is what a full reload (e.g. an index rebuild) needs
+        policy.sendKey = true;
         return policy;
     }
 
@@ -141,6 +145,7 @@ public class AerospikeVertexStore implements VertexStore {
         WritePolicy policy = new WritePolicy();
         policy.generationPolicy = GenerationPolicy.EXPECT_GEN_EQUAL;
         policy.generation = generation;
+        policy.sendKey = true;
         return policy;
     }
 
@@ -148,6 +153,7 @@ public class AerospikeVertexStore implements VertexStore {
     static BatchWritePolicy createOnlyBatchPolicy() {
         BatchWritePolicy policy = new BatchWritePolicy();
         policy.recordExistsAction = RecordExistsAction.CREATE_ONLY;
+        policy.sendKey = true;
         return policy;
     }
 
@@ -156,6 +162,7 @@ public class AerospikeVertexStore implements VertexStore {
         BatchWritePolicy policy = new BatchWritePolicy();
         policy.generationPolicy = GenerationPolicy.EXPECT_GEN_EQUAL;
         policy.generation = generation;
+        policy.sendKey = true;
         return policy;
     }
 
@@ -563,6 +570,47 @@ public class AerospikeVertexStore implements VertexStore {
     public Object getVertexProperty(Object vertexId, int propertyIndex) {
         Record record = client.get(null, key(vertexId));
         return record == null ? null : record.bins.get(propertyBin(propertyIndex));
+    }
+
+    /**
+     * Scans the whole set and returns the vertices that carry {@code requiredPropertyIndex},
+     * projecting that property plus {@code propertyIndexes}.
+     *
+     * <p>Used to reload a dataset without knowing its ids. The scan asks the server
+     * for the record keys ({@link ScanPolicy#sendKey}); a record only carries its key
+     * if it was written with {@code sendKey} as well - which this store does since
+     * the reload feature exists, so records written by an older version are skipped
+     * (a write of any property refreshes the key).
+     */
+    public List<StoredVertex> scanVerticesWithProperty(int requiredPropertyIndex, List<Integer> propertyIndexes) {
+        List<Integer> projected = new ArrayList<>();
+        projected.add(requiredPropertyIndex);
+        if (propertyIndexes != null) {
+            for (int index : propertyIndexes) {
+                if (!projected.contains(index)) {
+                    projected.add(index);
+                }
+            }
+        }
+        ScanPolicy policy = new ScanPolicy();
+        policy.sendKey = true;
+        policy.includeBinData = true;
+        List<StoredVertex> vertices = Collections.synchronizedList(new ArrayList<>());
+        client.scanAll(policy, namespace, set, (key, record) -> {
+            if (record == null || record.bins == null
+                    || !record.bins.containsKey(propertyBin(requiredPropertyIndex))) {
+                return;
+            }
+            Object vertexId = key.userKey == null ? null : key.userKey.getObject();
+            if (vertexId == null) {
+                // the server did not return the user key: the record cannot be addressed
+                errorLog.record(BusinessLogEntry.failure("scanVertices", key.digest == null ? "?": new String(key.digest),
+                        Map.of("reason", "scan returned a record without its user key")));
+                return;
+            }
+            vertices.add(decode(vertexId, record));
+        }, propertyBins(projected));
+        return new ArrayList<>(vertices);
     }
 
     /** Reads a single property's {@code lastModifiedTime}, or {@code null} if absent. */
