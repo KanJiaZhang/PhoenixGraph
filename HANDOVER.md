@@ -12,7 +12,7 @@
 - 追加（第 18 节）：有向边布局验证（source 存 out-bin、target 存 in-bin，两跳四组合全通）、
   修复 `@PathVariable` 未命名导致 `GET|DELETE /vertices/{id}` 等接口 400/500 的 bug
 - 追加（第 20 节）：UI 示例查询收进小按钮（默认隐藏）、
-  查询结果值浮窗（HTTP  一次执行同时返回答案与子图，兼容旧形状）
+  查询结果值浮窗（HTTP `includeResult` 一次执行同时返回答案与子图，且兼容旧的子图响应形状）
 - 追加（第 19 节）：**新模块 `graph-query-cypher`**（openCypher 子集：`MATCH`/`WHERE`/`RETURN` + 聚合），
   HTTP 增加 `language` 字段（`${name}` 与 `$name` 两种参数写法），UI 增加语言选择 / 示例查询下拉 /
   「结果」表格 tab；`Subgraph` 与 `NeighborVertexResolver` 下沉到 `graph-query` 共用
