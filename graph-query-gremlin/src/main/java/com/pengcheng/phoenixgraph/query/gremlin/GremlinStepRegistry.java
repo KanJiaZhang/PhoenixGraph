@@ -1,6 +1,7 @@
 package com.pengcheng.phoenixgraph.query.gremlin;
 
 import com.pengcheng.phoenixgraph.query.QueryException;
+import com.pengcheng.phoenixgraph.storage.TimeRange;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -87,6 +88,17 @@ public class GremlinStepRegistry {
                 throw new QueryException("values expects at least one property key");
             }
             return GremlinSteps.values(args);
+        });
+        register("createdBetween", args -> {
+            if (args.size() != 2) {
+                throw new QueryException("createdBetween expects createdBetween(from, to), got "
+                        + args.size() + " arguments");
+            }
+            try {
+                return GremlinSteps.createdBetween(TimeRange.parse(args.get(0), args.get(1)));
+            } catch (IllegalArgumentException e) {
+                throw new QueryException(e.getMessage(), e);
+            }
         });
         register("elementMap", args -> GremlinSteps.elementMap());
         register("count", args -> GremlinSteps.count());

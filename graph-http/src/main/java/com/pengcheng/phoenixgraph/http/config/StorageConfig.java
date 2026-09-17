@@ -3,7 +3,11 @@ package com.pengcheng.phoenixgraph.http.config;
 import com.aerospike.client.AerospikeClient;
 import com.pengcheng.phoenixgraph.http.service.GraphBinding;
 import com.pengcheng.phoenixgraph.http.service.GraphRegistry;
+import com.pengcheng.phoenixgraph.query.aerospike.AerospikeEdgeGraphQuery;
+import com.pengcheng.phoenixgraph.query.aerospike.AerospikeGraphQuery;
 import com.pengcheng.phoenixgraph.query.storage.GraphQuery;
+import com.pengcheng.phoenixgraph.schema.GraphStorageType;
+import com.pengcheng.phoenixgraph.storage.aerospike.AerospikeEdgeChunkStore;
 import com.pengcheng.phoenixgraph.schema.GraphSchema;
 import com.pengcheng.phoenixgraph.schema.GraphSchemaManagers;
 import com.pengcheng.phoenixgraph.schema.json.SchemaJsonCodec;
@@ -95,10 +99,22 @@ public class StorageConfig {
                 AerospikeGeoIndex.ensureIndexes(client, properties.namespace(), definition.vertexSet(),
                         schema, null);
             }
-            bindings.add(new GraphBinding(schema,
-                    new AerospikeVertexStore(client, properties.namespace(), definition.vertexSet()),
-                    new AerospikeEdgeStore(client, properties.namespace(), definition.vertexSet(), schema),
-                    client, properties.namespace()));
+            AerospikeVertexStore vertexStore =
+                    new AerospikeVertexStore(client, properties.namespace(), definition.vertexSet());
+            AerospikeEdgeStore edgeStore =
+                    new AerospikeEdgeStore(client, properties.namespace(), definition.vertexSet(), schema);
+            if (schema.storage().type() == GraphStorageType.AEROSPIKE_EDGE) {
+                // big vertices live in the aggregated Edge_Out / Edge_In tables, written by a bulk
+                // import; the read path merges them with the edges still inline in the vertex record
+                AerospikeEdgeChunkStore chunks = new AerospikeEdgeChunkStore(client, properties.namespace(),
+                        definition.vertexSet());
+                GraphQuery query = new AerospikeEdgeGraphQuery(
+                        new AerospikeGraphQuery(vertexStore, edgeStore, schema), chunks, schema);
+                bindings.add(new GraphBinding(schema, vertexStore, edgeStore, client,
+                        properties.namespace(), query));
+                continue;
+            }
+            bindings.add(new GraphBinding(schema, vertexStore, edgeStore, client, properties.namespace()));
         }
         return new GraphRegistry(bindings);
     }

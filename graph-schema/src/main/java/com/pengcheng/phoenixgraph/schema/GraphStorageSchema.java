@@ -51,6 +51,12 @@ public record GraphStorageSchema(GraphStorageType type, String path, int regionC
         return AEROSPIKE;
     }
 
+    /** An Aerospike graph whose edges live in the aggregated {@code Edge_Out}/{@code Edge_In} tables. */
+    public static GraphStorageSchema aerospikeEdge() {
+        return new GraphStorageSchema(GraphStorageType.AEROSPIKE_EDGE, null,
+                DEFAULT_REGION_COUNT, DEFAULT_MAX_VERSIONS, true);
+    }
+
     /** A RocksDB-Inline graph at a directory. */
     public static GraphStorageSchema rocksDbInline(String path) {
         return new GraphStorageSchema(GraphStorageType.ROCKSDB_INLINE, requirePath(path),
@@ -82,6 +88,11 @@ public record GraphStorageSchema(GraphStorageType type, String path, int regionC
     /** Whether this graph is served by Aerospike. */
     public boolean isAerospike() {
         return type.isAerospike();
+    }
+
+    /** Whether this is the Aerospike storage with the aggregated edge tables. */
+    public boolean isAerospikeEdge() {
+        return type == GraphStorageType.AEROSPIKE_EDGE;
     }
 
     /** Whether this graph is served by a RocksDB scheme. */

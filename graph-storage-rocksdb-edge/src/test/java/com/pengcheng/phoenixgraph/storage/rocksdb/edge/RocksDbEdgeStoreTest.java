@@ -19,6 +19,7 @@ import com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbKeys;
 import com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbPropertyValue;
 import com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbStoreConfig;
 import com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbVertexUpsert;
+import com.pengcheng.phoenixgraph.storage.TimeRange;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -211,19 +212,19 @@ class RocksDbEdgeStoreTest {
 
         // createdTime of edge i is 1000 + i*10, so [1300, 1500] holds edges 30..50
         List<EdgeQueryResult> window = query.readEdgesWithin(100L, "Account", "Payment", EdgeSide.OUT,
-                RocksDbTimeRange.of(1_300L, 1_500L), List.of("status"));
+                TimeRange.of(1_300L, 1_500L), List.of("status"));
         assertEquals(21, window.size());
         assertEquals(1_300L, window.stream().mapToLong(EdgeQueryResult::createdTime).min().orElseThrow());
         assertEquals(1_500L, window.stream().mapToLong(EdgeQueryResult::createdTime).max().orElseThrow());
 
         // an open ended window
         assertEquals(100, query.readEdgesWithin(100L, "Account", "Payment", EdgeSide.OUT,
-                RocksDbTimeRange.from(1_000L), List.of()).size());
+                TimeRange.from(1_000L), List.of()).size());
         assertEquals(10, query.readEdgesWithin(100L, "Account", "Payment", EdgeSide.OUT,
-                RocksDbTimeRange.until(1_090L), List.of()).size());
+                TimeRange.until(1_090L), List.of()).size());
         // a window with nothing in it
         assertTrue(query.readEdgesWithin(100L, "Account", "Payment", EdgeSide.OUT,
-                RocksDbTimeRange.of(9_000L, 9_999L), List.of()).isEmpty());
+                TimeRange.of(9_000L, 9_999L), List.of()).isEmpty());
         // the unbounded read sees everything
         assertEquals(100, query.readEdges(100L, "Account", "Payment", EdgeSide.OUT, List.of()).size());
     }

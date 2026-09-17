@@ -12,6 +12,7 @@ import com.pengcheng.phoenixgraph.query.storage.GraphQuery;
 import com.pengcheng.phoenixgraph.schema.GeoIndexSchemas;
 import com.pengcheng.phoenixgraph.schema.geo.GeoHit;
 import com.pengcheng.phoenixgraph.schema.geo.GeoSearch;
+import com.pengcheng.phoenixgraph.storage.TimeRange;
 import com.pengcheng.phoenixgraph.query.storage.VertexQueryResult;
 
 import java.util.ArrayList;
@@ -146,6 +147,27 @@ final class GremlinSteps {
                 out.addAll(readVertices(ctx, vertex.label(), new ArrayList<>(hits)));
             }
             return out;
+        };
+    }
+
+    /**
+     * Declares the creation-time window the following edge reads use, and passes the traversers
+     * through unchanged.
+     *
+     * <p>A backend with aggregated edge tables (a vertex with a hundred million edges) can only
+     * answer a bounded read, so a query on such a vertex has to say which window it wants:
+     *
+     * <pre>
+     * g.V('hub','Account').createdBetween('2025-01-01', '2025-02-01').outE('Payment').limit(500)
+     * </pre>
+     *
+     * <p>Bounds are epoch millis or a UTC date; {@code *} (or an empty argument) leaves a side
+     * open. Backends without such tables simply ignore the window.
+     */
+    static GremlinStep createdBetween(TimeRange range) {
+        return (ctx, in) -> {
+            ctx.edgeTimeRange(range);
+            return in;
         };
     }
 

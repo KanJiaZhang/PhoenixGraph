@@ -4,6 +4,7 @@ import com.pengcheng.phoenixgraph.query.QueryException;
 import com.pengcheng.phoenixgraph.query.storage.EdgeQueryResult;
 import com.pengcheng.phoenixgraph.query.storage.EdgeSide;
 import com.pengcheng.phoenixgraph.query.storage.GraphQuery;
+import com.pengcheng.phoenixgraph.storage.TimeRange;
 import com.pengcheng.phoenixgraph.query.storage.SchemaProjections;
 import com.pengcheng.phoenixgraph.query.storage.VertexQueryResult;
 import com.pengcheng.phoenixgraph.schema.EdgeDirection;
@@ -122,7 +123,7 @@ public class RocksDbEdgeGraphQuery implements GraphQuery {
     @Override
     public List<EdgeQueryResult> readEdges(Object vertexId, String vertexName, String edgeName,
                                            EdgeSide direction, List<String> propertyNames) {
-        return readEdgesWithin(vertexId, vertexName, edgeName, direction, RocksDbTimeRange.ALL, propertyNames);
+        return readEdgesWithin(vertexId, vertexName, edgeName, direction, TimeRange.ALL, propertyNames);
     }
 
     /**
@@ -130,7 +131,7 @@ public class RocksDbEdgeGraphQuery implements GraphQuery {
      * the layer's native read: the window is the range the table scan walks.
      */
     public List<EdgeQueryResult> readEdgesWithin(Object vertexId, String vertexName, String edgeName,
-                                                 EdgeSide direction, RocksDbTimeRange range,
+                                                 EdgeSide direction, TimeRange range,
                                                  List<String> propertyNames) {
         Objects.requireNonNull(vertexId, "vertexId");
         Objects.requireNonNull(direction, "direction");
@@ -157,12 +158,13 @@ public class RocksDbEdgeGraphQuery implements GraphQuery {
     @Override
     public List<List<EdgeQueryResult>> readEdgesBatch(String edgeName, EdgeSide direction,
                                                       List<Object> vertexIds, List<String> propertyNames) {
-        return readEdgesBatchWithin(edgeName, direction, RocksDbTimeRange.ALL, vertexIds, propertyNames);
+        return readEdgesBatchWithin(edgeName, direction, TimeRange.ALL, vertexIds, propertyNames);
     }
 
     /** Batched form of {@link #readEdgesWithin}. */
+    @Override
     public List<List<EdgeQueryResult>> readEdgesBatchWithin(String edgeName, EdgeSide direction,
-                                                            RocksDbTimeRange range, List<Object> vertexIds,
+                                                            TimeRange range, List<Object> vertexIds,
                                                             List<String> propertyNames) {
         Objects.requireNonNull(vertexIds, "vertexIds");
         Objects.requireNonNull(direction, "direction");
@@ -188,6 +190,28 @@ public class RocksDbEdgeGraphQuery implements GraphQuery {
         }
         for (List<EdgeQueryResult> edges : perVertex) {
             sort(edges);
+        }
+        return perVertex;
+    }
+
+    /** Every edge class, inside a window (the edge tables are ordered by creation time). */
+    @Override
+    public List<List<EdgeQueryResult>> readAllEdgesBatchWithin(List<Object> vertexIds, EdgeSide direction,
+                                                              TimeRange range, List<String> propertyNames) {
+        Objects.requireNonNull(vertexIds, "vertexIds");
+        if (vertexIds.isEmpty()) {
+            return List.of();
+        }
+        List<List<EdgeQueryResult>> perVertex = new ArrayList<>(vertexIds.size());
+        for (int i = 0; i < vertexIds.size(); i++) {
+            perVertex.add(new ArrayList<>());
+        }
+        for (EdgeSchema edgeSchema : schema.edgeSchemas()) {
+            List<List<EdgeQueryResult>> byEdge =
+                    readEdgesBatchWithin(edgeSchema.name(), direction, range, vertexIds, propertyNames);
+            for (int i = 0; i < vertexIds.size(); i++) {
+                perVertex.get(i).addAll(byEdge.get(i));
+            }
         }
         return perVertex;
     }

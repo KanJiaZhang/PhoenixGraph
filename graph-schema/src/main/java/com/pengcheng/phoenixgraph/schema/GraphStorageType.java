@@ -24,6 +24,14 @@ public enum GraphStorageType {
     AEROSPIKE("Aerospike"),
 
     /**
+     * Aerospike set as {@link #AEROSPIKE}, plus an aggregated edge table per edge class
+     * ({@code Edge_Out} / {@code Edge_In}): the edges of a vertex are chunked by creation time
+     * and indexed by two further levels, so a vertex with hundreds of millions of edges is read
+     * by walking the levels of a time window. Written by a bulk import, not edge by edge.
+     */
+    AEROSPIKE_EDGE("Aerospike-Edge"),
+
+    /**
      * RocksDB directory with one table per vertex type and one table per edge type, the
      * edges of a vertex folded into its record of that edge type. Degree limits apply.
      */
@@ -47,9 +55,14 @@ public enum GraphStorageType {
         return configName;
     }
 
-    /** Whether this is the Aerospike storage (the default). */
+    /** Whether this is an Aerospike storage (the default, or the aggregated edge variant). */
     public boolean isAerospike() {
-        return this == AEROSPIKE;
+        return this == AEROSPIKE || this == AEROSPIKE_EDGE;
+    }
+
+    /** Whether this is the Aerospike storage with the aggregated edge tables. */
+    public boolean isAerospikeEdge() {
+        return this == AEROSPIKE_EDGE;
     }
 
     /** Whether this is one of the RocksDB schemes. */
@@ -75,6 +88,7 @@ public enum GraphStorageType {
             }
         }
         throw new IllegalArgumentException("Unknown storage type '" + name + "'; supported: "
-                + AEROSPIKE.configName + ", " + ROCKSDB_INLINE.configName + ", " + ROCKSDB_EDGE.configName);
+                + AEROSPIKE.configName + ", " + AEROSPIKE_EDGE.configName + ", "
+                + ROCKSDB_INLINE.configName + ", " + ROCKSDB_EDGE.configName);
     }
 }

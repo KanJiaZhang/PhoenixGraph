@@ -1,6 +1,7 @@
 package com.pengcheng.phoenixgraph.query.storage;
 
 import com.pengcheng.phoenixgraph.query.QueryException;
+import com.pengcheng.phoenixgraph.storage.TimeRange;
 import com.pengcheng.phoenixgraph.schema.geo.GeoHit;
 import com.pengcheng.phoenixgraph.schema.geo.GeoSearch;
 
@@ -124,6 +125,53 @@ public interface GraphQuery {
                                             String... propertyNames) {
         return readEdges(vertexId, vertexName, edgeName, EdgeSide.BOTH,
                 propertyNames == null ? List.of() : List.of(propertyNames));
+    }
+
+    /**
+     * Reads the edges of one class attached to a vertex <b>inside a creation-time window</b>.
+     *
+     * <p>A backend whose edges are stored in aggregated tables (a vertex with a hundred million
+     * edges cannot live in one record) can only answer a bounded read - and may refuse an
+     * unbounded one with a message that says to add {@code createdBetween(...)}. Implementations
+     * without such tables simply ignore the window and delegate to
+     * {@link #readEdges(Object, String, String, EdgeSide, List)}.
+     *
+     * @param range the window a big vertex needs; {@link TimeRange#ALL} means "no bound"
+     */
+    default List<EdgeQueryResult> readEdgesWithin(Object vertexId, String vertexName, String edgeName,
+                                                  EdgeSide direction, TimeRange range,
+                                                  List<String> propertyNames) {
+        return readEdges(vertexId, vertexName, edgeName, direction, propertyNames);
+    }
+
+    /** Whether {@link #readEdgesWithin} narrows the read (a big vertex may need a window). */
+    default boolean supportsEdgeTimeRange() {
+        return false;
+    }
+
+    /**
+     * Batched form of {@link #readEdgesWithin}: the window applies to every vertex of the batch.
+     * The default reads them one by one; a backend whose tables are already ordered by time can
+     * override it with something smarter.
+     */
+    default List<List<EdgeQueryResult>> readEdgesBatchWithin(String edgeName, EdgeSide direction,
+                                                             TimeRange range, List<Object> vertexIds,
+                                                             List<String> propertyNames) {
+        List<List<EdgeQueryResult>> out = new ArrayList<>(vertexIds.size());
+        for (Object vertexId : vertexIds) {
+            out.add(readEdgesWithin(vertexId, null, edgeName, direction, range, propertyNames));
+        }
+        return out;
+    }
+
+    /**
+     * Batched form of {@link #readEdgesWithin} over every edge class of the graph. The default
+     * ignores the window (a backend without aggregated tables reads the same either way); a
+     * backend whose window changes the answer overrides it.
+     */
+    default List<List<EdgeQueryResult>> readAllEdgesBatchWithin(List<Object> vertexIds, EdgeSide direction,
+                                                               TimeRange range, List<String> propertyNames) {
+        return readAllEdgesBatch(vertexIds, direction, propertyNames);
     }
 
     /**

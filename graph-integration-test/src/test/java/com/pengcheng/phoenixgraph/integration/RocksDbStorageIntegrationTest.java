@@ -13,10 +13,11 @@ import com.pengcheng.phoenixgraph.schema.GraphStorageType;
 import com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbStoreConfig;
 import com.pengcheng.phoenixgraph.storage.rocksdb.edge.RocksDbEdgeGraphQuery;
 import com.pengcheng.phoenixgraph.storage.rocksdb.edge.RocksDbEdgeStore;
-import com.pengcheng.phoenixgraph.storage.rocksdb.edge.RocksDbTimeRange;
+import com.pengcheng.phoenixgraph.storage.TimeRange;
 import com.pengcheng.phoenixgraph.storage.rocksdb.inline.RocksDbEdgeBins;
 import com.pengcheng.phoenixgraph.storage.rocksdb.inline.RocksDbInlineGraphQuery;
 import com.pengcheng.phoenixgraph.storage.rocksdb.inline.RocksDbInlineStore;
+import com.pengcheng.phoenixgraph.storage.TimeRange;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -224,9 +225,9 @@ class RocksDbStorageIntegrationTest {
         RocksDbEdgeGraphQuery query = new RocksDbEdgeGraphQuery(edgeStore, edgeSchema);
         long base = 1_700_000_000_000L;
         assertEquals(50, query.readEdgesWithin(PaymentGraphRocksDbLoader.HUB_ACCOUNT, "Account", "Payment",
-                EdgeSide.OUT, RocksDbTimeRange.of(base, base + 1_000L), List.of()).size());
+                EdgeSide.OUT, TimeRange.of(base, base + 1_000L), List.of()).size());
         assertTrue(query.readEdgesWithin(PaymentGraphRocksDbLoader.HUB_ACCOUNT, "Account", "Payment",
-                EdgeSide.OUT, RocksDbTimeRange.of(base - 10_000L, base - 1L), List.of()).isEmpty());
+                EdgeSide.OUT, TimeRange.of(base - 10_000L, base - 1L), List.of()).isEmpty());
         // and the keys are spread over the configured regions
         assertTrue(edgeStore.regionsUsed("Payment") > 50, "targets should cover many regions");
     }

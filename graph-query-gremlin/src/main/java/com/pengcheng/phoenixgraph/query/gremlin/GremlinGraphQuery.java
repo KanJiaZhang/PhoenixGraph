@@ -7,6 +7,7 @@ import com.pengcheng.phoenixgraph.query.result.Subgraph;
 import com.pengcheng.phoenixgraph.query.traversal.NeighborVertexResolver;
 import com.pengcheng.phoenixgraph.query.storage.GraphQuery;
 import com.pengcheng.phoenixgraph.schema.geo.GeoSearch;
+import com.pengcheng.phoenixgraph.storage.TimeRange;
 import com.pengcheng.phoenixgraph.query.storage.VertexQueryResult;
 
 import java.util.ArrayList;

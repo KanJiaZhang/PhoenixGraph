@@ -20,6 +20,7 @@ import com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbStoredEdge;
 import com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbStoredVertex;
 import com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbVertexTable;
 import com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbVertexUpsert;
+import com.pengcheng.phoenixgraph.storage.TimeRange;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -315,12 +316,12 @@ public final class RocksDbEdgeStore implements AutoCloseable {
 
     /**
      * Reads the edges of one edge class attached to a vertex, in one direction and inside a
-     * time window. {@link RocksDbTimeRange#ALL} reads every edge.
+     * time window. {@link TimeRange#ALL} reads every edge.
      */
     public List<RocksDbStoredEdge> readEdges(String edgeName, Object vertexId, byte direction,
-                                             RocksDbTimeRange range, List<Integer> propertyIds) {
+                                             TimeRange range, List<Integer> propertyIds) {
         EdgeSchema edgeSchema = requireEdge(edgeName);
-        RocksDbTimeRange window = range == null ? RocksDbTimeRange.ALL : range;
+        TimeRange window = range == null ? TimeRange.ALL : range;
         Set<Integer> requested = propertyIds == null || propertyIds.isEmpty()
                 ? Set.of() : Set.copyOf(propertyIds);
         String family = familyOf(edgeSchema);
@@ -340,7 +341,7 @@ public final class RocksDbEdgeStore implements AutoCloseable {
 
     /** The range scan behind {@link #readEdges}: one ordered iterator over the key prefix. */
     private List<RocksDbStoredEdge> scan(String family, Object vertexId, byte direction,
-                                         RocksDbTimeRange window, Set<Integer> requested) {
+                                         TimeRange window, Set<Integer> requested) {
         byte[] prefix = RocksDbKeys.edgePrefix(vertexId, direction);
         byte[] from = window.fromTime() == Long.MIN_VALUE ? prefix
                 : RocksDbKeys.edgeKeyFrom(prefix, window.fromTime());
@@ -366,7 +367,7 @@ public final class RocksDbEdgeStore implements AutoCloseable {
      * window. Each vertex is an ordered prefix scan; results are cached, so a traversal that
      * visits the same vertex twice reads the table once.
      */
-    public List<List<RocksDbStoredEdge>> readEdgesBatch(String edgeName, byte direction, RocksDbTimeRange range,
+    public List<List<RocksDbStoredEdge>> readEdgesBatch(String edgeName, byte direction, TimeRange range,
                                                         List<Object> vertexIds, List<Integer> propertyIds) {
         Objects.requireNonNull(vertexIds, "vertexIds");
         if (vertexIds.isEmpty()) {
@@ -453,7 +454,7 @@ public final class RocksDbEdgeStore implements AutoCloseable {
      * and the projection. The projection belongs in the key because the cached value is already
      * projected - a list read for one property must not answer a read that asks for another.
      */
-    private static String cacheKey(String family, Object vertexId, byte direction, RocksDbTimeRange range,
+    private static String cacheKey(String family, Object vertexId, byte direction, TimeRange range,
                                    Set<Integer> requested) {
         List<Integer> properties = new ArrayList<>(requested);
         Collections.sort(properties);

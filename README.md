@@ -36,9 +36,10 @@ backend:
 | --- | --- | --- |
 | `Aerospike` (**default**) | one record per vertex holding its properties and its denormalised edges (one bin per edge class and direction) | enforced with per-property CAS on `lastUpdatedTime` |
 | `RocksDB-Inline` | one table per vertex type; one table per edge type holding, per vertex, every edge of that class and direction (Aerospike bin names kept) | enforced: the update reads the edge list, merges by `lastUpdatedTime` and evicts the oldest beyond `maxOutDegree`/`maxInDegree`/`maxDegree` |
+| `Aerospike-Edge` | Aerospike, plus an aggregated edge table per edge class (`Edge_Out` / `Edge_In`): a vertex's edges are chunked by creation time (2000 per record) and folded into further levels until one root remains | none: written by a bulk import, read by a creation-time window (`createdBetween(from, to)`) |
 | `RocksDB-Edge` | one table per vertex type; one edge table per edge class keyed by `hash(vertexId):direction:vertexId:createdTime:edgeId` | none: a hub may have any degree, and a creation-time window is a range scan |
 
-Both RocksDB schemes implement the same `GraphQuery` port as Aerospike, so Gremlin and Cypher
+All four schemes implement the same `GraphQuery` port, so Gremlin and Cypher
 run unchanged on all three, with the same batched/parallel reads, on-demand property projection
 and caching.
 
@@ -66,6 +67,19 @@ g.V('1','Merchant').circle('{"lat":31.2304,"lon":121.4737}', 500).has('category'
 
 The radius is in metres and a step argument, the results come back nearest first with the distance
 attached (`distanceMeters`), and they combine with the other steps (`has`, `limit`, `elementMap`, `count`).
+
+### Reading a hub by time window
+
+A vertex with hundreds of millions of edges cannot live in one record, so `Aerospike-Edge` keeps its
+edges in the aggregated tables and a query has to say which window it wants:
+
+```groovy
+g.V('9000001','Account').createdBetween('2025-06-01','2025-06-02').inE('Payment').limit(500)
+```
+
+The window walks the levels (root -> children whose span overlaps -> level 0 chunks), the answers are
+merged with the edges still inline in the vertex record (an update always leaves the newest copy
+there), and a query without a window is refused with a message that says to add `createdBetween`.
 
 ### Two query languages
 

@@ -73,6 +73,22 @@ class GraphStorageSchemaTest {
     }
 
     @Test
+    void theAerospikeEdgeVariantSurvivesAJsonRoundTrip() {
+        GraphSchema schema = new GraphSchema(1, "as-edge").vertex(account())
+                .storage(GraphStorageSchema.aerospikeEdge());
+        String json = new SchemaJsonCodec().toJson(schema);
+        assertTrue(json.contains("\"type\" : \"Aerospike-Edge\""), json);
+
+        GraphSchema parsed = new SchemaJsonCodec().fromJson(json);
+        assertEquals(GraphStorageType.AEROSPIKE_EDGE, parsed.storage().type());
+        assertTrue(parsed.storage().isAerospike());
+        assertTrue(parsed.storage().isAerospikeEdge());
+        assertFalse(parsed.storage().isRocksDb());
+        // it needs no path: the aggregated tables live in the Aerospike set of the deployment
+        assertEquals(null, parsed.storage().path());
+    }
+
+    @Test
     void rocksDbEdgeBlockDefaultsItsSettings() {
         String json = """
                 {
@@ -145,7 +161,8 @@ class GraphStorageSchemaTest {
         assertEquals("RocksDB-Inline", GraphStorageType.ROCKSDB_INLINE.configName());
         assertTrue(GraphStorageType.ROCKSDB_EDGE.isRocksDb());
         assertFalse(GraphStorageType.ROCKSDB_EDGE.isAerospike());
-        assertEquals(List.of(GraphStorageType.AEROSPIKE, GraphStorageType.ROCKSDB_INLINE,
-                GraphStorageType.ROCKSDB_EDGE), List.of(GraphStorageType.values()));
+        assertEquals(List.of(GraphStorageType.AEROSPIKE, GraphStorageType.AEROSPIKE_EDGE,
+                GraphStorageType.ROCKSDB_INLINE, GraphStorageType.ROCKSDB_EDGE),
+                List.of(GraphStorageType.values()));
     }
 }

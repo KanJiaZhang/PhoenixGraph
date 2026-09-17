@@ -1368,3 +1368,113 @@ sameRow true, pickerOnTheRight true, pickerWidth 468, pickerIsOneThirdOfRow 0.33
 - 用 headless Edge + DevTools 协议**真实驱动页面**（点 `#modeToggle`/`#examplesBtn`/`#queryBtn`、
   切图与切语言）后读取 DOM 状态，得到上表结果 ✓；
 - Java 侧本轮未改动（仅 `graph-web/frontend` + 打包静态副本 ✓），`graph-web` 模块测试复跑通过 ✓。
+
+---
+
+## 25. Aerospike-Edge：大点的聚合边表（Edge_Out / Edge_In，三级索引 + 离线批量导入）
+
+### 25.1 动机与声明方式
+
+原来的 Aerospike 方案把边内联在顶点记录里，受**出入度上限**和记录大小限制：一个每年收款 1 亿笔的商户根本放不下 ✗。
+新增存储类型 **`Aerospike-Edge`**（仍是 Aerospike ✓，只是边另有归宿 ✓），schema 里声明即可：
+
+```json
+"storage": { "type": "Aerospike-Edge" }
+```
+
+（`Aerospike` / `RocksDB-Inline` / `RocksDB-Edge` 行为完全不变 ✓ —— 要求 1 ✓。缺陷修复：codec 以前把任何 Aerospike 变体都退化成默认值 ✗，现在 `Aerospike-Edge` 会正确往返 ✓ 有测试 ✓。）
+
+### 25.2 表结构与键（要求 2、3、4、5）
+
+每种边两张表（无向/双向只一张 ✓），表名 `<vertexSet>_edge_out_<edgeSchemaId>` / `_edge_in_<edgeSchemaId>` / `_edge_<edgeSchemaId>` ✓，
+再加一张大点标记表 `<vertexSet>_edgeheads` ✓。
+
+键：**`点id|最小createdTime|最大createdTime|层级`**（`0` 最低一级 ✓）；值（CDT）：
+
+| 层级 | 内容 |
+|---|---|
+| 0 | **最多 2000 条边**：`edgeId → [lastUpdatedTime, createdTime, otherVertexId, {propId:[值,ct,ut]}]`（与内联 bin 完全同构 ✓，便于 merge ✓） |
+| 1 | 指向下一级的**区间列表** `[[min,max], ...]`（≤2000 个 ✓）—— 子键可由区间**推出来**，值里不需要存键 ✓ |
+| 2 | 同上，把第 1 级的键再索引一遍 ✓ |
+| … | 每层折叠到只剩 1 个 root 为止（`build()` 循环 ✓；2000/层 → 4,000,001 条边才需要第 3 级 ✓ 有测试 ✓） |
+
+每层的 `min/max` = 其所有子区间的最小/最大值 ✓，所以 root 的区间覆盖该点全部导入的边 ✓；
+大点标记记录 `{v, l=层数, mn, mx, n=边数}` ✓（查询与"是否需要窗口"的依据 ✓，进程内缓存 1 分钟 ✓）。
+
+### 25.3 离线批量导入（要求 3、7）
+
+`AerospikeEdgeBulkImporter`：调用方给一个点的边（任意顺序 ✓）→ 按 `createdTime` 排序切 2000 一条 ✓ →
+逐层折叠 ✓ → **生成所有 key/value 后在同一个 batch 里写**（每 500 条一批 ✓，绝不一条边一条边更新 ✓）→
+写大点标记 ✓。有向边写两次（source 的 `Edge_Out` + destination 的 `Edge_In` ✓），无向边写两端同一张表 ✓。
+
+实测（真实 Aerospike，`payment_as_edge_v1`）：
+
+```
+loaded payment-graph-as-edge into payment_as_edge_v1: 51 vertices, 300000 hub payments,
+       2 levels, 351 chunk records, 5 inline updates (4143 ms)
+```
+
+（30 万条 → 150 个 level-0 chunk + 1 个 level-1 root（+50 个付款方的 OUT 表共 200 个 ✓）= 351 条记录 ✓，4 秒 ✓。）
+
+### 25.4 查询：窗口 → 逐级下降 → 与内联合并（要求 6）
+
+新增 Gremlin step **`createdBetween(from, to)`**（epoch 毫秒或 UTC 日期，`*` 表示开区间 ✓），
+它给后续边读设定窗口（`GremlinContext.edgeTimeRange` ✓），端口层新增 `readEdgesWithin` / `readEdgesBatchWithin` /
+`readAllEdgesBatchWithin`（默认实现 = 忽略窗口，原有后端零改动 ✓；RocksDB-Edge 也顺带接上了 ✓）。
+
+大点查询流程：
+
+1. 读大点标记 → **没有窗口就报错并给出提示** ✓（要求 6 ✓）：
+   `Vertex '9000001' has 300000 edges of class Payment in the aggregated Edge_In table; ... add createdBetween('2025-01-01','2025-02-01')`
+2. 从 root 开始按层下降：只进入**区间与窗口相交**的子块（`selectChildren` ✓，按时间排序 ✓）；
+3. 到 level 0 后按 `createdTime ∈ [from,to]` 过滤（2000 条一条记录 ✓），结果按 createdTime 升序 ✓（`limit` 即取最早的那批 ✓）；
+4. **与顶点记录里的内联边 merge**（按 `edgeId` 去重，`lastUpdatedTime` 新者胜 ✓）—— 老边被最新修改后存在点里的那份会覆盖聚合表里的旧版 ✓（要求 6 ✓）；
+   内联边同样按窗口过滤 ✓。
+5. 单次窗口读取上限 50 万条兜底 ✓；无窗口时非大点走原来的内联路径 ✓（行为不变 ✓）。
+
+### 25.5 demo 与实测（要求 7）
+
+`payment-graph-as-edge`（schema id 31 ✓，`vertex-set: payment_as_edge_v1` ✓）：
+hub `9000001` 一年 **30 万笔**收款（50 个付款账户 ✓，每天约 822 笔 ✓），全部由批量导入写进聚合表 ✓；
+另外把其中 5 笔**再用内联写路径更新**（`REFUNDED` ✓）用来演示 merge ✓。
+
+**demo 查询**（窗口 1 天，取 500 条 ✓）：
+
+```
+g.V('9000001','Account').createdBetween('2025-06-01','2025-06-02').inE('Payment').limit(500)
+```
+
+线上实测（8081 / 8080）：
+
+| 查询 | 结果 |
+|---|---|
+| 上面的 demo（1 天窗口 + limit 500） | **500 条** ✓（该窗口共 1644 条） |
+| `createdBetween('2025-03-01','2025-03-01').inE('Payment').count()` | `822`（正好一天的量 ✓） |
+| `createdBetween('2025-11-01','2025-11-07').inE('Payment').limit(500)` | `500`（窗口内 5753 条 ✓） |
+| 同窗口 `elementMap()` | `{id:hub_pay_124110, label:Payment, status:SUCCESS, type:transfer, amount:111, currency:USD}` ✓ |
+| `inE('Payment').count()`（无窗口） | 明确报错并提示加 `createdBetween(...)` ✓ |
+| `g.V('1000','Account').out('AccountToIP')`（未导入的边） | 走内联路径 ✓ |
+
+UI：图下拉出现 `payment-graph-as-edge · Aerospike-Edge` ✓，示例菜单内置 3 条（一天 500 笔 / 某周计数 / 无窗口报错演示）✓。
+
+### 25.6 测试
+
+| 测试 | 覆盖 |
+|---|---|
+| `AerospikeEdgeChunksTest`（6，纯逻辑，无需服务器） | 表名/键格式与解析、大点键、**批量导入的逐层折叠（9 条边/每块 2 条 → 5+3+2+1 层，root 覆盖全span）**、`levelsFor`（2000/层 → 30 万=2 层、>400 万=3 层）、窗口选择子块（边界/空/有序） |
+| `AerospikeEdgeIntegrationTest`（8，真实 Aerospike，chunk=64 → **三级**） | 导入后大点标记与层数、窗口只返回窗口内的边且时间有序、无窗口报错并带 `createdBetween` 提示、**内联更新覆盖导入版且不重复**、未导入的边走内联、Gremlin 窗口查询与 limit、序列化与内联同构、表名规则 |
+| `AerospikeEdgeLiveLoadTest`（1，`-Daerospike.asEdge.set`） | 真实装载 30 万条 demo 并跑文档里的 demo 查询 |
+| `GraphStorageSchemaTest`（+1） | `Aerospike-Edge` 的 schema 往返与 `isAerospike/isRocksDb` 语义 |
+
+### 25.7 TODO（要求 8：近线更新，保证内联与批量导入之间没有 gap）
+
+当前读写语义已经**正确**（读时 merge 两条来源 ✓、新写/改写的边走内联并覆盖聚合版 ✓），但仍留三处待改进，
+记录为后续工作：
+
+1. **删除**：边被删除时聚合表里的副本仍在（无墓碑 ✗）→ 计划：写内联墓碑（`deleted=true` + lastUpdatedTime ✓）并在 merge 时按墓碑过滤，
+   或由周期任务重写受影响的 chunk ✓。
+2. **窗口之外的新边**：root 的 `min/max` 只在导入时计算 ✓；之后若在窗口外新增大量边，
+   要么它们只在内联（受度数上限约束 ✓），要么需要**增量重聚合**受影响的层（把新 chunk 插入父层并刷新 span ✓）。
+3. **重聚合/压缩任务**：把内联中已经稳定的边折叠进 level 0 chunk、刷新上层 span、清理墓碑 ✓（近线任务，允许分钟级延迟 ✓）。
+
+因此，"内联 vs 批量导入" 目前是**读时合并（无 gap 的正确性）** ✓，写入侧的自动化补齐列入上述 TODO ✓。

@@ -1,0 +1,270 @@
+package com.pengcheng.phoenixgraph.query.aerospike;
+
+import com.pengcheng.phoenixgraph.query.QueryException;
+import com.pengcheng.phoenixgraph.query.storage.EdgeQueryResult;
+import com.pengcheng.phoenixgraph.query.storage.EdgeSide;
+import com.pengcheng.phoenixgraph.query.storage.GraphQuery;
+import com.pengcheng.phoenixgraph.query.storage.VertexQueryResult;
+import com.pengcheng.phoenixgraph.schema.EdgeDirection;
+import com.pengcheng.phoenixgraph.schema.EdgePropertySchema;
+import com.pengcheng.phoenixgraph.schema.EdgeSchema;
+import com.pengcheng.phoenixgraph.schema.GraphSchema;
+import com.pengcheng.phoenixgraph.storage.TimeRange;
+import com.pengcheng.phoenixgraph.storage.aerospike.AerospikeEdgeChunkStore;
+import com.pengcheng.phoenixgraph.storage.aerospike.AerospikeEdgeStore;
+import com.pengcheng.phoenixgraph.storage.aerospike.EdgePropertyValue;
+import com.pengcheng.phoenixgraph.storage.aerospike.StoredEdgeValue;
+
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+
+/**
+ * {@link GraphQuery} over an Aerospike graph whose big vertices live in the aggregated edge
+ * tables ({@code Edge_Out} / {@code Edge_In}) while everything else stays in the vertex record.
+ *
+ * <p>A read of a vertex that has a hub marker needs a creation-time window (there may be a
+ * hundred million edges behind it, so "all of them" is not a question storage can answer); a
+ * read of a vertex without one is the plain inline read. Either way the answer is the <b>merge</b>
+ * of the two places: an edge written by the bulk import lives in the tables, but if it was updated
+ * later that update went through the ordinary write path into the vertex record, and the newer of
+ * the two copies wins (compared by {@code lastUpdatedTime}, which an update always lifts - the
+ * same rule the inline store applies per bin).
+ */
+public class AerospikeEdgeGraphQuery implements GraphQuery {
+
+    private final AerospikeGraphQuery inline;
+    private final AerospikeEdgeChunkStore chunks;
+    private final GraphSchema schema;
+
+    public AerospikeEdgeGraphQuery(AerospikeGraphQuery inline, AerospikeEdgeChunkStore chunks,
+                                   GraphSchema schema) {
+        this.inline = Objects.requireNonNull(inline, "inline");
+        this.chunks = Objects.requireNonNull(chunks, "chunks");
+        this.schema = Objects.requireNonNull(schema, "schema");
+    }
+
+    /** The inline read path (vertices, and edges of vertices without an aggregated table). */
+    public AerospikeGraphQuery inline() {
+        return inline;
+    }
+
+    /** The aggregated edge tables. */
+    public AerospikeEdgeChunkStore chunks() {
+        return chunks;
+    }
+
+    // --- vertices: the aggregated tables do not change them ---
+
+    @Override
+    public VertexQueryResult readVertex(Object vertexId, String vertexName, List<String> propertyNames) {
+        return inline.readVertex(vertexId, vertexName, propertyNames);
+    }
+
+    @Override
+    public List<VertexQueryResult> readVertices(String vertexName, List<Object> vertexIds,
+                                                List<String> propertyNames) {
+        return inline.readVertices(vertexName, vertexIds, propertyNames);
+    }
+
+    // --- edges ---
+
+    @Override
+    public boolean supportsEdgeTimeRange() {
+        return true;
+    }
+
+    @Override
+    public List<EdgeQueryResult> readEdges(Object vertexId, String vertexName, String edgeName,
+                                           EdgeSide direction, List<String> propertyNames) {
+        EdgeSchema edgeSchema = requireEdge(edgeName);
+        for (EdgeSide side : sides(edgeSchema, direction)) {
+            if (isHub(vertexId, edgeSchema, side)) {
+                throw new QueryException(hubHint(vertexId, edgeSchema, side));
+            }
+        }
+        return inline.readEdges(vertexId, vertexName, edgeName, direction, propertyNames);
+    }
+
+    @Override
+    public List<EdgeQueryResult> readEdgesWithin(Object vertexId, String vertexName, String edgeName,
+                                                 EdgeSide direction, TimeRange range,
+                                                 List<String> propertyNames) {
+        Objects.requireNonNull(vertexId, "vertexId");
+        Objects.requireNonNull(direction, "direction");
+        EdgeSchema edgeSchema = requireEdge(edgeName);
+        Map<Integer, String> requested = requestedProperties(edgeSchema, propertyNames);
+        TimeRange window = range == null ? TimeRange.ALL : range;
+
+        Map<String, EdgeQueryResult> merged = new LinkedHashMap<>();
+        for (EdgeSide side : sides(edgeSchema, direction)) {
+            // 1. the aggregated tables: only the chunks whose span overlaps the window
+            for (StoredEdgeValue edge : chunks.readWindow(edgeSchema, directionCode(edgeSchema, side),
+                    vertexId, window)) {
+                merge(merged, toResult(edgeName, edge, side, requested));
+            }
+            // 2. the vertex record: the few edges that live (or were updated) there
+            for (EdgeQueryResult edge : inline.readEdges(vertexId, vertexName, edgeName, side,
+                    List.copyOf(requested.values()))) {
+                merge(merged, edge);
+            }
+        }
+
+        List<EdgeQueryResult> results = new ArrayList<>(merged.size());
+        for (EdgeQueryResult edge : merged.values()) {
+            if (window.isUnbounded() || window.contains(edge.createdTime())) {
+                results.add(edge);
+            }
+        }
+        // a window read answers in creation-time order
+        results.sort(Comparator.comparingLong(EdgeQueryResult::createdTime)
+                .thenComparing(EdgeQueryResult::edgeId));
+        return results;
+    }
+
+    /** Keeps the newer of two copies of the same edge (an update always lifts lastUpdatedTime). */
+    private static void merge(Map<String, EdgeQueryResult> merged, EdgeQueryResult edge) {
+        EdgeQueryResult existing = merged.get(edge.edgeId());
+        if (existing == null || edge.lastUpdatedTime() >= existing.lastUpdatedTime()) {
+            merged.put(edge.edgeId(), edge);
+        }
+    }
+
+    @Override
+    public List<List<EdgeQueryResult>> readEdgesBatch(String edgeName, EdgeSide direction,
+                                                      List<Object> vertexIds, List<String> propertyNames) {
+        Objects.requireNonNull(vertexIds, "vertexIds");
+        if (vertexIds.isEmpty()) {
+            return List.of();
+        }
+        List<List<EdgeQueryResult>> out = new ArrayList<>(vertexIds.size());
+        for (Object vertexId : vertexIds) {
+            out.add(readEdgesWithin(vertexId, null, edgeName, direction, TimeRange.ALL, propertyNames));
+        }
+        return out;
+    }
+
+    /** Batched form of {@link #readEdgesWithin}. */
+    @Override
+    public List<List<EdgeQueryResult>> readEdgesBatchWithin(String edgeName, EdgeSide direction,
+                                                            TimeRange range, List<Object> vertexIds,
+                                                            List<String> propertyNames) {
+        Objects.requireNonNull(vertexIds, "vertexIds");
+        if (vertexIds.isEmpty()) {
+            return List.of();
+        }
+        List<List<EdgeQueryResult>> out = new ArrayList<>(vertexIds.size());
+        for (Object vertexId : vertexIds) {
+            out.add(readEdgesWithin(vertexId, null, edgeName, direction, range, propertyNames));
+        }
+        return out;
+    }
+
+    @Override
+    public List<List<EdgeQueryResult>> readAllEdgesBatch(List<Object> vertexIds, EdgeSide direction,
+                                                         List<String> propertyNames) {
+        return readAllEdgesBatchWithin(vertexIds, direction, TimeRange.ALL, propertyNames);
+    }
+
+    /** Batched form of {@link #readEdgesWithin} over every edge class. */
+    @Override
+    public List<List<EdgeQueryResult>> readAllEdgesBatchWithin(List<Object> vertexIds, EdgeSide direction,
+                                                               TimeRange range, List<String> propertyNames) {
+        Objects.requireNonNull(vertexIds, "vertexIds");
+        if (vertexIds.isEmpty()) {
+            return List.of();
+        }
+        List<List<EdgeQueryResult>> perVertex = new ArrayList<>(vertexIds.size());
+        for (int i = 0; i < vertexIds.size(); i++) {
+            perVertex.add(new ArrayList<>());
+        }
+        for (EdgeSchema edgeSchema : schema.edgeSchemas()) {
+            List<List<EdgeQueryResult>> byEdge =
+                    readEdgesBatchWithin(edgeSchema.name(), direction, range, vertexIds, propertyNames);
+            for (int i = 0; i < vertexIds.size(); i++) {
+                perVertex.get(i).addAll(byEdge.get(i));
+            }
+        }
+        return perVertex;
+    }
+
+    /** Whether a vertex has edges of this class and direction in the aggregated tables. */
+    public boolean isHub(Object vertexId, EdgeSchema edgeSchema, EdgeSide side) {
+        AerospikeEdgeChunkStore.HubInfo hub =
+                chunks.hub(edgeSchema, directionCode(edgeSchema, side), vertexId);
+        return hub != null && !hub.isEmpty();
+    }
+
+    private String hubHint(Object vertexId, EdgeSchema edgeSchema, EdgeSide side) {
+        AerospikeEdgeChunkStore.HubInfo hub =
+                chunks.hub(edgeSchema, directionCode(edgeSchema, side), vertexId);
+        long count = hub == null ? 0 : hub.edgeCount();
+        return "Vertex '" + vertexId + "' has " + count + " edges of class " + edgeSchema.name()
+                + " in the aggregated " + (side == EdgeSide.IN ? "Edge_In" : "Edge_Out")
+                + " table; reading them needs a creation-time window, for example"
+                + " createdBetween('2025-01-01', '2025-02-01') before the edge step";
+    }
+
+    private EdgeSchema requireEdge(String edgeName) {
+        EdgeSchema edgeSchema = schema.edgeSchema(edgeName);
+        if (edgeSchema == null) {
+            throw new QueryException("Unknown edge schema: " + edgeName);
+        }
+        return edgeSchema;
+    }
+
+    /** The sides a request reads: a directed edge reads one table per side. */
+    static List<EdgeSide> sides(EdgeSchema edgeSchema, EdgeSide requested) {
+        if (edgeSchema.direction() != EdgeDirection.DIRECTED) {
+            return List.of(EdgeSide.BOTH);
+        }
+        return switch (requested) {
+            case OUT -> List.of(EdgeSide.OUT);
+            case IN -> List.of(EdgeSide.IN);
+            case BOTH -> List.of(EdgeSide.OUT, EdgeSide.IN);
+        };
+    }
+
+    private static int directionCode(EdgeSchema edgeSchema, EdgeSide side) {
+        if (edgeSchema.direction() != EdgeDirection.DIRECTED) {
+            return AerospikeEdgeStore.EDGE_DIR_BOTH;
+        }
+        return side == EdgeSide.IN ? AerospikeEdgeStore.EDGE_DIR_IN : AerospikeEdgeStore.EDGE_DIR_OUT;
+    }
+
+    private static Map<Integer, String> requestedProperties(EdgeSchema edgeSchema, List<String> propertyNames) {
+        List<String> names = propertyNames == null ? List.of() : propertyNames;
+        Map<Integer, String> requested = new LinkedHashMap<>();
+        if (names.isEmpty()) {
+            for (EdgePropertySchema property : edgeSchema.properties()) {
+                requested.put(property.id(), property.name());
+            }
+            return requested;
+        }
+        for (String name : names) {
+            EdgePropertySchema property = edgeSchema.property(name);
+            if (property == null) {
+                throw new QueryException("Unknown property '" + name + "' in edge schema '"
+                        + edgeSchema.name() + "'");
+            }
+            requested.put(property.id(), property.name());
+        }
+        return requested;
+    }
+
+    private static EdgeQueryResult toResult(String edgeName, StoredEdgeValue edge, EdgeSide side,
+                                            Map<Integer, String> requested) {
+        Map<String, Object> properties = new LinkedHashMap<>();
+        for (Map.Entry<Integer, String> entry : requested.entrySet()) {
+            EdgePropertyValue value = edge.properties().get(entry.getKey());
+            if (value != null) {
+                properties.put(entry.getValue(), value.value());
+            }
+        }
+        return new EdgeQueryResult(edgeName, edge.edgeId(), side, edge.otherVertexId(), properties,
+                edge.createdTime(), edge.lastUpdatedTime());
+    }
+}

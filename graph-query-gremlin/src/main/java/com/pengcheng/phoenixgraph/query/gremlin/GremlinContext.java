@@ -3,6 +3,7 @@ package com.pengcheng.phoenixgraph.query.gremlin;
 import com.pengcheng.phoenixgraph.query.result.Subgraph;
 import com.pengcheng.phoenixgraph.query.traversal.NeighborVertexResolver;
 import com.pengcheng.phoenixgraph.query.storage.EdgeQueryResult;
+import com.pengcheng.phoenixgraph.storage.TimeRange;
 import com.pengcheng.phoenixgraph.query.storage.EdgeSide;
 import com.pengcheng.phoenixgraph.query.storage.GraphQuery;
 import com.pengcheng.phoenixgraph.query.storage.VertexQueryResult;
@@ -255,6 +256,26 @@ public final class GremlinContext {
     }
 
     /** Records a vertex touched by the traversal (deduplicated by label + id). */
+    /** The creation-time window the following edge reads use ({@link TimeRange#ALL} = none). */
+    private TimeRange edgeTimeRange = TimeRange.ALL;
+
+    /** Sets the window a {@code createdBetween} step declared. */
+    public void edgeTimeRange(TimeRange range) {
+        this.edgeTimeRange = range == null ? TimeRange.ALL : range;
+        // a different window reads different edges: the per-query caches must not answer for it
+        edgeCache.clear();
+    }
+
+    /** The window the following edge reads use. */
+    public TimeRange edgeTimeRange() {
+        return edgeTimeRange;
+    }
+
+    /** Whether a window is in force (a backend with aggregated tables may need one). */
+    public boolean hasEdgeTimeRange() {
+        return !edgeTimeRange.isUnbounded();
+    }
+
     public void recordVertex(String label, Object id) {
         if (!collectSubgraph) {
             return;
@@ -479,7 +500,9 @@ public final class GremlinContext {
             return List.of();
         }
         List<List<List<EdgeQueryResult>>> results = readBatches(batches(vertexIds),
-                batch -> graphQuery.readAllEdgesBatch(batch, direction, propertyNames));
+                batch -> hasEdgeTimeRange()
+                        ? graphQuery.readAllEdgesBatchWithin(batch, direction, edgeTimeRange, propertyNames)
+                        : graphQuery.readAllEdgesBatch(batch, direction, propertyNames));
         List<List<EdgeQueryResult>> all = new ArrayList<>(vertexIds.size());
         for (List<List<EdgeQueryResult>> part : results) {
             all.addAll(part);
@@ -491,7 +514,10 @@ public final class GremlinContext {
     private List<List<EdgeQueryResult>> readEdgesBatched(String edgeName, EdgeSide direction,
                                                          List<Object> vertexIds, List<String> propertyNames) {
         List<List<List<EdgeQueryResult>>> results = readBatches(batches(vertexIds),
-                batch -> graphQuery.readEdgesBatch(edgeName, direction, batch, propertyNames));
+                batch -> hasEdgeTimeRange()
+                        ? graphQuery.readEdgesBatchWithin(edgeName, direction, edgeTimeRange, batch,
+                                propertyNames)
+                        : graphQuery.readEdgesBatch(edgeName, direction, batch, propertyNames));
         List<List<EdgeQueryResult>> all = new ArrayList<>(vertexIds.size());
         for (List<List<EdgeQueryResult>> part : results) {
             all.addAll(part);
@@ -509,7 +535,10 @@ public final class GremlinContext {
                 return cached;
             }
         }
-        List<EdgeQueryResult> result = graphQuery.readEdges(vertexId, vertexName, edgeName, direction, propertyNames);
+        List<EdgeQueryResult> result = hasEdgeTimeRange()
+                ? graphQuery.readEdgesWithin(vertexId, vertexName, edgeName, direction, edgeTimeRange,
+                        propertyNames)
+                : graphQuery.readEdges(vertexId, vertexName, edgeName, direction, propertyNames);
         if (cacheEnabled) {
             edgeCache.put(key, result);
         }

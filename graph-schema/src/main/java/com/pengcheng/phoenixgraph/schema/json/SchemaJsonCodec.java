@@ -82,7 +82,8 @@ public class SchemaJsonCodec {
 
     /** The storage block, or {@code null} for the Aerospike default (keeps old JSON unchanged). */
     private StorageSchemaDto toStorageDto(GraphStorageSchema storage) {
-        if (storage == null || storage.isAerospike()) {
+        // only the plain Aerospike default is left out: the Edge variant must be declared
+        if (storage == null || storage.type() == GraphStorageType.AEROSPIKE) {
             return null;
         }
         return new StorageSchemaDto(storage.type().configName(), storage.path(), storage.regionCount(),
@@ -96,8 +97,11 @@ public class SchemaJsonCodec {
             return GraphStorageSchema.AEROSPIKE;
         }
         GraphStorageType type = GraphStorageType.fromConfigName(storage.type());
-        if (type.isAerospike()) {
+        if (type == GraphStorageType.AEROSPIKE) {
             return GraphStorageSchema.AEROSPIKE;
+        }
+        if (type == GraphStorageType.AEROSPIKE_EDGE) {
+            return GraphStorageSchema.aerospikeEdge();
         }
         return GraphStorageSchema.rocksDb(type, storage.path(),
                 storage.regionCount() == null ? GraphStorageSchema.DEFAULT_REGION_COUNT : storage.regionCount(),

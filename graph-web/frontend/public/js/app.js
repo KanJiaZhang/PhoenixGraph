@@ -316,6 +316,13 @@
       ],
     },
     gremlin: {
+      // a hub with 300k payments lives in the aggregated Aerospike Edge_Out/Edge_In tables:
+      // such a vertex can only be read inside a creation-time window
+      'payment-graph-as-edge': [
+        ['大点 · 一天窗口内的前 500 笔支付（Aerospike-Edge）', "g.V('9000001','Account').createdBetween('2025-06-01','2025-06-02').inE('Payment').limit(500)"],
+        ['大点 · 某周窗口的笔数', "g.V('9000001','Account').createdBetween('2025-11-01','2025-11-07').inE('Payment').count()"],
+        ['大点 · 不限时间会被提示加窗口', "g.V('9000001','Account').inE('Payment').count()"],
+      ],
       'geo-merchants-rocksdb-inline': [
         ['GEO · 1km 内最近的 10 家商户', "g.V('1','Merchant').circle('{\"lat\":31.2304,\"lon\":121.4737,\"radius\":1000}').limit(10)"],
         ['GEO · 500m 内的咖啡店 + 距离(米)', "g.V('1','Merchant').circle('{\"lat\":31.2304,\"lon\":121.4737}', 500).has('category','coffee').values('name','distanceMeters')"],

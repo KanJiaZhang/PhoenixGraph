@@ -34,6 +34,11 @@ phoenixgraph:
         vertex-set: http_demo_v1
       - schema: geo-merchants-rocksdb-edge
         vertex-set: http_demo_v1
+      # the payment graph with its big vertices in the aggregated Edge_Out / Edge_In tables
+      # (loaded by AerospikeEdgeDemoLoader); a query on a hub needs a time window:
+      # g.V('9000001','Account').createdBetween('2025-06-01','2025-06-02').inE('Payment').limit(500)
+      - schema: payment-graph-as-edge
+        vertex-set: payment_as_edge_v1
       - schema: kg-entity-graph
         vertex-set: kg_nell995_v2
       # HNSW vector index of the SIFT small dataset (10,000 x 128); its schema
