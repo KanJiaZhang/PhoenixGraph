@@ -452,9 +452,14 @@ public class AerospikeEdgeStore implements AdjacentEdgeStore {
                     upsertBatchInto(vertexId, edgeSchema, entry.getKey(), entry.getValue()));
         }
 
-        // Write each edge's other side individually.
+        // Write each edge's other side individually. An edge with a nullable target
+        // (isNull on its target endpoint) has no far side: only the source bin is written.
         List<WriteOutcome> outcomes = new ArrayList<>(plans.size());
         for (EdgeWritePlan plan : plans) {
+            if (plan.otherEndpoint() == null) {
+                outcomes.add(sharedOutcomes.get(plan.sharedDir()));
+                continue;
+            }
             List<Object> otherSideValue = serializeEdgeValue(
                     edgeLastUpdatedTime(plan.edge().lastUpdatedTime(), plan.edge().properties()),
                     plan.edge().createdTime(), vertexId, plan.edge().properties());

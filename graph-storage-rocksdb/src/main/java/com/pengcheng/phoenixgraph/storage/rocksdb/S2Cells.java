@@ -31,8 +31,8 @@ public final class S2Cells {
     /** The level an index uses when the schema does not say: cells of roughly 200 m. */
     public static final int DEFAULT_INDEX_LEVEL = 16;
 
-    /** Average edge length of a level-16 cell, in kilometres (S2 is not uniform, this is the mean). */
-    private static final double LEVEL_16_EDGE_KM = 0.2d;
+    /** Average edge length of a level-16 cell, in metres (S2 is not uniform, this is the mean). */
+    private static final double LEVEL_16_EDGE_METERS = 200d;
 
     private S2Cells() {
     }
@@ -52,11 +52,11 @@ public final class S2Cells {
      * The level to cover a circle of the given radius at: the cell edge is roughly the radius,
      * so the covering stays small while a cell is not much bigger than the search area.
      */
-    public static int levelForRadius(double radiusKm) {
-        if (!(radiusKm > 0)) {
+    public static int levelForRadius(double radiusMeters) {
+        if (!(radiusMeters > 0)) {
             return DEFAULT_INDEX_LEVEL;
         }
-        double steps = Math.log(radiusKm / LEVEL_16_EDGE_KM) / Math.log(2d);
+        double steps = Math.log(radiusMeters / LEVEL_16_EDGE_METERS) / Math.log(2d);
         return clampLevel((int) Math.round(DEFAULT_INDEX_LEVEL - steps));
     }
 
@@ -86,9 +86,9 @@ public final class S2Cells {
         GeoPoint center = search.center();
         int stored = indexLevel > 0 ? clampLevel(indexLevel) : DEFAULT_INDEX_LEVEL;
         int level = search.level() > 0 ? Math.min(clampLevel(search.level()), stored)
-                : Math.min(stored, levelForRadius(search.radiusKm()));
+                : Math.min(stored, levelForRadius(search.radiusMeters()));
         int budget = search.maxCells() > 0 ? search.maxCells() : maxCells;
-        S1Angle angle = S1Angle.radians(search.radiusKm() / GeoPoint.EARTH_RADIUS_KM);
+        S1Angle angle = S1Angle.radians(search.radiusMeters() / GeoPoint.EARTH_RADIUS_METERS);
         S2Cap cap = S2Cap.fromAxisAngle(
                 S2LatLng.fromDegrees(center.lat(), center.lon()).toPoint(), angle);
         S2RegionCoverer.Builder coverer = S2RegionCoverer.builder()
@@ -111,7 +111,7 @@ public final class S2Cells {
         if (search.level() > 0) {
             return clampLevel(search.level());
         }
-        return indexLevel > 0 ? clampLevel(indexLevel) : levelForRadius(search.radiusKm());
+        return indexLevel > 0 ? clampLevel(indexLevel) : levelForRadius(search.radiusMeters());
     }
 
     private static int clampLevel(int level) {

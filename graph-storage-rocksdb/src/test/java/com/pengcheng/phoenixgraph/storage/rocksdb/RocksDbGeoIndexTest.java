@@ -100,17 +100,17 @@ class RocksDbGeoIndexTest {
         // ~200 m cells at level 16: the index of this schema
         assertEquals(16, S2Cells.DEFAULT_INDEX_LEVEL);
         // a 1 km circle is covered at a coarser level (fewer, bigger cells)
-        assertTrue(S2Cells.levelForRadius(1d) < 16, "1 km should cover coarser than the index");
-        assertTrue(S2Cells.levelForRadius(0.1d) >= 15);
+        assertTrue(S2Cells.levelForRadius(1_000d) < 16, "1 km should cover coarser than the index");
+        assertTrue(S2Cells.levelForRadius(100d) >= 15);
         // the covering never goes finer than the index, otherwise the scan would miss rows
-        List<S2Cells.CellRange> coarse = S2Cells.coveringRanges(GeoSearch.of(CENTRE, 1d), 16, 32);
+        List<S2Cells.CellRange> coarse = S2Cells.coveringRanges(GeoSearch.of(CENTRE, 1_000d), 16, 32);
         assertTrue(coarse.size() <= 32, "the cell budget is respected: " + coarse.size());
         assertTrue(coarse.size() >= 1);
         for (S2Cells.CellRange range : coarse) {
             assertTrue(range.level() <= 16, "covering deeper than the index: " + range.level());
         }
         // even when the query asks for a finer level, the covering stops at the index's
-        List<S2Cells.CellRange> fine = S2Cells.coveringRanges(GeoSearch.of(CENTRE, 0.05d).withLevel(20), 16, 32);
+        List<S2Cells.CellRange> fine = S2Cells.coveringRanges(GeoSearch.of(CENTRE, 50d).withLevel(20), 16, 32);
         for (S2Cells.CellRange range : fine) {
             assertTrue(range.level() <= 16, "covering deeper than the index: " + range.level());
         }
@@ -119,8 +119,8 @@ class RocksDbGeoIndexTest {
     @Test
     void coveringRangesCoverTheCentreAndGrowWithTheRadius() {
         // at one level, a wider circle needs at least as many cells as a narrow one
-        List<S2Cells.CellRange> small = S2Cells.coveringRanges(GeoSearch.of(CENTRE, 0.5d).withLevel(14), 16, 64);
-        List<S2Cells.CellRange> large = S2Cells.coveringRanges(GeoSearch.of(CENTRE, 5d).withLevel(14), 16, 64);
+        List<S2Cells.CellRange> small = S2Cells.coveringRanges(GeoSearch.of(CENTRE, 500d).withLevel(14), 16, 64);
+        List<S2Cells.CellRange> large = S2Cells.coveringRanges(GeoSearch.of(CENTRE, 5_000d).withLevel(14), 16, 64);
         assertTrue(large.size() >= small.size(), "a wider circle needs at least as many cells");
         assertTrue(small.size() >= 1);
         long centreCell = S2Cells.cellId(CENTRE, 16);
@@ -149,25 +149,25 @@ class RocksDbGeoIndexTest {
         put(4L, "south-west-1500m", -kmToLat(1.06d), -kmToLon(1.06d));
         put(5L, "far-5km", kmToLat(5d), 0d);
 
-        List<GeoHit> hits = index.search("Merchant", "location", GeoSearch.of(CENTRE, 1d));
+        List<GeoHit> hits = index.search("Merchant", "location", GeoSearch.of(CENTRE, 1_000d));
         assertEquals(List.of("at-centre", "north-500m", "east-800m"),
                 hits.stream().map(hit -> nameOf(hit.vertexId())).toList(),
                 "only the shops within 1 km, nearest first");
         // distances are real great-circle distances
-        assertEquals(0d, hits.get(0).distanceKm(), 1e-6);
-        assertEquals(0.5d, hits.get(1).distanceKm(), 0.01d);
-        assertEquals(0.8d, hits.get(2).distanceKm(), 0.02d);
+        assertEquals(0d, hits.get(0).distanceMeters(), 1e-3);
+        assertEquals(500d, hits.get(1).distanceMeters(), 10d);
+        assertEquals(800d, hits.get(2).distanceMeters(), 20d);
 
         // a wider radius brings the two farther shops in, still ordered
-        List<GeoHit> wider = index.search("Merchant", "location", GeoSearch.of(CENTRE, 2d));
+        List<GeoHit> wider = index.search("Merchant", "location", GeoSearch.of(CENTRE, 2_000d));
         assertEquals(4, wider.size());
         assertEquals("south-west-1500m", nameOf(wider.get(3).vertexId()));
-        assertTrue(wider.get(3).distanceKm() > 1.4d && wider.get(3).distanceKm() < 1.6d,
-                "distance " + wider.get(3).distanceKm());
+        assertTrue(wider.get(3).distanceMeters() > 1_400d && wider.get(3).distanceMeters() < 1_600d,
+                "distance " + wider.get(3).distanceMeters());
 
-        // and everything, however small the radius is around the centre
-        assertEquals(1, index.search("Merchant", "location", GeoSearch.of(CENTRE, 0.05d)).size());
-        assertTrue(index.search("Merchant", "location", GeoSearch.of(new GeoPoint(0d, 0d), 1d)).isEmpty());
+        // and the centre itself is found with a small radius
+        assertEquals(1, index.search("Merchant", "location", GeoSearch.of(CENTRE, 50d)).size());
+        assertTrue(index.search("Merchant", "location", GeoSearch.of(new GeoPoint(0d, 0d), 1_000d)).isEmpty());
     }
 
     @Test
@@ -176,7 +176,7 @@ class RocksDbGeoIndexTest {
             put((long) i, "shop-" + i, kmToLat(i * 0.02d), 0d);
         }
         List<GeoHit> limited = index.search("Merchant", "location",
-                GeoSearch.of(CENTRE, 1d).withMaxResults(5));
+                GeoSearch.of(CENTRE, 1_000d).withMaxResults(5));
         assertEquals(5, limited.size());
         assertEquals("shop-0", nameOf(limited.get(0).vertexId()));
         assertEquals("shop-4", nameOf(limited.get(4).vertexId()));
@@ -185,13 +185,13 @@ class RocksDbGeoIndexTest {
     @Test
     void movingAShopMovesItsIndexRow() {
         put(1L, "shop", 0d, 0d);
-        assertEquals(1, index.search("Merchant", "location", GeoSearch.of(CENTRE, 1d)).size());
+        assertEquals(1, index.search("Merchant", "location", GeoSearch.of(CENTRE, 1_000d)).size());
         // write the same vertex with a point 3 km away
         put(1L, "shop", kmToLat(3d), 0d, 200L); // a newer point moves the shop
         assertEquals(1L, index.count("Merchant", "location"), "the old row is removed, not kept");
-        assertTrue(index.search("Merchant", "location", GeoSearch.of(CENTRE, 1d)).isEmpty());
+        assertTrue(index.search("Merchant", "location", GeoSearch.of(CENTRE, 1_000d)).isEmpty());
         assertEquals(1, index.search("Merchant", "location",
-                GeoSearch.of(new GeoPoint(CENTRE.lat() + kmToLat(3d), CENTRE.lon()), 1d)).size());
+                GeoSearch.of(new GeoPoint(CENTRE.lat() + kmToLat(3d), CENTRE.lon()), 1_000d)).size());
     }
 
     @Test
@@ -201,7 +201,7 @@ class RocksDbGeoIndexTest {
         assertEquals(2L, index.count("Merchant", "location"));
         assertTrue(table.delete("Merchant", 1L));
         assertEquals(1L, index.count("Merchant", "location"));
-        assertEquals(1, index.search("Merchant", "location", GeoSearch.of(CENTRE, 1d)).size());
+        assertEquals(1, index.search("Merchant", "location", GeoSearch.of(CENTRE, 1_000d)).size());
     }
 
     @Test
@@ -209,7 +209,7 @@ class RocksDbGeoIndexTest {
         put(1L, "shop", 0d, 0d, 500L);
         // same property, older timestamp: the record keeps the newer point, so must the index
         put(1L, "shop", kmToLat(3d), 0d, 400L);
-        assertEquals(1, index.search("Merchant", "location", GeoSearch.of(CENTRE, 1d)).size());
+        assertEquals(1, index.search("Merchant", "location", GeoSearch.of(CENTRE, 1_000d)).size());
     }
 
     @Test
@@ -225,7 +225,7 @@ class RocksDbGeoIndexTest {
         table.upsert(new RocksDbVertexUpsert(3L, schema.vertexSchema("Merchant"),
                 Map.of(LOCATION, new RocksDbPropertyValue(CENTRE.lat() + "," + CENTRE.lon(), 10L)), 1L, 10L));
         assertEquals(3L, index.count("Merchant", "location"));
-        assertEquals(3, index.search("Merchant", "location", GeoSearch.of(CENTRE, 0.1d)).size());
+        assertEquals(3, index.search("Merchant", "location", GeoSearch.of(CENTRE, 100d)).size());
     }
 
     @Test

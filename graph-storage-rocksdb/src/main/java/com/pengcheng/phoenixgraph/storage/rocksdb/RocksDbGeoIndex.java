@@ -187,6 +187,12 @@ public final class RocksDbGeoIndex {
     /**
      * Searches the index of one geo property: covers the circle, scans the cell ranges, drops
      * the candidates that are farther than the radius and returns the rest, nearest first.
+     *
+     * <p>A query with a {@code limit} passes it as {@code maxResults}: only that many hits are
+     * kept while the covering is scanned (a bounded heap), and only those are returned, so the
+     * vertex reads and the collected subgraph stop at the limit instead of covering the whole
+     * circle. The covering itself is bounded by the index's cell budget, so the scan never
+     * degenerates into a table scan.
      */
     public List<GeoHit> search(String vertexName, String propertyName, GeoSearch search) {
         GeoIndexConfig config = configOf(vertexName, propertyName);
@@ -203,8 +209,8 @@ public final class RocksDbGeoIndex {
                 while (iterator.isValid() && candidates < MAX_CANDIDATES) {
                     candidates++;
                     GeoPoint point = pointOfValue(iterator.value());
-                    double distance = search.center().distanceKm(point);
-                    if (distance <= search.radiusKm()) {
+                    double distance = search.center().distanceMeters(point);
+                    if (distance <= search.radiusMeters()) {
                         hits.add(new GeoHit(vertexName, vertexIdOfKey(iterator.key()), point, distance));
                     }
                     iterator.next();

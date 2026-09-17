@@ -44,6 +44,7 @@ public class SchemaValidator {
             checkMetaProperties(errors, "edge", edge.name(),
                     edge.createdTime(), edge.lastUpdatedTime(), constraints);
             checkEndpointVertex(errors, schema, edge);
+            checkNullableEndpoint(errors, warnings, edge);
             checkEndpointVertexDeclared(warnings, edge);
             checkDegreeLimitsDeclared(warnings, edge);
             checkDuplicateProperties(errors, "edge", edge.name(), edge.properties());
@@ -210,6 +211,26 @@ public class SchemaValidator {
         if (edge.targetVertexName() != null && schema.vertexSchema(edge.targetVertexName()) == null) {
             errors.add("edge schema '" + edge.name() + "' targetVertex '" + edge.targetVertexName()
                     + "' is not a declared vertex schema");
+        }
+    }
+
+    /**
+     * Checks {@code isNull}: only the target of an edge may be absent (the edge is then stored
+     * on its source alone), and an undirected edge has no target to leave out.
+     */
+    private void checkNullableEndpoint(List<String> errors, List<String> warnings, EdgeSchema edge) {
+        if (edge.source() != null && edge.source().isNull()) {
+            errors.add("Edge '" + edge.name() + "' declares isNull on its source; only the target may be null");
+        }
+        if (edge.target() != null && edge.target().isNull()) {
+            if (edge.direction() != EdgeDirection.DIRECTED) {
+                warnings.add("Edge '" + edge.name() + "' is " + edge.direction()
+                        + " but declares a null target; an undirected edge has no target to leave out");
+            }
+            if (edge.maxInDegree() > 0 || (edge.direction() != EdgeDirection.DIRECTED && edge.maxDegree() > 0)) {
+                warnings.add("Edge '" + edge.name() + "' declares a null target, so nothing is stored on the"
+                        + " target side and its incoming degree limit cannot apply");
+            }
         }
     }
 

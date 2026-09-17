@@ -82,5 +82,63 @@
       ]
     }
   ],
-  "edgeSchemas": []
+  "edgeSchemas": [
+    {
+      "id": 1,
+      "name": "Opens",
+      "description": "A deal a merchant announced before the counterpart is known (nullable target)",
+      "idSchema": {
+        "id": 0,
+        "name": "id",
+        "description": "Deal id",
+        "type": "STRING"
+      },
+      "source": {
+        "id": 1,
+        "name": "source",
+        "description": "The merchant announcing it",
+        "type": "LONG",
+        "vertex": "Merchant"
+      },
+      "target": {
+        "id": 2,
+        "name": "target",
+        "description": "The counterpart, still unknown",
+        "type": "LONG",
+        "vertex": "Merchant",
+        "isNull": true
+      },
+      "createdTime": {
+        "id": -2,
+        "name": "createdTime",
+        "description": "Creation time",
+        "type": "LONG"
+      },
+      "lastUpdatedTime": {
+        "id": -1,
+        "name": "lastUpdatedTime",
+        "description": "Last update time",
+        "type": "LONG"
+      },
+      "direction": "DIRECTED",
+      "maxOutgoingEdges": 10,
+      "maxIncomingEdges": 0,
+      "maxDegree": 0,
+      "properties": [
+        {
+          "id": 3,
+          "name": "since",
+          "description": "Announced at (epoch millis)",
+          "type": "LONG"
+        },
+        {
+          "id": 4,
+          "name": "title",
+          "description": "What the deal is",
+          "type": "STRING",
+          "display": true
+        }
+      ]
+    }
+  ]
 }

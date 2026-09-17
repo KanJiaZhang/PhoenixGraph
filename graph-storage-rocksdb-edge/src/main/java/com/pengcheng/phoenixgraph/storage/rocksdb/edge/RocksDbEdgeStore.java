@@ -253,14 +253,19 @@ public final class RocksDbEdgeStore implements AutoCloseable {
     private record EdgeRow(Object vertexId, byte direction, byte[] key, RocksDbStoredEdge edge) {
     }
 
+    /**
+     * The rows of one edge. An edge with a nullable target ({@code isNull} on its target
+     * endpoint) has no far side: only its source row is written, so no vertex points back at it.
+     */
     private List<EdgeRow> rowsOf(RocksDbEdgeUpsert edge, EdgeSchema edgeSchema) {
         List<EdgeRow> rows = new ArrayList<>(2);
         long createdTime = edge.createdTime();
+        boolean farSide = edge.destination() != null && !Objects.equals(edge.source(), edge.destination());
         if (edgeSchema.direction() == EdgeDirection.DIRECTED) {
             rows.add(new EdgeRow(edge.source(), RocksDbKeys.DIRECTION_OUT,
                     RocksDbKeys.edgeKey(edge.source(), RocksDbKeys.DIRECTION_OUT, createdTime, edge.edgeId()),
                     stored(edge, edge.destination())));
-            if (!Objects.equals(edge.source(), edge.destination())) {
+            if (farSide) {
                 rows.add(new EdgeRow(edge.destination(), RocksDbKeys.DIRECTION_IN,
                         RocksDbKeys.edgeKey(edge.destination(), RocksDbKeys.DIRECTION_IN, createdTime,
                                 edge.edgeId()),
@@ -272,7 +277,7 @@ public final class RocksDbEdgeStore implements AutoCloseable {
         rows.add(new EdgeRow(edge.source(), RocksDbKeys.DIRECTION_UNDIRECTED,
                 RocksDbKeys.edgeKey(edge.source(), RocksDbKeys.DIRECTION_UNDIRECTED, createdTime, edge.edgeId()),
                 stored(edge, edge.destination())));
-        if (!Objects.equals(edge.source(), edge.destination())) {
+        if (farSide) {
             rows.add(new EdgeRow(edge.destination(), RocksDbKeys.DIRECTION_UNDIRECTED,
                     RocksDbKeys.edgeKey(edge.destination(), RocksDbKeys.DIRECTION_UNDIRECTED, createdTime,
                             edge.edgeId()),
@@ -380,15 +385,16 @@ public final class RocksDbEdgeStore implements AutoCloseable {
      */
     public boolean deleteEdge(EdgeSchema edgeSchema, Object edgeId, long createdTime, Object source, Object destination) {
         String family = familyOf(edgeSchema);
+        boolean farSide = destination != null && !Objects.equals(source, destination);
         boolean removed;
         if (edgeSchema.direction() == EdgeDirection.DIRECTED) {
             removed = removeRow(family, source, RocksDbKeys.DIRECTION_OUT, createdTime, edgeId);
-            if (!Objects.equals(source, destination)) {
+            if (farSide) {
                 removeRow(family, destination, RocksDbKeys.DIRECTION_IN, createdTime, edgeId);
             }
         } else {
             removed = removeRow(family, source, RocksDbKeys.DIRECTION_UNDIRECTED, createdTime, edgeId);
-            if (!Objects.equals(source, destination)) {
+            if (farSide) {
                 removeRow(family, destination, RocksDbKeys.DIRECTION_UNDIRECTED, createdTime, edgeId);
             }
         }

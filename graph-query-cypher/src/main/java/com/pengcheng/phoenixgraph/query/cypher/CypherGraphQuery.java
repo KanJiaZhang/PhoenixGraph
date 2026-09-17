@@ -593,8 +593,9 @@ public final class CypherGraphQuery {
             if (!collectSubgraph) {
                 return;
             }
-            subgraphVertices.putIfAbsent(label + "::" + id,
-                    new Subgraph.Vertex(label, id, properties, createdTime, lastUpdatedTime));
+            Object text = id == null ? null : String.valueOf(id);
+            subgraphVertices.putIfAbsent(label + "::" + text,
+                    new Subgraph.Vertex(label, text, properties, createdTime, lastUpdatedTime));
         }
 
         private void recordEdge(CypherElement from, EdgeQueryResult edge) {

@@ -12,10 +12,13 @@ import java.util.Objects;
  * writes the edge into the outgoing bin of {@code source} and the incoming bin of
  * {@code destination} (an undirected edge uses the single undirected bin of both).
  *
+ * <p>{@code destination} may be {@code null} when the edge class declares a nullable target
+ * ({@code isNull} on the target endpoint): the edge is then written on its source only.
+ *
  * @param edgeId          edge id
  * @param edgeSchema      the edge class this edge conforms to
  * @param source          source vertex id
- * @param destination     destination vertex id
+ * @param destination     destination vertex id, or {@code null} for a nullable target
  * @param properties      property index -> value + per-property timestamps
  * @param createdTime     edge creation timestamp (epoch millis)
  * @param lastUpdatedTime edge last-update timestamp (epoch millis)
@@ -28,7 +31,10 @@ public record RocksDbEdgeUpsert(Object edgeId, EdgeSchema edgeSchema, Object sou
         Objects.requireNonNull(edgeId, "edgeId");
         Objects.requireNonNull(edgeSchema, "edgeSchema");
         Objects.requireNonNull(source, "source");
-        Objects.requireNonNull(destination, "destination");
+        if (destination == null && (edgeSchema.target() == null || !edgeSchema.target().isNull())) {
+            throw new IllegalArgumentException("Edge class '" + edgeSchema.name()
+                    + "' does not allow a null target (declare isNull on its target)");
+        }
         properties = Map.copyOf(Objects.requireNonNull(properties, "properties"));
     }
 }

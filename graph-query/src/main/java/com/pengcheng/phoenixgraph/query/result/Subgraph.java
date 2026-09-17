@@ -22,13 +22,36 @@ public record Subgraph(List<Vertex> vertices, List<Edge> edges) {
 
     public static final Subgraph EMPTY = new Subgraph(List.of(), List.of());
 
-    /** A vertex in the subgraph. */
+    /**
+     * A vertex in the subgraph.
+     *
+     * <p>The id is kept as text on purpose: a traversal reaches the same vertex once from a
+     * query seed - whose id is whatever the caller typed - and once from storage, where the id
+     * keeps its stored type ({@code 1000} is a number there). A renderer joins edges to
+     * vertices by id, so a graph whose vertices say {@code 1000} and whose edges say
+     * {@code "1000"} would draw nodes without edges. Text makes both sides one node.
+     */
     public record Vertex(String label, Object id, Map<String, Object> properties,
                          long createdTime, long lastUpdatedTime) {
+
+        public Vertex {
+            id = id == null ? null : String.valueOf(id);
+        }
     }
 
-    /** An edge in the subgraph with resolved endpoints. */
+    /**
+     * An edge in the subgraph with resolved endpoints.
+     *
+     * <p>{@code target} may be {@code null}: an edge whose schema declares a nullable target
+     * only has an outgoing side, so there is no vertex at the far end.
+     */
     public record Edge(String label, Object id, Object source, Object target, Map<String, Object> properties,
                        long createdTime, long lastUpdatedTime) {
+
+        public Edge {
+            id = id == null ? null : String.valueOf(id);
+            source = source == null ? null : String.valueOf(source);
+            target = target == null ? null : String.valueOf(target);
+        }
     }
 }

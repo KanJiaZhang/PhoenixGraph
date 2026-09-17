@@ -1,10 +1,13 @@
 package com.pengcheng.phoenixgraph.integration;
 
 import com.pengcheng.phoenixgraph.schema.GeoIndexSchemas;
+import com.pengcheng.phoenixgraph.schema.EdgeSchema;
 import com.pengcheng.phoenixgraph.schema.GraphSchema;
 import com.pengcheng.phoenixgraph.schema.GraphStorageType;
 import com.pengcheng.phoenixgraph.schema.VertexSchema;
 import com.pengcheng.phoenixgraph.schema.geo.GeoPoint;
+import com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbEdgeProperty;
+import com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbEdgeUpsert;
 import com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbPropertyValue;
 import com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbStoreConfig;
 import com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbVertexUpsert;
@@ -65,9 +68,12 @@ public final class GeoMerchantDataLoader {
     private GeoMerchantDataLoader() {
     }
 
+    /** How many "opens" edges (nullable target) the demo writes. */
+    public static final int OPEN_DEALS = 3;
+
     /** What a load wrote. */
     public record LoadResult(String graph, GraphStorageType storage, String path, int merchants,
-                             long indexed) {
+                             long indexed, int opens) {
     }
 
     /** Loads a geo instance declared by a schema file (its own storage path is used). */
@@ -87,23 +93,31 @@ public final class GeoMerchantDataLoader {
         RocksDbStoreConfig config = new RocksDbStoreConfig(path, schema.storage().regionCount(),
                 schema.storage().maxVersions(), true, schema.storage().cacheEdges());
         List<RocksDbVertexUpsert> merchants = merchants(schema);
+        List<RocksDbEdgeUpsert> opens = openDeals(schema);
         long indexed;
         if (schema.storage().type() == GraphStorageType.ROCKSDB_INLINE) {
             try (RocksDbInlineStore store = RocksDbInlineStore.open(schema, config)) {
                 store.upsertVertices(merchants);
+                if (!opens.isEmpty()) {
+                    store.upsertEdges(opens);
+                }
                 store.flush();
                 indexed = store.geoIndex().count("Merchant", "location");
             }
         } else if (schema.storage().type() == GraphStorageType.ROCKSDB_EDGE) {
             try (RocksDbEdgeStore store = RocksDbEdgeStore.open(schema, config)) {
                 store.upsertVertices(merchants);
+                if (!opens.isEmpty()) {
+                    store.upsertEdges(opens);
+                }
                 store.flush();
                 indexed = store.geoIndex().count("Merchant", "location");
             }
         } else {
             throw new IllegalArgumentException("Graph '" + schema.name() + "' is not a RocksDB graph");
         }
-        return new LoadResult(schema.name(), schema.storage().type(), path, merchants.size(), indexed);
+        return new LoadResult(schema.name(), schema.storage().type(), path, merchants.size(), indexed,
+                opens.size());
     }
 
     /** The shops of the demo, in the shape the storage writes. */
@@ -125,6 +139,29 @@ public final class GeoMerchantDataLoader {
             upserts.add(new RocksDbVertexUpsert((long) (i + 1), merchant, byName(merchant, values), time, time));
         }
         return upserts;
+    }
+
+    /**
+     * The "opens" edges: deals whose counterpart is not known yet. The schema declares the
+     * target nullable ({@code isNull}), so the edge is stored on its source only and no vertex
+     * points back at it.
+     */
+    public static List<RocksDbEdgeUpsert> openDeals(GraphSchema schema) {
+        EdgeSchema opens = schema.edgeSchema("Opens");
+        if (opens == null) {
+            return List.of();
+        }
+        List<RocksDbEdgeUpsert> edges = new ArrayList<>(OPEN_DEALS);
+        for (int i = 0; i < OPEN_DEALS; i++) {
+            long time = BASE_TIME + 500 + i;
+            Map<Integer, RocksDbEdgeProperty> properties = new LinkedHashMap<>();
+            properties.put(opens.property("since").id(), new RocksDbEdgeProperty(time, time, time));
+            properties.put(opens.property("title").id(),
+                    new RocksDbEdgeProperty("Deal #" + (i + 1) + " (counterpart TBD)", time, time));
+            edges.add(new RocksDbEdgeUpsert("deal_" + (i + 1), opens, 1L, null, // all announced by merchant 1
+                    properties, time, time));
+        }
+        return edges;
     }
 
     /** The point of shop {@code i}: a spiral around the centre with a golden-angle bearing. */
@@ -188,9 +225,9 @@ public final class GeoMerchantDataLoader {
         }
         for (String graph : graphs) {
             LoadResult result = load(graph, root, true);
-            System.out.printf("loaded %s (%s) at %s: %d merchants, %d geo index rows%n",
+            System.out.printf("loaded %s (%s) at %s: %d merchants, %d geo index rows, %d open deals%n",
                     result.graph(), result.storage().configName(), result.path(),
-                    result.merchants(), result.indexed());
+                    result.merchants(), result.indexed(), result.opens());
         }
     }
 }

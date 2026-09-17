@@ -152,33 +152,42 @@ final class GremlinSteps {
     /**
      * Geo search step: replaces every vertex with the vertices of its type that lie inside a
      * circle, nearest first, attaching the distance as
-     * {@link GeoIndexSchemas#DISTANCE_PROPERTY}.
+     * {@link GeoIndexSchemas#DISTANCE_PROPERTY} (metres).
      *
      * <p>The circle is described by the step's JSON argument
-     * ({@code geoNear('{"lat":31.2304,"lon":121.4737,"radiusKm":1}')}) or by a point JSON plus
-     * the radius as the step's own argument ({@code geoNear('{"lat":..,"lon":..}', 2)}) - the
-     * radius is a step parameter so a client can vary the distance per call. The search runs
-     * over the geo index of the vertex type the traversers are on, the same way
-     * {@code nearest} uses the HNSW index of the type.
+     * ({@code circle('{"lat":31.2304,"lon":121.4737,"radius":1000}')}) or by a point JSON plus
+     * the radius in metres as the step's own argument ({@code circle('{"lat":..,"lon":..}', 2000)})
+     * - the radius is a step parameter so a client can vary it per call. The search runs over
+     * the geo index of the vertex type the traversers are on, the same way {@code nearest} uses
+     * the HNSW index of the type.
+     *
+     * <p>{@code search.maxResults()} carries a {@code limit} of the query: the search stops
+     * keeping hits beyond it, so only the nearest ones are read back and collected.
      */
-    static GremlinStep geoNear(java.util.function.Function<String, String> geoPropertyOf,
-                               GraphQuery graphQuery, GeoSearch search) {
+    static GremlinStep circle(java.util.function.Function<String, String> geoPropertyOf,
+                              GraphQuery graphQuery, GeoSearch search) {
         return (ctx, in) -> {
             List<Object> out = new ArrayList<>();
             Set<Object> seen = new LinkedHashSet<>();
             for (Object o : in) {
                 if (!(o instanceof GremlinVertex vertex)) {
-                    throw new QueryException("geoNear expects vertices but got: " + o);
+                    throw new QueryException("circle expects vertices but got: " + o);
                 }
                 String property = geoPropertyOf.apply(vertex.label());
                 if (property == null) {
                     throw new QueryException("No geo index is configured for vertex type '"
                             + vertex.label() + "' (declare a property with isGeo)");
                 }
+                if (seen.size() >= search.maxResults() && search.maxResults() > 0) {
+                    break; // the limit of the query is already satisfied
+                }
                 if (!graphQuery.supportsGeoSearch()) {
                     throw new QueryException("The storage behind this graph does not support geo search");
                 }
                 for (GeoHit hit : graphQuery.geoNear(vertex.label(), property, search)) {
+                    if (search.maxResults() > 0 && seen.size() >= search.maxResults()) {
+                        break;
+                    }
                     if (!seen.add(hit.vertexId())) {
                         continue;
                     }
@@ -206,7 +215,7 @@ final class GremlinSteps {
         }
         ctx.recordVertex(vertex.vertexName(), vertex.vertexId());
         Map<String, Object> properties = new LinkedHashMap<>(vertex.properties());
-        properties.put(GeoIndexSchemas.DISTANCE_PROPERTY, hit.distanceKm());
+        properties.put(GeoIndexSchemas.DISTANCE_PROPERTY, hit.distanceMeters());
         return new GremlinVertex(vertex.vertexName(), vertex.vertexId(), properties,
                 vertex.createdTime(), vertex.lastUpdatedTime());
     }
@@ -488,8 +497,25 @@ final class GremlinSteps {
         return properties == null ? List.of() : properties;
     }
 
+    /**
+     * Reads the neighbours an edge hop reached. An edge with a nullable target has no far
+     * endpoint ({@code otherVertexId == null}): it is a real edge - {@code outE} returns it -
+     * but there is no vertex to continue to, so no traverser is produced for it.
+     */
     private static List<GremlinVertex> readNeighbourVertices(GremlinContext ctx,
                                                              List<EdgeQueryResult> edges) {
+        if (edges.isEmpty()) {
+            return List.of();
+        }
+        List<EdgeQueryResult> reachable = new ArrayList<>(edges.size());
+        for (EdgeQueryResult edge : edges) {
+            if (edge.otherVertexId() != null) {
+                reachable.add(edge);
+            }
+        }
+        if (reachable.size() != edges.size()) {
+            edges = reachable;
+        }
         if (edges.isEmpty()) {
             return List.of();
         }

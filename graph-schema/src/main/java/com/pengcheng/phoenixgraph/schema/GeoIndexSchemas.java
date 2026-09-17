@@ -15,11 +15,11 @@ import java.util.Map;
 public final class GeoIndexSchemas {
 
     /**
-     * The property name a geo query attaches the computed distance under. It is not stored
-     * anywhere: a geo result carries it so a query can read or print the distance like any
-     * other property.
+     * The property name a geo query attaches the computed distance under (in metres). It is not
+     * stored anywhere: a geo result carries it so a query can read or print the distance like
+     * any other property.
      */
-    public static final String DISTANCE_PROPERTY = "distanceKm";
+    public static final String DISTANCE_PROPERTY = "distanceMeters";
 
     private GeoIndexSchemas() {
     }

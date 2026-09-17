@@ -110,7 +110,7 @@ public final class AerospikeGeoIndex {
         statement.setNamespace(namespace);
         statement.setSetName(set);
         statement.setFilter(Filter.geoWithinRadius(bin, search.center().lat(), search.center().lon(),
-                search.radiusKm() * 1_000d));
+                search.radiusMeters()));
         List<GeoHit> hits = new ArrayList<>();
         try (RecordSet records = client.query(new QueryPolicy(), statement)) {
             while (records.next()) {
@@ -123,14 +123,14 @@ public final class AerospikeGeoIndex {
                 if (point == null) {
                     continue;
                 }
-                double distance = search.center().distanceKm(point);
-                if (distance <= search.radiusKm()) {
+                double distance = search.center().distanceMeters(point);
+                if (distance <= search.radiusMeters()) {
                     hits.add(new GeoHit(vertexName, vertexId, point, distance));
                 }
             }
         }
         hits.sort(GeoHit::compareTo);
-        log(null, "geoNear", property.indexName(), true, hits.size() + " hit(s) via the geo index");
+        log(null, "circle", property.indexName(), true, hits.size() + " hit(s) via the geo index");
         return List.copyOf(hits);
     }
 
@@ -142,25 +142,29 @@ public final class AerospikeGeoIndex {
                                             String propertyName, int propertyId, GeoSearch search,
                                             BusinessLog businessLog) {
         List<StoredVertex> vertices = vertexStore.scanVerticesWithProperty(propertyId, List.of(propertyId));
-        List<GeoHit> hits = new ArrayList<>();
+        // only the wanted number of hits is kept while the set is scanned
+        GeoHit.TopK top = new GeoHit.TopK(search.maxResults());
+        List<GeoHit> all = search.maxResults() > 0 ? null : new ArrayList<>();
         for (StoredVertex vertex : vertices) {
             VertexPropertyValue value = vertex.properties().get(propertyId);
             GeoPoint point = value == null ? null : GeoPoint.from(value.value());
             if (point == null) {
                 continue;
             }
-            double distance = search.center().distanceKm(point);
-            if (distance <= search.radiusKm()) {
-                hits.add(new GeoHit(vertexName, vertex.vertexId(), point, distance));
+            double distance = search.center().distanceMeters(point);
+            if (distance <= search.radiusMeters()) {
+                GeoHit hit = new GeoHit(vertexName, vertex.vertexId(), point, distance);
+                if (all != null) {
+                    all.add(hit);
+                } else {
+                    top.offer(hit);
+                }
             }
         }
-        hits.sort(GeoHit::compareTo);
-        if (search.maxResults() > 0 && hits.size() > search.maxResults()) {
-            hits = new ArrayList<>(hits.subList(0, search.maxResults()));
-        }
-        log(businessLog, "geoNear", vertexName + "." + propertyName, true,
+        List<GeoHit> hits = all != null ? GeoHit.TopK.copyOf(all) : top.collect(List.of());
+        log(businessLog, "circle", vertexName + "." + propertyName, true,
                 hits.size() + " hit(s) of " + vertices.size() + " scanned");
-        return List.copyOf(hits);
+        return hits;
     }
 
     /** The stored point of a vertex property (used by tests and diagnostics). */

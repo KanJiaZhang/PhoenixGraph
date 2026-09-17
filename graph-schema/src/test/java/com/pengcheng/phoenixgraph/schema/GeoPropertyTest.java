@@ -105,6 +105,50 @@ class GeoPropertyTest {
     }
 
     @Test
+    void aNullableTargetIsAValidatedSchemaOption() {
+        EdgeEndpointSchema source = new EdgeEndpointSchema(1, "source", null,
+                PropertyType.ScalarType.LONG, "Merchant");
+        EdgeEndpointSchema target = new EdgeEndpointSchema(2, "target", null,
+                PropertyType.ScalarType.LONG, "Merchant");
+        EdgeSchema opens = new EdgeSchema(1, "Opens", "an out-edge with nothing at the far end",
+                new EdgePropertySchema(0, "id", null, PropertyType.ScalarType.LONG), source,
+                target.nullable(true), MetaPropertySchema.createdTime(),
+                MetaPropertySchema.lastUpdatedTime(), EdgeDirection.DIRECTED);
+        assertTrue(opens.target().isNull());
+        assertFalse(opens.source().isNull());
+
+        GraphSchema schema = new GraphSchema(1, "shop-graph")
+                .vertex(merchantWithGeo(GeoIndexConfig.DEFAULT)).edge(opens);
+        SchemaValidator validator = new SchemaValidator();
+        SchemaValidationResult result = validator.validateResult(schema, SchemaConstraints.DEFAULTS);
+        assertTrue(result.errors().isEmpty(), result.errors().toString());
+
+        // through JSON as well
+        GraphSchema parsed = new SchemaJsonCodec().fromJson(new SchemaJsonCodec().toJson(schema));
+        assertTrue(parsed.edgeSchema("Opens").target().isNull());
+        assertFalse(parsed.edgeSchema("Opens").source().isNull());
+
+        // only the target may be null
+        GraphSchema badSource = new GraphSchema(1, "bad").vertex(merchantWithGeo(GeoIndexConfig.DEFAULT))
+                .edge(new EdgeSchema(1, "Opens", null,
+                        new EdgePropertySchema(0, "id", null, PropertyType.ScalarType.LONG),
+                        source.nullable(true), target, MetaPropertySchema.createdTime(),
+                        MetaPropertySchema.lastUpdatedTime(), EdgeDirection.DIRECTED));
+        SchemaValidationResult sourceError = validator.validateResult(badSource, SchemaConstraints.DEFAULTS);
+        assertTrue(sourceError.errors().stream().anyMatch(e -> e.contains("only the target may be null")),
+                sourceError.errors().toString());
+
+        // and an undirected edge has no target to leave out
+        GraphSchema undirected = new GraphSchema(1, "undirected").vertex(merchantWithGeo(GeoIndexConfig.DEFAULT))
+                .edge(new EdgeSchema(1, "Knows", null,
+                        new EdgePropertySchema(0, "id", null, PropertyType.ScalarType.LONG),
+                        source, target.nullable(true), MetaPropertySchema.createdTime(),
+                        MetaPropertySchema.lastUpdatedTime(), EdgeDirection.UNDIRECTED));
+        assertTrue(validator.validateResult(undirected, SchemaConstraints.DEFAULTS).warnings().stream()
+                .anyMatch(w -> w.contains("null target")), "an undirected edge gets a warning");
+    }
+
+    @Test
     void aPointIsReadFromEveryAcceptedShape() {
         GeoPoint centre = new GeoPoint(31.2304d, 121.4737d);
         assertEquals(centre, GeoPoint.from(Map.of("lat", 31.2304d, "lon", 121.4737d)));
@@ -125,10 +169,10 @@ class GeoPropertyTest {
     void distanceIsGreatCircleDistance() {
         GeoPoint shanghai = new GeoPoint(31.2304d, 121.4737d);
         // a degree of latitude is about 111 km
-        assertEquals(111.19d, shanghai.distanceKm(new GeoPoint(32.2304d, 121.4737d)), 0.3d);
+        assertEquals(111_190d, shanghai.distanceMeters(new GeoPoint(32.2304d, 121.4737d)), 300d);
         // 0.01 degrees north is about 1.1 km
-        assertEquals(1.11d, shanghai.distanceKm(new GeoPoint(31.2404d, 121.4737d)), 0.02d);
-        assertEquals(0d, shanghai.distanceKm(shanghai), 1e-9);
+        assertEquals(1_112d, shanghai.distanceMeters(new GeoPoint(31.2404d, 121.4737d)), 20d);
+        assertEquals(0d, shanghai.distanceMeters(shanghai), 1e-6);
         assertTrue(GeoPoint.isValid(31.2d, 121.4d));
         assertFalse(GeoPoint.isValid(91d, 0d));
         assertThrows(IllegalArgumentException.class, () -> new GeoPoint(0d, 181d));
@@ -136,20 +180,23 @@ class GeoPropertyTest {
 
     @Test
     void aSearchIsReadFromTheStepJson() {
-        GeoSearch search = GeoSearch.parse("{\"lat\":31.2304,\"lon\":121.4737,\"radiusKm\":1}", null);
+        GeoSearch search = GeoSearch.parse("{\"lat\":31.2304,\"lon\":121.4737,\"radius\":1000}", null);
         assertEquals(new GeoPoint(31.2304d, 121.4737d), search.center());
-        assertEquals(1d, search.radiusKm());
+        assertEquals(1_000d, search.radiusMeters(), "the radius is metres");
 
         // the step argument overrides the JSON radius
-        assertEquals(2.5d, GeoSearch.parse("{\"lat\":31.23,\"lon\":121.47,\"radiusKm\":1}", 2.5d).radiusKm());
+        assertEquals(2_500d, GeoSearch.parse("{\"lat\":31.23,\"lon\":121.47,\"radius\":1000}", 2_500d)
+                .radiusMeters());
         // and the plain text form works too, as long as a radius is passed as well
-        assertEquals(new GeoPoint(31.23d, 121.47d), GeoSearch.parse("31.23,121.47", 1d).center());
+        assertEquals(new GeoPoint(31.23d, 121.47d), GeoSearch.parse("31.23,121.47", 1_000d).center());
         assertEquals(0, search.maxResults(), "everything inside the radius by default");
+        // a limit becomes the result cap the storage applies
+        assertEquals(5, search.withMaxResults(5).maxResults());
 
-        assertThrows(IllegalArgumentException.class, () -> GeoSearch.parse("{\"lat\":31.23}", 1d));
+        assertThrows(IllegalArgumentException.class, () -> GeoSearch.parse("{\"lat\":31.23}", 1_000d));
         assertThrows(IllegalArgumentException.class, () -> GeoSearch.parse("{\"lat\":31.23,\"lon\":121.47}", null));
         assertThrows(IllegalArgumentException.class, () -> GeoSearch.of(new GeoPoint(0d, 0d), 0d));
-        assertThrows(IllegalArgumentException.class, () -> GeoSearch.of(new GeoPoint(0d, 0d), 1d).withMaxResults(-1));
+        assertThrows(IllegalArgumentException.class, () -> GeoSearch.of(new GeoPoint(0d, 0d), 1_000d).withMaxResults(-1));
     }
 
     @Test

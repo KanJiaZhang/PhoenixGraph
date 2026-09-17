@@ -59,13 +59,13 @@ table per geo property, maintained by the vertex writes themselves), and Aerospi
 `geo2dsphere` secondary index where the server has one and scans where it does not.
 
 ```groovy
-g.V('1','Merchant').geoNear('{"lat":31.2304,"lon":121.4737,"radiusKm":1}').limit(10)
-g.V('1','Merchant').geoNear('{"lat":31.2304,"lon":121.4737}', 0.5).has('category','coffee')
-        .values('name','distanceKm')
+g.V('1','Merchant').circle('{"lat":31.2304,"lon":121.4737,"radius":1000}').limit(10)
+g.V('1','Merchant').circle('{"lat":31.2304,"lon":121.4737}', 500).has('category','coffee')
+        .values('name','distanceMeters')
 ```
 
-The radius is a step argument, the results come back nearest first with the distance attached
-(`distanceKm`), and they combine with the other steps (`has`, `limit`, `elementMap`, `count`).
+The radius is in metres and a step argument, the results come back nearest first with the distance
+attached (`distanceMeters`), and they combine with the other steps (`has`, `limit`, `elementMap`, `count`).
 
 ### Two query languages
 

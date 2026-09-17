@@ -669,8 +669,8 @@ button.btn-primary:hover, #queryBtn:hover { filter: brightness(1.07); }
   font-weight: 600;
 }
 .lang-select { margin-right: 4px; }
-/* one third of the query box, centred under it */
-.example-select { width: calc(100% / 3); align-self: center; margin-top: 8px; }
+/* one third of the query box, in its column: same left edge, directly under it */
+.example-select { width: calc(100% / 3); align-self: flex-start; margin-top: 8px; }
 #gremlinInput.cypher { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 
 .rows-wrap { overflow: auto; max-height: calc(100% - 8px); }

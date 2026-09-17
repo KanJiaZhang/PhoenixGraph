@@ -244,7 +244,7 @@ public final class RocksDbInlineStore implements AutoCloseable {
         List<WriteOutcome> outcomes = new ArrayList<>(edges.size());
         for (RocksDbEdgeUpsert edge : edges) {
             boolean ok = Boolean.TRUE.equals(written.get(edge.source()));
-            if (ok && !Objects.equals(edge.source(), edge.destination())) {
+            if (ok && edge.destination() != null && !Objects.equals(edge.source(), edge.destination())) {
                 ok = Boolean.TRUE.equals(written.get(edge.destination()));
             }
             outcomes.add(ok ? WriteOutcome.SUCCESS : WriteOutcome.FAILED);
@@ -252,12 +252,18 @@ public final class RocksDbInlineStore implements AutoCloseable {
         return outcomes;
     }
 
-    /** Adds the two sides of one edge to the write plan. */
+    /**
+     * Adds the sides of one edge to the write plan. An edge with a nullable target
+     * ({@code isNull} on its target endpoint) has no far side: it is written on its source
+     * only, so nothing points back at it.
+     */
     private void addSideWrites(List<EdgeSideWrite> writes, RocksDbEdgeUpsert edge, EdgeSchema edgeSchema) {
+        boolean bothSides = edge.destination() != null
+                && !Objects.equals(edge.source(), edge.destination());
         if (edgeSchema.direction() == EdgeDirection.DIRECTED) {
             writes.add(new EdgeSideWrite(edge.source(), RocksDbEdgeBins.bin(edgeSchema, RocksDbEdgeBins.DIR_OUT),
                     String.valueOf(edge.edgeId()), storedEdge(edge, edge.destination())));
-            if (!Objects.equals(edge.source(), edge.destination())) {
+            if (bothSides) {
                 writes.add(new EdgeSideWrite(edge.destination(),
                         RocksDbEdgeBins.bin(edgeSchema, RocksDbEdgeBins.DIR_IN), String.valueOf(edge.edgeId()),
                         storedEdge(edge, edge.source())));
@@ -267,7 +273,7 @@ public final class RocksDbInlineStore implements AutoCloseable {
         // UNDIRECTED / BIDIRECTIONAL: one bin on each endpoint, no in/out distinction
         writes.add(new EdgeSideWrite(edge.source(), RocksDbEdgeBins.bin(edgeSchema, RocksDbEdgeBins.DIR_BOTH),
                 String.valueOf(edge.edgeId()), storedEdge(edge, edge.destination())));
-        if (!Objects.equals(edge.source(), edge.destination())) {
+        if (bothSides) {
             writes.add(new EdgeSideWrite(edge.destination(),
                     RocksDbEdgeBins.bin(edgeSchema, RocksDbEdgeBins.DIR_BOTH), String.valueOf(edge.edgeId()),
                     storedEdge(edge, edge.source())));
@@ -385,18 +391,19 @@ public final class RocksDbInlineStore implements AutoCloseable {
     public boolean deleteEdge(EdgeSchema edgeSchema, Object edgeId, Object source, Object destination) {
         String family = familyOf(edgeSchema);
         boolean directed = edgeSchema.direction() == EdgeDirection.DIRECTED;
+        boolean farSide = destination != null && !Objects.equals(source, destination);
         boolean removed;
         if (directed) {
             removed = removeFromBin(family, source, RocksDbEdgeBins.bin(edgeSchema, RocksDbEdgeBins.DIR_OUT),
                     String.valueOf(edgeId));
-            if (!Objects.equals(source, destination)) {
+            if (farSide) {
                 removeFromBin(family, destination, RocksDbEdgeBins.bin(edgeSchema, RocksDbEdgeBins.DIR_IN),
                         String.valueOf(edgeId));
             }
         } else {
             removed = removeFromBin(family, source, RocksDbEdgeBins.bin(edgeSchema, RocksDbEdgeBins.DIR_BOTH),
                     String.valueOf(edgeId));
-            if (!Objects.equals(source, destination)) {
+            if (farSide) {
                 removeFromBin(family, destination, RocksDbEdgeBins.bin(edgeSchema, RocksDbEdgeBins.DIR_BOTH),
                         String.valueOf(edgeId));
             }

@@ -30,6 +30,7 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -323,6 +324,43 @@ class RocksDbInlineStoreTest {
                 .get(0).otherVertexId());
         assertEquals(Map.of("ve_2_0", 1), store.binSizes("Knows", 100L));
         assertEquals(Map.of("ve_2_0", 1), store.binSizes("Knows", 200L));
+    }
+
+    @Test
+    void anEdgeWithANullableTargetIsStoredOnItsSourceOnly() {
+        // Opens: Merchant -> Merchant, but the target may be absent
+        EdgeSchema opens = new EdgeSchema(4, "Opens", "an edge with nothing at the far end",
+                new EdgePropertySchema(0, "id", null, PropertyType.ScalarType.LONG),
+                new EdgeEndpointSchema(1, "source", null, PropertyType.ScalarType.LONG, "Account"),
+                new EdgeEndpointSchema(2, "target", null, PropertyType.ScalarType.LONG, "Account")
+                        .nullable(true),
+                MetaPropertySchema.createdTime(), MetaPropertySchema.lastUpdatedTime(),
+                EdgeDirection.DIRECTED)
+                .property(new EdgePropertySchema(3, "since", null, PropertyType.ScalarType.LONG));
+        GraphSchema schema = new GraphSchema(1, "inline-null-target").vertex(accountSchema()).edge(opens);
+        store = RocksDbInlineStore.open(schema, RocksDbStoreConfig.of(directory.resolve("db-null").toString()));
+        RocksDbInlineGraphQuery query = new RocksDbInlineGraphQuery(store, schema);
+
+        // the target is null: the edge is written on the source, nowhere else
+        assertEquals(WriteOutcome.SUCCESS, store.upsertEdge(new RocksDbEdgeUpsert(1L, opens, 100L, null,
+                Map.of(3, new RocksDbEdgeProperty(1_000L, 5L, 5L)), 5L, 5L)));
+
+        List<EdgeQueryResult> out = query.readEdges(100L, "Account", "Opens", EdgeSide.OUT, List.of("since"));
+        assertEquals(1, out.size());
+        assertEquals(EdgeSide.OUT, out.get(0).side());
+        assertNull(out.get(0).otherVertexId(), "the edge has no far endpoint");
+        assertEquals(1_000L, out.get(0).properties().get("since"));
+        // its target bin is empty - there is no other side at all
+        assertEquals(1, store.binSizes("Opens", 100L).values().iterator().next());
+        assertEquals(1L, store.edgeCount("Opens"), "one side only");
+
+        // a schema that does not allow it refuses the write
+        assertThrows(IllegalArgumentException.class, () -> new RocksDbEdgeUpsert(2L,
+                paymentSchema(0, 0, 0), 100L, null, Map.of(), 5L, 5L));
+
+        // deleting the edge removes the one side it has
+        assertTrue(store.deleteEdge(opens, 1L, 100L, null));
+        assertTrue(query.readEdges(100L, "Account", "Opens", EdgeSide.OUT, List.of()).isEmpty());
     }
 
     @Test

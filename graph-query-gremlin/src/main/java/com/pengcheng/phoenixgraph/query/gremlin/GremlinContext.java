@@ -259,7 +259,8 @@ public final class GremlinContext {
         if (!collectSubgraph) {
             return;
         }
-        subgraphVertices.putIfAbsent(key(label, id), new VertexRef(label, id));
+        Object text = id == null ? null : String.valueOf(id);
+        subgraphVertices.putIfAbsent(key(label, text), new VertexRef(label, text));
     }
 
     /**
@@ -285,8 +286,9 @@ public final class GremlinContext {
         if (!collectSubgraph) {
             return;
         }
-        subgraphEdges.putIfAbsent(key(label, id),
-                new Subgraph.Edge(label, id, source, target, properties, createdTime, lastUpdatedTime));
+        Object text = id == null ? null : String.valueOf(id);
+        subgraphEdges.putIfAbsent(key(label, text),
+                new Subgraph.Edge(label, text, source, target, properties, createdTime, lastUpdatedTime));
     }
 
     /** Reads full vertex properties for every recorded vertex and returns the induced subgraph. */
@@ -303,7 +305,12 @@ public final class GremlinContext {
         }
         Map<String, VertexRef> verticesToRead = new LinkedHashMap<>(subgraphVertices);
         for (Subgraph.Edge edge : subgraphEdges.values()) {
-            for (Object endpoint : List.of(edge.source(), edge.target())) {
+            // an edge with a nullable target has no far endpoint: only the endpoint it has is
+            // resolved (List.of would reject the null it carries)
+            for (Object endpoint : endpointsOf(edge)) {
+                if (endpoint == null) {
+                    continue;
+                }
                 for (VertexRef ref : endpointsById.getOrDefault(endpoint, List.of())) {
                     verticesToRead.putIfAbsent(key(ref.label(), ref.id()), ref);
                 }
@@ -332,6 +339,14 @@ public final class GremlinContext {
             }
         }
         return new Subgraph(List.copyOf(vertices), List.copyOf(subgraphEdges.values()));
+    }
+
+    /** The endpoints of an edge, tolerating a null one (a nullable target). */
+    private static List<Object> endpointsOf(Subgraph.Edge edge) {
+        List<Object> endpoints = new ArrayList<>(2);
+        endpoints.add(edge.source());
+        endpoints.add(edge.target());
+        return endpoints;
     }
 
     private static String key(String label, Object id) {
@@ -364,8 +379,9 @@ public final class GremlinContext {
             // An edge hop only materialises edges; remember the far endpoint so a
             // surviving edge can still bring its other vertex into the subgraph.
             String endpointLabel = vertexResolver.neighborVertexName(edge.edgeName(), edge.side());
-            edgeEndpointVertices.putIfAbsent(key(endpointLabel, edge.otherVertexId()),
-                    new VertexRef(endpointLabel, edge.otherVertexId()));
+            Object endpointId = edge.otherVertexId() == null ? null : String.valueOf(edge.otherVertexId());
+            edgeEndpointVertices.putIfAbsent(key(endpointLabel, endpointId),
+                    new VertexRef(endpointLabel, endpointId));
         }
     }
 

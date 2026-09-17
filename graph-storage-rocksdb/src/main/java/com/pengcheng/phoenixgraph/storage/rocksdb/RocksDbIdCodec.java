@@ -12,6 +12,7 @@ package com.pengcheng.phoenixgraph.storage.rocksdb;
  * 0  string
  * 1  long
  * 2  int
+ * 3  null   (the absent endpoint of an edge whose target is declared isNull)
  * </pre>
  */
 public final class RocksDbIdCodec {
@@ -20,11 +21,17 @@ public final class RocksDbIdCodec {
     public static final byte TYPE_LONG = 1;
     public static final byte TYPE_INT = 2;
 
+    /** The absent id of an edge endpoint ({@code isNull} on a target). */
+    public static final byte TYPE_NULL = 3;
+
     private RocksDbIdCodec() {
     }
 
     /** The type tag of an id value. */
     public static byte typeOf(Object id) {
+        if (id == null) {
+            return TYPE_NULL;
+        }
         if (id instanceof Long) {
             return TYPE_LONG;
         }
@@ -48,6 +55,7 @@ public final class RocksDbIdCodec {
     /** Rebuilds an id from its type tag and text form. */
     public static Object decode(byte type, String text) {
         return switch (type) {
+            case TYPE_NULL -> null;
             case TYPE_LONG -> {
                 try {
                     yield Long.parseLong(text);

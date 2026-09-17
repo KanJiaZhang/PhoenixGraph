@@ -19,6 +19,8 @@ import com.pengcheng.phoenixgraph.schema.PropertyType;
  * index tunables ({@code null} = the defaults of
  * {@link com.pengcheng.phoenixgraph.schema.VectorIndexConfig}).
  *
+ * <p>{@code isNull} marks an edge target that may be absent ({@code null} = required).
+ *
  * <p>{@code isGeo} marks the property as a geographic point the graph indexes with
  * Google S2 cells; {@code geoLevel}/{@code geoMaxCells} are its index tunables
  * ({@code null} = the defaults of
@@ -31,24 +33,25 @@ public record PropertyDto(int id, String name, String description, PropertyType 
                           String vertex, Boolean display,
                           Boolean isVector, String metric, Integer m, Integer efConstruction,
                           Integer efSearch,
-                          Boolean isGeo, Integer geoLevel, Integer geoMaxCells) {
+                          Boolean isGeo, Integer geoLevel, Integer geoMaxCells,
+                          Boolean isNull) {
 
     public PropertyDto(int id, String name, String description, PropertyType type) {
         this(id, name, description, type, null, null, null, null, null, null,
-                null, null, null, null, null, null, null, null);
+                null, null, null, null, null, null, null, null, null);
     }
 
     public PropertyDto(int id, String name, String description, PropertyType type,
                        Number min, Number max, Integer minLength, Integer maxLength, String vertex) {
         this(id, name, description, type, min, max, minLength, maxLength, vertex, null,
-                null, null, null, null, null, null, null, null);
+                null, null, null, null, null, null, null, null, null);
     }
 
     public PropertyDto(int id, String name, String description, PropertyType type,
                        Number min, Number max, Integer minLength, Integer maxLength, String vertex,
                        Boolean display) {
         this(id, name, description, type, min, max, minLength, maxLength, vertex, display,
-                null, null, null, null, null, null, null, null);
+                null, null, null, null, null, null, null, null, null);
     }
 
     /** The vector and geo tunables in one place (used by the codec when it rebuilds a property). */
@@ -58,6 +61,6 @@ public record PropertyDto(int id, String name, String description, PropertyType 
                        Boolean isVector, String metric, Integer m, Integer efConstruction,
                        Integer efSearch, Boolean isGeo) {
         this(id, name, description, type, min, max, minLength, maxLength, vertex, display,
-                isVector, metric, m, efConstruction, efSearch, isGeo, null, null);
+                isVector, metric, m, efConstruction, efSearch, isGeo, null, null, null);
     }
 }

@@ -19,6 +19,7 @@ import java.util.Map;
 import com.pengcheng.phoenixgraph.query.traversal.NeighborVertexResolver;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -298,11 +299,11 @@ class GremlinGraphQueryTest {
     }
 
     @Test
-    void geoNearReplacesTheTraversersWithThePointsInsideTheRadius() {
+    void circleReplacesTheTraversersWithThePointsInsideTheRadius() {
         when(graphQuery.supportsGeoSearch()).thenReturn(true);
         when(graphQuery.geoNear(eq("person"), eq("location"), any())).thenReturn(List.of(
-                new GeoHit("person", "n1", new GeoPoint(31.2304d, 121.4737d), 0.2d),
-                new GeoHit("person", "n2", new GeoPoint(31.24d, 121.48d), 0.9d)));
+                new GeoHit("person", "n1", new GeoPoint(31.2304d, 121.4737d), 200d),
+                new GeoHit("person", "n2", new GeoPoint(31.24d, 121.48d), 900d)));
         when(graphQuery.readVertex("n1", "person", List.of())).thenReturn(
                 new VertexQueryResult("person", "n1", Map.of("name", "coffee"), 5L, 6L));
         when(graphQuery.readVertex("n2", "person", List.of())).thenReturn(
@@ -311,60 +312,128 @@ class GremlinGraphQueryTest {
                 new VertexQueryResult("person", "n1", Map.of("name", "coffee"), 5L, 6L));
         when(graphQuery.readVertex("n2", "person", List.of("name"))).thenReturn(
                 new VertexQueryResult("person", "n2", Map.of("name", "bakery"), 5L, 6L));
-        when(graphQuery.readVertex("n1", "person", List.of("distanceKm"))).thenReturn(
+        when(graphQuery.readVertex("n1", "person", List.of("distanceMeters"))).thenReturn(
                 new VertexQueryResult("person", "n1", Map.of(), 5L, 6L));
-        when(graphQuery.readVertex("n2", "person", List.of("distanceKm"))).thenReturn(
+        when(graphQuery.readVertex("n2", "person", List.of("distanceMeters"))).thenReturn(
                 new VertexQueryResult("person", "n2", Map.of(), 5L, 6L));
         GremlinGraphQuery engine = new GremlinGraphQuery(graphQuery, resolver)
                 .geoProperties(Map.of("person", "location"));
 
         // the radius rides in the JSON ...
         List<Object> names = engine.execute(
-                "g.V('v1','person').geoNear('{\"lat\":31.2304,\"lon\":121.4737,\"radiusKm\":1}')"
+                "g.V('v1','person').circle('{\"lat\":31.2304,\"lon\":121.4737,\"radius\":1000}')"
                         + ".values('name')");
         assertEquals(List.of("coffee", "bakery"), names);
 
         // ... and can be given as the step's own argument instead
         List<Object> distances = engine.execute(
-                "g.V('v1','person').geoNear('{\"lat\":31.2304,\"lon\":121.4737}', 2)"
-                        + ".values('distanceKm')");
-        assertEquals(List.of(0.2d, 0.9d), distances);
+                "g.V('v1','person').circle('{\"lat\":31.2304,\"lon\":121.4737}', 2000)"
+                        + ".values('distanceMeters')");
+        assertEquals(List.of(200d, 900d), distances);
 
         // the search ran on the type's geo property, once per traverser
         verify(graphQuery, org.mockito.Mockito.atLeastOnce()).geoNear(eq("person"), eq("location"), any());
     }
 
     @Test
-    void geoNearAttachesTheDistanceSoElementMapShowsIt() {
+    void anEdgeWithANullTargetIsReturnedByOutEButHopsNowhere() {
+        // a nullable target: the edge exists on its source, but there is no far vertex
+        when(graphQuery.readEdges("v1", "person", "opens", EdgeSide.OUT, List.of()))
+                .thenReturn(List.of(new EdgeQueryResult("opens", "e9", EdgeSide.OUT, null, Map.of("since", 3),
+                        5L, 6L)));
+
+        assertEquals(List.of(), gremlin.execute("g.V('v1','person').out('opens')"),
+                "following an edge with no target reaches no vertex");
+        assertEquals(1, gremlin.execute("g.V('v1','person').outE('opens')").size(),
+                "the edge itself is still there");
+        assertEquals(List.of(), gremlin.execute("g.V('v1','person').both('opens')"));
+
+        // the subgraph keeps the half edge: its target is null, so only the source is drawn
+        when(graphQuery.readVertex("v1", "person", List.of())).thenReturn(
+                new VertexQueryResult("person", "v1", Map.of(), 1L, 2L));
+        Subgraph subgraph = gremlin.executeSubgraph("g.V('v1','person').outE('opens')");
+        assertEquals(1, subgraph.vertices().size(), "the source vertex");
+        assertEquals(1, subgraph.edges().size());
+        assertEquals("v1", subgraph.edges().get(0).source());
+        assertNull(subgraph.edges().get(0).target(), "the edge has no far endpoint");
+    }
+
+    @Test
+    void aLimitAfterCircleIsPushedIntoTheSearch() {
+        when(graphQuery.supportsGeoSearch()).thenReturn(true);
+        when(graphQuery.geoNear(eq("person"), eq("location"), any())).thenAnswer(inv -> {
+            com.pengcheng.phoenixgraph.schema.geo.GeoSearch search = inv.getArgument(2);
+            java.util.List<GeoHit> hits = new java.util.ArrayList<>();
+            for (int i = 0; i < 20; i++) {
+                hits.add(new GeoHit("person", "n" + i, new GeoPoint(31.23d + i / 1000d, 121.47d), 100d + i));
+            }
+            // what a storage does with the pushed limit: only that many hits come back
+            return search.maxResults() > 0 ? hits.subList(0, search.maxResults()) : hits;
+        });
+        when(graphQuery.readVertices(eq("person"), anyList(), anyList())).thenAnswer(inv -> {
+            List<Object> ids = inv.getArgument(1);
+            List<VertexQueryResult> out = new ArrayList<>(ids.size());
+            for (Object id : ids) {
+                out.add(new VertexQueryResult("person", id, Map.of("name", "shop-" + id), 5L, 6L));
+            }
+            return out;
+        });
+        GremlinGraphQuery engine = new GremlinGraphQuery(graphQuery, resolver)
+                .geoProperties(Map.of("person", "location"));
+
+        // 20 hits inside the circle, but the query wants three ...
+        List<Object> names = engine.execute(
+                "g.V('v1','person').circle('{\"lat\":31.23,\"lon\":121.47,\"radius\":5000}')"
+                        + ".limit(3).values('name')");
+        assertEquals(List.of("shop-n0", "shop-n1", "shop-n2"), names);
+        // ... so the storage was asked for three hits and only three vertices were read
+        org.mockito.ArgumentCaptor<com.pengcheng.phoenixgraph.schema.geo.GeoSearch> searches =
+                org.mockito.ArgumentCaptor.forClass(com.pengcheng.phoenixgraph.schema.geo.GeoSearch.class);
+        verify(graphQuery, org.mockito.Mockito.atLeastOnce()).geoNear(eq("person"), eq("location"),
+                searches.capture());
+        assertEquals(3, searches.getValue().maxResults(), "the limit reached the storage");
+        verify(graphQuery, org.mockito.Mockito.times(3)).readVertices(eq("person"), anyList(), anyList());
+
+        // without a limit every hit is read (the previous behaviour, still correct)
+        org.mockito.Mockito.clearInvocations(graphQuery);
+        List<Object> all = engine.execute(
+                "g.V('v1','person').circle('{\"lat\":31.23,\"lon\":121.47,\"radius\":5000}')"
+                        + ".values('name')");
+        assertEquals(20, all.size());
+        verify(graphQuery, org.mockito.Mockito.times(20)).readVertices(eq("person"), anyList(), anyList());
+    }
+
+    @Test
+    void circleAttachesTheDistanceSoElementMapShowsIt() {
         when(graphQuery.supportsGeoSearch()).thenReturn(true);
         when(graphQuery.geoNear(eq("person"), eq("location"), any())).thenReturn(
-                List.of(new GeoHit("person", "n1", new GeoPoint(31.2304d, 121.4737d), 0.25d)));
+                List.of(new GeoHit("person", "n1", new GeoPoint(31.2304d, 121.4737d), 250d)));
         when(graphQuery.readVertex("n1", "person", List.of())).thenReturn(
                 new VertexQueryResult("person", "n1", Map.of("name", "coffee"), 5L, 6L));
         GremlinGraphQuery engine = new GremlinGraphQuery(graphQuery, resolver)
                 .geoProperties(Map.of("person", "location"));
 
-        assertEquals(Map.of("id", "n1", "label", "person", "name", "coffee", "distanceKm", 0.25d),
-                engine.execute("g.V('v1','person').geoNear('{\"lat\":31.23,\"lon\":121.47,\"radiusKm\":1}')"
+        assertEquals(Map.of("id", "n1", "label", "person", "name", "coffee", "distanceMeters", 250d),
+                engine.execute("g.V('v1','person').circle('{\"lat\":31.23,\"lon\":121.47,\"radius\":1000}')"
                         + ".elementMap()").get(0));
     }
 
     @Test
-    void geoNearExplainsAMissingIndexOrRadius() {
+    void circleExplainsAMissingIndexOrRadius() {
         GremlinGraphQuery engine = new GremlinGraphQuery(graphQuery, resolver);
         // no geo property is declared for the type
         QueryException noIndex = assertThrows(QueryException.class, () -> engine.execute(
-                "g.V('v1','person').geoNear('{\"lat\":31.23,\"lon\":121.47,\"radiusKm\":1}')"));
+                "g.V('v1','person').circle('{\"lat\":31.23,\"lon\":121.47,\"radius\":1000}')"));
         assertTrue(noIndex.getMessage().contains("No geo index"), noIndex.getMessage());
 
         // the point JSON without a radius anywhere
         QueryException noRadius = assertThrows(QueryException.class, () -> engine.execute(
-                "g.V('v1','person').geoNear('{\"lat\":31.23,\"lon\":121.47}')"));
+                "g.V('v1','person').circle('{\"lat\":31.23,\"lon\":121.47}')"));
         assertTrue(noRadius.getMessage().contains("radius"), noRadius.getMessage());
 
         // a point that is not a point
         QueryException badPoint = assertThrows(QueryException.class, () -> engine.execute(
-                "g.V('v1','person').geoNear('not-a-point', 1)"));
+                "g.V('v1','person').circle('not-a-point', 1000)"));
         assertTrue(badPoint.getMessage().contains("point"), badPoint.getMessage());
     }
 

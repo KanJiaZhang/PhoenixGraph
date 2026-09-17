@@ -81,16 +81,19 @@ public class GremlinGraphQuery {
             int ef = args.size() > 1 ? positiveInt(args.get(1), "nearest") : 0;
             return GremlinSteps.nearest(vertexType -> resolvedHnswIndexes().get(vertexType), k, ef);
         });
-        // the geo step resolves the geo property of the traverser's vertex type
-        registry.register("geoNear", args -> {
-            if (args.isEmpty() || args.size() > 2) {
-                throw new QueryException("geoNear expects geoNear(pointJson) or geoNear(pointJson, radiusKm),"
+        // the circle step resolves the geo property of the traverser's vertex type; its third
+        // argument is the query's limit, which the compile step pushes in (see #pushLimits)
+        registry.register("circle", args -> {
+            if (args.isEmpty() || args.size() > 3) {
+                throw new QueryException("circle expects circle(pointJson[, radiusMeters][, limit]),"
                         + " got " + args.size() + " arguments");
             }
-            Double radius = args.size() > 1 ? positiveDouble(args.get(1), "geoNear") : null;
+            Double radius = arg(args, 1, "circle") == null ? null : positiveDouble(args.get(1), "circle");
+            Integer limit = arg(args, 2, "circle") == null ? null : positiveInt(args.get(2), "circle");
             try {
                 GeoSearch search = GeoSearch.parse(args.get(0), radius);
-                return GremlinSteps.geoNear(vertexType -> geoProperties.get(vertexType), graphQuery, search);
+                return GremlinSteps.circle(vertexType -> geoProperties.get(vertexType), graphQuery,
+                        limit == null ? search : search.withMaxResults(limit));
             } catch (IllegalArgumentException e) {
                 // a point or radius the step cannot read is a query error like any other
                 throw new QueryException(e.getMessage(), e);
@@ -100,7 +103,7 @@ public class GremlinGraphQuery {
 
     /**
      * Declares which property of which vertex type is a geo property (declared with
-     * {@code isGeo} in the schema). The {@code geoNear} step uses it to find the index of the
+     * {@code isGeo} in the schema). The {@code circle} step uses it to find the index of the
      * type its traversers are on, exactly like {@link #hnswIndex} does for vector search.
      */
     public GremlinGraphQuery geoProperties(Map<String, String> geoPropertyByVertexType) {
@@ -238,12 +241,45 @@ public class GremlinGraphQuery {
         return compile(GremlinQuery.parse(gremlin));
     }
 
+    /**
+     * Rewrites {@code circle(...)} followed by {@code limit(k)} into one {@code circle} step
+     * carrying the limit ({@code circle(pointJson, radiusMeters, k)}), so the limit is applied
+     * inside the index search rather than after every hit was read.
+     *
+     * <p>The rewrite is only about <i>where</i> the limit runs: the result of
+     * {@code circle(...).limit(k)} is the k nearest points either way, but here the storage
+     * stops early instead of materialising the whole circle.
+     */
+    private static List<GremlinQuery.Step> pushLimitsIntoCircle(List<GremlinQuery.Step> steps) {
+        List<GremlinQuery.Step> out = new ArrayList<>(steps.size());
+        for (int i = 0; i < steps.size(); i++) {
+            GremlinQuery.Step step = steps.get(i);
+            if (!step.name().equals("circle") || i + 1 >= steps.size()
+                    || !steps.get(i + 1).name().equals("limit")) {
+                out.add(step);
+                continue;
+            }
+            List<String> args = new ArrayList<>(step.args());
+            while (args.size() < 2) {
+                args.add(""); // no radius given: it comes from the point JSON
+            }
+            args.add(steps.get(i + 1).args().get(0));
+            out.add(new GremlinQuery.Step("circle", List.copyOf(args)));
+            i++; // the limit became part of the circle
+        }
+        return out;
+    }
+
     private CompiledQuery compile(GremlinQuery query) {
         List<GremlinQuery.Step> parsedSteps = new ArrayList<>(query.steps());
         if (query.logic() != null && !query.logic().isBlank()) {
             parsedSteps.addAll(expandLogic(query.logic()));
         }
         parsedSteps = optimizeSteps(parsedSteps);
+        // a circle step absorbs the limit directly following it: the geo search keeps only that
+        // many hits while it walks the index, so the vertex reads, the collected subgraph and
+        // the rendered graph stop at the limit instead of covering the whole circle
+        parsedSteps = pushLimitsIntoCircle(parsedSteps);
         // a nearest step absorbs the has/filter conditions directly following it: they
         // are evaluated inside the graph walk, so the search returns the closest k that
         // *match* instead of the k closest of which some happen to match
@@ -503,10 +539,19 @@ public class GremlinGraphQuery {
     private static boolean isHop(String name) {
         return name.equals("out") || name.equals("in") || name.equals("both")
                 || name.equals("outE") || name.equals("inE") || name.equals("bothE")
-                || name.equals("otherV") || name.equals("nearest") || name.equals("geoNear");
+                || name.equals("otherV") || name.equals("nearest") || name.equals("circle");
     }
 
-    /** Parses a positive step argument that may be a decimal (a radius in kilometres). */
+    /** An optional step argument: blank means "not given". */
+    private static String arg(List<String> args, int index, String stepName) {
+        if (index >= args.size()) {
+            return null;
+        }
+        String value = args.get(index);
+        return value == null || value.isBlank() ? null : value;
+    }
+
+    /** Parses a positive step argument that may be a decimal (a radius in metres). */
     private static double positiveDouble(String text, String stepName) {
         try {
             double value = Double.parseDouble(text.trim());

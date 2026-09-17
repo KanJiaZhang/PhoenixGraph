@@ -143,14 +143,16 @@ public class SchemaJsonCodec {
                 vector == null ? null : vector.efSearch(),
                 property.isGeo() ? Boolean.TRUE : null,
                 geo == null ? null : geo.level(),
-                geo == null ? null : geo.maxCells());
+                geo == null ? null : geo.maxCells(),
+                null);
     }
 
     private PropertyDto toEndpointDto(EdgeEndpointSchema endpoint) {
         PropertyConstraints constraints = endpoint.constraints();
         return new PropertyDto(endpoint.id(), endpoint.name(), endpoint.description(), endpoint.type(),
                 constraints.min(), constraints.max(), constraints.minLength(), constraints.maxLength(),
-                endpoint.vertexName(), null);
+                endpoint.vertexName(), null, null, null, null, null, null, null, null, null,
+                endpoint.isNull() ? Boolean.TRUE : null);
     }
 
     // --- DTO -> domain ---
@@ -217,7 +219,7 @@ public class SchemaJsonCodec {
 
     private EdgeEndpointSchema toEndpoint(PropertyDto dto) {
         return new EdgeEndpointSchema(dto.id(), dto.name(), dto.description(), dto.type(),
-                dto.vertex(), toConstraints(dto));
+                dto.vertex(), toConstraints(dto)).nullable(Boolean.TRUE.equals(dto.isNull()));
     }
 
     /**

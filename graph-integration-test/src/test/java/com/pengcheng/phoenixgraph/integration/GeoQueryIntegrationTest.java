@@ -34,7 +34,7 @@ class GeoQueryIntegrationTest {
 
     /** The query the demo shows: the nearest shops within one kilometre of People's Square. */
     private static final String NEAREST_1KM =
-            "g.V('1','Merchant').geoNear('{\"lat\":31.2304,\"lon\":121.4737,\"radiusKm\":1}')";
+            "g.V('1','Merchant').circle('{\"lat\":31.2304,\"lon\":121.4737,\"radius\":1000}')";
 
     @TempDir
     static Path directory;
@@ -90,35 +90,36 @@ class GeoQueryIntegrationTest {
         assertEquals(GeoMerchantDataLoader.SHOPS_WITHIN_1_KM, oneKm,
                 "the spiral puts " + GeoMerchantDataLoader.SHOPS_WITHIN_1_KM + " shops within 1 km");
         assertEquals(GeoMerchantDataLoader.MERCHANT_COUNT,
-                (long) inline.execute("g.V('1','Merchant').geoNear('{\"lat\":31.2304,\"lon\":121.4737}',"
-                        + " 2).count()").get(0),
+                (long) inline.execute("g.V('1','Merchant').circle('{\"lat\":31.2304,\"lon\":121.4737}',"
+                        + " 2000).count()").get(0),
                 "a 2 km radius holds every shop");
         // a small radius holds the few shops right around the centre
-        long near = (long) inline.execute("g.V('1','Merchant').geoNear('{\"lat\":31.2304,\"lon\":121.4737}',"
-                + " 0.2).count()").get(0);
-        assertTrue(near >= 20 && near <= 30, "0.2 km holds the first ~26 shops, got " + near);
+        long near = (long) inline.execute("g.V('1','Merchant').circle('{\"lat\":31.2304,\"lon\":121.4737}',"
+                + " 200).count()").get(0);
+        assertTrue(near >= 20 && near <= 30, "200 m holds the first ~26 shops, got " + near);
 
         // both schemes answer the same
-        for (String radius : List.of("0.2", "0.5", "1", "1.5")) {
-            String query = "g.V('1','Merchant').geoNear('{\"lat\":31.2304,\"lon\":121.4737}', " + radius
+        for (String radius : List.of("200", "500", "1000", "1500")) {
+            String query = "g.V('1','Merchant').circle('{\"lat\":31.2304,\"lon\":121.4737}', " + radius
                     + ").count()";
-            assertEquals(inline.execute(query), edge.execute(query), "radius " + radius + " km");
+            assertEquals(inline.execute(query), edge.execute(query), "radius " + radius + " m");
         }
     }
 
     @Test
     void resultsAreTheNearestShopsWithTheirDistance() {
-        List<Object> distances = inline.execute(NEAREST_1KM + ".limit(5).values('distanceKm')");
+        List<Object> distances = inline.execute(NEAREST_1KM + ".limit(5).values('distanceMeters')");
         assertEquals(5, distances.size());
         double previous = -1;
         for (Object distance : distances) {
             double value = ((Number) distance).doubleValue();
-            assertTrue(value <= 1d, "a hit inside the radius: " + value);
+            assertTrue(value <= 1_000d, "a hit inside the radius: " + value);
             assertTrue(value >= previous, "nearest first: " + distances);
             previous = value;
         }
         // the closest shop is the first of the spiral, 50 m from the centre
-        assertEquals(GeoMerchantDataLoader.FIRST_DISTANCE_KM, ((Number) distances.get(0)).doubleValue(), 0.01d);
+        assertEquals(GeoMerchantDataLoader.FIRST_DISTANCE_KM * 1_000d,
+                ((Number) distances.get(0)).doubleValue(), 10d);
 
         // the same five shops, in the same order, on the other scheme
         assertEquals(inline.execute(NEAREST_1KM + ".limit(5).values('name')"),
@@ -142,7 +143,7 @@ class GeoQueryIntegrationTest {
         Map<String, Object> first = (Map<String, Object>) inline.execute(NEAREST_1KM + ".limit(1).elementMap()")
                 .get(0);
         assertEquals("Merchant", first.get("label"));
-        assertTrue(first.containsKey("distanceKm"), first.toString());
+        assertTrue(first.containsKey("distanceMeters"), first.toString());
         assertTrue(first.containsKey("name") && first.containsKey("category"), first.toString());
     }
 
@@ -152,9 +153,9 @@ class GeoQueryIntegrationTest {
                 NEAREST_1KM + ".limit(10).values('name')",
                 NEAREST_1KM + ".count()",
                 NEAREST_1KM + ".has('category','bakery').values('name')",
-                "g.V('1','Merchant').geoNear('{\"lat\":31.2304,\"lon\":121.4737,\"radiusKm\":0.4}')"
+                "g.V('1','Merchant').circle('{\"lat\":31.2304,\"lon\":121.4737,\"radius\":400}')"
                         + ".limit(3).elementMap()",
-                "g.V('1','Merchant').geoNear('{\"lat\":31.22,\"lon\":121.48}', 0.6).count()");
+                "g.V('1','Merchant').circle('{\"lat\":31.22,\"lon\":121.48}', 600).count()");
         for (String query : queries) {
             assertEquals(inline.execute(query), edge.execute(query), "query: " + query);
         }
@@ -162,13 +163,56 @@ class GeoQueryIntegrationTest {
 
     @Test
     void anotherCentreFindsAnotherNeighbourhood() {
-        long north = (long) inline.execute("g.V('1','Merchant').geoNear('{\"lat\":31.2404,\"lon\":121.4737}',"
-                + " 0.3).count()").get(0);
+        long north = (long) inline.execute("g.V('1','Merchant').circle('{\"lat\":31.2404,\"lon\":121.4737}',"
+                + " 300).count()").get(0);
         assertTrue(north > 0, "shops north of the centre");
         // the two circles overlap but are not the same set
-        long centre = (long) inline.execute("g.V('1','Merchant').geoNear('{\"lat\":31.2304,\"lon\":121.4737}',"
-                + " 0.3).count()").get(0);
+        long centre = (long) inline.execute("g.V('1','Merchant').circle('{\"lat\":31.2304,\"lon\":121.4737}',"
+                + " 300).count()").get(0);
         assertTrue(north != centre, "a different centre finds a different set (" + north + " vs " + centre + ")");
+    }
+
+    @Test
+    void anEdgeWithANullableTargetIsAnOutEdgeWithNoNeighbour() {
+        // the demo data holds three "opens" edges: a merchant announced a deal whose
+        // counterpart is not known yet, and the schema declares the target nullable
+        for (GremlinGraphQuery engine : List.of(inline, edge)) {
+            assertEquals(GeoMerchantDataLoader.OPEN_DEALS,
+                    ((Number) engine.execute("g.V('1','Merchant').outE('Opens').count()").get(0)).intValue(),
+                    "the edge is stored on its source");
+            assertEquals(List.of(), engine.execute("g.V('1','Merchant').out('Opens')"),
+                    "following it reaches no vertex");
+            assertEquals(List.of(), engine.execute("g.V('1','Merchant').both('Opens')"));
+            // the edge itself carries its properties and no far endpoint
+            @SuppressWarnings("unchecked")
+            Map<String, Object> edgeMap = (Map<String, Object>) engine.execute(
+                    "g.V('1','Merchant').outE('Opens').limit(1).elementMap()").get(0);
+            assertEquals("Opens", edgeMap.get("label"));
+            assertTrue(String.valueOf(edgeMap.get("title")).startsWith("Deal #"), edgeMap.toString());
+        }
+    }
+
+    @Test
+    void aLimitAfterCircleLimitsWhatIsReadAndDrawn() {
+        // the UI draws the visited subgraph, so a limited circle must not collect the whole
+        // circle: ten merchants asked for means ten merchants read, collected and drawn
+        com.pengcheng.phoenixgraph.query.result.Subgraph subgraph = inline.executeSubgraph(
+                NEAREST_1KM + ".limit(10)");
+        assertEquals(10, subgraph.vertices().size(), "ten shops, not the 159 inside the radius");
+        java.util.Set<String> names = subgraph.vertices().stream()
+                .map(vertex -> String.valueOf(vertex.properties().get("name")))
+                .collect(java.util.stream.Collectors.toSet());
+        assertTrue(names.containsAll(List.of(GeoMerchantDataLoader.nameOf(0),
+                        GeoMerchantDataLoader.nameOf(1), GeoMerchantDataLoader.nameOf(9))),
+                "the ten nearest shops are the ones collected: " + names);
+        assertTrue(!names.contains(GeoMerchantDataLoader.nameOf(50)),
+                "shops beyond the limit are not collected: " + names);
+
+        // without a limit the whole circle is collected (159 shops, 0 edges)
+        com.pengcheng.phoenixgraph.query.result.Subgraph all = inline.executeSubgraph(NEAREST_1KM);
+        assertEquals(GeoMerchantDataLoader.SHOPS_WITHIN_1_KM, all.vertices().size());
+        // and the same on the other scheme
+        assertEquals(10, edge.executeSubgraph(NEAREST_1KM + ".limit(10)").vertices().size());
     }
 
     @Test

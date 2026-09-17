@@ -1210,3 +1210,111 @@ java -jar graph-web/target/graph-web-*.jar            # 8080：UI
 | `RocksDbLiveLoadTest`（+1） | 真实落盘装载 geo 实例 + 重新打开执行 demo 查询 |
 
 全量 `./mvnw test`：**19 个模块 BUILD SUCCESS**（含全部新测试）。
+
+---
+
+## 23. 四项修正：示例框同列、RocksDB 子图缺边、`circle` 改名 + 米制 + limit 下推、`isNull` target
+
+### 23.1 示例框与查询框同列
+
+`.example-select` 从 `align-self: center` 改为 `align-self: flex-start`：宽度仍是查询框的 **1/3**
+（用户上一轮的要求 ✓），但**左边缘与查询框对齐**、直接位于其下方 —— 即两者在**同一列**里 ✓。
+
+headless Edge 实测（8080）：
+
+```
+textareaLeft 33, textareaWidth 1404
+pickerLeft   33, pickerWidth   468      -> sameLeftEdge true, widthRatio 0.333, below true
+```
+
+### 23.2 RocksDB 实例上「只有点没有边」的根因与修复
+
+`g.V('1000','Account').out('AccountToPhone')` 在 Aerospike 上正常画边，在两个 RocksDB 实例上只出现两个点 ✗。
+
+根因：**同一张子图里，点的 id 与边的端点 id 类型不一致**：
+
+| 来源 | id 形态 |
+|---|---|
+| 子图顶点 | 从存储回读 → **原生类型**（RocksDB 的 `idType` 字节还原成数字 `1000`） |
+| 子图边的端点 | 遍历器上记录的 id → 查询里写的是**字符串**（种子点 `g.V('1000',...)` 未读记录时直接沿用请求 id） |
+
+UI 用 `label::id` 做 join，`1000 !== "1000"` → 边被丢掉 ✓。Aerospike 恰好两边都是字符串所以看不出来 ✗。
+
+修复：`Subgraph.Vertex/Edge` 的 id **统一成文本**（构造器里 `String.valueOf`），并且在
+`GremlinContext.recordVertex/recordEdge`、顶点端点表、`CypherGraphQuery` 的记录点也一起规范化 ——
+这样「同一个点在两条路径下被记录两次」也不会变成两个节点 ✓。
+
+线上实测（8081）：
+
+```
+payment-graph                3v 2e   edges whose endpoints are drawn: 2/2
+payment-graph-rocksdb-inline 2v 1e   edges whose endpoints are drawn: 1/1
+payment-graph-rocksdb-edge   2v 1e   edges whose endpoints are drawn: 1/1
+   vertices "1000", "6000"    edges AccountToPhone:"1000"->"6000"
+```
+
+### 23.3 `geoNear` → `circle`，半径单位改为**米**，`limit` 下推进索引搜索
+
+1). step 改名 **`circle`**，JSON 键改名 **`radius`**、单位 **米**：
+
+```
+g.V('1','Merchant').circle('{"lat":31.2304,"lon":121.4737,"radius":1000}').limit(10)
+g.V('1','Merchant').circle('{"lat":31.2304,"lon":121.4737}', 500)        // 半径作为 step 参数（米）
+```
+
+连带统一：`GeoSearch.radiusMeters`、`GeoPoint.distanceMeters`（haversine，地球半径 6371008.8m）、
+`GeoHit.distanceMeters`、结果附带属性 **`distanceMeters`**（`values('distanceMeters')` /
+`elementMap()` 可用 ✓）、S2 `levelForRadius(meters)`、Aerospike `Filter.geoWithinRadius(..., meters)`。
+
+2). **`limit` 下推**（性能问题的根因）：以前是「查出圆内全部点 → 读全部顶点 → 再取 limit」✗，
+现在编译期把紧跟 `circle` 的 `limit(k)` 合并进 step 参数（`circle(pointJson, radius, k)` ✓），
+搜索侧 `GeoSearch.maxResults=k`：
+
+- `GeoHit.TopK`：扫描覆盖 cell 时用**大小为 k 的最大堆**只保留最近的 k 个（内存有界 ✓）；
+- step 只对 k 个命中回读顶点、只把 k 个点收进子图 ✓（`isHop("circle")` 也一并登记，投影计划才正确 ✓）。
+
+实测（两个 geo 实例一致）：
+
+```
+limit(10)  -> result 10, subgraph 10v      （修复前 subgraph = 圆内全部 159v ✗）
+no limit   -> 159                           （语义不变 ✓）
+nearest 3  -> Coffee #1 50.0m, Bakery #2 55.97m, Pharmacy #3 61.93m   （最近优先，米）
+```
+
+单测断言了「有 limit 只读 3 个顶点、无 limit 读全部 20 个」✓（`readVertices` 调用次数）。
+
+### 23.4 Edge target 的 `isNull`：允许没有指向的边
+
+Schema（只允许写在 **target** 上）：
+
+```json
+"target": { "id": 2, "name": "target", "type": "LONG", "vertex": "Merchant", "isNull": true }
+```
+
+语义：target 可以为 `null` 的边**只存出边**，没有点指向它：
+
+| 层 | 行为 |
+|---|---|
+| 写入 | RocksDB-Inline 只写 source 的 `ve_<schema>_2`（OUT）；RocksDB-Edge 只写 source 的 `direction=1` 行；Aerospike 只写 source 的 bin ✓（`RocksDbEdgeUpsert` 在 schema 不允许时直接报错 ✓） |
+| 删除 | 只删 source 那一侧 ✓ |
+| `outE()/bothE()` | 正常返回该边，`otherVertexId = null` ✓ |
+| `out()/both()` | **不产生遍历器**（没有下一个点 ✓） |
+| 子图 | 边保留但 `target = null` ✓（修了 `buildSubgraph` 里 `List.of(source, target)` 遇到 null 抛 NPE 的 bug ✗） |
+| 校验 | `isNull` 写在 source → **error** ✓；无向边声明 null target → warning ✓；同时声明入度上限 → warning ✓ |
+| JSON | `isNull` 参与 DTO/codec round-trip ✓；`RocksDbIdCodec` 新增 `TYPE_NULL=3`，null 端点不再被写成字符串 `"null"` ✓ |
+
+demo 数据里给两个 geo 实例各加了 `Opens` 边类（Merchant → Merchant，target `isNull`）与 3 条「未确定对手方」的商机 ✓，
+线上实测：
+
+```
+outE('Opens') = 3 条，otherVertexId = null，带 since/title 属性
+out('Opens')  = []        both('Opens') = []
+subgraph edges: deal_1:"1"->null, deal_2:"1"->null, deal_3:"1"->null
+```
+
+### 23.5 测试
+
+新增/更新：`GremlinGraphQueryTest`（+2：nullable target 的 hop/子图语义、limit 下推的读取次数）、
+`GeoQueryIntegrationTest`（+2：limit 只收 k 个点的子图、nullable target 的端到端）、
+`RocksDbInlineStoreTest`（+1：nullable target 只写出边）、`GeoPropertyTest`（+1：isNull 校验与 JSON round-trip）、
+以及全部 geo 测试改名为 `circle`/米制 ✓。全量 `./mvnw test`：**19 个模块 BUILD SUCCESS**（0 失败）。

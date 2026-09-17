@@ -16,17 +16,18 @@ import java.util.Map;
  *   <li>another {@link GeoPoint}.</li>
  * </ul>
  *
- * <p>Distances use the haversine formula on a sphere of {@link #EARTH_RADIUS_KM}, which is
+ * <p>Distances use the haversine formula on a sphere of {@link #EARTH_RADIUS_METERS}, which is
  * accurate to a few metres over the ranges a radius query uses - plenty for "shops within one
- * kilometre", and cheap enough to run on every candidate a cell scan returns.
+ * kilometre", and cheap enough to run on every candidate a cell scan returns. Distances and
+ * radii are <b>metres</b>: a radius query is written {@code "radius": 1000}.
  *
  * @param lat latitude in degrees, -90 to 90
  * @param lon longitude in degrees, -180 to 180
  */
 public record GeoPoint(double lat, double lon) {
 
-    /** Mean earth radius in kilometres. */
-    public static final double EARTH_RADIUS_KM = 6371.0088d;
+    /** Mean earth radius in metres. */
+    public static final double EARTH_RADIUS_METERS = 6_371_008.8d;
 
     private static final double DEG_TO_RAD = Math.PI / 180d;
 
@@ -102,7 +103,7 @@ public record GeoPoint(double lat, double lon) {
 
     /**
      * Parses {@code "31.2304,121.4737"} or a JSON object such as
-     * {@code {"lat":31.2304,"lon":121.4737}} (the radius, if present, is ignored here).
+     * {@code {"lat":31.2304,"lon":121.4737}} (a radius, if present, is ignored here).
      *
      * @throws IllegalArgumentException when the text does not describe a point
      */
@@ -142,15 +143,15 @@ public record GeoPoint(double lat, double lon) {
         return new GeoPoint(lat, lon);
     }
 
-    /** The great-circle distance to another point, in kilometres. */
-    public double distanceKm(GeoPoint other) {
+    /** The great-circle distance to another point, in metres. */
+    public double distanceMeters(GeoPoint other) {
         double lat1 = lat * DEG_TO_RAD;
         double lat2 = other.lat * DEG_TO_RAD;
         double dLat = (other.lat - lat) * DEG_TO_RAD;
         double dLon = (other.lon - lon) * DEG_TO_RAD;
         double a = Math.sin(dLat / 2) * Math.sin(dLat / 2)
                 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
-        return 2 * EARTH_RADIUS_KM * Math.asin(Math.min(1d, Math.sqrt(a)));
+        return 2 * EARTH_RADIUS_METERS * Math.asin(Math.min(1d, Math.sqrt(a)));
     }
 
     @Override
