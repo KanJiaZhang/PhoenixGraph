@@ -11,6 +11,8 @@
   `efSearch` 默认 50、`has`/`filter` 下沉进 HNSW 搜索
 - 追加（第 18 节）：有向边布局验证（source 存 out-bin、target 存 in-bin，两跳四组合全通）、
   修复 `@PathVariable` 未命名导致 `GET|DELETE /vertices/{id}` 等接口 400/500 的 bug
+- 追加（第 24 节）：示例框回到查询框同一行靠右（宽度仍为 1/3）；浮窗只在结果为非点非边时显示（点/边列表自动隐藏）；
+  「结果」tab 改为仅 Cypher 且查询过之后才出现
 - 追加（第 23 节）：示例框与查询框同列；修复 RocksDB 子图**只有点没有边**（子图 id 统一为文本）；
   geo step 改名 `circle`、半径改米、`limit` 下推进索引搜索（不再先取全部再截断）；
   edge target 新增 `isNull`（只存出边、没有指向，含校验/存储/查询/子图）
