@@ -34,24 +34,26 @@ public class VertexController {
     }
 
     @GetMapping("/{id}")
-    public ResponseEntity<StoredVertex> get(@PathVariable Object id) {
+    public ResponseEntity<StoredVertex> get(@PathVariable("id") Object id) {
         StoredVertex vertex = service.getVertex(id);
         return vertex == null ? ResponseEntity.notFound().build() : ResponseEntity.ok(vertex);
     }
 
     @DeleteMapping("/{id}")
-    public ResponseEntity<WriteResult> delete(@PathVariable Object id) {
+    public ResponseEntity<WriteResult> delete(@PathVariable("id") Object id) {
         return WriteResponses.of(id, service.deleteVertex(id));
     }
 
     @PutMapping("/{id}/properties/{index}")
-    public ResponseEntity<WriteResult> updateProperty(@PathVariable Object id, @PathVariable int index,
+    public ResponseEntity<WriteResult> updateProperty(@PathVariable("id") Object id,
+                                                      @PathVariable("index") int index,
                                                       @RequestBody PropertyUpdateRequest request) {
         return WriteResponses.of(id, service.updateVertexProperty(id, index, request));
     }
 
     @DeleteMapping("/{id}/properties/{index}")
-    public ResponseEntity<WriteResult> deleteProperty(@PathVariable Object id, @PathVariable int index) {
+    public ResponseEntity<WriteResult> deleteProperty(@PathVariable("id") Object id,
+                                                      @PathVariable("index") int index) {
         return WriteResponses.of(id, service.deleteVertexProperty(id, index));
     }
 }

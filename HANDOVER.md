@@ -9,6 +9,8 @@
 - 追加（第 17 节）：重复边 id 记 bizlog、`POST /api/v1/vector-index/rebuild` 重建索引、
   一个点类型只能有一个向量属性、demo 数据加 `bucket`(INT)/`category`(STRING) 属性、
   `efSearch` 默认 50、`has`/`filter` 下沉进 HNSW 搜索
+- 追加（第 18 节）：有向边布局验证（source 存 out-bin、target 存 in-bin，两跳四组合全通）、
+  修复 `@PathVariable` 未命名导致 `GET|DELETE /vertices/{id}` 等接口 400/500 的 bug
 
 > 详细设计与实测数据在 `CONTEXT.md`：**第 15 节**（HNSW 引擎、SIFT Demo、召回实测）、
 > **第 16 节**（schema 驱动、自动建边、写入路径、缓存、配置、验证）、

@@ -660,3 +660,56 @@ vertex schema 'Doc' declares 2 vector properties (a, b); a vertex type may have 
 单元测试（2000 点合成数据，PRNG 属性）`pushed-down=0.990 vs post-filter=0.108`；查询语言侧 `g.V('4242','Vector').nearest(20).has('bucket',3)` → **20 个点全部 bucket=3**（`nearest(20)` 原始结果里只有 4 个），字符串属性 `has('category','music')` 同理。
 
 **取舍**：过滤越狠，候选表越大、越慢（`k/selectivity` 是硬道理）。目前是"先按声明的选择率一次到位、不够再按实测通过率放大"；如果调用方能给准确的选择率（统计信息/采样），第一次就能取到正确大小、避免重试。
+
+---
+
+## 18. 有向边的存储布局（source 存出边 / target 存入边）与两跳验证
+
+### 18.1 布局
+
+`upsertEdge` 对 DIRECTED 边写两条记录（`AerospikeEdgeStore.sourceDirection/destinationDirection`）：
+
+| 记录 | bin | 内容 |
+|---|---|---|
+| **source 的顶点记录** | `ve_<edgeSchemaId>_2`（`EDGE_DIR_OUT`）| 一个 CDT map，key = edgeId，value 里 `otherVertexId` = **destination** |
+| **target 的顶点记录** | `ve_<edgeSchemaId>_1`（`EDGE_DIR_IN`）| 同样以 edgeId 为 key，但 `otherVertexId` = **source** |
+
+UNDIRECTED / BIDIRECTIONAL 边则两边都写 `ve_<id>_0`（`EDGE_DIR_BOTH`）。因此**有向边没有任何"共享 bin"**：
+`getEdges(v, schema, EDGE_DIR_BOTH)` 对有向边永远是空 —— 这一条本身就是"方向被真正分开存了"的证明（只有无向边才会落到 `_0` bin）。
+
+查询层的 `EdgeSide.BOTH` 不是读 `_0` bin，而是**OUT + IN 各读一次再合并**（`AerospikeGraphQuery.readEdgesForVertex`），所以 `both()`/`bothE()` 在有向图上依然能看到两个方向。
+
+### 18.2 验证（`DirectedEdgeStorageIntegrationTest`）
+
+用 `QueryDataSeeder` 的确定性有向数据（Account 100..199 成环 + 跨 3 的弦：`p_i: 100+i -> 100+(i+1)%100`、`p_i: 100+i -> 100+(i+3)%100`；`pa_i: Phone 300+i -> Account 100+i`），在**独立 set**（默认 `directed_edges_v1`）里做了四层断言：
+
+1. **裸 bin**：直接 `client.get` 记录 → Account 100 的 out-bin = `{p0, p100}`、Account 101 的 in-bin = `{p0, p198}`；`edgeBin(schemaId, OUT/IN)` 正是 `ve_<id>_2` / `ve_<id>_1`。
+2. **存储层**：`getEdges("100", Payment, OUT)` = `{p0, p100}`、`IN` = `{p99, p197}`、`BOTH` = **空**；同一条 `p0` 在 source 的 out-bin 里 `otherVertexId=101`、在 target 的 in-bin 里 `otherVertexId=100`；`p0` 不会出现在 source 的 in-bin / target 的 out-bin；`PhoneToAccount`（Phone→Account）在 Account 上只有 in、在 Phone 上只有 out。
+3. **查询层**：`readEdges(..., EdgeSide.OUT/IN/BOTH)` 分别给出目标/源/并集；反向读（Account 的 `PhoneToAccount` OUT、Phone 的 `PhoneToAccount` IN）为空。
+4. **遍历语言**：
+   - 一跳：`out/in/both` 三种方向的确切邻居集；`outE` 的 `side=OUT`、`inE` 的 `side=IN`；
+   - 两跳四组合（精确集合 + 计数）：
+     `out.out(100) = {102,104,106}`、`in.in(100) = {194,196,198}`、`in.out(100) = {100,102,198}`、`out.in(100) = {100,102,198}`；
+     `out().out().count() = in().in().count() = 4`（含重复，104 与 196 各有两条路径），`dedup()` 后为 3；
+   - 跨 schema：`g.V('300','Phone').out('PhoneToAccount').out('Payment') = {101,103}`，而 Phone 的 `in('PhoneToAccount')` 为空。
+
+**线上 demo（8081 / `http_demo_v1`，真实 Payment 数据）** 另做了一次与数据无关的镜像校验：随机 10 个种子点收集 **167 条不同的边**，逐条核对
+「A 的 `outE('Payment')` 里的边 id，必须出现在 B 的 `inE('Payment')` 里，且 `side=IN`、`otherVertexId=A`」→ **167/167 通过，0 条反向泄漏**；再用写接口造链 `3001→3002→3003` 验证 `out.out(3001)={3003}`、`in.in(3003)={3001}`、`in.out/out.in(3002)={3002}`，删除边后两个端点同时消失。
+
+### 18.3 顺带修掉的一个真 bug
+
+验证过程中发现：`@PathVariable Object id` 形式的接口（`GET|DELETE /api/v1/vertices/{id}`、`PUT|DELETE /api/v1/vertices/{id}/properties/{index}`、`DELETE /api/v1/edges/{edgeId}`）**全部返回 400/500**：
+
+```
+Name for argument of type [java.lang.Object] not specified, and parameter name information
+not available via reflection. Ensure that the compiler uses the '-parameters' flag.
+```
+
+根因：项目编译时没保留方法参数名，Spring 无法按名字绑定 `@PathVariable`。修复两处：
+
+1. 父 `pom.xml` 的 `maven-compiler-plugin` 加 `<parameters>true</parameters>`（Java 8+ 的 `-parameters`）；
+2. 这几个 handler 的注解写上显式名字（`@PathVariable("id")` 等），不再依赖编译开关。
+
+新增 `VertexEdgeControllerTest`（6 个 MockMvc 用例，覆盖 `GET|DELETE /vertices/{id}`、`PUT|DELETE …/properties/{index}`、`DELETE /edges/{edgeId}`）——这类按 id 的读写以前没有任何测试覆盖，所以 bug 一直没暴露。
+
+验收：`GET /api/v1/vertices/3001` → 200 带属性；`DELETE /api/v1/edges/e-3001?...` → 200 且两个端点的 out/in 同时为空；`DELETE /api/v1/vertices/{id}` → 200。

@@ -31,7 +31,7 @@ public class EdgeController {
     }
 
     @DeleteMapping("/{edgeId}")
-    public ResponseEntity<WriteResult> delete(@PathVariable Object edgeId,
+    public ResponseEntity<WriteResult> delete(@PathVariable("edgeId") Object edgeId,
                                               @RequestParam String edgeSchemaName,
                                               @RequestParam Object source,
                                               @RequestParam Object destination) {
