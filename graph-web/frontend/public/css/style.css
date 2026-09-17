@@ -122,11 +122,13 @@ body {
 .query-mode { display: flex; gap: 8px; align-items: center; }
 .query-mode[hidden] { display: none; }
 .query-mode:not([hidden]) { animation: fadeIn 0.24s ease; }
-/* the query box takes the row, the example picker sits centred underneath it */
-.gremlin-row { flex-basis: 100%; order: 99; width: 100%; flex-direction: column; align-items: stretch; }
+/* the query box and the example picker share one row: the picker sits to its right, at the
+   same width it had as its own row */
+.gremlin-row { flex-basis: 100%; order: 99; width: 100%; flex-direction: row; align-items: flex-start; }
 .gremlin-row textarea {
-  flex: none;
-  width: 100%;          /* left-to-right, right edge flush with the query button */
+  flex: 1 1 0;
+  min-width: 0;         /* shrink with the row instead of overflowing it */
+  width: auto;          /* left-to-right, right edge flush with the example picker */
   height: 56px;         /* auto-grows with the content up to max-height */
   min-height: 56px;
   max-height: 280px;
@@ -372,6 +374,7 @@ button.btn-primary:hover, #queryBtn:hover { filter: brightness(1.07); }
   box-shadow: none;
 }
 .tab:hover { color: var(--text-2); background: rgba(79, 70, 229, 0.05); }
+.tab[hidden] { display: none; } /* the result tab only exists for Cypher answers */
 .tab.active {
   color: var(--accent);
   background: #fff;
@@ -669,8 +672,8 @@ button.btn-primary:hover, #queryBtn:hover { filter: brightness(1.07); }
   font-weight: 600;
 }
 .lang-select { margin-right: 4px; }
-/* one third of the query box, in its column: same left edge, directly under it */
-.example-select { width: calc(100% / 3); align-self: flex-start; margin-top: 8px; }
+/* one third of the row, on its right, vertically aligned with the query box */
+.example-select { flex: 0 0 auto; width: calc(100% / 3); align-self: flex-start; margin-top: 0; }
 #gremlinInput.cypher { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 
 .rows-wrap { overflow: auto; max-height: calc(100% - 8px); }

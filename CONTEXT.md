@@ -1318,3 +1318,53 @@ subgraph edges: deal_1:"1"->null, deal_2:"1"->null, deal_3:"1"->null
 `GeoQueryIntegrationTest`（+2：limit 只收 k 个点的子图、nullable target 的端到端）、
 `RocksDbInlineStoreTest`（+1：nullable target 只写出边）、`GeoPropertyTest`（+1：isNull 校验与 JSON round-trip）、
 以及全部 geo 测试改名为 `circle`/米制 ✓。全量 `./mvnw test`：**19 个模块 BUILD SUCCESS**（0 失败）。
+
+---
+
+## 24. UI 三处调整：示例框回同一行右侧、浮窗只显示「非点非边」结果、结果 tab 仅 Cypher
+
+### 24.1 示例框与查询框同一行、靠右、宽度不变
+
+`.gremlin-row` 改回**一行**（`flex-direction: row`），查询框 `flex: 1 1 0`（吃掉剩余宽度），
+示例框 `flex: 0 0 auto; width: calc(100% / 3); align-self: flex-start`（靠右、顶对齐 ✓）：
+
+headless Edge 实测（8080，真实点击 `#examplesBtn` 后量 `getBoundingClientRect`）：
+
+```
+sameRow true, pickerOnTheRight true, pickerWidth 468, pickerIsOneThirdOfRow 0.333, rowFilled true
+```
+
+（468px = 之前竖直排布时的宽度 ✓ 保持不变 ✓。）
+
+### 24.2 浮窗只在「非 Vertex / 非 Edge」结果时出现
+
+`showValue()` 新增判定：结果是**图元素**（对象且含 `id` 且含 `label`/`type`）时**自动隐藏**浮窗
+—— 点/边本身已经画在画布上 ✓；Cypher 投影如果每列取出来都是元素也同样隐藏 ✓。
+数字/字符串/列表/聚合/`elementMap()` 之外的标量投影照旧显示 ✓。
+顺带修正 Cypher 结果浮窗内容：以前多行时会把「整行 Map」当值渲染成 JSON ✗，现在统一取**首行的各列值** ✓。
+
+真实 UI 驱动实测（点击 QUERY）：
+
+| 查询 | 浮窗 | 结果 tab |
+|---|---|---|
+| `g.V('1000','Account').out('AccountToPhone')`（点列表） | 隐藏 ✓ | 隐藏（Gremlin）✓ |
+| `g.V('135','Account').out('Payment').count()` | 显示 `50` ✓ | 隐藏 ✓ |
+| `…outE('Payment').limit(3).values('amount')` | 显示 `59 · 58 · 57` ✓ | 隐藏 ✓ |
+| Cypher 聚合（多行多列） | 显示 `PENDING · 17`（首行值）+ 明细「3 行 · status, n」✓ | 显示并激活 ✓ |
+| 再切回 Gremlin 点列表 | 隐藏 ✓ | 隐藏、自动回到「统计」tab ✓ |
+
+### 24.3 「结果」tab 只在 Cypher 且查询过之后出现
+
+- 新增状态 `rowsReady`（只有 Cypher 响应带 `columns` 时才置真 ✓）；
+- `refreshRowsTab()`：`rowsAvailable() = 当前语言是 cypher && rowsReady` 决定 `结果` tab 的
+  `hidden` ✓（CSS 补 `.tab[hidden] { display: none; }` ✓）；不可用时若正停在该 tab 会自动切回「统计」✓；
+- 触发点：`init()` 初始隐藏 ✓、语言切换 `onLanguageChange()` 隐藏 ✓、`clearRows()`（新查询/重置）隐藏 ✓、
+  Cypher 查询返回后显示并激活 ✓。
+
+实测：Gremlin 全程无「结果」tab ✓；Cypher 查询后出现且自动激活 ✓；切回 Gremlin 后消失并回到「统计」✓。
+
+### 24.4 验证与提交
+
+- 用 headless Edge + DevTools 协议**真实驱动页面**（点 `#modeToggle`/`#examplesBtn`/`#queryBtn`、
+  切图与切语言）后读取 DOM 状态，得到上表结果 ✓；
+- Java 侧本轮未改动（仅 `graph-web/frontend` + 打包静态副本 ✓），`graph-web` 模块测试复跑通过 ✓。

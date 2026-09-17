@@ -273,6 +273,7 @@
   let picked = []; // up to two clicked vertex keys (shortest-path endpoints)
   let pathState = null; // { pathNodes, pathEdges, shortestNodes, shortestEdges }
   let displayFields = {}; // vertex label -> display property names (from /api/graphs)
+  let rowsReady = false;  // whether a Cypher query already produced rows (the tab appears then)
 
   /**
    * Example queries per language and graph, offered in the picker under the query
@@ -1368,8 +1369,14 @@
       const subgraph = responseSubgraph(result);
       resetGraph();
       const { addedV, addedE } = merge(subgraph);
-      if (result && result.columns) showRows(result.columns, result.rows || []);
-      else clearRows();
+      // a Cypher answer brings rows, which is also what makes the result tab available
+      if (result && result.columns) {
+        rowsReady = true;
+        refreshRowsTab();
+        showRows(result.columns, result.rows || []);
+      } else {
+        clearRows();
+      }
       const value = responseValue(result);
       showValue(value, result);
       clearAlgo();
@@ -1409,9 +1416,27 @@
    * is shown large, a short list verbatim, a long one as a count plus a preview, and a
    * Cypher projection as its row count plus the first row (the rows tab has the rest).
    */
+  /**
+   * Whether an answer is made of graph elements (vertices or edges). A subgraph is already on
+   * the canvas, so the floating window stays out of the way for those: it is there for the
+   * answers a graph cannot show - a count, a list of values, a projection.
+   */
+  function elementValues(list) {
+    if (!list.length) return false;
+    return list.every((value) => value && typeof value === 'object'
+      && value.id !== undefined && (value.label !== undefined || value.type !== undefined));
+  }
+
   function showValue(value, result) {
     if (!el.valuePanel) return;
     if (value === undefined) { hideValue(); return; }
+    // vertices and edges are what the canvas is for: no floating window
+    if (Array.isArray(value) && elementValues(value)) { hideValue(); return; }
+    if (value && value.columns && value.rows.length && elementValues(
+      value.columns.map((column) => value.rows[value.rows.length - 1][column]))) {
+      hideValue(); // a Cypher projection of vertices: the canvas shows them
+      return;
+    }
     const summary = summarizeValue(value, result);
     el.valueTitle.textContent = t('valueTitle');
     el.valueBody.innerHTML = summary.body;
@@ -1459,9 +1484,9 @@
       const rows = value.rows;
       const columns = value.columns;
       if (!rows.length) return { body: `0 ${t('valueRows')}`, detail: '' };
-      // the first row is the value; the rows tab carries the rest
+      // the first row's values are the value; the rows tab carries the rest
       const first = rows[0];
-      const summary = summarizeValues(rows.length === 1 ? columns.map((c) => first[c]) : [first], 'valueItems');
+      const summary = summarizeValues(columns.map((c) => first[c]), 'valueItems');
       const detail = `${rows.length} ${t('valueRows')} · ${escapeHtml(columns.join(', '))}`;
       return { body: summary.body, detail };
     }
@@ -1505,6 +1530,8 @@
 
   /** Empties the rows table (a new query, or a Gremlin one). */
   function clearRows() {
+    rowsReady = false;
+    refreshRowsTab();
     if (!el.rowsTable) return;
     el.rowsTable.innerHTML = '';
     el.rowsTableWrap.hidden = true;
@@ -1565,7 +1592,8 @@
       ? "MATCH (a:Account {id:'135'})-[p:Payment]->(b:Account) RETURN b.id, p.status LIMIT 10"
       : "g.V(888,'Account').batch(40).both('Payment').both('Payment')";
     el.gremlinInput.classList.toggle('cypher', cypher);
-    clearRows();
+    clearRows(); // also hides the result tab: it belongs to Cypher answers
+    refreshRowsTab();
     refreshExamples();
     hideExamples();
   }
@@ -1592,6 +1620,7 @@
 
   // ---- init ----
   async function init() {
+    refreshRowsTab(); // the result tab is Cypher only: hidden until a Cypher query runs
     const graphs = await fetchGraphs();
     if (!graphs.length) { setStatus(t('noGraph')); return; }
 
@@ -1726,12 +1755,27 @@
     activateTab(e.target.dataset.tab);
   }
 
-  /** Shows the side panel for the given tab ('stats' or 'props'). */
+  /** Whether the result tab is available: only Cypher answers have rows to show. */
+  function rowsAvailable() {
+    return currentLanguage() === 'cypher' && rowsReady;
+  }
+
+  /** Shows the side panel for the given tab ('stats' / 'props' / 'rows'). */
   function activateTab(tab) {
-    document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === tab));
-    document.getElementById('statsPanel').hidden = tab !== 'stats';
-    document.getElementById('propsPanel').hidden = tab !== 'props';
-    document.getElementById('rowsPanel').hidden = tab !== 'rows';
+    const wanted = tab === 'rows' && !rowsAvailable() ? 'stats' : tab;
+    document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === wanted));
+    document.getElementById('statsPanel').hidden = wanted !== 'stats';
+    document.getElementById('propsPanel').hidden = wanted !== 'props';
+    document.getElementById('rowsPanel').hidden = wanted !== 'rows';
+  }
+
+  /** Shows or hides the result tab (it only exists for Cypher results). */
+  function refreshRowsTab() {
+    const tab = document.querySelector('.tab[data-tab="rows"]');
+    if (tab) tab.hidden = !rowsAvailable();
+    if (!rowsAvailable() && !document.getElementById('rowsPanel').hidden) {
+      activateTab('stats');
+    }
   }
 
   init().catch((err) => { setStatus('初始化失败: ' + err.message); });
