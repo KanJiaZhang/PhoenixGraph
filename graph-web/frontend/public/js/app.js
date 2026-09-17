@@ -1589,7 +1589,11 @@
     for (const g of graphs) {
       const opt = document.createElement('option');
       opt.value = g.name;
-      opt.textContent = g.name;
+      // the storage implementation is part of the identity of an instance: the same graph
+      // can be served by Aerospike, RocksDB-Inline or RocksDB-Edge at the same time
+      opt.textContent = g.storage && g.storage !== 'Aerospike'
+        ? g.name + ' · ' + g.storage
+        : g.name;
       el.graphSelect.appendChild(opt);
     }
     onGraphChange(graphs[0]);

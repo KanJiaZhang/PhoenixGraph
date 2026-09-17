@@ -33,3 +33,6 @@ target/
 
 # Downloaded demo datasets (tools/download-siftsmall-dataset.sh)
 .datasets/
+
+# RocksDB graph directories (created by the service / the RocksDB loader)
+.rocksdb/

@@ -12,12 +12,44 @@ A High Scaled and High Performance HTAP Graph Database.
 | `graph-core`          | Core graph abstractions: graph, vertex, edge and exceptions     |
 | `graph-schema`        | Schema model: labels, property keys, data types, cardinalities  |
 | `graph-storage`       | Storage engine abstraction + in-memory storage implementation   |
+| `graph-storage-aerospike` | Aerospike storage: vertices and denormalised edges in one record per vertex, per-property CAS |
+| `graph-storage-rocksdb` | Shared RocksDB plumbing: key layout (fixed-width hash + id), 512-region key space, column families, property codec, vertex tables |
+| `graph-storage-rocksdb-inline` | RocksDB-Inline storage: one table per vertex type, edges folded into one table per edge type, degree limits enforced |
+| `graph-storage-rocksdb-edge` | RocksDB-Edge storage: one table per vertex type plus an edge table per edge class, creation-time window scans, no degree limit |
 | `graph-query`  | Query parsing, planning and execution                           |
 | `graph-query-gremlin` | Gremlin-style traversal engine (`out/in/both`, `bothE`, `filter`, `nearest`, ...) |
 | `graph-query-cypher`  | openCypher subset over the same query ports (`MATCH` / `WHERE` / `RETURN` + aggregation) |
 | `graph-hnsw`          | HNSW vector index: layered graph build + nearest-neighbour search |
 | `graph-compute-engine`| Graph analytics and algorithm execution (BFS, PageRank, ...)    |
 | `graph-web`           | RESTful web service (Spring Boot)                               |
+
+### Storage implementations
+
+The schema decides where a graph lives, so the same graph definition can be served by any
+backend:
+
+```json
+"storage": { "type": "RocksDB-Inline", "path": "payment-graph-rocksdb-inline" }
+```
+
+| `storage.type` | Layout | Degree limits |
+| --- | --- | --- |
+| `Aerospike` (**default**) | one record per vertex holding its properties and its denormalised edges (one bin per edge class and direction) | enforced with per-property CAS on `lastUpdatedTime` |
+| `RocksDB-Inline` | one table per vertex type; one table per edge type holding, per vertex, every edge of that class and direction (Aerospike bin names kept) | enforced: the update reads the edge list, merges by `lastUpdatedTime` and evicts the oldest beyond `maxOutDegree`/`maxInDegree`/`maxDegree` |
+| `RocksDB-Edge` | one table per vertex type; one edge table per edge class keyed by `hash(vertexId):direction:vertexId:createdTime:edgeId` | none: a hub may have any degree, and a creation-time window is a range scan |
+
+Both RocksDB schemes implement the same `GraphQuery` port as Aerospike, so Gremlin and Cypher
+run unchanged on all three, with the same batched/parallel reads, on-demand property projection
+and caching.
+
+```bash
+# load the demo payment graph into both RocksDB instances
+./mvnw -pl graph-integration-test -am test -Dtest=RocksDbLiveLoadTest \
+       -Drocksdb.live.dir=$PWD/.rocksdb -Dsurefire.failIfNoSpecifiedTests=false
+# serve Aerospike + both RocksDB instances (default application.yml), or only RocksDB
+java -jar graph-http/target/graph-http-*.jar
+java -jar graph-http/target/graph-http-*.jar --spring.profiles.active=rocksdb
+```
 
 ### Two query languages
 

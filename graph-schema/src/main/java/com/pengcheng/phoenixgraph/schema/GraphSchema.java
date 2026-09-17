@@ -20,6 +20,7 @@ public class GraphSchema {
     private final String name;
     private final String description;
     private final SchemaConstraints constraints;
+    private GraphStorageSchema storage = GraphStorageSchema.AEROSPIKE;
     private final List<VertexSchema> vertexSchemas = new ArrayList<>();
     private final List<EdgeSchema> edgeSchemas = new ArrayList<>();
     private final Map<Integer, VertexSchema> vertexById = new HashMap<>();
@@ -94,6 +95,17 @@ public class GraphSchema {
     /** The validation constraints declared by this graph schema. */
     public SchemaConstraints constraints() {
         return constraints;
+    }
+
+    /** The storage implementation serving this graph (Aerospike unless declared otherwise). */
+    public GraphStorageSchema storage() {
+        return storage;
+    }
+
+    /** Declares the storage implementation serving this graph (fluent). */
+    public GraphSchema storage(GraphStorageSchema storageSchema) {
+        this.storage = Objects.requireNonNull(storageSchema, "storageSchema");
+        return this;
     }
 
     /** Immutable view of the vertex schemas in this graph. */

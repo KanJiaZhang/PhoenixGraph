@@ -9,6 +9,7 @@ import java.util.List;
  */
 public record GraphSchemaDto(int id, String name, String description,
                              SchemaConstraints constraints,
+                             StorageSchemaDto storage,
                              List<VertexSchemaDto> vertexSchemas,
                              List<EdgeSchemaDto> edgeSchemas) {
 }

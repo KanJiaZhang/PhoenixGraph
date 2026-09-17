@@ -27,6 +27,7 @@ public class SchemaValidator {
     public SchemaValidationResult validateResult(GraphSchema schema, SchemaConstraints constraints) {
         List<String> errors = new ArrayList<>();
         List<String> warnings = new ArrayList<>();
+        checkStorage(errors, warnings, schema);
         for (VertexSchema vertex : schema.vertexSchemas()) {
             checkIdSchema(errors, "vertex", vertex.name(), vertex.idSchema().id(), constraints);
             checkMetaProperties(errors, "vertex", vertex.name(),
@@ -64,6 +65,39 @@ public class SchemaValidator {
             validateAgainstMeta(schema, metaSchema, errors);
         }
         return errors;
+    }
+
+    /**
+     * Checks the storage block: a RocksDB scheme must say where its directory is and can
+     * only use the settings that scheme supports. A declared degree limit is a warning for
+     * RocksDB-Edge, which stores edges in a table of their own and has no degree limit.
+     */
+    private void checkStorage(List<String> errors, List<String> warnings, GraphSchema schema) {
+        GraphStorageSchema storage = schema.storage();
+        if (storage == null || storage.isAerospike()) {
+            return;
+        }
+        String name = storage.type().configName();
+        if (storage.path() == null || storage.path().isBlank()) {
+            errors.add("Graph '" + schema.name() + "' uses storage " + name
+                    + " but declares no path");
+        }
+        if (storage.regionCount() <= 0) {
+            errors.add("Graph '" + schema.name() + "' declares regionCount " + storage.regionCount()
+                    + " for storage " + name + "; it must be positive");
+        }
+        if (storage.maxVersions() <= 0) {
+            errors.add("Graph '" + schema.name() + "' declares maxVersions " + storage.maxVersions()
+                    + " for storage " + name + "; it must be positive");
+        }
+        if (storage.type() == GraphStorageType.ROCKSDB_EDGE) {
+            for (EdgeSchema edge : schema.edgeSchemas()) {
+                if (edge.maxOutDegree() > 0 || edge.maxInDegree() > 0 || edge.maxDegree() > 0) {
+                    warnings.add("Storage RocksDB-Edge has no degree limit: the limits declared on edge '"
+                            + edge.name() + "' are ignored");
+                }
+            }
+        }
     }
 
     private void validateAgainstMeta(GraphSchema schema, GraphMetaSchema metaSchema, List<String> errors) {        for (VertexSchema vertex : schema.vertexSchemas()) {

@@ -3,6 +3,7 @@ package com.pengcheng.phoenixgraph.http.config;
 import com.aerospike.client.AerospikeClient;
 import com.pengcheng.phoenixgraph.http.service.GraphBinding;
 import com.pengcheng.phoenixgraph.http.service.GraphRegistry;
+import com.pengcheng.phoenixgraph.query.storage.GraphQuery;
 import com.pengcheng.phoenixgraph.schema.GraphSchema;
 import com.pengcheng.phoenixgraph.schema.GraphSchemaManagers;
 import com.pengcheng.phoenixgraph.schema.json.SchemaJsonCodec;
@@ -61,11 +62,31 @@ public class StorageConfig {
      * schemas are also registered with {@link GraphSchemaManagers} so schema-aware
      * storage code can look them up by name.
      */
+    /**
+     * Opens the RocksDB directories the schemas declare. Every directory is closed when the
+     * application shuts down (and only one process may hold one open).
+     */
+    @Bean(destroyMethod = "close")
+    public RocksDbGraphStores rocksDbGraphStores(StorageProperties properties) {
+        return new RocksDbGraphStores(properties.rocksdbRoot());
+    }
+
+    /**
+     * Every graph this instance can query, each bound to the storage its schema declares:
+     * Aerospike (the default) reads through the vertex/edge stores, RocksDB-Inline and
+     * RocksDB-Edge open their own directory and read through their own query.
+     */
     @Bean
-    public GraphRegistry graphRegistry(AerospikeClient client, StorageProperties properties) {
+    public GraphRegistry graphRegistry(AerospikeClient client, StorageProperties properties,
+                                       RocksDbGraphStores rocksDbStores) {
         List<GraphBinding> bindings = new ArrayList<>();
         for (GraphProperties definition : properties.graphDefinitions()) {
             GraphSchema schema = loadSchema(definition.schema());
+            if (RocksDbGraphStores.isRocksDb(schema)) {
+                GraphQuery query = rocksDbStores.open(schema);
+                bindings.add(GraphBinding.of(schema, query));
+                continue;
+            }
             bindings.add(new GraphBinding(schema,
                     new AerospikeVertexStore(client, properties.namespace(), definition.vertexSet()),
                     new AerospikeEdgeStore(client, properties.namespace(), definition.vertexSet(), schema),

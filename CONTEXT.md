@@ -936,3 +936,156 @@ G.out('AccountToPhone').values('cnCode')                            → ["+86","
 ```
 
 （浮窗文案由 app.js 中真实的 `summarizeValue` 抽取执行得到，非手写预期。）
+
+---
+
+## 21. RocksDB 存储：`RocksDB-Inline` 与 `RocksDB-Edge`
+
+在 Schema 里声明存储实现，新增三个模块（两个实现 + 一个共享底座）：
+
+```
+graph-storage-rocksdb         共享底座：键布局/哈希分区/列族/属性编解码/顶点表/条带锁/LRU
+graph-storage-rocksdb-inline  RocksDB-Inline：边内联进「边类型的表」
+graph-storage-rocksdb-edge    RocksDB-Edge：边独立成表，按 (方向, 顶点, 时间) 前缀扫描
+```
+
+依赖：`org.rocksdb:rocksdbjni:9.11.2`（本机 Windows/JDK 26 原生库加载已实测 ✓，`RocksDB.rocksdbVersion()` = 9.11.2）。
+
+### 21.1 Schema 里选择存储实现
+
+```json
+"storage": { "type": "RocksDB-Inline", "path": "payment-graph-rocksdb-inline",
+             "regionCount": 512, "maxVersions": 1, "cacheEdges": true }
+```
+
+| 字段 | 含义 |
+|---|---|
+| `type` | `Aerospike`（**默认**，不写 storage 块就是这个） / `RocksDB-Inline` / `RocksDB-Edge`；大小写不敏感，`-`/`_`/空格都当分隔符（`rocksdb_inline` ✓） |
+| `path` | RocksDB 目录（RocksDB 两种方案必填；可用部署侧的 `rocksdb-root` 作为相对路径基准） |
+| `regionCount` | 键空间划分的区域数，默认 **512**（区域 = `floorMod(hash(key), regionCount)`，由定长哈希前缀决定） |
+| `maxVersions` | 每个 property 保留的版本数，默认 **1**（即只留当前版本，`lastUpdatedTime` 作为版本号） |
+| `cacheEdges` | 是否缓存已解码的边列表，默认 true |
+
+- `graph-schema` 新增 `GraphStorageType`、`GraphStorageSchema`、`GraphSchema.storage(...)`、DTO `StorageSchemaDto`；
+- **向后兼容**：Aerospike 是默认，且默认时不写 `storage` 字段 → 旧的 schema JSON 与 JSON round-trip 完全不变 ✓；
+- 校验：RocksDB 缺 `path` → error；`regionCount`/`maxVersions` ≤ 0 → error；**RocksDB-Edge 声明了度数上限 → warning**（该方案没有度数上限，声明会被忽略）。
+
+### 21.2 键与值布局
+
+所有键都以**定长 8 字节哈希**开头（FNV-1a 64，big-endian），这既是散列分区，也是「同一区域的键物理相邻」的来源：
+
+```
+顶点   hash(vertexId) : vertexId
+边     hash(vertexId) : direction : vertexId : createdTime : edgeId
+```
+
+边键里**重复了 vertexId**：它必须落在前缀里，这样「某顶点某方向的边」才是**一次范围扫描**；`createdTime` 用**定长 8 字节 big-endian**（保持字节序 = 时间序），于是时间窗是 `seek` 而不是过滤；`edgeId` 收尾保证唯一。
+
+方向编码两套各自遵守自己的磁盘契约：
+- **RocksDB-Edge**（用户规格）：`0` 无向、`1` 出边、`2` 入边；
+- **RocksDB-Inline**（沿用 Aerospike bin 命名）：`ve_<edgeSchemaId>_<dir>`，其中 `0` 无向、`1` IN、`2` OUT —— 这样同一份 schema 在两种后端上看到同样的「列名」✓。
+
+顶点记录（每个点类型一张表 = 一个 column family）：
+
+```
+idType : createdTime : lastUpdatedTime : propertyCount
+每个 property: propertyId : versionCount : [ version : length : value ] ...
+```
+
+- `version` 就是该 property 的 `lastUpdatedTime`；**只有更新的 version 才能覆盖**（乱序写入无法回退新值），和 Aerospike 的 per-bin CAS 语义一致；
+- 默认只留 1 个版本；`maxVersions > 1` 时旧值作为历史保留，可用 `versions(vertex, property)` 读回（测试覆盖 3 版本 ✓）；
+- `idType`（0 string / 1 long / 2 int）保证 **id 类型往返**：`135` 回来还是数字 `135`，`account-42` 还是字符串。
+
+### 21.3 RocksDB-Inline
+
+- 点：每类型一张表（同 21.2）；
+- 边：**每种边一张表**（column family = `edge-inline:<EdgeName>`），表内**每个顶点一条记录**，记录里按 **Aerospike bin 名**（`ve_<schemaId>_<dir>`）存该顶点该类型该方向的**全部边**（`edgeId → {otherVertexId, createdTime, lastUpdatedTime, properties[...]}`）；
+- 写入/更新：读该顶点的记录 → 按 per-property `lastUpdatedTime` 合并 → **按 schema 的 `maxOutDegree`/`maxInDegree`/`maxDegree` 淘汰最旧的边** → 写回（`KeyLocks` 条带锁保护读-改-写，RocksDB 没有 CAS）；
+- 淘汰是**按端、按方向**的（与 Aerospike 实现一致）：源端 OUT bin 淘汰后，目的端 IN bin 里的副本只有它自己的 `maxInDegree` 才会淘汰它（测试里明确记录了这个语义）；
+- 一条有向边写两次：source 的 OUT bin + destination 的 IN bin → `out()`/`in()` 各自一次读；无向边写两端同一个 `_0` bin。
+
+### 21.4 RocksDB-Edge
+
+- 点：同一套顶点表（与 Inline 完全相同的布局，可以互相读）；
+- 边：**每种边一张独立的边表**（`edge:<EdgeName>`），一条有向边两行（source 的 `direction=1` 行 / destination 的 `direction=2` 行），无向边两端各一行 `direction=0`；
+- **没有度数上限**（`maxInDegree`/`maxOutDegree` 被忽略）：1 万个出边的 hub 实测写入/读取正常 ✓；
+- **时间窗**是这一层的原生能力：`readEdgesWithin(vertex, edge, side, RocksDbTimeRange.of(from,to), props)` → 扫描范围 `[prefix+from, prefix+to+1)`，上限/下限都可开区间（`ALL`）；
+- `both()` = **两个迭代器**（OUT 一个、IN 一个），合并后按 `lastUpdatedTime` 倒序（与 Inline/Aerospike 一致）；
+- 边缓存：`(表|顶点|方向|窗口|投影)` 为键的 LRU（4096 条），写/删按 `表|顶点|` 前缀失效 —— 投影必须进键，否则「只读了 status 的缓存」会去回答「同时要 amount 的读」（**这是实现中真实踩到并修掉的 bug** ✓ 有单测/集成测试覆盖）。
+
+### 21.5 复用的东西（要求 2.5 / 3.4）
+
+| 能力 | 复用方式 |
+|---|---|
+| 批查询 | `readVertices` → `multiGet`；Inline 的 `readEdgesBatch` 一次 `multiGet` 覆盖全部顶点；Edge 的批量是按顶点做有序前缀扫描（本地迭代器，无网络往返） |
+| 并行查询 | 完全走 Gremlin 引擎既有的并行 seed 读（`GremlinContext` 的 `ForkJoinPool` 批读）✓ |
+| 按需 properties | `SchemaProjections`（新，放在 `graph-query` 共用）把名字解析成 property id，解码时**跳过未请求的属性** |
+| 缓存 | 引擎侧点/边缓存照旧 ✓；存储侧再加一层已解码边列表 LRU（Inline 缓存「记录里的 bins」，Edge 缓存「投影后的列表」） |
+| 查询接口统一 | 两个方案都实现 `GraphQuery` → **Gremlin 与 Cypher 引擎零改动**即可查询 ✓（`Subgraph`/`NeighborVertexResolver` 早已下沉 `graph-query`） |
+
+### 21.6 HTTP 侧接线
+
+- `GraphBinding` 增加 `graphQuery`（第 6 个分量，前 5 个保持不变 → 无二义性），Aerospike 绑定自动构造 `AerospikeGraphQuery`，RocksDB 绑定用 `GraphBinding.of(schema, query)`；
+- `StorageConfig` 按 `schema.storage()` 分流：Aerospike → 原来的 stores；RocksDB → `RocksDbGraphStores.open(schema)`（新类，负责打开/持有/关闭目录，支持 `rocksdb-root` 解析相对路径）；
+- `QueryService` 两个引擎都改成 `binding.graphQuery()`；HNSW 分支加 `hasAerospikeStores()` 保护；`VectorIndexManager` 对非 Aerospike 图直接返回空索引（`rebuild` 抛明确错误）；
+- `/api/v1/graphs` 的 `GraphInfo` 增加 **`storage`** 字段，UI 的图下拉显示 `payment-graph-rocksdb-inline · RocksDB-Inline` ✓；
+- 写接口（`POST /api/v1/vertices|edges|batch`）仍然是 Aerospike 主图的能力（RocksDB 实例的数据由 loader 写入）。
+
+### 21.7 数据装载（payment-graph → 两个 RocksDB 实例）
+
+`graph-integration-test` 的 `PaymentGraphRocksDbLoader`：与 Aerospike 演示集同构的 **151 点 / 400 边**
+（hub `135` 支付 50 个账户；50 个账户按 `+1/+7/+13` 成环互付 150 条；每个账户 2 个 IP + 2 个 Phone，并含反向边），
+同一份生成器喂给两种方案，所以两边可以**逐条查询对比**：
+
+```
+./mvnw -q -pl graph-integration-test -am test -Dtest=RocksDbLiveLoadTest \
+       -Drocksdb.live.dir=D:/workspace/eclipse/PhoenixGraph/.rocksdb -Dsurefire.failIfNoSpecifiedTests=false
+# loaded payment-graph-rocksdb-inline (RocksDB-Inline) at ...\.rocksdb\payment-graph-rocksdb-inline: 151 vertices, 400 edges
+# loaded payment-graph-rocksdb-edge    (RocksDB-Edge)   at ...\.rocksdb\payment-graph-rocksdb-edge:   151 vertices, 400 edges
+```
+
+启动服务（默认 `application.yml` 已把这两个图挂进同一个实例 ✓，`rocksdb-root: .rocksdb`）：
+
+```
+java -jar graph-http/target/graph-http-*.jar        # 8081：Aerospike + RocksDB 两实例共 6 个图
+java -jar graph-web/target/graph-web-*.jar          # 8080：UI
+# 只跑 RocksDB：--spring.profiles.active=rocksdb
+```
+
+### 21.8 线上实测（8081 / 8080，UI 与 API 同一入口）
+
+两个实例逐条对比，**答案完全一致**：
+
+| 查询 | inline | edge |
+|---|---|---|
+| `g.V('135','Account').out('Payment').count()` | `[50]` | `[50]` |
+| `g.V('135','Account').both('Payment').both('Payment').limit(1).values('accountStatus')` | `["FROZEN"]` | `["FROZEN"]` |
+| `g.V('1000','Account').out('AccountToPhone').values('cnCode')` | `["+86"]` | `["+86"]` |
+| `g.V('135','Account').out('Payment').out('AccountToIP').values('ipAddress')` | 50 个 IP | 50 个 IP |
+| `g.V('1000','Account').outE('Payment').values('amount')` | `[18,12,6]` | `[18,12,6]` |
+| `...both('Payment')`（子图） | 51 点/50 边 | 51 点/50 边 |
+| Cypher `MATCH (a:Account {id:'135'})-[p:Payment]->(b:Account) RETURN p.status, count(*) ORDER BY n DESC` | `PENDING 17 / SUCCESS 17 / FAILED 16` | 同 |
+| Cypher `MATCH (a:Account {id:$id}) RETURN a.id, a.firstName, a.lastName` | `135 / Ada / Lovelace` | 同 |
+| Cypher 两跳 `Account→IP→Account` | `10.0.0.0 / 1000` | 同 |
+
+`/api/v1/graphs` 实测：
+
+```
+payment-graph                  Aerospike
+payment-graph-rocksdb-inline   RocksDB-Inline
+payment-graph-rocksdb-edge     RocksDB-Edge
+kg-entity-graph / hnsw-sift / hnsw-dynamic   Aerospike
+```
+
+### 21.9 测试
+
+| 模块/测试 | 覆盖 |
+|---|---|
+| `graph-storage-rocksdb` `RocksDbVertexTableTest`（13） | 键布局（定长哈希 + id）、512 区域分布、时间序键、属性编解码（string/long/double/bool/list/map）、按需投影、**版本规则（新覆盖旧、旧不回退、部分更新保留其他属性、`maxVersions=3` 历史）**、批量多读、删除、扫描、id 类型往返 |
+| `graph-storage-rocksdb-inline` `RocksDbInlineStoreTest`（15） | bin 名与 Aerospike 一致（`ve_1_2` = OUT）、两向可读、BOTH 合并排序、**maxOut/maxIn 淘汰最旧（按端独立）**、无上限、无向边单 bin、旧写不回退、属性投影、删除两侧、批量=单读、缓存失效 |
+| `graph-storage-rocksdb-edge` `RocksDbEdgeStoreTest`（13） | 每条边两行 + 方向、BOTH 两迭代器、**无度数上限（1 万边 hub）**、**时间窗 seek（含开区间/空窗）**、前缀范围隔离、旧写不回退、删除两行、缓存失效（含投影键）、region 覆盖 |
+| `graph-integration-test` `RocksDbStorageIntegrationTest`（9） | 同一份数据装进两方案 → **9 条 Gremlin + 5 条 Cypher 查询逐条比对相等**、子图相等、存储层事实（bin 大小/行数/时间窗/批量=单读） |
+| `graph-schema` `GraphStorageSchemaTest`（9） | 默认 Aerospike、类型名宽松解析、JSON round-trip（含默认值填充）、缺 path 报错、校验 error/warning |
+| `RocksDbLiveLoadTest`（1，需 `-Drocksdb.live.dir`） | 真正落盘装载 + 重新打开 + 跑 Gremlin/Cypher，服务前自检 |
+
+全量 `./mvnw test`：**19 个模块 BUILD SUCCESS**。

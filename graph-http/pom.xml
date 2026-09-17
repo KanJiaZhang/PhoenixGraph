@@ -21,6 +21,14 @@
         </dependency>
         <dependency>
             <groupId>com.pengcheng.phoenixgraph</groupId>
+            <artifactId>graph-storage-rocksdb-inline</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.pengcheng.phoenixgraph</groupId>
+            <artifactId>graph-storage-rocksdb-edge</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.pengcheng.phoenixgraph</groupId>
             <artifactId>graph-query-gremlin</artifactId>
         </dependency>
         <dependency>

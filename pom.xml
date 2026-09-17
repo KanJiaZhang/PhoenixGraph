@@ -17,6 +17,9 @@
         <module>graph-schema</module>
         <module>graph-storage</module>
         <module>graph-storage-aerospike</module>
+        <module>graph-storage-rocksdb</module>
+        <module>graph-storage-rocksdb-inline</module>
+        <module>graph-storage-rocksdb-edge</module>
         <module>graph-query</module>
         <module>graph-query-aerospike</module>
         <module>graph-query-gremlin</module>
@@ -41,6 +44,7 @@
         <junit.version>5.11.4</junit.version>
         <jackson.version>2.19.4</jackson.version>
         <aerospike.version>8.0.0</aerospike.version>
+        <rocksdb.version>9.11.2</rocksdb.version>
 
         <maven-compiler-plugin.version>3.13.0</maven-compiler-plugin.version>
         <maven-surefire-plugin.version>3.5.2</maven-surefire-plugin.version>
@@ -67,6 +71,21 @@
             <dependency>
                 <groupId>com.pengcheng.phoenixgraph</groupId>
                 <artifactId>graph-storage-aerospike</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.pengcheng.phoenixgraph</groupId>
+                <artifactId>graph-storage-rocksdb</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.pengcheng.phoenixgraph</groupId>
+                <artifactId>graph-storage-rocksdb-inline</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.pengcheng.phoenixgraph</groupId>
+                <artifactId>graph-storage-rocksdb-edge</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
@@ -148,6 +167,11 @@
                 <groupId>com.aerospike</groupId>
                 <artifactId>aerospike-client</artifactId>
                 <version>${aerospike.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.rocksdb</groupId>
+                <artifactId>rocksdbjni</artifactId>
+                <version>${rocksdb.version}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>

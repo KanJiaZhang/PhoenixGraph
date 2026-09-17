@@ -151,8 +151,7 @@ public class QueryService {
     private CypherGraphQuery cypherEngine(String graphName) {
         return cypherEngines.computeIfAbsent(requireName(graphName), name -> {
             GraphBinding binding = graphs.require(name);
-            return new CypherGraphQuery(
-                    new AerospikeGraphQuery(binding.vertexStore(), binding.edgeStore(), binding.schema()),
+            return new CypherGraphQuery(binding.graphQuery(),
                     NeighborVertexResolver.from(binding.schema()));
         });
     }
@@ -162,9 +161,7 @@ public class QueryService {
     private GremlinGraphQuery engineFor(String graphName) {
         return engines.computeIfAbsent(requireName(graphName), name -> {
             GraphBinding binding = graphs.require(name);
-            AerospikeGraphQuery graphQuery = new AerospikeGraphQuery(
-                    binding.vertexStore(), binding.edgeStore(), binding.schema());
-            GremlinGraphQuery engine = new GremlinGraphQuery(graphQuery,
+            GremlinGraphQuery engine = new GremlinGraphQuery(binding.graphQuery(),
                     NeighborVertexResolver.from(binding.schema()));
             // vector search: every property the schema flags isVector gets a nearest(k)
             // step (the index is shared with the write path, so freshly written
@@ -172,8 +169,10 @@ public class QueryService {
             if (vectorIndexes != null) {
                 // resolved per query, so a rebuilt index is used without restarting
                 engine.hnswIndexSource(() -> vectorIndexes.indexesOf(name));
-            } else if (binding.hasKeyValueAccess()) {
-                AerospikeHnswIndexFactory.open(graphQuery, binding.edgeStore(), binding.schema(),
+            } else if (binding.hasKeyValueAccess() && binding.hasAerospikeStores()) {
+                AerospikeHnswIndexFactory.open(
+                                new AerospikeGraphQuery(binding.vertexStore(), binding.edgeStore(), binding.schema()),
+                                binding.edgeStore(), binding.schema(),
                                 binding.client(), binding.namespace(), AerospikeHnswIndexFactory.DEFAULT_METADATA_SET,
                                 VectorIndexManager.METADATA_TTL)
                         .forEach(engine::hnswIndex);

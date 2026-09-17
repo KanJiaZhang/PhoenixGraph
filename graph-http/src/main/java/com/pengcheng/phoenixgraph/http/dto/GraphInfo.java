@@ -13,7 +13,7 @@ import java.util.Map;
  * vertex type, the names of its {@code display} properties - the values a UI
  * should render (joined by a space) to label a vertex.
  */
-public record GraphInfo(String name, List<String> vertexTypes, List<String> edgeTypes,
+public record GraphInfo(String name, String storage, List<String> vertexTypes, List<String> edgeTypes,
                         Map<String, List<String>> displayProperties) {
 
     public static GraphInfo of(GraphSchema schema) {
@@ -23,6 +23,7 @@ public record GraphInfo(String name, List<String> vertexTypes, List<String> edge
         }
         return new GraphInfo(
                 schema.name(),
+                schema.storage() == null ? "Aerospike" : schema.storage().type().configName(),
                 schema.vertexSchemas().stream().map(v -> v.name()).toList(),
                 schema.edgeSchemas().stream().map(e -> e.name()).toList(),
                 Map.copyOf(display));

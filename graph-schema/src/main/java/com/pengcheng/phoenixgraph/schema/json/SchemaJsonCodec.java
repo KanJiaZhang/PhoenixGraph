@@ -14,6 +14,8 @@ import com.pengcheng.phoenixgraph.schema.EdgeEndpointSchema;
 import com.pengcheng.phoenixgraph.schema.EdgePropertySchema;
 import com.pengcheng.phoenixgraph.schema.EdgeSchema;
 import com.pengcheng.phoenixgraph.schema.GraphSchema;
+import com.pengcheng.phoenixgraph.schema.GraphStorageSchema;
+import com.pengcheng.phoenixgraph.schema.GraphStorageType;
 import com.pengcheng.phoenixgraph.schema.MetaPropertySchema;
 import com.pengcheng.phoenixgraph.schema.PropertyConstraints;
 import com.pengcheng.phoenixgraph.schema.PropertySchema;
@@ -72,8 +74,34 @@ public class SchemaJsonCodec {
     private GraphSchemaDto toDto(GraphSchema schema) {
         return new GraphSchemaDto(
                 schema.id(), schema.name(), schema.description(), schema.constraints(),
+                toStorageDto(schema.storage()),
                 schema.vertexSchemas().stream().map(this::toVertexDto).toList(),
                 schema.edgeSchemas().stream().map(this::toEdgeDto).toList());
+    }
+
+    /** The storage block, or {@code null} for the Aerospike default (keeps old JSON unchanged). */
+    private StorageSchemaDto toStorageDto(GraphStorageSchema storage) {
+        if (storage == null || storage.isAerospike()) {
+            return null;
+        }
+        return new StorageSchemaDto(storage.type().configName(), storage.path(), storage.regionCount(),
+                storage.maxVersions(), storage.cacheEdges());
+    }
+
+    /** Parses the storage block: absent means Aerospike, a RocksDB block must carry a path. */
+    private GraphStorageSchema toStorage(GraphSchemaDto dto) {
+        StorageSchemaDto storage = dto.storage();
+        if (storage == null || storage.type() == null || storage.type().isBlank()) {
+            return GraphStorageSchema.AEROSPIKE;
+        }
+        GraphStorageType type = GraphStorageType.fromConfigName(storage.type());
+        if (type.isAerospike()) {
+            return GraphStorageSchema.AEROSPIKE;
+        }
+        return GraphStorageSchema.rocksDb(type, storage.path(),
+                storage.regionCount() == null ? GraphStorageSchema.DEFAULT_REGION_COUNT : storage.regionCount(),
+                storage.maxVersions() == null ? GraphStorageSchema.DEFAULT_MAX_VERSIONS : storage.maxVersions(),
+                storage.cacheEdges() == null || storage.cacheEdges());
     }
 
     private VertexSchemaDto toVertexDto(VertexSchema schema) {
@@ -124,7 +152,8 @@ public class SchemaJsonCodec {
 
     private GraphSchema toDomain(GraphSchemaDto dto) {
         SchemaConstraints constraints = dto.constraints() != null ? dto.constraints() : SchemaConstraints.DEFAULTS;
-        GraphSchema graph = new GraphSchema(dto.id(), dto.name(), dto.description(), constraints);
+        GraphSchema graph = new GraphSchema(dto.id(), dto.name(), dto.description(), constraints)
+                .storage(toStorage(dto));
         if (dto.vertexSchemas() != null) {
             for (VertexSchemaDto v : dto.vertexSchemas()) {
                 graph.vertex(toVertexSchema(v));

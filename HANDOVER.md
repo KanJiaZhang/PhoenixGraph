@@ -11,6 +11,10 @@
   `efSearch` 默认 50、`has`/`filter` 下沉进 HNSW 搜索
 - 追加（第 18 节）：有向边布局验证（source 存 out-bin、target 存 in-bin，两跳四组合全通）、
   修复 `@PathVariable` 未命名导致 `GET|DELETE /vertices/{id}` 等接口 400/500 的 bug
+- 追加（第 21 节）：**RocksDB 两种存储实现**（schema 里用 \`storage.type\` 选择：\`Aerospike\` 默认 /
+  \`RocksDB-Inline\` / \`RocksDB-Edge\`）；新增 \`graph-storage-rocksdb\`（共享底座）、
+  \`graph-storage-rocksdb-inline\`、\`graph-storage-rocksdb-edge\` 三个模块；两个方案都实现 \`GraphQuery\`，
+  Gremlin/Cypher/批读/并行/按需属性/缓存全部复用；payment-graph 数据装进两个 RocksDB 实例后 UI/API 可查
 - 追加（第 20.4/20.5 节）：修复 `limit()` 截断属性投影的 bug（`values()` 紧跟 `limit()` 取不到值）、
   浮窗改为优先展示查询结果值（重复值折叠成「ACTIVE + 350 项」）、示例下拉改为查询框 1/3 宽并居中于其下方
 - 追加（第 20 节）：UI 示例查询收进小按钮（默认隐藏）、

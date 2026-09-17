@@ -1,0 +1,439 @@
+{
+  "id": 12,
+  "name": "payment-graph-rocksdb-edge",
+  "description": "Account / IP / Phone graph served by the RocksDB-Edge storage (one table per vertex type plus an edge table per edge class, time-window scans, no degree limit)",
+  "constraints": {
+    "idSchemaIndex": 0,
+    "createdTimeIndex": -2,
+    "lastUpdatedTimeIndex": -1
+  },
+  "vertexSchemas": [
+    {
+      "id": 1,
+      "name": "Account",
+      "description": "An account",
+      "idSchema": {
+        "id": 0,
+        "name": "id",
+        "description": "Account id",
+        "type": "LONG"
+      },
+      "createdTime": {
+        "id": -2,
+        "name": "createdTime",
+        "description": "Creation time",
+        "type": "LONG"
+      },
+      "lastUpdatedTime": {
+        "id": -1,
+        "name": "lastUpdatedTime",
+        "description": "Last update time",
+        "type": "LONG"
+      },
+      "properties": [
+        {
+          "id": 1,
+          "name": "accountStatus",
+          "description": "Account status",
+          "type": {
+            "enum": [
+              "ACTIVE",
+              "FROZEN",
+              "CLOSED"
+            ]
+          }
+        },
+        {
+          "id": 2,
+          "name": "accountType",
+          "description": "Account type",
+          "type": "STRING"
+        },
+        {
+          "id": 3,
+          "name": "primaryAddress",
+          "description": "Primary address",
+          "type": "STRING"
+        },
+        {
+          "id": 4,
+          "name": "accountUsage",
+          "description": "Account usage types",
+          "type": {
+            "list": "STRING"
+          }
+        },
+        {
+          "id": 5,
+          "name": "accountLimited",
+          "description": "Account limits / flags",
+          "type": {
+            "map": "STRING"
+          }
+        },
+        {
+          "id": 6,
+          "name": "firstName",
+          "description": "Account holder first name",
+          "type": "STRING",
+          "display": true
+        },
+        {
+          "id": 7,
+          "name": "lastName",
+          "description": "Account holder last name",
+          "type": "STRING",
+          "display": true
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "IP",
+      "description": "An IP address",
+      "idSchema": {
+        "id": 0,
+        "name": "id",
+        "description": "IP id",
+        "type": "LONG"
+      },
+      "createdTime": {
+        "id": -2,
+        "name": "createdTime",
+        "description": "Creation time",
+        "type": "LONG"
+      },
+      "lastUpdatedTime": {
+        "id": -1,
+        "name": "lastUpdatedTime",
+        "description": "Last update time",
+        "type": "LONG"
+      },
+      "properties": [
+        {
+          "id": 1,
+          "name": "ipAddress",
+          "description": "IP address string",
+          "type": "STRING",
+          "display": true
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "name": "Phone",
+      "description": "A phone number",
+      "idSchema": {
+        "id": 0,
+        "name": "id",
+        "description": "Phone id",
+        "type": "LONG"
+      },
+      "createdTime": {
+        "id": -2,
+        "name": "createdTime",
+        "description": "Creation time",
+        "type": "LONG"
+      },
+      "lastUpdatedTime": {
+        "id": -1,
+        "name": "lastUpdatedTime",
+        "description": "Last update time",
+        "type": "LONG"
+      },
+      "properties": [
+        {
+          "id": 1,
+          "name": "cnCode",
+          "description": "Country calling code, e.g. +86",
+          "type": "STRING",
+          "display": true
+        },
+        {
+          "id": 2,
+          "name": "phoneNumber",
+          "description": "Phone number",
+          "type": "STRING",
+          "minLength": 3,
+          "maxLength": 20,
+          "display": true
+        }
+      ]
+    }
+  ],
+  "edgeSchemas": [
+    {
+      "id": 1,
+      "name": "Payment",
+      "description": "A payment from a sender to a receiver",
+      "idSchema": {
+        "id": 0,
+        "name": "id",
+        "description": "Payment id",
+        "type": "LONG"
+      },
+      "source": {
+        "id": 1,
+        "name": "source",
+        "description": "Sender vertex id",
+        "type": "LONG",
+        "vertex": "Account"
+      },
+      "target": {
+        "id": 2,
+        "name": "target",
+        "description": "Receiver vertex id",
+        "type": "LONG",
+        "vertex": "Account"
+      },
+      "createdTime": {
+        "id": -2,
+        "name": "createdTime",
+        "description": "Creation time",
+        "type": "LONG"
+      },
+      "lastUpdatedTime": {
+        "id": -1,
+        "name": "lastUpdatedTime",
+        "description": "Last update time",
+        "type": "LONG"
+      },
+      "direction": "DIRECTED",
+      "maxOutgoingEdges": 1000,
+      "maxIncomingEdges": 1000,
+      "properties": [
+        {
+          "id": 3,
+          "name": "status",
+          "description": "Payment status",
+          "type": {
+            "enum": [
+              "PENDING",
+              "SUCCESS",
+              "FAILED"
+            ]
+          }
+        },
+        {
+          "id": 4,
+          "name": "type",
+          "description": "Payment type",
+          "type": "STRING"
+        },
+        {
+          "id": 5,
+          "name": "amount",
+          "description": "Payment amount",
+          "type": "DOUBLE",
+          "min": 0,
+          "max": 1000000000
+        },
+        {
+          "id": 6,
+          "name": "currency",
+          "description": "Currency code",
+          "type": "STRING"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "PhoneToAccount",
+      "description": "A phone belongs to an account",
+      "idSchema": {
+        "id": 0,
+        "name": "id",
+        "description": "Edge id",
+        "type": "LONG"
+      },
+      "source": {
+        "id": 1,
+        "name": "source",
+        "description": "Phone vertex id",
+        "type": "LONG",
+        "vertex": "Phone"
+      },
+      "target": {
+        "id": 2,
+        "name": "target",
+        "description": "Account vertex id",
+        "type": "LONG",
+        "vertex": "Account"
+      },
+      "createdTime": {
+        "id": -2,
+        "name": "createdTime",
+        "description": "Creation time",
+        "type": "LONG"
+      },
+      "lastUpdatedTime": {
+        "id": -1,
+        "name": "lastUpdatedTime",
+        "description": "Last update time",
+        "type": "LONG"
+      },
+      "direction": "DIRECTED",
+      "maxOutgoingEdges": 10,
+      "maxIncomingEdges": 1000,
+      "properties": [
+        {
+          "id": 3,
+          "name": "linkedAt",
+          "description": "Time when the phone was linked to the account",
+          "type": "LONG"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "name": "AccountToPhone",
+      "description": "An account owns a phone",
+      "idSchema": {
+        "id": 0,
+        "name": "id",
+        "description": "Edge id",
+        "type": "LONG"
+      },
+      "source": {
+        "id": 1,
+        "name": "source",
+        "description": "Account vertex id",
+        "type": "LONG",
+        "vertex": "Account"
+      },
+      "target": {
+        "id": 2,
+        "name": "target",
+        "description": "Phone vertex id",
+        "type": "LONG",
+        "vertex": "Phone"
+      },
+      "createdTime": {
+        "id": -2,
+        "name": "createdTime",
+        "description": "Creation time",
+        "type": "LONG"
+      },
+      "lastUpdatedTime": {
+        "id": -1,
+        "name": "lastUpdatedTime",
+        "description": "Last update time",
+        "type": "LONG"
+      },
+      "direction": "DIRECTED",
+      "maxOutgoingEdges": 10,
+      "maxIncomingEdges": 1000,
+      "properties": [
+        {
+          "id": 3,
+          "name": "linkedAt",
+          "description": "Time when the phone was linked",
+          "type": "LONG"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "name": "AccountToIP",
+      "description": "An account logs in from an IP",
+      "idSchema": {
+        "id": 0,
+        "name": "id",
+        "description": "Edge id",
+        "type": "LONG"
+      },
+      "source": {
+        "id": 1,
+        "name": "source",
+        "description": "Account vertex id",
+        "type": "LONG",
+        "vertex": "Account"
+      },
+      "target": {
+        "id": 2,
+        "name": "target",
+        "description": "IP vertex id",
+        "type": "LONG",
+        "vertex": "IP"
+      },
+      "createdTime": {
+        "id": -2,
+        "name": "createdTime",
+        "description": "Creation time",
+        "type": "LONG"
+      },
+      "lastUpdatedTime": {
+        "id": -1,
+        "name": "lastUpdatedTime",
+        "description": "Last update time",
+        "type": "LONG"
+      },
+      "direction": "DIRECTED",
+      "maxOutgoingEdges": 100,
+      "maxIncomingEdges": 1000,
+      "properties": [
+        {
+          "id": 3,
+          "name": "loginTime",
+          "description": "Login time",
+          "type": "LONG"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "name": "IPToAccount",
+      "description": "An IP is linked to an account",
+      "idSchema": {
+        "id": 0,
+        "name": "id",
+        "description": "Edge id",
+        "type": "LONG"
+      },
+      "source": {
+        "id": 1,
+        "name": "source",
+        "description": "IP vertex id",
+        "type": "LONG",
+        "vertex": "IP"
+      },
+      "target": {
+        "id": 2,
+        "name": "target",
+        "description": "Account vertex id",
+        "type": "LONG",
+        "vertex": "Account"
+      },
+      "createdTime": {
+        "id": -2,
+        "name": "createdTime",
+        "description": "Creation time",
+        "type": "LONG"
+      },
+      "lastUpdatedTime": {
+        "id": -1,
+        "name": "lastUpdatedTime",
+        "description": "Last update time",
+        "type": "LONG"
+      },
+      "direction": "DIRECTED",
+      "maxOutgoingEdges": 100,
+      "maxIncomingEdges": 1000,
+      "properties": [
+        {
+          "id": 3,
+          "name": "linkedAt",
+          "description": "Link time",
+          "type": "LONG"
+        }
+      ]
+    }
+  ],
+  "storage": {
+    "type": "RocksDB-Edge",
+    "path": "payment-graph-rocksdb-edge",
+    "regionCount": 512,
+    "maxVersions": 1,
+    "cacheEdges": true
+  }
+}

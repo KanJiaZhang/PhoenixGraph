@@ -17,9 +17,17 @@ phoenixgraph:
     # primary graph: used by the write endpoints
     vertex-set: http_demo_v1
     schema: payment-graph
+    # RocksDB graphs resolve their (relative) schema paths against this directory
+    rocksdb-root: .rocksdb
     # further graphs served by the same instance; the UI lists all of them and
     # each one reads its own Aerospike vertex set
     graphs:
+      # the same payment graph served by the two RocksDB storage schemes (see
+      # PaymentGraphRocksDbLoader for loading the demo data into them)
+      - schema: payment-graph-rocksdb-inline
+        vertex-set: http_demo_v1
+      - schema: payment-graph-rocksdb-edge
+        vertex-set: http_demo_v1
       - schema: kg-entity-graph
         vertex-set: kg_nell995_v2
       # HNSW vector index of the SIFT small dataset (10,000 x 128); its schema

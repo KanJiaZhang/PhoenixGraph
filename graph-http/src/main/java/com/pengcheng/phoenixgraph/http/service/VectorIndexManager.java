@@ -112,6 +112,9 @@ public class VectorIndexManager {
      * properties keeps its first one here.
      */
     public Map<String, HnswIndex> indexesOf(String graphName) {
+        if (!hasAerospikeStores(graphName)) {
+            return Map.of();
+        }
         Map<String, HnswIndex> byVertexType = new LinkedHashMap<>();
         for (HnswIndex index : indexes(graphName).values()) {
             byVertexType.putIfAbsent(index.vertexName(), index);
@@ -151,6 +154,11 @@ public class VectorIndexManager {
     public List<VectorIndexRebuildResult> rebuild(String graphName, String vertexSchemaName,
                                                  String vectorPropertyName) {
         GraphBinding binding = graphs.require(graphName);
+        if (!binding.hasAerospikeStores()) {
+            throw new IllegalArgumentException("Graph '" + graphName + "' is served by "
+                    + binding.storageType().configName()
+                    + "; a vector index lives in the Aerospike edge bins and is only available there");
+        }
         List<VectorIndexSchemas.VectorProperty> properties =
                 VectorIndexSchemas.vectorProperties(binding.schema());
         if (vertexSchemaName != null && !vertexSchemaName.isBlank()) {
@@ -301,6 +309,9 @@ public class VectorIndexManager {
      * @return the insert results, one per vector property that had a vector
      */
     public List<HnswInsertResult> indexVertex(String graphName, String vertexSchemaName, Object vertexId) {
+        if (!hasAerospikeStores(graphName)) {
+            return List.of();
+        }
         List<HnswIndex> indexes = indexesOf(graphName, vertexSchemaName);
         if (indexes.isEmpty()) {
             return List.of();
@@ -332,8 +343,19 @@ public class VectorIndexManager {
         return property == null ? null : property.config();
     }
 
+    /**
+     * Whether a graph can carry a vector index: the HNSW graph lives in the Aerospike edge
+     * bins, so a RocksDB-backed graph (whose read path is its own store) has no index.
+     */
+    private boolean hasAerospikeStores(String graphName) {
+        return graphs.require(graphName).hasAerospikeStores();
+    }
+
     /** Opens (once) every vector index of a graph, keyed by {@code vertex|property}. */
     private Map<String, HnswIndex> indexes(String graphName) {
+        if (!hasAerospikeStores(graphName)) {
+            return Map.of();
+        }
         return indexesByGraph.computeIfAbsent(graphs.require(graphName).name(), name -> {
             GraphBinding binding = graphs.require(name);
             AerospikeGraphQuery query = new AerospikeGraphQuery(binding.vertexStore(), binding.edgeStore(),

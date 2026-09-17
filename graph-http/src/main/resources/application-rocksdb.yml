@@ -1,0 +1,13 @@
+# Only the two RocksDB instances of the payment graph: start with
+#   --spring.profiles.active=rocksdb
+# after loading the data with PaymentGraphRocksDbLoader (graph-integration-test).
+spring:
+  application:
+    name: phoenixgraph-http-rocksdb
+
+phoenixgraph:
+  storage:
+    rocksdb-root: .rocksdb
+    schema: payment-graph-rocksdb-inline
+    graphs:
+      - schema: payment-graph-rocksdb-edge
