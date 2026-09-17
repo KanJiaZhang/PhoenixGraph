@@ -7,7 +7,9 @@ import com.pengcheng.phoenixgraph.query.storage.GraphQuery;
 import com.pengcheng.phoenixgraph.schema.GraphSchema;
 import com.pengcheng.phoenixgraph.schema.GraphSchemaManagers;
 import com.pengcheng.phoenixgraph.schema.json.SchemaJsonCodec;
+import com.pengcheng.phoenixgraph.schema.GeoIndexSchemas;
 import com.pengcheng.phoenixgraph.storage.aerospike.AerospikeEdgeStore;
+import com.pengcheng.phoenixgraph.storage.aerospike.AerospikeGeoIndex;
 import com.pengcheng.phoenixgraph.storage.aerospike.AerospikeVertexStore;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
@@ -86,6 +88,12 @@ public class StorageConfig {
                 GraphQuery query = rocksDbStores.open(schema);
                 bindings.add(GraphBinding.of(schema, query));
                 continue;
+            }
+            // an Aerospike graph declares its geo bins as geo2dsphere secondary indexes; a
+            // community server refuses (the query then scans) which is not an error here
+            if (GeoIndexSchemas.hasGeoProperties(schema)) {
+                AerospikeGeoIndex.ensureIndexes(client, properties.namespace(), definition.vertexSet(),
+                        schema, null);
             }
             bindings.add(new GraphBinding(schema,
                     new AerospikeVertexStore(client, properties.namespace(), definition.vertexSet()),

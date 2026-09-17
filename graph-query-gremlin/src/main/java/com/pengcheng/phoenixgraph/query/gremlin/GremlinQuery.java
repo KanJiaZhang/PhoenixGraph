@@ -96,7 +96,7 @@ public final class GremlinQuery {
 
         String rest = s.substring(close + 1).trim();
         String logic = null;
-        int brace = rest.indexOf('{');
+        int brace = indexOfOutsideQuotes(rest, '{');
         if (brace >= 0) {
             int logicClose = matchingBrace(rest, brace);
             logic = rest.substring(brace + 1, logicClose).trim();
@@ -138,9 +138,18 @@ public final class GremlinQuery {
 
     private static int matchingBrace(String s, int open) {
         int depth = 0;
+        char quote = 0;
         for (int i = open; i < s.length(); i++) {
             char c = s.charAt(i);
-            if (c == '{') {
+            if (quote != 0) {
+                if (c == quote) {
+                    quote = 0;
+                }
+                continue;
+            }
+            if (c == '\'' || c == '"') {
+                quote = c;
+            } else if (c == '{') {
                 depth++;
             } else if (c == '}') {
                 depth--;
@@ -154,9 +163,18 @@ public final class GremlinQuery {
 
     private static int matchingParen(String s, int open) {
         int depth = 0;
+        char quote = 0;
         for (int i = open; i < s.length(); i++) {
             char c = s.charAt(i);
-            if (c == '(') {
+            if (quote != 0) {
+                if (c == quote) {
+                    quote = 0;
+                }
+                continue;
+            }
+            if (c == '\'' || c == '"') {
+                quote = c;
+            } else if (c == '(') {
                 depth++;
             } else if (c == ')') {
                 depth--;
@@ -166,6 +184,30 @@ public final class GremlinQuery {
             }
         }
         throw new QueryException("Unbalanced parentheses in: " + s);
+    }
+
+    /**
+     * The index of the first {@code wanted} character that is not inside a quoted argument,
+     * or -1. Arguments may be JSON ({@code geoNear('{"lat":31.2}')}), so punctuation inside
+     * quotes must not be read as query syntax.
+     */
+    private static int indexOfOutsideQuotes(String s, char wanted) {
+        char quote = 0;
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (quote != 0) {
+                if (c == quote) {
+                    quote = 0;
+                }
+                continue;
+            }
+            if (c == '\'' || c == '"') {
+                quote = c;
+            } else if (c == wanted) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     /** Splits comma-separated arguments, ignoring commas inside quotes. */

@@ -10,6 +10,7 @@ import com.pengcheng.phoenixgraph.storage.WriteOutcome;
 import com.pengcheng.phoenixgraph.storage.rocksdb.KeyLocks;
 import com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbEdgeUpsert;
 import com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbHash;
+import com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbGeoIndex;
 import com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbHandle;
 import com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbKeys;
 import com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbLruCache;
@@ -105,7 +106,13 @@ public final class RocksDbEdgeStore implements AutoCloseable {
         for (EdgeSchema edgeSchema : schema.edgeSchemas()) {
             families.add(familyOf(edgeSchema));
         }
+        families.addAll(RocksDbGeoIndex.columnFamilies(schema));
         return families;
+    }
+
+    /** The geo index of this graph (one table per {@code isGeo} property). */
+    public RocksDbGeoIndex geoIndex() {
+        return vertexTable.geoIndex();
     }
 
     /**

@@ -1,0 +1,86 @@
+{
+  "id": 22,
+  "name": "geo-merchants-rocksdb-edge",
+  "description": "Shops with a geo index, served by RocksDB-Edge (the same S2 geo index, edges in per-class edge tables)",
+  "constraints": {
+    "idSchemaIndex": 0,
+    "createdTimeIndex": -2,
+    "lastUpdatedTimeIndex": -1
+  },
+  "storage": {
+    "type": "RocksDB-Edge",
+    "path": "geo-merchants-rocksdb-edge",
+    "regionCount": 512,
+    "maxVersions": 1,
+    "cacheEdges": true
+  },
+  "vertexSchemas": [
+    {
+      "id": 1,
+      "name": "Merchant",
+      "description": "A shop with a geographic location",
+      "idSchema": {
+        "id": 0,
+        "name": "id",
+        "description": "Merchant id",
+        "type": "LONG"
+      },
+      "createdTime": {
+        "id": -2,
+        "name": "createdTime",
+        "description": "Creation time",
+        "type": "LONG"
+      },
+      "lastUpdatedTime": {
+        "id": -1,
+        "name": "lastUpdatedTime",
+        "description": "Last update time",
+        "type": "LONG"
+      },
+      "properties": [
+        {
+          "id": 1,
+          "name": "name",
+          "description": "Shop name",
+          "type": "STRING",
+          "display": true
+        },
+        {
+          "id": 2,
+          "name": "category",
+          "description": "Shop category",
+          "type": "STRING",
+          "display": true
+        },
+        {
+          "id": 3,
+          "name": "rating",
+          "description": "Average rating",
+          "type": "DOUBLE"
+        },
+        {
+          "id": 4,
+          "name": "address",
+          "description": "Street address",
+          "type": "STRING"
+        },
+        {
+          "id": 5,
+          "name": "location",
+          "description": "Where the shop is, as {lat, lon}; indexed with Google S2 cells",
+          "type": {
+            "map": "DOUBLE"
+          },
+          "isGeo": true
+        },
+        {
+          "id": 6,
+          "name": "openNow",
+          "description": "Whether the shop is open",
+          "type": "BOOLEAN"
+        }
+      ]
+    }
+  ],
+  "edgeSchemas": []
+}

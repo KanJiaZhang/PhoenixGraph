@@ -11,7 +11,11 @@ import com.pengcheng.phoenixgraph.schema.EdgeSchema;
 import com.pengcheng.phoenixgraph.schema.GraphSchema;
 import com.pengcheng.phoenixgraph.schema.VertexPropertySchema;
 import com.pengcheng.phoenixgraph.schema.VertexSchema;
+import com.pengcheng.phoenixgraph.schema.geo.GeoHit;
+import com.pengcheng.phoenixgraph.schema.geo.GeoSearch;
+import com.pengcheng.phoenixgraph.storage.BusinessLogEntry;
 import com.pengcheng.phoenixgraph.storage.aerospike.AerospikeEdgeStore;
+import com.pengcheng.phoenixgraph.storage.aerospike.AerospikeGeoIndex;
 import com.pengcheng.phoenixgraph.storage.aerospike.AerospikeVertexStore;
 import com.pengcheng.phoenixgraph.storage.aerospike.EdgePropertyValue;
 import com.pengcheng.phoenixgraph.storage.aerospike.StoredEdgeValue;
@@ -45,11 +49,18 @@ public class AerospikeGraphQuery implements GraphQuery {
     private final AerospikeVertexStore vertexStore;
     private final AerospikeEdgeStore edgeStore;
     private final GraphSchema schema;
+    private final com.pengcheng.phoenixgraph.storage.BusinessLog businessLog;
 
     public AerospikeGraphQuery(AerospikeVertexStore vertexStore, AerospikeEdgeStore edgeStore, GraphSchema schema) {
+        this(vertexStore, edgeStore, schema, null);
+    }
+
+    public AerospikeGraphQuery(AerospikeVertexStore vertexStore, AerospikeEdgeStore edgeStore, GraphSchema schema,
+                               com.pengcheng.phoenixgraph.storage.BusinessLog businessLog) {
         this.vertexStore = Objects.requireNonNull(vertexStore, "vertexStore");
         this.edgeStore = Objects.requireNonNull(edgeStore, "edgeStore");
         this.schema = Objects.requireNonNull(schema, "schema");
+        this.businessLog = businessLog == null ? entry -> { } : businessLog;
     }
 
     // --- vertex ---
@@ -261,6 +272,50 @@ public class AerospikeGraphQuery implements GraphQuery {
             return EdgeSide.IN;
         }
         return EdgeSide.BOTH;
+    }
+
+    // --- geo ---
+
+    /**
+     * Finds the vertices of a type inside a circle, nearest first.
+     *
+     * <p>Aerospike answers this from the {@code geo2dsphere} secondary index of the geo bin when
+     * the server supports it (an enterprise feature, and the stored value has to be a GeoJSON
+     * point for it to match). When the index is missing - a community server, or a point stored
+     * as a map - the query falls back to scanning the set and computing every distance, so the
+     * same Gremlin query works either way.
+     */
+    @Override
+    public List<GeoHit> geoNear(String vertexName, String propertyName, GeoSearch search) {
+        VertexSchema vertexSchema = resolveVertexSchema(vertexName);
+        VertexPropertySchema propertySchema = requireVertexProperty(vertexSchema, propertyName);
+        if (!propertySchema.isGeo()) {
+            throw new QueryException("Property '" + propertyName + "' of vertex type '" + vertexName
+                    + "' is not declared with isGeo, so it has no geo index");
+        }
+        int propertyId = propertySchema.id();
+        String bin = AerospikeVertexStore.propertyBin(propertyId);
+        if (vertexStore.hasGeoIndex(bin)) {
+            try {
+                return AerospikeGeoIndex.searchByIndex(vertexStore.client(), vertexStore.namespace(),
+                        vertexStore.set(), vertexName, propertyName, propertyId, search);
+            } catch (RuntimeException e) {
+                // the index exists but cannot serve this query: scan instead of failing
+                businessLog.record(BusinessLogEntry.failure("geoNear", vertexName + "." + propertyName,
+                        Map.of("detail", "geo index query failed, falling back to a scan: " + e.getMessage())));
+            }
+        }
+        List<GeoHit> hits = AerospikeGeoIndex.searchByScan(vertexStore, vertexName, propertyName, propertyId,
+                search, businessLog);
+        if (search.maxResults() > 0 && hits.size() > search.maxResults()) {
+            return List.copyOf(hits.subList(0, search.maxResults()));
+        }
+        return hits;
+    }
+
+    @Override
+    public boolean supportsGeoSearch() {
+        return true;
     }
 
     // --- schema resolution ---

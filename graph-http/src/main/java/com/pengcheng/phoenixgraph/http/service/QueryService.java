@@ -9,6 +9,7 @@ import com.pengcheng.phoenixgraph.http.dto.QueryResponse;
 import com.pengcheng.phoenixgraph.query.gremlin.GremlinGraphQuery;
 import com.pengcheng.phoenixgraph.query.result.Subgraph;
 import com.pengcheng.phoenixgraph.query.traversal.NeighborVertexResolver;
+import com.pengcheng.phoenixgraph.schema.GeoIndexSchemas;
 import com.pengcheng.phoenixgraph.schema.GraphSchema;
 import com.pengcheng.phoenixgraph.schema.GraphSchemaManagers;
 import com.pengcheng.phoenixgraph.storage.aerospike.AerospikeEdgeStore;
@@ -162,7 +163,8 @@ public class QueryService {
         return engines.computeIfAbsent(requireName(graphName), name -> {
             GraphBinding binding = graphs.require(name);
             GremlinGraphQuery engine = new GremlinGraphQuery(binding.graphQuery(),
-                    NeighborVertexResolver.from(binding.schema()));
+                    NeighborVertexResolver.from(binding.schema()))
+                    .geoProperties(geoPropertyByVertexType(binding.schema()));
             // vector search: every property the schema flags isVector gets a nearest(k)
             // step (the index is shared with the write path, so freshly written
             // vertices are searchable immediately)
@@ -179,6 +181,18 @@ public class QueryService {
             }
             return engine;
         });
+    }
+
+    /**
+     * The geo property of every vertex type that declares one ({@code isGeo}), which is what
+     * the {@code geoNear} step resolves its search against.
+     */
+    private static Map<String, String> geoPropertyByVertexType(GraphSchema schema) {
+        Map<String, String> byType = new LinkedHashMap<>();
+        for (GeoIndexSchemas.GeoProperty property : GeoIndexSchemas.geoProperties(schema)) {
+            byType.putIfAbsent(property.vertexName(), property.propertyName());
+        }
+        return Map.copyOf(byType);
     }
 
     private static String requireName(String graphName) {

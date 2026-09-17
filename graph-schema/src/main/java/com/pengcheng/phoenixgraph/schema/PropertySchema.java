@@ -37,6 +37,7 @@ public abstract class PropertySchema {
     private final PropertyConstraints constraints;
     private boolean display;
     private VectorIndexConfig vectorConfig;
+    private GeoIndexConfig geoConfig;
 
     protected PropertySchema(int id, String name, String description, PropertyType type) {
         this(id, name, description, type, PropertyConstraints.NONE);
@@ -127,6 +128,39 @@ public abstract class PropertySchema {
     /** Marks this property as a vector property with the default index configuration. */
     public PropertySchema vector(boolean isVector) {
         return vector(isVector ? VectorIndexConfig.DEFAULT : null);
+    }
+
+    /**
+     * Whether this property holds a geographic point ({@code {lat, lon}}) the graph indexes
+     * with Google S2 cells, so a radius query is a range scan over the index. Defaults to
+     * {@code false}.
+     */
+    public boolean isGeo() {
+        return geoConfig != null;
+    }
+
+    /** The geo index configuration of this property, or {@code null} when it is not a geo property. */
+    public GeoIndexConfig geoConfig() {
+        return geoConfig;
+    }
+
+    /**
+     * The geo index configuration of this property, falling back to
+     * {@link GeoIndexConfig#DEFAULT} for a property that is not a geo property.
+     */
+    public GeoIndexConfig geoConfigOrDefault() {
+        return geoConfig == null ? GeoIndexConfig.DEFAULT : geoConfig;
+    }
+
+    /** Marks this property as a geo property (fluent) with the given index settings. */
+    public PropertySchema geo(GeoIndexConfig config) {
+        this.geoConfig = config;
+        return this;
+    }
+
+    /** Marks this property as a geo property with the default index settings. */
+    public PropertySchema geo(boolean isGeo) {
+        return geo(isGeo ? GeoIndexConfig.DEFAULT : null);
     }
 
     @Override

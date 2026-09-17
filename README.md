@@ -51,6 +51,22 @@ java -jar graph-http/target/graph-http-*.jar
 java -jar graph-http/target/graph-http-*.jar --spring.profiles.active=rocksdb
 ```
 
+### Geo search
+
+A property marked `isGeo` holds a point and gets an S2 cell index, so a radius query is a range
+scan over that index instead of a scan of the graph. Both RocksDB schemes keep it (one index
+table per geo property, maintained by the vertex writes themselves), and Aerospike uses its
+`geo2dsphere` secondary index where the server has one and scans where it does not.
+
+```groovy
+g.V('1','Merchant').geoNear('{"lat":31.2304,"lon":121.4737,"radiusKm":1}').limit(10)
+g.V('1','Merchant').geoNear('{"lat":31.2304,"lon":121.4737}', 0.5).has('category','coffee')
+        .values('name','distanceKm')
+```
+
+The radius is a step argument, the results come back nearest first with the distance attached
+(`distanceKm`), and they combine with the other steps (`has`, `limit`, `elementMap`, `count`).
+
 ### Two query languages
 
 The same graph answers Gremlin and openCypher. The HTTP API picks one with `language`,

@@ -125,6 +125,26 @@ public class AerospikeVertexStore implements VertexStore {
         return PROPERTY_TIME_BIN_PREFIX + propertyIndex;
     }
 
+    /** The connection this store writes through (used by the geo query for its secondary index). */
+    public AerospikeClient client() {
+        return client;
+    }
+
+    /** The namespace this store lives in. */
+    public String namespace() {
+        return namespace;
+    }
+
+    /** The set this store lives in. */
+    public String set() {
+        return set;
+    }
+
+    /** Whether the server reports the geo secondary index of a bin. */
+    public boolean hasGeoIndex(String binName) {
+        return AerospikeGeoIndex.hasIndex(client, namespace, set, binName);
+    }
+
     /** Returns {@code true} when {@code incoming} is strictly newer than {@code stored}. */
     static boolean isNewer(long incomingLastModifiedTime, long storedLastModifiedTime) {
         return incomingLastModifiedTime > storedLastModifiedTime;

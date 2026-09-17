@@ -1,5 +1,9 @@
 package com.pengcheng.phoenixgraph.query.storage;
 
+import com.pengcheng.phoenixgraph.query.QueryException;
+import com.pengcheng.phoenixgraph.schema.geo.GeoHit;
+import com.pengcheng.phoenixgraph.schema.geo.GeoSearch;
+
 import java.util.ArrayList;
 import java.util.List;
 
@@ -120,5 +124,27 @@ public interface GraphQuery {
                                             String... propertyNames) {
         return readEdges(vertexId, vertexName, edgeName, EdgeSide.BOTH,
                 propertyNames == null ? List.of() : List.of(propertyNames));
+    }
+
+    /**
+     * Finds the vertices of one type whose geo property lies inside a circle, nearest first.
+     *
+     * <p>This is the one read that is not reached through a vertex or an edge: a radius query
+     * asks the geo index of a type where its points are, which is why it is a port of its own.
+     * Implementations that index geo points answer it from the index; the default refuses with
+     * a clear message rather than scanning.
+     *
+     * @param vertexName   the vertex type holding the points
+     * @param propertyName the geo property
+     * @param search       the centre, the radius and the search budget
+     * @return the hits inside the radius, nearest first (possibly empty)
+     */
+    default List<GeoHit> geoNear(String vertexName, String propertyName, GeoSearch search) {
+        throw new QueryException("Geo search is not supported by " + getClass().getSimpleName());
+    }
+
+    /** Whether {@link #geoNear} is implemented (used to explain a missing index in an error). */
+    default boolean supportsGeoSearch() {
+        return false;
     }
 }

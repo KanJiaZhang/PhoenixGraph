@@ -20,6 +20,10 @@
             <artifactId>graph-storage</artifactId>
         </dependency>
         <dependency>
+            <groupId>com.pengcheng.phoenixgraph</groupId>
+            <artifactId>graph-schema</artifactId>
+        </dependency>
+        <dependency>
             <groupId>com.aerospike</groupId>
             <artifactId>aerospike-client</artifactId>
         </dependency>

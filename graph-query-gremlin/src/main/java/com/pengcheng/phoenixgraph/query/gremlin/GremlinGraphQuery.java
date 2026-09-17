@@ -6,6 +6,7 @@ import com.pengcheng.phoenixgraph.query.QueryException;
 import com.pengcheng.phoenixgraph.query.result.Subgraph;
 import com.pengcheng.phoenixgraph.query.traversal.NeighborVertexResolver;
 import com.pengcheng.phoenixgraph.query.storage.GraphQuery;
+import com.pengcheng.phoenixgraph.schema.geo.GeoSearch;
 import com.pengcheng.phoenixgraph.query.storage.VertexQueryResult;
 
 import java.util.ArrayList;
@@ -49,6 +50,7 @@ public class GremlinGraphQuery {
     private final GremlinStepRegistry registry;
     private final Map<String, String> logics = new LinkedHashMap<>();
     private final Map<String, HnswIndex> hnswIndexes = new LinkedHashMap<>();
+    private Map<String, String> geoProperties = Map.of();
     private Supplier<Map<String, HnswIndex>> hnswIndexSource;
     private final Map<String, CompiledQuery> compiledCache = new ConcurrentHashMap<>();
     private boolean cacheEnabled = true;
@@ -79,6 +81,32 @@ public class GremlinGraphQuery {
             int ef = args.size() > 1 ? positiveInt(args.get(1), "nearest") : 0;
             return GremlinSteps.nearest(vertexType -> resolvedHnswIndexes().get(vertexType), k, ef);
         });
+        // the geo step resolves the geo property of the traverser's vertex type
+        registry.register("geoNear", args -> {
+            if (args.isEmpty() || args.size() > 2) {
+                throw new QueryException("geoNear expects geoNear(pointJson) or geoNear(pointJson, radiusKm),"
+                        + " got " + args.size() + " arguments");
+            }
+            Double radius = args.size() > 1 ? positiveDouble(args.get(1), "geoNear") : null;
+            try {
+                GeoSearch search = GeoSearch.parse(args.get(0), radius);
+                return GremlinSteps.geoNear(vertexType -> geoProperties.get(vertexType), graphQuery, search);
+            } catch (IllegalArgumentException e) {
+                // a point or radius the step cannot read is a query error like any other
+                throw new QueryException(e.getMessage(), e);
+            }
+        });
+    }
+
+    /**
+     * Declares which property of which vertex type is a geo property (declared with
+     * {@code isGeo} in the schema). The {@code geoNear} step uses it to find the index of the
+     * type its traversers are on, exactly like {@link #hnswIndex} does for vector search.
+     */
+    public GremlinGraphQuery geoProperties(Map<String, String> geoPropertyByVertexType) {
+        this.geoProperties = geoPropertyByVertexType == null ? Map.of() : Map.copyOf(geoPropertyByVertexType);
+        compiledCache.clear();
+        return this;
     }
 
     /**
@@ -475,7 +503,20 @@ public class GremlinGraphQuery {
     private static boolean isHop(String name) {
         return name.equals("out") || name.equals("in") || name.equals("both")
                 || name.equals("outE") || name.equals("inE") || name.equals("bothE")
-                || name.equals("otherV") || name.equals("nearest");
+                || name.equals("otherV") || name.equals("nearest") || name.equals("geoNear");
+    }
+
+    /** Parses a positive step argument that may be a decimal (a radius in kilometres). */
+    private static double positiveDouble(String text, String stepName) {
+        try {
+            double value = Double.parseDouble(text.trim());
+            if (!(value > 0) || !Double.isFinite(value)) {
+                throw new QueryException(stepName + " expects a positive number, got " + text);
+            }
+            return value;
+        } catch (NumberFormatException e) {
+            throw new QueryException(stepName + " expects a number, got '" + text + "'");
+        }
     }
 
     private static boolean isMeta(String name) {

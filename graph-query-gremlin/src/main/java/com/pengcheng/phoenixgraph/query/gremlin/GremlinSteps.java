@@ -8,6 +8,10 @@ import com.pengcheng.phoenixgraph.query.QueryException;
 import com.pengcheng.phoenixgraph.query.result.Subgraph;
 import com.pengcheng.phoenixgraph.query.storage.EdgeQueryResult;
 import com.pengcheng.phoenixgraph.query.storage.EdgeSide;
+import com.pengcheng.phoenixgraph.query.storage.GraphQuery;
+import com.pengcheng.phoenixgraph.schema.GeoIndexSchemas;
+import com.pengcheng.phoenixgraph.schema.geo.GeoHit;
+import com.pengcheng.phoenixgraph.schema.geo.GeoSearch;
 import com.pengcheng.phoenixgraph.query.storage.VertexQueryResult;
 
 import java.util.ArrayList;
@@ -143,6 +147,68 @@ final class GremlinSteps {
             }
             return out;
         };
+    }
+
+    /**
+     * Geo search step: replaces every vertex with the vertices of its type that lie inside a
+     * circle, nearest first, attaching the distance as
+     * {@link GeoIndexSchemas#DISTANCE_PROPERTY}.
+     *
+     * <p>The circle is described by the step's JSON argument
+     * ({@code geoNear('{"lat":31.2304,"lon":121.4737,"radiusKm":1}')}) or by a point JSON plus
+     * the radius as the step's own argument ({@code geoNear('{"lat":..,"lon":..}', 2)}) - the
+     * radius is a step parameter so a client can vary the distance per call. The search runs
+     * over the geo index of the vertex type the traversers are on, the same way
+     * {@code nearest} uses the HNSW index of the type.
+     */
+    static GremlinStep geoNear(java.util.function.Function<String, String> geoPropertyOf,
+                               GraphQuery graphQuery, GeoSearch search) {
+        return (ctx, in) -> {
+            List<Object> out = new ArrayList<>();
+            Set<Object> seen = new LinkedHashSet<>();
+            for (Object o : in) {
+                if (!(o instanceof GremlinVertex vertex)) {
+                    throw new QueryException("geoNear expects vertices but got: " + o);
+                }
+                String property = geoPropertyOf.apply(vertex.label());
+                if (property == null) {
+                    throw new QueryException("No geo index is configured for vertex type '"
+                            + vertex.label() + "' (declare a property with isGeo)");
+                }
+                if (!graphQuery.supportsGeoSearch()) {
+                    throw new QueryException("The storage behind this graph does not support geo search");
+                }
+                for (GeoHit hit : graphQuery.geoNear(vertex.label(), property, search)) {
+                    if (!seen.add(hit.vertexId())) {
+                        continue;
+                    }
+                    GremlinVertex found = readVertex(ctx, hit);
+                    if (found != null) {
+                        out.add(found);
+                    }
+                }
+            }
+            return out;
+        };
+    }
+
+    /**
+     * Reads one geo hit and attaches the distance, so a query can print it
+     * ({@code values('distanceKm')}) or see it in {@code elementMap()}.
+     */
+    private static GremlinVertex readVertex(GremlinContext ctx, GeoHit hit) {
+        List<String> plan = ctx.readProperties();
+        List<VertexQueryResult> found = ctx.graphQuery().readVertices(hit.vertexName(),
+                List.of(hit.vertexId()), plan == null ? List.of() : plan);
+        VertexQueryResult vertex = found.isEmpty() ? null : found.get(0);
+        if (vertex == null) {
+            return null; // the point is indexed but its vertex is gone: skip it
+        }
+        ctx.recordVertex(vertex.vertexName(), vertex.vertexId());
+        Map<String, Object> properties = new LinkedHashMap<>(vertex.properties());
+        properties.put(GeoIndexSchemas.DISTANCE_PROPERTY, hit.distanceKm());
+        return new GremlinVertex(vertex.vertexName(), vertex.vertexId(), properties,
+                vertex.createdTime(), vertex.lastUpdatedTime());
     }
 
     /**

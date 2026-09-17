@@ -13,6 +13,7 @@ import com.pengcheng.phoenixgraph.schema.EdgeDirection;
 import com.pengcheng.phoenixgraph.schema.EdgeEndpointSchema;
 import com.pengcheng.phoenixgraph.schema.EdgePropertySchema;
 import com.pengcheng.phoenixgraph.schema.EdgeSchema;
+import com.pengcheng.phoenixgraph.schema.GeoIndexConfig;
 import com.pengcheng.phoenixgraph.schema.GraphSchema;
 import com.pengcheng.phoenixgraph.schema.GraphStorageSchema;
 import com.pengcheng.phoenixgraph.schema.GraphStorageType;
@@ -131,6 +132,7 @@ public class SchemaJsonCodec {
     private PropertyDto toPropertyDto(PropertySchema property) {
         PropertyConstraints constraints = property.constraints();
         VectorIndexConfig vector = property.vectorConfig();
+        GeoIndexConfig geo = property.geoConfig();
         return new PropertyDto(property.id(), property.name(), property.description(), property.type(),
                 constraints.min(), constraints.max(), constraints.minLength(), constraints.maxLength(), null,
                 property.display() ? Boolean.TRUE : null,
@@ -138,7 +140,10 @@ public class SchemaJsonCodec {
                 vector == null ? null : vector.metric(),
                 vector == null ? null : vector.m(),
                 vector == null ? null : vector.efConstruction(),
-                vector == null ? null : vector.efSearch());
+                vector == null ? null : vector.efSearch(),
+                property.isGeo() ? Boolean.TRUE : null,
+                geo == null ? null : geo.level(),
+                geo == null ? null : geo.maxCells());
     }
 
     private PropertyDto toEndpointDto(EdgeEndpointSchema endpoint) {
@@ -176,9 +181,10 @@ public class SchemaJsonCodec {
         VertexSchema schema = new VertexSchema(dto.id(), dto.name(), dto.description(), idSchema, createdTime, lastUpdatedTime);
         if (dto.properties() != null) {
             for (PropertyDto p : dto.properties()) {
-                schema.property(toVectorProperty(
+                VertexPropertySchema property = toVectorProperty(
                         new VertexPropertySchema(p.id(), p.name(), p.description(), p.type(),
-                                toConstraints(p)).display(Boolean.TRUE.equals(p.display())), p));
+                                toConstraints(p)).display(Boolean.TRUE.equals(p.display())), p);
+                schema.property(toGeoProperty(property, p));
             }
         }
         return schema;
@@ -218,6 +224,17 @@ public class SchemaJsonCodec {
      * Applies the vector index declaration of a property DTO ({@code isVector} plus
      * its optional metric/m/ef tunables).
      */
+    /** Applies the geo settings of a DTO to a property. */
+    private static <T extends PropertySchema> T toGeoProperty(T property, PropertyDto dto) {
+        if (dto.isGeo() == null || !dto.isGeo()) {
+            return property;
+        }
+        GeoIndexConfig defaults = GeoIndexConfig.DEFAULT;
+        int level = dto.geoLevel() == null ? defaults.level() : dto.geoLevel();
+        int maxCells = dto.geoMaxCells() == null ? defaults.maxCells() : dto.geoMaxCells();
+        return (T) property.geo(new GeoIndexConfig(level, maxCells));
+    }
+
     private static <T extends PropertySchema> T toVectorProperty(T property, PropertyDto dto) {
         if (Boolean.TRUE.equals(dto.isVector())) {
             property.vector(VectorIndexConfig.of(dto.metric(), dto.m(), dto.efConstruction(), dto.efSearch()));

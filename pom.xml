@@ -45,6 +45,7 @@
         <jackson.version>2.19.4</jackson.version>
         <aerospike.version>8.0.0</aerospike.version>
         <rocksdb.version>9.11.2</rocksdb.version>
+        <s2-geometry.version>2.0.0</s2-geometry.version>
 
         <maven-compiler-plugin.version>3.13.0</maven-compiler-plugin.version>
         <maven-surefire-plugin.version>3.5.2</maven-surefire-plugin.version>
@@ -172,6 +173,11 @@
                 <groupId>org.rocksdb</groupId>
                 <artifactId>rocksdbjni</artifactId>
                 <version>${rocksdb.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.google.geometry</groupId>
+                <artifactId>s2-geometry</artifactId>
+                <version>${s2-geometry.version}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>

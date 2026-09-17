@@ -28,6 +28,12 @@ phoenixgraph:
         vertex-set: http_demo_v1
       - schema: payment-graph-rocksdb-edge
         vertex-set: http_demo_v1
+      # shops around People's Square with an S2 geo index, in both RocksDB schemes:
+      # g.V('1','Merchant').geoNear('{"lat":31.2304,"lon":121.4737,"radiusKm":1}')
+      - schema: geo-merchants-rocksdb-inline
+        vertex-set: http_demo_v1
+      - schema: geo-merchants-rocksdb-edge
+        vertex-set: http_demo_v1
       - schema: kg-entity-graph
         vertex-set: kg_nell995_v2
       # HNSW vector index of the SIFT small dataset (10,000 x 128); its schema

@@ -3,6 +3,7 @@ package com.pengcheng.phoenixgraph.query.storage;
 import com.pengcheng.phoenixgraph.query.QueryException;
 import com.pengcheng.phoenixgraph.schema.EdgePropertySchema;
 import com.pengcheng.phoenixgraph.schema.EdgeSchema;
+import com.pengcheng.phoenixgraph.schema.GeoIndexSchemas;
 import com.pengcheng.phoenixgraph.schema.GraphSchema;
 import com.pengcheng.phoenixgraph.schema.VertexPropertySchema;
 import com.pengcheng.phoenixgraph.schema.VertexSchema;
@@ -10,6 +11,7 @@ import com.pengcheng.phoenixgraph.schema.VertexSchema;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Turns the property <em>names</em> a query asks for into the property <em>indexes</em> a
@@ -21,6 +23,19 @@ import java.util.Map;
  * declaration order so a response is stable.
  */
 public final class SchemaProjections {
+
+    /**
+     * Property names a query may ask for that are computed rather than stored. They are
+     * skipped when the storage reads are planned (there is no bin to read) while still being
+     * available on the elements a step produced - the distance a geo search attaches, for
+     * instance.
+     */
+    private static final Set<String> COMPUTED = Set.of(GeoIndexSchemas.DISTANCE_PROPERTY);
+
+    /** Whether a property name is computed by a step instead of stored. */
+    public static boolean isComputed(String name) {
+        return name != null && COMPUTED.contains(name);
+    }
 
     private SchemaProjections() {
     }
@@ -63,6 +78,9 @@ public final class SchemaProjections {
             return requested;
         }
         for (String name : names) {
+            if (isComputed(name)) {
+                continue; // produced by a step, there is no bin behind it
+            }
             VertexPropertySchema propertySchema = vertexSchema.property(name);
             if (propertySchema == null) {
                 throw new QueryException("Unknown property '" + name + "' in vertex schema '"

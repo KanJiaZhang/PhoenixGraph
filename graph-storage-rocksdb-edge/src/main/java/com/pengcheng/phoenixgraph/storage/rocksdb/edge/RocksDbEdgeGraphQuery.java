@@ -1,5 +1,6 @@
 package com.pengcheng.phoenixgraph.storage.rocksdb.edge;
 
+import com.pengcheng.phoenixgraph.query.QueryException;
 import com.pengcheng.phoenixgraph.query.storage.EdgeQueryResult;
 import com.pengcheng.phoenixgraph.query.storage.EdgeSide;
 import com.pengcheng.phoenixgraph.query.storage.GraphQuery;
@@ -7,8 +8,11 @@ import com.pengcheng.phoenixgraph.query.storage.SchemaProjections;
 import com.pengcheng.phoenixgraph.query.storage.VertexQueryResult;
 import com.pengcheng.phoenixgraph.schema.EdgeDirection;
 import com.pengcheng.phoenixgraph.schema.EdgeSchema;
+import com.pengcheng.phoenixgraph.schema.GeoIndexSchemas;
 import com.pengcheng.phoenixgraph.schema.GraphSchema;
 import com.pengcheng.phoenixgraph.schema.VertexSchema;
+import com.pengcheng.phoenixgraph.schema.geo.GeoHit;
+import com.pengcheng.phoenixgraph.schema.geo.GeoSearch;
 import com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbEdgeProperty;
 import com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbPropertyValue;
 import com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbStoredEdge;
@@ -45,6 +49,30 @@ public class RocksDbEdgeGraphQuery implements GraphQuery {
     /** The store behind this query. */
     public RocksDbEdgeStore store() {
         return store;
+    }
+
+    /**
+     * Finds the vertices of a type inside a circle, nearest first, from the S2 geo index.
+     * The index belongs to the vertex tables, so the edge tables of this scheme are not
+     * involved - a radius query is a few range scans of the index.
+     */
+    @Override
+    public List<GeoHit> geoNear(String vertexName, String propertyName, GeoSearch search) {
+        SchemaProjections.requireVertex(schema, vertexName);
+        requireGeoProperty(vertexName, propertyName);
+        return store.geoIndex().search(vertexName, propertyName, search);
+    }
+
+    @Override
+    public boolean supportsGeoSearch() {
+        return true;
+    }
+
+    private void requireGeoProperty(String vertexName, String propertyName) {
+        if (GeoIndexSchemas.geoProperty(schema, vertexName, propertyName) == null) {
+            throw new QueryException("Property '" + propertyName + "' of vertex type '" + vertexName
+                    + "' is not declared with isGeo, so it has no geo index");
+        }
     }
 
     // --- vertices ---

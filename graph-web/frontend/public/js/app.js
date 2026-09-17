@@ -315,6 +315,15 @@
       ],
     },
     gremlin: {
+      'geo-merchants-rocksdb-inline': [
+        ['GEO · 1km 内最近的商户', "g.V('1','Merchant').geoNear('{\"lat\":31.2304,\"lon\":121.4737,\"radiusKm\":1}').limit(10)"],
+        ['GEO · 500m 内的咖啡店 + 距离', "g.V('1','Merchant').geoNear('{\"lat\":31.2304,\"lon\":121.4737}', 0.5).has('category','coffee').values('name','distanceKm')"],
+        ['GEO · 2km 内有多少商户', "g.V('1','Merchant').geoNear('{\"lat\":31.2304,\"lon\":121.4737,\"radiusKm\":2}').count()"],
+      ],
+      'geo-merchants-rocksdb-edge': [
+        ['GEO · 1km 内最近的商户（RocksDB-Edge）', "g.V('1','Merchant').geoNear('{\"lat\":31.2304,\"lon\":121.4737,\"radiusKm\":1}').limit(10)"],
+        ['GEO · 300m 内全部商户的距离', "g.V('1','Merchant').geoNear('{\"lat\":31.2304,\"lon\":121.4737}', 0.3).values('distanceKm')"],
+      ],
       'payment-graph': [
         ['135 的出账（一跳）', "g.V('135','Account').outE('Payment').limit(10)"],
         ['135 双向两跳', "g.V('135','Account').both('Payment').both('Payment').dedup().limit(50)"],

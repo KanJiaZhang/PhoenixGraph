@@ -1089,3 +1089,124 @@ kg-entity-graph / hnsw-sift / hnsw-dynamic   Aerospike
 | `RocksDbLiveLoadTest`（1，需 `-Drocksdb.live.dir`） | 真正落盘装载 + 重新打开 + 跑 Gremlin/Cypher，服务前自检 |
 
 全量 `./mvnw test`：**19 个模块 BUILD SUCCESS**。
+
+---
+
+## 22. GEO 地理位置查询：`isGeo` 声明 + Google S2 索引 + Gremlin `geoNear`
+
+目标：给定经纬度，查出半径内的点（例如「最近的商户」），并返回每个点的距离；Gremlin 里用一条语句搞定，
+半径是 step 参数；Aerospike 与两种 RocksDB 实现都支持（索引落在 RocksDB 上）。
+
+### 22.1 Schema：`isGeo` 声明要做 geo index 的 property
+
+```json
+{ "id": 5, "name": "location", "type": { "map": "DOUBLE" },
+  "isGeo": true, "geoLevel": 16, "geoMaxCells": 32 }
+```
+
+| 字段 | 含义 |
+|---|---|
+| `isGeo` | 该 property 存的是经纬度点 `{lat, lon}`，需要建 geo index（默认 false） |
+| `geoLevel` | S2 cell 层级，默认 **16**（约 200m 一格）；越细 → 一格点越少、查询扫的格越多 |
+| `geoMaxCells` | 一次查询最多覆盖多少个 cell，默认 **32**（防退化成全表扫描） |
+
+- `GraphSchema`/`PropertySchema` 增加 `isGeo()/geoConfig()/geo(...)`（与 `isVector` 完全对称），
+  新增 `GeoIndexConfig`(level, maxCells)、`GeoIndexSchemas`（按点类型列出 geo property、给出 property id）；
+- DTO 增加 `isGeo/geoLevel/geoMaxCells`（省略即默认，旧 JSON 不受影响 ✓），JSON round-trip ✓；
+- 允许的存储形状（读取时宽松解析，任一即可）：`{"lat":..,"lon":..}`（`latitude/longitude/lng` 也认）、
+  GeoJSON 二元数组 `[lon, lat]`、字符串 `"31.2304,121.4737"` ✓。
+
+### 22.2 查询类型（`graph-schema` 的 `schema.geo` 包）
+
+- `GeoPoint(lat, lon)`：范围校验 + **haversine 大圆距离** `distanceKm(other)` + 宽松 `from(Object)`/`parse(String)`；
+- `GeoSearch(center, radiusKm, level, maxCells, maxResults)`：`GeoSearch.parse(json, radiusOverride)` 解析 step 的 JSON ✓；
+- `GeoHit(vertexName, vertexId, point, distanceKm)`：按距离排序（同距离按 id ✓）；
+- `GraphQuery` 新增端口 `geoNear(vertexName, propertyName, GeoSearch)` + `supportsGeoSearch()`（默认抛「不支持」✓）；
+- `SchemaProjections` 把 `distanceKm`（`GeoIndexSchemas.DISTANCE_PROPERTY`）当作**计算属性**：不当作 bin 去读，
+  但结果元素上带着它 → `values('distanceKm')`、`elementMap()` 都能用 ✓。
+
+### 22.3 RocksDB 的 S2 索引（两种方案共用）
+
+索引表：**每个 geo property 一张表**（column family `geo:<VertexType>:<propertyName>`），
+键 = `S2 cellId(8字节, big-endian) : vertexId`，值 = `lat(8B) : lon(8B)`（点也放索引里，
+距离只用索引算，命中的点才回点表读 ✓）。
+
+- 写入时**自动维护**：`RocksDbVertexTable` 在写/删顶点的同一个 `WriteBatch` 里加/删索引行
+  （点搬家 → 删旧 cell 行、加新 cell 行；删点 → 删索引行 ✓ 有测试覆盖）；
+- 查询：`S2Cap` 覆盖圆 → `S2RegionCoverer` 取 cover cell → 每个 cell 扫
+  `[cell.rangeMin():, end(cell.rangeMax():))` 区间（**后代 cell 的键都落在祖先的 range 内** ✓）→
+  逐点算 haversine → 过滤半径 → 按距离排序 → 取 limit ✓；
+- cover 层级 = `min(索引层级, levelForRadius(半径))`（**永不比索引更细**，否则会漏掉更深的点 ✓ 有测试）；
+  1km 半径 → level 14（约 1.6km 的格，覆盖 ~9–16 格 ✓）；
+- 命中上限 `MAX_CANDIDATES=200000` 兜底 ✓。
+
+Gremlin step：
+
+```
+g.V('1','Merchant').geoNear('{"lat":31.2304,"lon":121.4737,"radiusKm":1}').limit(10)
+g.V('1','Merchant').geoNear('{"lat":31.2304,"lon":121.4737}', 0.5)        # 半径用 step 参数
+g.V('1','Merchant').geoNear('{"lat":31.2304,"lon":121.4737}', 0.5).has('category','coffee').values('name','distanceKm')
+```
+
+- 语义与 `nearest` 一致：在**种子点类型**的 geo 索引上搜索，替换当前 traverser ✓；
+- 结果带 `distanceKm` 属性 ✓（`elementMap()` 也能看到 ✓）；
+- step 参数：`geoNear(pointJson[, radiusKm])`；半径缺省从 JSON 的 `radiusKm/radius/distance` 取 ✓；
+- 顺带修了 Gremlin 解析器：JSON 参数里的 `{`/`}`/`(`/`)`/`,`/`.` 不再被当作语法
+  （`{` 曾是「逻辑块」的分界 → `geoNear('{...}')` 直接解析失败 ✗）；现在括号匹配、逻辑块定位都跳过引号内内容 ✓。
+
+### 22.4 Aerospike 侧
+
+- 启动时对每个 `isGeo` property 的 bin 尝试创建 **geo2dsphere secondary index**
+  （`AerospikeGeoIndex.ensureIndexes`，已存在/社区版不支持都只记日志 ✓ 不算错误 ✓）；
+- 查询优先走索引（`Filter.geoWithinRadius`），失败/无索引则**退化为扫描集合 + 逐条算距离**
+  （`searchByScan`）→ 同一句 Gremlin 在社区版也能查 ✓；
+- 说明：Aerospike 的 geo 索引要求 bin 存 GeoJSON 字符串，而我们的存法是 `{lat,lon}` map，
+  所以实践中索引路径主要用于接入既有的 GeoJSON 数据；**持久化的 S2 索引是 RocksDB 两种方案的**（用户选型一致 ✓）。
+
+### 22.5 demo 数据与实测
+
+演示图 `geo-merchants-*`（`Merchant`：name/category/rating/address/**location(isGeo)**/openNow），
+240 家店按**黄金角螺旋**铺在人民广场周围：第 i 家距离中心 `0.05 + 0.006·i` km（最远 ~1.5km）✓，
+同一份数据写进 **两个 RocksDB 实例**（`geo-merchants-rocksdb-inline` / `geo-merchants-rocksdb-edge`）✓。
+
+```
+java ... GeoMerchantDataLoader /path/to/rocksdb-root
+# loaded geo-merchants-rocksdb-inline (RocksDB-Inline) ...: 240 merchants, 240 geo index rows
+# loaded geo-merchants-rocksdb-edge    (RocksDB-Edge)   ...: 240 merchants, 240 geo index rows
+```
+
+线上实测（8081 API / 8080 UI 代理，两个实例**逐条一致**）：
+
+| demo 查询 | 结果 |
+|---|---|
+| `g.V('1','Merchant').geoNear('{...radiusKm:1}').limit(5).values('name')` | `Coffee #1, Bakery #2, Pharmacy #3, Supermarket #4, Restaurant #5` |
+| 同上 `.values('distanceKm')` | `0.0500, 0.0560, 0.0619, …` km（**最近优先** ✓） |
+| `…geoNear('{…}', 0.5).has('category','coffee').values('name','distanceKm')` | 26 家咖啡店（500m 内）+ 各自距离 |
+| `…geoNear('{...radiusKm:2}').count()` | `240`（全部） |
+| 半径 1km / 500m / 300m / 100m 计数 | `159 / 76 / 42 / 9` |
+| `…geoNear('{...}').limit(1).elementMap()` | `{id:1, label:Merchant, name:Coffee #1, category:coffee, location:{lat:31.23084968,lon:121.4737}, distanceKm:0.0500}` |
+
+UI：`/api/v1/graphs` 现在带 `geoProperties`（`{"Merchant":["location"]}` ✓），
+下拉里两个 geo 实例显示 `… · RocksDB-Inline/Edge` ✓，示例下拉内置 5 条 GEO 示例 ✓，
+`geoNear` 的 159 个命中会一并画在画布上（159v ✓）。
+
+初始化（服务启动前）：
+
+```
+./mvnw -q -pl graph-integration-test -am test -Dtest='RocksDbLiveLoadTest#loadTheGeoInstancesIntoTheConfiguredDirectory' \
+       -Drocksdb.live.dir=D:/workspace/eclipse/PhoenixGraph/.rocksdb -Dsurefire.failIfNoSpecifiedTests=false
+java -jar graph-http/target/graph-http-*.jar          # 8081：8 个图（含 2 个 geo 实例）
+java -jar graph-web/target/graph-web-*.jar            # 8080：UI
+```
+
+### 22.6 测试
+
+| 测试 | 覆盖 |
+|---|---|
+| `graph-schema` `GeoPropertyTest`（8） | `isGeo`/配置、校验、`GeoIndexSchemas` 查询、JSON round-trip（含默认值）、点解析的 7 种形状、haversine 距离、`GeoSearch.parse` 与错误、`GeoHit` 排序 |
+| `graph-storage-rocksdb` `RocksDbGeoIndexTest`（13） | S2 层级/嵌套/range、cover 层级与 cell 预算、**半径过滤与距离（0.5km 进、1.5km 出、5km 出）**、结果上限、**搬家重建索引**、删点删索引、旧版本写入不改索引、非点值不入索引、索引键/值编解码 |
+| `graph-query-gremlin` `GremlinGraphQueryTest`（+3） | `geoNear` 两种参数形式、距离属性与 `elementMap`、缺索引/缺半径/坏点的报错 |
+| `graph-integration-test` `GeoQueryIntegrationTest`（6） | 240 家店 → 半径 0.2/0.3/0.5/1/1.5/2km 计数、最近 5 家名称与距离、`has` 过滤、`elementMap`、**两个 RocksDB 方案逐条结果相等**、索引行数/cell id |
+| `RocksDbLiveLoadTest`（+1） | 真实落盘装载 geo 实例 + 重新打开执行 demo 查询 |
+
+全量 `./mvnw test`：**19 个模块 BUILD SUCCESS**（含全部新测试）。

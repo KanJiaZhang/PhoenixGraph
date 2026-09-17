@@ -21,7 +21,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
- * Loads the payment graph into the on-disk RocksDB instances the HTTP service serves.
+ * Loads the demo graphs into the on-disk RocksDB instances the HTTP service serves: the payment
+ * graph in both schemes, and the shop graph with its geo index.
  *
  * <p>This is the "prepare the demo" step rather than a test of its own: it writes where the
  * service will read from, so it only runs when a directory is named explicitly.
@@ -79,6 +80,38 @@ class RocksDbLiveLoadTest {
                     .rows().get(0).get("n")).longValue());
             assertEquals(151L, edge.vertices().count("Account") + edge.vertices().count("IP")
                     + edge.vertices().count("Phone"));
+        }
+    }
+
+    /** The geo demo: the same shops, indexed with S2 cells, in both RocksDB schemes. */
+    @Test
+    void loadTheGeoInstancesIntoTheConfiguredDirectory() throws IOException {
+        String root = directory();
+        assumeTrue(root != null, "ROCKSDB_LIVE_DIR / -Drocksdb.live.dir not set, skipping the live load");
+        Files.createDirectories(Path.of(root));
+
+        for (String graph : List.of(GeoMerchantDataLoader.INLINE_GRAPH, GeoMerchantDataLoader.EDGE_GRAPH)) {
+            GeoMerchantDataLoader.LoadResult result = GeoMerchantDataLoader.load(graph, root, true);
+            System.out.printf("loaded %s (%s) at %s: %d merchants, %d geo index rows%n", result.graph(),
+                    result.storage().configName(), result.path(), result.merchants(), result.indexed());
+            assertEquals(GeoMerchantDataLoader.MERCHANT_COUNT, result.merchants());
+            assertEquals(GeoMerchantDataLoader.MERCHANT_COUNT, result.indexed(),
+                    "every shop must be in the geo index");
+        }
+
+        // the demo query answers out of the freshly written instances
+        GraphSchema schema = PaymentGraphRocksDbLoader.loadSchema(GeoMerchantDataLoader.INLINE_GRAPH);
+        String path = Path.of(root).resolve(schema.storage().requireRocksDbPath()).toString();
+        try (com.pengcheng.phoenixgraph.storage.rocksdb.inline.RocksDbInlineStore store =
+                     com.pengcheng.phoenixgraph.storage.rocksdb.inline.RocksDbInlineStore.open(schema,
+                             RocksDbStoreConfig.of(path))) {
+            GremlinGraphQuery engine = new GremlinGraphQuery(
+                    new com.pengcheng.phoenixgraph.storage.rocksdb.inline.RocksDbInlineGraphQuery(store, schema),
+                    NeighborVertexResolver.from(schema))
+                    .geoProperties(java.util.Map.of("Merchant", "location"));
+            assertEquals((long) GeoMerchantDataLoader.SHOPS_WITHIN_1_KM,
+                    (long) engine.execute("g.V('1','Merchant')"
+                            + ".geoNear('{\"lat\":31.2304,\"lon\":121.4737,\"radiusKm\":1}').count()").get(0));
         }
     }
 

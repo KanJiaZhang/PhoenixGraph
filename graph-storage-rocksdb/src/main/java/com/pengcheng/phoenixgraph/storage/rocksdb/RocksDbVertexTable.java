@@ -45,6 +45,7 @@ public final class RocksDbVertexTable {
     private final RocksDbStoreConfig config;
     private final KeyLocks locks;
     private final BusinessLog businessLog;
+    private final RocksDbGeoIndex geoIndex;
 
     public RocksDbVertexTable(RocksDbHandle handle, GraphSchema schema, RocksDbStoreConfig config,
                               KeyLocks locks, BusinessLog businessLog) {
@@ -53,6 +54,17 @@ public final class RocksDbVertexTable {
         this.config = Objects.requireNonNull(config, "config");
         this.locks = Objects.requireNonNull(locks, "locks");
         this.businessLog = businessLog == null ? entry -> { } : businessLog;
+        this.geoIndex = new RocksDbGeoIndex(handle, schema);
+    }
+
+    /** The geo index of this graph (the {@code isGeo} properties are indexed by the writes). */
+    public RocksDbGeoIndex geoIndex() {
+        return geoIndex;
+    }
+
+    /** The column families of the geo indexes of this graph. */
+    public Set<String> geoColumnFamilies() {
+        return RocksDbGeoIndex.columnFamilies(schema);
     }
 
     /** The column family (table) of a vertex type. */
@@ -227,6 +239,14 @@ public final class RocksDbVertexTable {
                             Map.of("table", familyOf(upsert.vertexName()), "stale", true)));
                     continue;
                 }
+                // the geo rows follow the record: the previous point is removed and the new
+                // one added in the same batch, so a moved shop is never found twice
+                if (geoIndex.hasGeoProperties(upsert.vertexName())) {
+                    if (existing != null) {
+                        geoIndex.unindex(batch, upsert.vertexName(), upsert.vertexId(), currentValues(existing));
+                    }
+                    geoIndex.index(batch, upsert.vertexName(), upsert.vertexId(), currentValues(merged));
+                }
                 long createdTime = existing == null || existing.createdTime() == 0L
                         ? upsert.createdTime() : existing.createdTime();
                 long lastUpdatedTime = existing == null ? 0L : existing.lastUpdatedTime();
@@ -247,19 +267,43 @@ public final class RocksDbVertexTable {
         }
     }
 
-    /** Deletes a vertex record. Returns whether a record was removed. */
+    /** Deletes a vertex record and its geo index rows. Returns whether a record was removed. */
     public boolean delete(String vertexName, Object vertexId) {
         return locks.withLock(vertexId, () -> {
             String family = familyOf(vertexName);
             byte[] key = RocksDbKeys.vertexKey(vertexId);
-            boolean present = handle.get(family, key) != null;
-            if (present) {
-                handle.delete(family, key);
-                businessLog.record(BusinessLogEntry.success("deleteVertex", String.valueOf(vertexId),
-                        Map.of("table", family)));
+            Record record = decodeRecord(handle.get(family, key));
+            if (record == null) {
+                return false;
             }
-            return present;
+            try (WriteBatch batch = handle.batch()) {
+                if (geoIndex.hasGeoProperties(vertexName)) {
+                    geoIndex.unindex(batch, vertexName, vertexId, currentValues(record));
+                }
+                handle.delete(batch, family, key);
+                handle.write(batch);
+            }
+            businessLog.record(BusinessLogEntry.success("deleteVertex", String.valueOf(vertexId),
+                    Map.of("table", family)));
+            return true;
         });
+    }
+
+    /** The current value of every property of a record (the shape the geo index works on). */
+    private static Map<Integer, RocksDbPropertyValue> currentValues(Record record) {
+        return currentValues(record.chains());
+    }
+
+    /** The current value of every property of a version chain map. */
+    private static Map<Integer, RocksDbPropertyValue> currentValues(
+            Map<Integer, List<RocksDbPropertyValue>> chains) {
+        Map<Integer, RocksDbPropertyValue> values = new LinkedHashMap<>();
+        for (Map.Entry<Integer, List<RocksDbPropertyValue>> entry : chains.entrySet()) {
+            if (!entry.getValue().isEmpty()) {
+                values.put(entry.getKey(), entry.getValue().get(0));
+            }
+        }
+        return values;
     }
 
     /**

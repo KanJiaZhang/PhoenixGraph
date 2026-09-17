@@ -8,6 +8,8 @@ import com.pengcheng.phoenixgraph.query.storage.EdgeQueryResult;
 import com.pengcheng.phoenixgraph.query.storage.EdgeSide;
 import com.pengcheng.phoenixgraph.query.storage.GraphQuery;
 import com.pengcheng.phoenixgraph.query.storage.VertexQueryResult;
+import com.pengcheng.phoenixgraph.schema.geo.GeoHit;
+import com.pengcheng.phoenixgraph.schema.geo.GeoPoint;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -21,6 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -292,6 +295,77 @@ class GremlinGraphQueryTest {
                 gremlin.execute("g.V('v1','person').out('knows').limit(1).elementMap()").get(0));
         // the projection of the hop itself must name the property, not skip the read
         verify(graphQuery).readVertex("n1", "person", List.of("name"));
+    }
+
+    @Test
+    void geoNearReplacesTheTraversersWithThePointsInsideTheRadius() {
+        when(graphQuery.supportsGeoSearch()).thenReturn(true);
+        when(graphQuery.geoNear(eq("person"), eq("location"), any())).thenReturn(List.of(
+                new GeoHit("person", "n1", new GeoPoint(31.2304d, 121.4737d), 0.2d),
+                new GeoHit("person", "n2", new GeoPoint(31.24d, 121.48d), 0.9d)));
+        when(graphQuery.readVertex("n1", "person", List.of())).thenReturn(
+                new VertexQueryResult("person", "n1", Map.of("name", "coffee"), 5L, 6L));
+        when(graphQuery.readVertex("n2", "person", List.of())).thenReturn(
+                new VertexQueryResult("person", "n2", Map.of("name", "bakery"), 5L, 6L));
+        when(graphQuery.readVertex("n1", "person", List.of("name"))).thenReturn(
+                new VertexQueryResult("person", "n1", Map.of("name", "coffee"), 5L, 6L));
+        when(graphQuery.readVertex("n2", "person", List.of("name"))).thenReturn(
+                new VertexQueryResult("person", "n2", Map.of("name", "bakery"), 5L, 6L));
+        when(graphQuery.readVertex("n1", "person", List.of("distanceKm"))).thenReturn(
+                new VertexQueryResult("person", "n1", Map.of(), 5L, 6L));
+        when(graphQuery.readVertex("n2", "person", List.of("distanceKm"))).thenReturn(
+                new VertexQueryResult("person", "n2", Map.of(), 5L, 6L));
+        GremlinGraphQuery engine = new GremlinGraphQuery(graphQuery, resolver)
+                .geoProperties(Map.of("person", "location"));
+
+        // the radius rides in the JSON ...
+        List<Object> names = engine.execute(
+                "g.V('v1','person').geoNear('{\"lat\":31.2304,\"lon\":121.4737,\"radiusKm\":1}')"
+                        + ".values('name')");
+        assertEquals(List.of("coffee", "bakery"), names);
+
+        // ... and can be given as the step's own argument instead
+        List<Object> distances = engine.execute(
+                "g.V('v1','person').geoNear('{\"lat\":31.2304,\"lon\":121.4737}', 2)"
+                        + ".values('distanceKm')");
+        assertEquals(List.of(0.2d, 0.9d), distances);
+
+        // the search ran on the type's geo property, once per traverser
+        verify(graphQuery, org.mockito.Mockito.atLeastOnce()).geoNear(eq("person"), eq("location"), any());
+    }
+
+    @Test
+    void geoNearAttachesTheDistanceSoElementMapShowsIt() {
+        when(graphQuery.supportsGeoSearch()).thenReturn(true);
+        when(graphQuery.geoNear(eq("person"), eq("location"), any())).thenReturn(
+                List.of(new GeoHit("person", "n1", new GeoPoint(31.2304d, 121.4737d), 0.25d)));
+        when(graphQuery.readVertex("n1", "person", List.of())).thenReturn(
+                new VertexQueryResult("person", "n1", Map.of("name", "coffee"), 5L, 6L));
+        GremlinGraphQuery engine = new GremlinGraphQuery(graphQuery, resolver)
+                .geoProperties(Map.of("person", "location"));
+
+        assertEquals(Map.of("id", "n1", "label", "person", "name", "coffee", "distanceKm", 0.25d),
+                engine.execute("g.V('v1','person').geoNear('{\"lat\":31.23,\"lon\":121.47,\"radiusKm\":1}')"
+                        + ".elementMap()").get(0));
+    }
+
+    @Test
+    void geoNearExplainsAMissingIndexOrRadius() {
+        GremlinGraphQuery engine = new GremlinGraphQuery(graphQuery, resolver);
+        // no geo property is declared for the type
+        QueryException noIndex = assertThrows(QueryException.class, () -> engine.execute(
+                "g.V('v1','person').geoNear('{\"lat\":31.23,\"lon\":121.47,\"radiusKm\":1}')"));
+        assertTrue(noIndex.getMessage().contains("No geo index"), noIndex.getMessage());
+
+        // the point JSON without a radius anywhere
+        QueryException noRadius = assertThrows(QueryException.class, () -> engine.execute(
+                "g.V('v1','person').geoNear('{\"lat\":31.23,\"lon\":121.47}')"));
+        assertTrue(noRadius.getMessage().contains("radius"), noRadius.getMessage());
+
+        // a point that is not a point
+        QueryException badPoint = assertThrows(QueryException.class, () -> engine.execute(
+                "g.V('v1','person').geoNear('not-a-point', 1)"));
+        assertTrue(badPoint.getMessage().contains("point"), badPoint.getMessage());
     }
 
     @Test
