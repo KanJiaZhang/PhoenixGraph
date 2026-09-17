@@ -11,6 +11,8 @@
   `efSearch` 默认 50、`has`/`filter` 下沉进 HNSW 搜索
 - 追加（第 18 节）：有向边布局验证（source 存 out-bin、target 存 in-bin，两跳四组合全通）、
   修复 `@PathVariable` 未命名导致 `GET|DELETE /vertices/{id}` 等接口 400/500 的 bug
+- 追加（第 20.4/20.5 节）：修复 `limit()` 截断属性投影的 bug（`values()` 紧跟 `limit()` 取不到值）、
+  浮窗改为优先展示查询结果值（重复值折叠成「ACTIVE + 350 项」）、示例下拉改为查询框 1/3 宽并居中于其下方
 - 追加（第 20 节）：UI 示例查询收进小按钮（默认隐藏）、
   查询结果值浮窗（HTTP `includeResult` 一次执行同时返回答案与子图，且兼容旧的子图响应形状）
 - 追加（第 19 节）：**新模块 `graph-query-cypher`**（openCypher 子集：`MATCH`/`WHERE`/`RETURN` + 聚合），

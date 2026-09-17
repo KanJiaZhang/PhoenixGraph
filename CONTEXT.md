@@ -874,3 +874,65 @@ Cypher + returnSubgraph → {"columns":[…],"rows":[{"phones":2}],"subgraph":3 
 
 测试：`GremlinGraphQueryTest`（`executeWithSubgraphReturnsTheAnswerAndTheVisitedGraph`：一次执行同时给出 `count()` 的值与走过的子图 + 新增 null 容忍）、
 `QueryControllerTest`（`includeResultReturnsTheAnswerNextToTheSubgraph`：`$.result[0]` 与 `$.subgraph`；`withoutIncludeResultTheSubgraphResponseIsUnchanged`：旧形状不变），全绿 ✓。
+
+### 20.4 第二轮：示例框排版（1/3 宽居中）+ 浮窗显示真正的查询值
+
+**问题 1（后端 bug）**：投影计划 `neededProperties()` 在遇到 `limit` 时**停止扫描**，把 `limit` 当成了终结步骤 ✗。
+而 `limit(n)` 只是流式截断、元素原样通过 ✓，所以 `...out('AccountToPhone').limit(1).values('cnCode')` 拿不到属性（返回 `[null]`），
+而**不带** `limit` 的同一条查询却正常 ✓ —— 于是用户的
+
+```
+g.V('135','Account').both('Payment').both('Payment').limit(1).values('accountStatus')
+```
+
+返回 `[null]` ✗（应为 `["ACTIVE"]`）。
+
+- 修复：`neededProperties` 只在 `count()` 处停止扫描（它确实消耗掉元素），`limit()` 继续往后找真正的属性消费者 ✓；
+- 副作用是**语义一致**了：`both('Payment').limit(3).values('status')` 与不带 `limit` 一样会报 `Unknown property 'status' in vertex schema 'Account'`（`status` 是 Payment 边的属性，应按 `outE/bothE` 取）✓；
+- 由此也解释了一个旧现象：`bothE(...).limit(1).values('status')` 之前"能工作"是因为顶点投影 `null`（跳过读）而**边**投影 `null` 被 `edgeReadProperties` 兜底成"读全部边属性" ✓，纯属巧合。
+
+**问题 2（浮窗显示的不是值）**：长列表（如 350 个 `ACTIVE`）原先在大字位置显示 **数量 350**，看起来像"点的数目" ✗，
+用户要的是 **Gremlin 计算出的值** ✓。
+
+新渲染规则（`summarizeValues`）：
+
+| 结果 | 浮窗 |
+|---|---|
+| `count()` → `[2]` | **2**（大号） |
+| 单值 `['ACTIVE']` | **ACTIVE**（大号） |
+| **N 个相同值** `['ACTIVE' × 350]` | **ACTIVE**（大号）+ 明细 `350 项` |
+| 少量不同值 `['+86','+86']` | `+86`（大号）+ `2 项` |
+| ≤8 种不同值 | 值列表 `a · b · c` + `N 项 · M 个不同值` |
+| >8 种不同值 | 前 8 个 + `…` + `N 项 · M 个不同值` |
+| 顶点/边元素 | 显示其 **id** |
+| Cypher 单行 | 首行的值（大号）+ `N 行 · 列名` |
+
+即：**永远优先显示值本身**，数量只作为次要明细 ✓。
+
+**问题 3（示例框排版）**：示例下拉改为
+- 查询框独占一行（`.gremlin-row { flex-direction: column }`，`textarea { flex: none }`），
+- 示例下拉在查询框**下方**、宽度 = 查询框的 **1/3**（`width: calc(100% / 3); align-self: center`）。
+
+用 **headless Edge + DevTools 协议**实测真实布局（点击 `#modeToggle` → 点击 `#examplesBtn` → 量 `getBoundingClientRect()`）：
+
+```
+picker revealed by the button: true      # hidden → 可见 + aria-expanded=true
+textareaWidth 1404, pickerWidth 468      # 468 / 1404 = 0.333 → 正好 1/3
+pickerBelowBox true, centerOffset 0      # 在查询框正下方且完全居中
+```
+
+### 20.5 测试与验证
+
+- `GremlinGraphQueryTest.limitKeepsThePropertiesProjectedForTheFollowingSteps`：`out('knows').limit(1).values('name')` → `["bob"]`、
+  `...limit(1).elementMap()` → 全属性、并 `verify` 投影里确实带了 `name` ✓（48 项全绿）；
+- 线上（8081）实测：
+
+```
+G.both('Payment').both('Payment').limit(1).values('accountStatus')  → ["ACTIVE"]   浮窗：ACTIVE
+G.both('Payment').both('Payment').values('accountStatus')           → 350 项       浮窗：ACTIVE + "350 项"
+G.both('Payment').both('Payment').limit(1)                          → 顶点         浮窗：135
+G.out('AccountToPhone').count()                                     → [2]          浮窗：2
+G.out('AccountToPhone').values('cnCode')                            → ["+86","+86"] 浮窗：+86 + "2 项"
+```
+
+（浮窗文案由 app.js 中真实的 `summarizeValue` 抽取执行得到，非手写预期。）

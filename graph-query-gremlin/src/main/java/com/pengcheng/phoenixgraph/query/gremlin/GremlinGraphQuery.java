@@ -457,9 +457,11 @@ public class GremlinGraphQuery {
                 }
             } else if (name.equals("values")) {
                 keys.addAll(steps.get(j).args());
-            } else if (name.equals("count") || name.equals("limit")) {
+            } else if (name.equals("count")) {
+                // count() consumes the elements, so nothing after it needs properties
                 break;
             }
+            // limit()/dedup() pass the elements through: keep looking for consumers
         }
         if (all || !sawConsumer) {
             return List.of();

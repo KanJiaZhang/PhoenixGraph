@@ -139,6 +139,7 @@
       valueTitle: '查询结果值',
       valueRows: '行',
       valueItems: '项',
+      valueDistinct: '个不同值',
       valueCopy: '复制结果值',
     },
     en: {
@@ -192,6 +193,7 @@
       valueTitle: 'Query result',
       valueRows: 'row(s)',
       valueItems: 'item(s)',
+      valueDistinct: 'distinct',
       valueCopy: 'Copy the value',
     },
   };
@@ -1410,39 +1412,51 @@
     el.valueCopy.title = t('valueCopy');
   }
 
+/** How many distinct values the window lists before it gives up and shows "…". */
+  const VALUE_PREVIEW = 8;
+
+  /** A vertex/edge traverser is shown by its id; anything else by its text. */
+  function valueLabel(v) {
+    if (v === null || v === undefined) return '—';
+    if (typeof v !== 'object') return escapeHtml(String(v));
+    if (v.id !== undefined && (v.label || v.type)) return escapeHtml(String(v.id));
+    return escapeHtml(JSON.stringify(v));
+  }
+
+  /**
+   * Renders a list of traversers as the window's body: one value large, several
+   * values listed with their count, and repeated values collapsed onto one value
+   * with a multiplier (a `values('status')` over 50 edges reads "ACTIVE ×50"
+   * rather than "50").
+   */
+  function summarizeValues(values, unit) {
+    if (!values.length) return { body: `0 ${t(unit)}`, detail: '' };
+    const labels = values.map(valueLabel);
+    const distinct = [...new Set(labels)];
+    if (distinct.length === 1) {
+      const detail = values.length > 1 ? `${values.length} ${t(unit)}` : '';
+      return { body: `<span class="value-scalar">${distinct[0]}</span>`, detail };
+    }
+    const shown = distinct.slice(0, VALUE_PREVIEW);
+    const suffix = distinct.length > VALUE_PREVIEW ? ' …' : '';
+    const body = `<span class="value-scalar value-small">${shown.join(' · ')}${suffix}</span>`;
+    const detail = `${values.length} ${t(unit)} · ${distinct.length} ${t('valueDistinct')}`;
+    return { body, detail };
+  }
+
+  /** The window's content for one query answer (Gremlin traversers or Cypher rows). */
   function summarizeValue(value, result) {
-    const scalar = (v) => (v === null || v === undefined ? '—' : escapeHtml(String(v)));
     if (value && value.columns) {
       const rows = value.rows;
       const columns = value.columns;
-      if (!rows.length) return { body: '0 ' + t('valueRows'), detail: '' };
+      if (!rows.length) return { body: `0 ${t('valueRows')}`, detail: '' };
+      // the first row is the value; the rows tab carries the rest
       const first = rows[0];
-      const values = columns.map((c) => first[c]).filter((v) => v !== null && v !== undefined);
-      const head = values.length === 1
-        ? `<span class="value-scalar">${scalar(values[0])}</span>`
-        : `<span class="value-scalar value-small">${values.map(scalar).join(' · ')}</span>`;
+      const summary = summarizeValues(rows.length === 1 ? columns.map((c) => first[c]) : [first], 'valueItems');
       const detail = `${rows.length} ${t('valueRows')} · ${escapeHtml(columns.join(', '))}`;
-      return { body: head, detail };
+      return { body: summary.body, detail };
     }
-    const list = Array.isArray(value) ? value : [value];
-    if (!list.length) return { body: '0 ' + t('valueItems'), detail: '' };
-    const isElement = (v) => v && typeof v === 'object' && v.id !== undefined && (v.label || v.type);
-    if (list.length === 1 && !isElement(list[0]) && typeof list[0] !== 'object') {
-      return { body: `<span class="value-scalar">${scalar(list[0])}</span>`, detail: '' };
-    }
-    const label = (v) => {
-      if (isElement(v)) return String(v.id);
-      if (v && typeof v === 'object') return escapeHtml(JSON.stringify(v));
-      return scalar(v);
-    };
-    const preview = list.slice(0, 6).map(label).join(', ');
-    const body = list.length <= 6
-      ? `<span class="value-scalar value-small">${preview}</span>`
-      : `<span class="value-scalar">${list.length}</span>`;
-    const detail = list.length > 6
-      ? `${list.length} ${t('valueItems')} · ${preview} …`
-      : `${list.length} ${t('valueItems')}`;
-    return { body, detail };
+    return summarizeValues(Array.isArray(value) ? value : [value], 'valueItems');
   }
 
   function hideValue() {

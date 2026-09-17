@@ -274,6 +274,27 @@ class GremlinGraphQueryTest {
     }
 
     @Test
+    void limitKeepsThePropertiesProjectedForTheFollowingSteps() {
+        when(graphQuery.readEdges("v1", "person", "knows", EdgeSide.OUT, List.of()))
+                .thenReturn(List.of(edge("e1", EdgeSide.OUT, "n1", Map.of())));
+        when(graphQuery.readVertex("n1", "person", List.of("name")))
+                .thenReturn(new VertexQueryResult("person", "n1", Map.of("name", "bob"), 5L, 6L));
+        // an empty projection means "all properties", as elementMap() needs
+        when(graphQuery.readVertex("n1", "person", List.of()))
+                .thenReturn(new VertexQueryResult("person", "n1",
+                        Map.of("name", "bob", "age", 42L), 5L, 6L));
+
+        // limit() lets the elements through unchanged, so values() after it still sees
+        // the properties the hop was asked to project
+        assertEquals(List.of("bob"), gremlin.execute("g.V('v1','person').out('knows').limit(1).values('name')"));
+        // ... and elementMap() after a limit() keeps asking for every property
+        assertEquals(Map.of("id", "n1", "label", "person", "name", "bob", "age", 42L),
+                gremlin.execute("g.V('v1','person').out('knows').limit(1).elementMap()").get(0));
+        // the projection of the hop itself must name the property, not skip the read
+        verify(graphQuery).readVertex("n1", "person", List.of("name"));
+    }
+
+    @Test
     void executeWithSubgraphReturnsTheAnswerAndTheVisitedGraph() {
         EdgeQueryResult edge = edge("e1", EdgeSide.OUT, "n1", Map.of());
         when(graphQuery.readEdges("v1", "person", "knows", EdgeSide.OUT, List.of()))

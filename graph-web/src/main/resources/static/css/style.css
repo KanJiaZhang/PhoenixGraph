@@ -122,9 +122,10 @@ body {
 .query-mode { display: flex; gap: 8px; align-items: center; }
 .query-mode[hidden] { display: none; }
 .query-mode:not([hidden]) { animation: fadeIn 0.24s ease; }
-.gremlin-row { flex-basis: 100%; order: 99; width: 100%; }
+/* the query box takes the row, the example picker sits centred underneath it */
+.gremlin-row { flex-basis: 100%; order: 99; width: 100%; flex-direction: column; align-items: stretch; }
 .gremlin-row textarea {
-  flex: 1 1 100%;
+  flex: none;
   width: 100%;          /* left-to-right, right edge flush with the query button */
   height: 56px;         /* auto-grows with the content up to max-height */
   min-height: 56px;
@@ -668,7 +669,8 @@ button.btn-primary:hover, #queryBtn:hover { filter: brightness(1.07); }
   font-weight: 600;
 }
 .lang-select { margin-right: 4px; }
-.example-select { width: 100%; margin-top: 8px; }
+/* one third of the query box, centred under it */
+.example-select { width: calc(100% / 3); align-self: center; margin-top: 8px; }
 #gremlinInput.cypher { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 
 .rows-wrap { overflow: auto; max-height: calc(100% - 8px); }
