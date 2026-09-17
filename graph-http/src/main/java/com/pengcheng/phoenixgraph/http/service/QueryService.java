@@ -5,6 +5,7 @@ import com.pengcheng.phoenixgraph.query.aerospike.AerospikeGraphQuery;
 import com.pengcheng.phoenixgraph.query.aerospike.AerospikeHnswIndexFactory;
 import com.pengcheng.phoenixgraph.query.cypher.CypherGraphQuery;
 import com.pengcheng.phoenixgraph.query.cypher.CypherResult;
+import com.pengcheng.phoenixgraph.http.dto.QueryResponse;
 import com.pengcheng.phoenixgraph.query.gremlin.GremlinGraphQuery;
 import com.pengcheng.phoenixgraph.query.result.Subgraph;
 import com.pengcheng.phoenixgraph.query.traversal.NeighborVertexResolver;
@@ -96,11 +97,38 @@ public class QueryService {
     /** Runs the query in the requested language ({@code gremlin} or {@code cypher}). */
     public Object query(String graphName, String query, Map<String, String> params, String language,
                         boolean returnSubgraph) {
+        return query(graphName, query, params, language, returnSubgraph, false);
+    }
+
+    /**
+     * Runs a query and decides what the response holds: the answer, the subgraph it
+     * visited, or both ({@link QueryResponse}).
+     *
+     * <p>Both come from one execution, so asking for the value next to the graph costs
+     * nothing extra - a {@code count()} has no graph of its own and a walk has no single
+     * value, and a UI wants to show whichever the query produced.
+     */
+    public Object query(String graphName, String query, Map<String, String> params, String language,
+                        boolean returnSubgraph, boolean includeResult) {
         String selected = language == null || language.isBlank() ? GREMLIN : language.trim().toLowerCase();
         return switch (selected) {
-            case GREMLIN -> returnSubgraph
-                    ? querySubgraph(graphName, query, params) : query(graphName, query, params);
-            case CYPHER -> cypherSubgraph(graphName, query, params);
+            case GREMLIN -> {
+                String substituted = substitute(query, params);
+                if (!returnSubgraph) {
+                    yield engineFor(graphName).execute(substituted);
+                }
+                GremlinGraphQuery.Result result = engineFor(graphName).executeWithSubgraph(substituted);
+                yield includeResult
+                        ? new QueryResponse(result.values(), result.subgraph())
+                        : result.subgraph();
+            }
+            case CYPHER -> {
+                String substituted = substitute(query, params);
+                CypherGraphQuery engine = cypherEngine(graphName);
+                yield returnSubgraph
+                        ? engine.executeSubgraph(substituted, cypherParameters(params))
+                        : engine.execute(substituted, cypherParameters(params));
+            }
             default -> throw new QueryException("Unknown query language '" + language
                     + "'; supported: " + GREMLIN + ", " + CYPHER);
         };

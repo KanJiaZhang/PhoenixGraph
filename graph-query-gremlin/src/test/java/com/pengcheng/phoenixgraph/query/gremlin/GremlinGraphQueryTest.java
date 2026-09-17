@@ -274,6 +274,33 @@ class GremlinGraphQueryTest {
     }
 
     @Test
+    void executeWithSubgraphReturnsTheAnswerAndTheVisitedGraph() {
+        EdgeQueryResult edge = edge("e1", EdgeSide.OUT, "n1", Map.of());
+        when(graphQuery.readEdges("v1", "person", "knows", EdgeSide.OUT, List.of()))
+                .thenReturn(List.of(edge));
+        when(graphQuery.readVertex("n1", "person", List.of("name")))
+                .thenReturn(new VertexQueryResult("person", "n1", Map.of("name", "bob"), 5L, 6L));
+        when(graphQuery.readVertex("n1", "person", List.of()))
+                .thenReturn(new VertexQueryResult("person", "n1", Map.of("name", "bob"), 5L, 6L));
+
+        GremlinGraphQuery.Result result = gremlin.executeWithSubgraph(
+                "g.V('v1','person').out('knows').values('name')");
+
+        // the answer of the query ...
+        assertEquals(List.of("bob"), result.values());
+        // ... and the subgraph it walked, from the same execution
+        assertEquals(2, result.subgraph().vertices().size());
+        assertEquals(1, result.subgraph().edges().size());
+        assertEquals("v1", result.subgraph().vertices().get(0).id());
+        assertEquals("e1", result.subgraph().edges().get(0).id());
+        // a count() has no graph of its own, but the walk it counted is there
+        GremlinGraphQuery.Result counted = gremlin.executeWithSubgraph(
+                "g.V('v1','person').out('knows').count()");
+        assertEquals(List.of(1L), counted.values());
+        assertEquals(2, counted.subgraph().vertices().size());
+    }
+
+    @Test
     void nearestStepReturnsTheIndexesNearestVertices() {
         HeapHnswVectorSource source = new HeapHnswVectorSource();
         source.put("v1", new float[] {0f, 0f});

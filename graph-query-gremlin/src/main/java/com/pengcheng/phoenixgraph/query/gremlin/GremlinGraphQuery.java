@@ -9,6 +9,7 @@ import com.pengcheng.phoenixgraph.query.storage.GraphQuery;
 import com.pengcheng.phoenixgraph.query.storage.VertexQueryResult;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -302,12 +303,33 @@ public class GremlinGraphQuery {
 
     /** Executes a query and returns the induced subgraph instead of the final traversers. */
     public Subgraph executeSubgraph(String gremlin) {
+        return executeWithSubgraph(gremlin).subgraph();
+    }
+
+    /**
+     * Executes a query and returns both the final traversers and the subgraph they
+     * visited, from a single pass over the graph.
+     *
+     * <p>This is what a UI needs: the traversers are the query's answer (a count, a
+     * list of values, ...) while the subgraph is what gets drawn.
+     */
+    public Result executeWithSubgraph(String gremlin) {
         Objects.requireNonNull(gremlin, "gremlin");
         CompiledQuery compiled = compiledCache.computeIfAbsent(gremlin, this::compile);
         GremlinContext context = newContext();
         context.collectSubgraph(true);
-        runCompiled(context, compiled);
-        return context.buildSubgraph();
+        List<Object> values = runCompiled(context, compiled);
+        return new Result(values, context.buildSubgraph());
+    }
+
+    /** The answer of a query and the subgraph it visited. */
+    public record Result(List<Object> values, Subgraph subgraph) {
+
+        public Result {
+            // values may contain nulls (values('missing')), unlike Subgraph's own lists
+            values = Collections.unmodifiableList(new ArrayList<>(values));
+            subgraph = subgraph == null ? Subgraph.EMPTY : subgraph;
+        }
     }
 
     private List<Object> executeCompiled(CompiledQuery compiled) {

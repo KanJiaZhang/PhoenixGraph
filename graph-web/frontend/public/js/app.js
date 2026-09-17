@@ -136,6 +136,10 @@
       rowsHint: 'Cypher 查询的行结果会显示在这里',
       rowsEmpty: '查询没有返回任何行',
       cypherError: 'Cypher 查询失败',
+      valueTitle: '查询结果值',
+      valueRows: '行',
+      valueItems: '项',
+      valueCopy: '复制结果值',
     },
     en: {
       title: 'PhoenixGraph Visualizer',
@@ -185,6 +189,10 @@
       rowsHint: 'Rows returned by a Cypher query show up here',
       rowsEmpty: 'The query returned no rows',
       cypherError: 'Cypher query failed',
+      valueTitle: 'Query result',
+      valueRows: 'row(s)',
+      valueItems: 'item(s)',
+      valueCopy: 'Copy the value',
     },
   };
   let lang = localStorage.getItem('pg.lang') === 'en' ? 'en' : 'zh';
@@ -213,6 +221,13 @@
     modeToggle: document.getElementById('modeToggle'),
     languageSelect: document.getElementById('languageSelect'),
     exampleSelect: document.getElementById('exampleSelect'),
+    examplesBtn: document.getElementById('examplesBtn'),
+    valuePanel: document.getElementById('valuePanel'),
+    valueTitle: document.getElementById('valueTitle'),
+    valueBody: document.getElementById('valueBody'),
+    valueDetail: document.getElementById('valueDetail'),
+    valueCopy: document.getElementById('valueCopy'),
+    valueClose: document.getElementById('valueClose'),
     rowsHint: document.getElementById('rowsHint'),
     rowsTable: document.getElementById('rowsTable'),
     rowsTableWrap: document.getElementById('rowsTableWrap'),
@@ -360,6 +375,7 @@
         params: {},
         language: currentLanguage(),
         returnSubgraph: true,
+        includeResult: true, // the answer (a count, values, rows) next to the graph
       }),
     });
     if (!res.ok) throw await queryError(res, query);
@@ -1329,27 +1345,108 @@
     picked = [];
     clearProps(); // the previously selected element no longer exists
     clearRows();
+    hideValue();
   }
 
   async function queryCurrent(query) {
     setStatus('查询中…');
     try {
       const result = await runQuery(query);
-      // Cypher answers with rows plus the subgraph it visited; Gremlin with the subgraph
-      const subgraph = result && result.subgraph ? result.subgraph : result;
+      // Cypher answers with columns/rows plus the subgraph; Gremlin with the subgraph,
+      // optionally next to the traversers it produced (includeResult)
+      const subgraph = responseSubgraph(result);
       resetGraph();
       const { addedV, addedE } = merge(subgraph);
       if (result && result.columns) showRows(result.columns, result.rows || []);
       else clearRows();
+      const value = responseValue(result);
+      showValue(value, result);
       clearAlgo();
       render();
-      if (!graph.vertices.size && !(result && result.rows && result.rows.length)) toast(t('emptyResult'));
+      const empty = !graph.vertices.size && !(result && result.rows && result.rows.length);
+      if (empty) toast(t('emptyResult'));
       const rows = result && result.rows ? `、行 ${result.rows.length}` : '';
       setStatus(`查询完成：共点 ${graph.vertices.size}、边 ${graph.edges.size}${rows}（新增点 ${addedV}、边 ${addedE}）`);
     } catch (err) {
       setStatus(err.message);
       showQueryError(err);
     }
+  }
+
+  /** The subgraph part of a response (the response itself is one for a plain Gremlin query). */
+  function responseSubgraph(result) {
+    if (!result) return null;
+    if (result.subgraph) return result.subgraph;
+    if (result.vertices) return result;
+    return { vertices: [], edges: [] };
+  }
+
+  /**
+   * The value part of a response: the traversers of a Gremlin query, or the
+   * columns/rows of a Cypher one. `undefined` when the request did not ask for it.
+   */
+  function responseValue(result) {
+    if (!result) return undefined;
+    if (result.columns) return { columns: result.columns, rows: result.rows || [] };
+    if (result.result !== undefined) return result.result;
+    if (Array.isArray(result)) return result;
+    return undefined;
+  }
+
+  /**
+   * Shows the query's answer in a small floating window: a single number (`count()`)
+   * is shown large, a short list verbatim, a long one as a count plus a preview, and a
+   * Cypher projection as its row count plus the first row (the rows tab has the rest).
+   */
+  function showValue(value, result) {
+    if (!el.valuePanel) return;
+    if (value === undefined) { hideValue(); return; }
+    const summary = summarizeValue(value, result);
+    el.valueTitle.textContent = t('valueTitle');
+    el.valueBody.innerHTML = summary.body;
+    el.valueDetail.innerHTML = summary.detail || '';
+    el.valuePanel.hidden = false;
+    el.valueCopy.textContent = '⧉';
+    el.valueCopy.title = t('valueCopy');
+  }
+
+  function summarizeValue(value, result) {
+    const scalar = (v) => (v === null || v === undefined ? '—' : escapeHtml(String(v)));
+    if (value && value.columns) {
+      const rows = value.rows;
+      const columns = value.columns;
+      if (!rows.length) return { body: '0 ' + t('valueRows'), detail: '' };
+      const first = rows[0];
+      const values = columns.map((c) => first[c]).filter((v) => v !== null && v !== undefined);
+      const head = values.length === 1
+        ? `<span class="value-scalar">${scalar(values[0])}</span>`
+        : `<span class="value-scalar value-small">${values.map(scalar).join(' · ')}</span>`;
+      const detail = `${rows.length} ${t('valueRows')} · ${escapeHtml(columns.join(', '))}`;
+      return { body: head, detail };
+    }
+    const list = Array.isArray(value) ? value : [value];
+    if (!list.length) return { body: '0 ' + t('valueItems'), detail: '' };
+    const isElement = (v) => v && typeof v === 'object' && v.id !== undefined && (v.label || v.type);
+    if (list.length === 1 && !isElement(list[0]) && typeof list[0] !== 'object') {
+      return { body: `<span class="value-scalar">${scalar(list[0])}</span>`, detail: '' };
+    }
+    const label = (v) => {
+      if (isElement(v)) return String(v.id);
+      if (v && typeof v === 'object') return escapeHtml(JSON.stringify(v));
+      return scalar(v);
+    };
+    const preview = list.slice(0, 6).map(label).join(', ');
+    const body = list.length <= 6
+      ? `<span class="value-scalar value-small">${preview}</span>`
+      : `<span class="value-scalar">${list.length}</span>`;
+    const detail = list.length > 6
+      ? `${list.length} ${t('valueItems')} · ${preview} …`
+      : `${list.length} ${t('valueItems')}`;
+    return { body, detail };
+  }
+
+  function hideValue() {
+    if (el.valuePanel) el.valuePanel.hidden = true;
   }
 
   /** Renders the rows of a Cypher result as a table in the "rows" tab. */
@@ -1442,11 +1539,32 @@
   function onLanguageChange() {
     const cypher = currentLanguage() === 'cypher';
     el.gremlinInput.placeholder = cypher
-      ? "MATCH (a:Account {id:'135'})-[:Payment]->(b:Account) RETURN b.id, p.amount LIMIT 10"
+      ? "MATCH (a:Account {id:'135'})-[p:Payment]->(b:Account) RETURN b.id, p.status LIMIT 10"
       : "g.V(888,'Account').batch(40).both('Payment').both('Payment')";
     el.gremlinInput.classList.toggle('cypher', cypher);
     clearRows();
     refreshExamples();
+    hideExamples();
+  }
+
+  /** The example picker only shows up when the little button asks for it. */
+  function toggleExamples() {
+    if (!el.exampleSelect) return;
+    if (el.exampleSelect.hidden) {
+      el.exampleSelect.hidden = false;
+      el.examplesBtn.classList.add('active');
+      el.examplesBtn.setAttribute('aria-expanded', 'true');
+      el.exampleSelect.focus();
+    } else {
+      hideExamples();
+    }
+  }
+
+  function hideExamples() {
+    if (!el.exampleSelect) return;
+    el.exampleSelect.hidden = true;
+    el.examplesBtn.classList.remove('active');
+    el.examplesBtn.setAttribute('aria-expanded', 'false');
   }
 
   // ---- init ----
@@ -1467,12 +1585,19 @@
     });
     el.modeToggle.addEventListener('change', onModeChange);
     el.languageSelect.addEventListener('change', onLanguageChange);
+    el.examplesBtn.addEventListener('click', toggleExamples);
     el.exampleSelect.addEventListener('change', () => {
       const query = el.exampleSelect.value;
       if (!query) return;
       el.gremlinInput.value = query;
       autoGrowGremlin();
       el.gremlinInput.focus();
+      hideExamples(); // the picker got out of the way again
+    });
+    el.valueClose.addEventListener('click', hideValue);
+    el.valueCopy.addEventListener('click', async () => {
+      await copyText(el.valueBody.textContent || '');
+      el.valueCopy.textContent = '✓';
     });
     el.queryBtn.addEventListener('click', () => {
       if (el.modeToggle.checked) onGremlinQuery();
@@ -1550,6 +1675,7 @@
     }
     clearRows();
     refreshExamples();
+    hideExamples();
     setStatus(`已选择图 ${g.name}（点类型 ${(g.vertexTypes || []).length}、边类型 ${(g.edgeTypes || []).length}）`);
     render();
   }

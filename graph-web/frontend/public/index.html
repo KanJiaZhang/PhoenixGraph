@@ -75,13 +75,21 @@
         <option value="gremlin">Gremlin</option>
         <option value="cypher">Cypher</option>
       </select>
+      <button id="examplesBtn" class="icon-btn" type="button" aria-expanded="false"
+              data-i18n-title="examples" title="示例查询" aria-label="examples">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
+          <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+          <path d="M9 7h7M9 11h5"/>
+        </svg>
+      </button>
       <button id="queryBtn" class="btn-primary" data-i18n="query">查询</button>
     </div>
 
     <div class="query-mode gremlin-row" id="gremlinPanel" hidden>
       <textarea id="gremlinInput" rows="2"
                 placeholder="g.V(888,'Account').batch(40).both('Payment').both('Payment')"></textarea>
-      <select id="exampleSelect" class="example-select" data-i18n-title="examples" title="示例查询"></select>
+      <select id="exampleSelect" class="example-select" data-i18n-title="examples" title="示例查询" hidden></select>
     </div>
   </header>
 
@@ -129,6 +137,15 @@
             <path d="M18 6 6 18"/><path d="m6 6 12 12"/>
           </svg>
         </button>
+      </div>
+      <div id="valuePanel" class="value-panel" hidden role="status" aria-live="polite">
+        <div class="value-head">
+          <span class="value-title" id="valueTitle" data-i18n="valueTitle">结果值</span>
+          <button id="valueCopy" class="value-btn" type="button" data-i18n-title="copy" title="复制">⧉</button>
+          <button id="valueClose" class="value-btn" type="button" data-i18n-title="close" title="关闭">×</button>
+        </div>
+        <div class="value-body" id="valueBody"></div>
+        <div class="value-detail" id="valueDetail"></div>
       </div>
       <div id="toast" role="status" aria-live="polite"></div>
     </div>

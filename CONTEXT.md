@@ -810,3 +810,67 @@ item     := expr [AS alias]
 ### 19.8 目前不支持（明确列出，避免误解）
 
 写操作（`CREATE/MERGE/SET/DELETE`）、`WITH`/`UNWIND`/`OPTIONAL MATCH`/`UNION`/`CALL`、无锚点的全表 `MATCH (n:Label)`、聚合嵌套（`count(*)+1`）、变长关系命名（`-[r*1..2]->`）、`shortestPath`/`APOC`、多跳 `*` 无上界（上限 6 跳）。向量检索目前只有 Gremlin 的 `nearest(k)`；Cypher 侧可以用层边（`-[r:vector_0]->`）做邻居遍历（见 19.6）。
+
+---
+
+## 20. UI：示例查询收进按钮 + 查询结果值浮窗
+
+第 19 节把 Cypher 接进 UI 之后补的两点体验改进。
+
+### 20.1 示例查询默认隐藏（小按钮启用）
+
+示例下拉不再占一整行：默认 `hidden`，查询框右侧多了一个 **小图标按钮**（`#examplesBtn`，书本图标，30×30，`aria-expanded` 同步）——
+- 点击展开示例下拉并聚焦，再点（或选中某个示例、切换语言/图实例）就收起 ✓；
+- 选中的示例直接填进查询框，`autoGrowGremlin()` 后光标落到文本框 ✓；
+- 不占布局、不挤压查询框，整体 UI 与之前完全一样 ✓（`.icon-btn` / `.icon-btn.active` 一套极简样式）。
+
+### 20.2 最终计算值浮窗（`includeResult`）
+
+**问题**：UI 一直用 `returnSubgraph: true`，所以 `g.V('1000','Account').out('AccountToPhone').count()` 只画出了子图，"2" 这个值根本拿不到 ✗。
+
+**后端**：`QueryRequest` 增加 `includeResult`（可空，缺省 false），`QueryService` 多一个入口：
+
+| returnSubgraph | includeResult | 响应 |
+|---|---|---|
+| false | — | 直接是答案（`[2]` / Cypher 的 columns+rows） |
+| true | false | 子图本身 `{vertices, edges}`（**与以前完全一致，向后兼容**） |
+| true | true | `{ "result": [...], "subgraph": {...} }`（`QueryResponse`） |
+
+- **一次执行同时产出两者**：`GremlinGraphQuery.executeWithSubgraph(query)` → `Result(values, subgraph)`（`executeSubgraph` 现在委托给它 ✓），所以"顺便要值"不额外跑一遍图 ✓；
+- Cypher 的响应本来就带 `columns/rows/subgraph` ✓ 且现在也尊重 `returnSubgraph`（之前无论传什么都带子图）；
+- 注意 `Result.values` 用 `Collections.unmodifiableList(new ArrayList<>(…))` 因为 `values('missing')` 会合法地产生 `null`（`List.copyOf` 会 NPE ✗）。
+
+**前端**：
+- `runQuery` 现在总是带 `includeResult: true` ✓；
+- 响应归一化：`responseSubgraph(result)` / `responseValue(result)`（兼容三种形状：Gremlin 子图、`{result, subgraph}`、Cypher `{columns, rows, subgraph}`）✓；
+- **浮窗** `#valuePanel`（画布左下，`z-index` 高于画布、低于弹窗；可关闭、可一键复制、新查询/重置时自动清除），内容由 `summarizeValue` 决定：
+
+| 结果形状 | 浮窗显示 |
+|---|---|
+| 单个标量（`count()` → `[2]`） | **大号数字** `2` |
+| 短列表（≤6） | 值/id 列表（小号） |
+| 长列表（如 400 个邻居点） | **数量**（大号）+ 前 6 个预览 |
+| Cypher 单行单列 | 大号标量 + "1 行 · phones" |
+| Cypher 多行 | 首行值 + "N 行 · 列名"（完整表格在「结果」tab） |
+| 空结果 | `0 项` / `0 行` |
+
+`node check-value-ui.cjs`（临时脚本，已删）用**真实 app.js 里抽出来的函数**跑过 7 种形状，输出与上表一致 ✓。
+
+### 20.3 验证
+
+```
+# 后端（8081）
+g.V('1000','Account').out('AccountToPhone').count() + returnSubgraph + includeResult
+  → {"result":[2], "subgraph":3 vertices / 2 edges}
+  不带 includeResult → {"vertices":…, "edges":…}（旧形状不变 ✓）
+  不带 returnSubgraph → [2] ✓
+Cypher + returnSubgraph → {"columns":[…],"rows":[{"phones":2}],"subgraph":3 vertices} ✓
+
+# 前端（8080）
+/index.html：examplesBtn ✓、exampleSelect 默认 hidden ✓、valuePanel 默认 hidden ✓
+/css/style.css：.icon-btn / .value-panel ✓
+/js/app.js：includeResult: true ✓、showValue/summarizeValue/toggleExamples/responseSubgraph/responseValue ✓
+```
+
+测试：`GremlinGraphQueryTest`（`executeWithSubgraphReturnsTheAnswerAndTheVisitedGraph`：一次执行同时给出 `count()` 的值与走过的子图 + 新增 null 容忍）、
+`QueryControllerTest`（`includeResultReturnsTheAnswerNextToTheSubgraph`：`$.result[0]` 与 `$.subgraph`；`withoutIncludeResultTheSubgraphResponseIsUnchanged`：旧形状不变），全绿 ✓。
