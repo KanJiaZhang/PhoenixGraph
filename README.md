@@ -14,9 +14,31 @@ A High Scaled and High Performance HTAP Graph Database.
 | `graph-storage`       | Storage engine abstraction + in-memory storage implementation   |
 | `graph-query`  | Query parsing, planning and execution                           |
 | `graph-query-gremlin` | Gremlin-style traversal engine (`out/in/both`, `bothE`, `filter`, `nearest`, ...) |
+| `graph-query-cypher`  | openCypher subset over the same query ports (`MATCH` / `WHERE` / `RETURN` + aggregation) |
 | `graph-hnsw`          | HNSW vector index: layered graph build + nearest-neighbour search |
 | `graph-compute-engine`| Graph analytics and algorithm execution (BFS, PageRank, ...)    |
 | `graph-web`           | RESTful web service (Spring Boot)                               |
+
+### Two query languages
+
+The same graph answers Gremlin and openCypher. The HTTP API picks one with `language`,
+and both take a query template plus parameters (`${name}` text placeholders, and native
+`$name` references for Cypher):
+
+```bash
+curl -s -X POST http://localhost:8081/api/v1/query -H 'content-type: application/json' -d '{
+  "graphName": "payment-graph", "language": "cypher",
+  "query": "MATCH (a:Account {id: $id})-[p:Payment]->(b:Account) RETURN b.id, p.status LIMIT 5",
+  "params": { "id": "135" }, "returnSubgraph": true }'
+```
+
+Supported Cypher: one or more `MATCH` patterns (directed, undirected or variable length,
+with labels and inline properties), `WHERE` with comparisons, `AND/OR/NOT`, `IN`,
+`IS [NOT] NULL` and string predicates, `RETURN [DISTINCT]` with
+`count/sum/avg/min/max/collect`, `ORDER BY`, `SKIP` and `LIMIT`. Writes stay in the REST
+write API, and a `MATCH` always needs a starting vertex with an id (the storage has no
+label index, so nothing is scanned). The web UI has a language picker, an example picker
+and a rows table. See `CONTEXT.md` section 19.
 
 ### Vector search in one query
 

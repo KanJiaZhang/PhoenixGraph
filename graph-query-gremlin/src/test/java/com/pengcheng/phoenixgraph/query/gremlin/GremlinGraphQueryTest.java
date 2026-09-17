@@ -3,6 +3,7 @@ package com.pengcheng.phoenixgraph.query.gremlin;
 import com.pengcheng.phoenixgraph.hnsw.HeapHnswVectorSource;
 import com.pengcheng.phoenixgraph.hnsw.HnswIndex;
 import com.pengcheng.phoenixgraph.hnsw.InMemoryHnswStore;import com.pengcheng.phoenixgraph.query.QueryException;
+import com.pengcheng.phoenixgraph.query.result.Subgraph;
 import com.pengcheng.phoenixgraph.query.storage.EdgeQueryResult;
 import com.pengcheng.phoenixgraph.query.storage.EdgeSide;
 import com.pengcheng.phoenixgraph.query.storage.GraphQuery;
@@ -13,6 +14,7 @@ import org.junit.jupiter.api.Test;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import com.pengcheng.phoenixgraph.query.traversal.NeighborVertexResolver;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;

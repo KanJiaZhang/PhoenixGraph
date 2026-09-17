@@ -66,17 +66,22 @@
         <button type="button" class="lang-opt" data-lang="zh">中</button>
         <button type="button" class="lang-opt" data-lang="en">EN</button>
       </div>
-      <label class="switch" data-i18n-title="gremlinToggle" title="切换 Gremlin 查询输入框">
+      <label class="switch" data-i18n-title="gremlinToggle" title="切换查询输入框">
         <input type="checkbox" id="modeToggle">
         <span class="slider"></span>
-        <span class="switch-label">Gremlin</span>
+        <span class="switch-label">Query</span>
       </label>
+      <select id="languageSelect" class="lang-select" data-i18n-title="queryLanguage" title="查询语言">
+        <option value="gremlin">Gremlin</option>
+        <option value="cypher">Cypher</option>
+      </select>
       <button id="queryBtn" class="btn-primary" data-i18n="query">查询</button>
     </div>
 
     <div class="query-mode gremlin-row" id="gremlinPanel" hidden>
       <textarea id="gremlinInput" rows="2"
                 placeholder="g.V(888,'Account').batch(40).both('Payment').both('Payment')"></textarea>
+      <select id="exampleSelect" class="example-select" data-i18n-title="examples" title="示例查询"></select>
     </div>
   </header>
 
@@ -132,7 +137,14 @@
       <nav class="tabs">
         <button class="tab active" data-tab="stats" data-i18n="stats">统计</button>
         <button class="tab" data-tab="props" data-i18n="props">属性</button>
+        <button class="tab" data-tab="rows" data-i18n="rows">结果</button>
       </nav>
+      <section id="rowsPanel" class="panel" hidden>
+        <div id="rowsHint" class="muted" data-i18n="rowsHint">Cypher 查询结果会显示在这里</div>
+        <div id="rowsTableWrap" class="rows-wrap" hidden>
+          <table id="rowsTable" class="rows-table"></table>
+        </div>
+      </section>
       <section id="statsPanel" class="panel">
         <div class="stat-grid">
           <div class="stat-card">

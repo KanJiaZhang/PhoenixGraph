@@ -1,10 +1,13 @@
 package com.pengcheng.phoenixgraph.http.service;
 
+import com.pengcheng.phoenixgraph.query.QueryException;
 import com.pengcheng.phoenixgraph.query.aerospike.AerospikeGraphQuery;
 import com.pengcheng.phoenixgraph.query.aerospike.AerospikeHnswIndexFactory;
+import com.pengcheng.phoenixgraph.query.cypher.CypherGraphQuery;
+import com.pengcheng.phoenixgraph.query.cypher.CypherResult;
 import com.pengcheng.phoenixgraph.query.gremlin.GremlinGraphQuery;
-import com.pengcheng.phoenixgraph.query.gremlin.NeighborVertexResolver;
-import com.pengcheng.phoenixgraph.query.gremlin.Subgraph;
+import com.pengcheng.phoenixgraph.query.result.Subgraph;
+import com.pengcheng.phoenixgraph.query.traversal.NeighborVertexResolver;
 import com.pengcheng.phoenixgraph.schema.GraphSchema;
 import com.pengcheng.phoenixgraph.schema.GraphSchemaManagers;
 import com.pengcheng.phoenixgraph.storage.aerospike.AerospikeEdgeStore;
@@ -12,6 +15,7 @@ import com.pengcheng.phoenixgraph.storage.aerospike.AerospikeVertexStore;
 import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Service;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -20,22 +24,32 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Executes Gremlin traversal queries against Aerospike.
+ * Executes traversal queries against Aerospike, in one of two languages.
  *
  * <p>The graph name in the request selects the schema and the vertex set (see
- * {@link GraphResolver}): one {@link GremlinGraphQuery} engine is cached per
- * graph, and each engine caches its own compiled queries. {@code ${paramName}}
- * placeholders in the query string are substituted from the request's
- * {@code params} map before execution.
+ * {@link GraphResolver}). One engine per graph and language is created on first use:
+ * a {@link GremlinGraphQuery} (which caches its compiled queries) and a
+ * {@link CypherGraphQuery} (the openCypher subset of {@code graph-query-cypher}, which
+ * resolves {@code $name} parameters from the request).
+ *
+ * <p>{@code ${paramName}} placeholders in the query text are substituted from the
+ * request's {@code params} in both languages, so a client can ship a query template and
+ * fill it in per call: {@code MATCH (a:Account {id: '${id}'}) RETURN a.id} as well as
+ * the native {@code $id} form.
  */
 @Service
 public class QueryService {
+
+    /** The languages the service can execute. */
+    public static final String GREMLIN = "gremlin";
+    public static final String CYPHER = "cypher";
 
     private static final Pattern PARAMETER = Pattern.compile("\\$\\{([^}]+)}");
 
     private final GraphResolver graphs;
     private final VectorIndexManager vectorIndexes;
     private final Map<String, GremlinGraphQuery> engines = new ConcurrentHashMap<>();
+    private final Map<String, CypherGraphQuery> cypherEngines = new ConcurrentHashMap<>();
 
     public QueryService(GraphResolver graphs, @Nullable VectorIndexManager vectorIndexes) {
         this.graphs = Objects.requireNonNull(graphs, "graphs");
@@ -61,6 +75,61 @@ public class QueryService {
         Objects.requireNonNull(query, "query");
         return engineFor(graphName).executeSubgraph(substitute(query, params));
     }
+
+    // --- Cypher ---
+
+    /**
+     * Executes an openCypher query: {@code ${name}} placeholders are substituted
+     * first, {@code $name} references are passed to the engine as parameters.
+     */
+    public CypherResult cypher(String graphName, String query, Map<String, String> params) {
+        Objects.requireNonNull(query, "query");
+        return cypherEngine(graphName).execute(substitute(query, params), cypherParameters(params));
+    }
+
+    /** Like {@link #cypher} but also reads the induced subgraph the match visited. */
+    public CypherResult cypherSubgraph(String graphName, String query, Map<String, String> params) {
+        Objects.requireNonNull(query, "query");
+        return cypherEngine(graphName).executeSubgraph(substitute(query, params), cypherParameters(params));
+    }
+
+    /** Runs the query in the requested language ({@code gremlin} or {@code cypher}). */
+    public Object query(String graphName, String query, Map<String, String> params, String language,
+                        boolean returnSubgraph) {
+        String selected = language == null || language.isBlank() ? GREMLIN : language.trim().toLowerCase();
+        return switch (selected) {
+            case GREMLIN -> returnSubgraph
+                    ? querySubgraph(graphName, query, params) : query(graphName, query, params);
+            case CYPHER -> cypherSubgraph(graphName, query, params);
+            default -> throw new QueryException("Unknown query language '" + language
+                    + "'; supported: " + GREMLIN + ", " + CYPHER);
+        };
+    }
+
+    /**
+     * Parameters reach the engine as the strings they are. Guessing types would break
+     * ids - a vertex id is the record key, so {@code 135} and {@code "135"} are
+     * different keys - while numeric comparisons still work because
+     * {@code CypherExpression.Values.compare} compares a number with a numeric string
+     * numerically.
+     */
+    private static Map<String, Object> cypherParameters(Map<String, String> params) {
+        if (params == null || params.isEmpty()) {
+            return Map.of();
+        }
+        return new LinkedHashMap<>(params);
+    }
+
+    private CypherGraphQuery cypherEngine(String graphName) {
+        return cypherEngines.computeIfAbsent(requireName(graphName), name -> {
+            GraphBinding binding = graphs.require(name);
+            return new CypherGraphQuery(
+                    new AerospikeGraphQuery(binding.vertexStore(), binding.edgeStore(), binding.schema()),
+                    NeighborVertexResolver.from(binding.schema()));
+        });
+    }
+
+    // --- Gremlin ---
 
     private GremlinGraphQuery engineFor(String graphName) {
         return engines.computeIfAbsent(requireName(graphName), name -> {

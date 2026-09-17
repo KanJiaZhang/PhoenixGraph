@@ -1,4 +1,4 @@
-package com.pengcheng.phoenixgraph.query.gremlin;
+package com.pengcheng.phoenixgraph.query.traversal;
 
 import com.pengcheng.phoenixgraph.query.storage.EdgeSide;
 import com.pengcheng.phoenixgraph.schema.EdgeSchema;
@@ -11,10 +11,13 @@ import java.util.Objects;
  * Resolves the vertex schema name of the neighbour reached by following an edge
  * of a given class in a direction.
  *
- * <p>This is what allows {@code out(...)} / {@code in(...)} / {@code both(...)}
- * to project the neighbour's properties by name. Returning {@code null} means
- * the schema is unknown; traversal still works (the neighbour's id is known),
- * but property access on that neighbour is not available.
+ * <p>This is what allows a vertex hop ({@code out(...)} in Gremlin, or a
+ * {@code (a)-[:TYPE]->(b)} step in Cypher) to project the neighbour's properties by
+ * name: the edge class and the direction decide which vertex type the far endpoint
+ * has. Returning {@code null} means the schema is unknown; traversal still works (the
+ * neighbour's id is known), but property access on that neighbour is not available.
+ *
+ * <p>Shared by the traversal engines, hence the neutral package.
  */
 @FunctionalInterface
 public interface NeighborVertexResolver {

@@ -24,6 +24,10 @@
             <artifactId>graph-query-gremlin</artifactId>
         </dependency>
         <dependency>
+            <groupId>com.pengcheng.phoenixgraph</groupId>
+            <artifactId>graph-query-cypher</artifactId>
+        </dependency>
+        <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
         </dependency>

@@ -713,3 +713,100 @@ not available via reflection. Ensure that the compiler uses the '-parameters' fl
 新增 `VertexEdgeControllerTest`（6 个 MockMvc 用例，覆盖 `GET|DELETE /vertices/{id}`、`PUT|DELETE …/properties/{index}`、`DELETE /edges/{edgeId}`）——这类按 id 的读写以前没有任何测试覆盖，所以 bug 一直没暴露。
 
 验收：`GET /api/v1/vertices/3001` → 200 带属性；`DELETE /api/v1/edges/e-3001?...` → 200 且两个端点的 out/in 同时为空；`DELETE /api/v1/vertices/{id}` → 200。
+
+---
+
+## 19. openCypher 查询（graph-query-cypher）
+
+新增模块 `graph-query-cypher`：在**与存储无关**的 `GraphQuery` 端口上实现 openCypher 子集（`MATCH … WHERE … RETURN`），与 Gremlin 引擎并列，共用 HTTP/UI。
+
+### 19.1 分层与复用
+
+为了不再复制遍历引擎的公共部分，把两样东西下沉到 `graph-query`（两个引擎共用）：
+
+| 类 | 原位置 | 现位置 | 用途 |
+|---|---|---|---|
+| `Subgraph` | graph-query-gremlin | `query.result.Subgraph` | 两个引擎统一的"碰过的子图"返回类型（UI 渲染） |
+| `NeighborVertexResolver` | graph-query-gremlin | `query.traversal.NeighborVertexResolver` | 由 (边类, 方向) 推**邻居点类型**（边的 target/source 端点），Cypher 的 `(a)-[:T]->(b)` 与 Gremlin 的 `out()` 都需要 |
+
+`graph-http` 依赖 `graph-query-cypher`（并已在 pom/dependencyManagement 注册）。
+
+### 19.2 支持的语法（`CypherParser`，手写递归下降 + 位置化报错）
+
+```
+MATCH pattern (',' pattern)* [WHERE expr]
+RETURN [DISTINCT] (* | item (',' item)*) [ORDER BY key [ASC|DESC] (',' …)*] [SKIP n] [LIMIT n]
+pattern  := node (rel node)*
+node     := '(' [var] [':' Label] ['{' key ':' expr, … '}'] ')'
+rel      := '-->' | '--' | '<--' | '-[var:TYPE1|TYPE2*1..3]->'   （方向/类型皆可省）
+item     := expr [AS alias]
+```
+- **表达式**：`= <> != < <= > >=`、`AND/OR/NOT`、`IN [...]`、`IS [NOT] NULL`、`CONTAINS`/`STARTS WITH`/`ENDS WITH`/`=~`、括号、列表字面量、`$参数`；
+- **函数**：`id/type/labels/toLower/toUpper/trim/length/size/coalesce`；
+- **聚合**：`count(*)`、`count(x)`、`count(DISTINCT x)`、`sum/avg/min/max/collect`（投影里含聚合就按非聚合项**隐式分组**）；
+- 大小写不敏感、`//` 注释、结尾 `;`；
+- **只读**：`CREATE/MERGE/SET/DELETE/REMOVE/WITH/UNWIND/CALL/UNION/OPTIONAL MATCH` 会报明确的 "not supported" ✓。
+
+### 19.3 执行语义（`CypherGraphQuery`）
+
+- **锚点（必须）**：存储没有 label 索引，所以 MATCH 必须有一个"起点" —— 节点带 `id`（`(a:Account {id:'135'})`）或 `WHERE a.id = '135'`，且该变量有点标签；否则报错并给出写法提示。**永不扫全表**。id 支持数字字面量 ↔ 字符串 key 的自动兜底（`{id: 100}` 能找到 key 为 `"100"` 的记录）。
+- **匹配**：按步扩展；边按（类型 × 方向）读取（无类型 `-[r]-` 读该点类型的**所有**边类），到端点后用 `NeighborVertexResolver` 定出邻居点类型再读点，最后套用该节点自身的约束（标签 + 内联属性）。每次执行的读都带缓存。
+- **谓词下推**：`WHERE` 里所有变量都绑定后**立即**过滤（不是最后统一过滤）。
+- **join**：`MATCH p1, p2` 共享变量即连接；某变量已绑定则从它继续扩展，否则用各自的锚点做嵌套循环。
+- **变长路径**：BFS 展开 `*min..max`，中间跳绑内部变量，`min..max` 内每一层都绑定目标变量（所以 `*1..2` 同时给出一跳和两跳的结果）；上限 6 跳（防跑飞），变长关系暂不支持命名（`-[r*1..2]->` 报错）。
+- **投影**：逐行求值 → 聚合分组 → `DISTINCT` → `ORDER BY`（可用别名/列名，也可用表达式；元素按 id 排序）→ `SKIP` → `LIMIT`。`RETURN *` 按"变量在模式里出现的顺序"给列。
+- **子图**：`executeSubgraph` 收集遍历到的点/边（按 label+id 去重）→ `Subgraph`，UI 画图用。
+
+### 19.4 HTTP：query template + parameters
+
+`POST /api/v1/query` 增加 **`language`** 字段（`gremlin` 缺省 / `cypher`）：
+
+```json
+{ "graphName": "payment-graph",
+  "language": "cypher",
+  "query": "MATCH (a:Account {id: $id})-[p:Payment]->(b:Account) RETURN b.id, p.status LIMIT $limit",
+  "params": { "id": "135" },
+  "returnSubgraph": true }
+```
+- **两种参数写法都支持**：`${name}` 由 `QueryService` 在文本层替换（两个语言都一样）；Cypher 另外原生解析 `$name`（`CypherParameters`）。参数**按字符串**传（id 就是记录 key，`135` 与 `"135"` 是不同 key）；数值比较仍然成立，因为 `Values.compare` 会把数字与数字字符串按数值比 ✓。
+- 响应：`{ "columns": [...], "rows": [ {列: 值}, … ], "subgraph": {vertices, edges} | null }`（`returnSubgraph` 决定 `subgraph` 是否为空）。Gremlin 的响应形状不变 ✓。
+- 错误：语法错误带**行列号**（`line 1, column 29: expected ')' …`），未知语言 → `Unknown query language 'sparql'; supported: gremlin, cypher` ✓，都走统一的 400 + 堆栈响应 ✓。
+
+### 19.5 UI：语言切换 + 示例 + 结果表
+
+- 查询框上方新增**语言选择**（Gremlin / Cypher），切换会换 placeholder 并重载示例；
+- 查询框下新增**示例下拉**（按"语言 × 图实例"分组，选中即填入文本框）；
+- 侧栏新增 **「结果 / Rows」** tab：Cypher 的 `columns/rows` 渲染成表格（Gremlin 查询会清空它）；`returnSubgraph` 的画布渲染与 Gremlin 完全一致 ✓。
+
+### 19.6 生成的 openCypher 实例（payment-graph 135 等，已对线上数据验证）
+
+| 示例 | 查询 | 线上结果（`payment-graph`，模拟数据） |
+|---|---|---|
+| 135 本体 | `MATCH (a:Account {id:'135'}) RETURN a.id, a.accountType, a.accountStatus, a.firstName, a.lastName` | `135 \| savings \| ACTIVE \| Linus \| Hopper` |
+| 出账（一跳） | `MATCH (a:Account {id:'135'})-[p:Payment]->(b:Account) RETURN b.id AS receiver, p.status ORDER BY receiver LIMIT 10` | 50 行（1000, 1001, … 状态 SUCCESS） |
+| 按状态聚合 | `… RETURN p.status AS status, count(*) AS n ORDER BY n DESC` | `SUCCESS \| 50` |
+| 双向关系 | `MATCH (a:Account {id:'135'})-[p:Payment]-(b:Account) RETURN b.id, p.status LIMIT 10` | 50 行 |
+| 两跳 | `MATCH (a:Account {id:'135'})-[:Payment]->(:Account)-[:Payment]->(c:Account) RETURN DISTINCT c.id LIMIT 10` | 50 个不同的两跳点 |
+| 变长 1..3 | `… -[:Payment*1..3]->(c:Account) …` | 一跳∪两跳∪三跳 |
+| 过滤 | `… WHERE b.accountStatus = 'ACTIVE' AND p.status = 'SUCCESS' RETURN b.id, b.accountType` | 全部 ACTIVE |
+| 参数（`$id` / `${id}`） | `MATCH (a:Account {id: $id})-[p:Payment]->(b:Account) RETURN b.id, p.status LIMIT 5` | 3 行，参数 `{"id":"135"}` |
+| join 两段路径 | `MATCH (a:Account {id:'1000'})-[:AccountToIP]->(ip:IP), (ip)-[:IPToAccount]->(b:Account) RETURN ip.id AS ip, b.id AS account` | `5000 \| 1000` |
+| 跨 schema | `MATCH (a:Account {id:'1000'})-[:AccountToPhone]->(ph:Phone) RETURN ph.cnCode, ph.phoneNumber` | `+86 \| 138-6000` |
+| KG：按 shard 聚合 | `MATCH (e:Entity {id:'concept_book_new_9'})-[r:Entity_Entity]->(x:Entity) RETURN x.shard AS shard, count(*) AS n ORDER BY n DESC` | Entity 的 `shard` 分组 |
+| HNSW：属性过滤邻居 | `MATCH (v:Vector {id:'4242'})-[r:vector_0]->(w:Vector) WHERE w.bucket = 3 RETURN w.id, w.name LIMIT 20` | 层 0 邻居中 bucket=3 的 |
+| HNSW：按 bucket 聚合 | `… RETURN w.bucket AS bucket, count(*) AS n ORDER BY n DESC` | bucket 分组计数 |
+
+**与 Gremlin 的交叉验证（线上同一份数据）**：`out`/`both` 一跳邻居集合、两跳集合、`count(*)` 全部一致 ✓（脚本一次跑完 11 个示例 + 3 个交叉校验 + 4 个错误分支）。
+
+### 19.7 测试
+
+| 测试 | 覆盖 |
+|---|---|
+| `CypherParserTest`（9） | 语法/AST、方向与多类型、变长、多模式、WHERE 各种算子、聚合与 ORDER BY、位置化报错、拒绝写子句、注释与分号 |
+| `CypherGraphQueryTest`（13） | 锚点（内联 id 与 WHERE id）、一跳（出/入/无向/无类型）、两跳与变长、WHERE（数值/字符串/IN/NULL/NOT/OR）、分组聚合（count/sum/avg/min/max/collect）、DISTINCT/SKIP/LIMIT、`RETURN p` 与 `RETURN *`、多模式 join、参数、子图、错误分支 |
+| `QueryControllerTest`（8） | `language` 绑定与缺省、Cypher 响应形状（columns/rows/subgraph）、Cypher 错误位置、未知语言 400 |
+| `CypherQueryIntegrationTest`（1，Aerospike） | 同一份有向图上 **Cypher 与 Gremlin 结果逐项相等**（出/入/无向一跳、两跳、变长、跨 schema、count、聚合分组）、参数与数字 id 兜底、子图点数边数、无锚点报错 |
+
+### 19.8 目前不支持（明确列出，避免误解）
+
+写操作（`CREATE/MERGE/SET/DELETE`）、`WITH`/`UNWIND`/`OPTIONAL MATCH`/`UNION`/`CALL`、无锚点的全表 `MATCH (n:Label)`、聚合嵌套（`count(*)+1`）、变长关系命名（`-[r*1..2]->`）、`shortestPath`/`APOC`、多跳 `*` 无上界（上限 6 跳）。向量检索目前只有 Gremlin 的 `nearest(k)`；Cypher 侧可以用层边（`-[r:vector_0]->`）做邻居遍历（见 19.6）。

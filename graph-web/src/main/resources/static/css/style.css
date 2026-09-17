@@ -655,3 +655,39 @@ button.btn-primary:hover, #queryBtn:hover { filter: brightness(1.07); }
   border-top: 1px solid var(--border);
   background: var(--surface-2);
 }
+
+/* ---------- query language, examples and the rows table ---------- */
+.lang-select,
+.example-select {
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: #fff;
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.lang-select { margin-right: 4px; }
+.example-select { width: 100%; margin-top: 8px; }
+#gremlinInput.cypher { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
+.rows-wrap { overflow: auto; max-height: calc(100% - 8px); }
+.rows-table { border-collapse: collapse; width: 100%; font-size: 12px; }
+.rows-table th,
+.rows-table td {
+  border-bottom: 1px solid var(--border);
+  padding: 6px 8px;
+  text-align: left;
+  vertical-align: top;
+  max-width: 260px;
+  word-break: break-word;
+}
+.rows-table th {
+  position: sticky;
+  top: 0;
+  background: #f7f8fd;
+  color: var(--muted);
+  font-weight: 700;
+  white-space: nowrap;
+}
+.rows-table tr:hover td { background: rgba(79, 70, 229, 0.04); }

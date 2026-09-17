@@ -8,7 +8,10 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * REST endpoint for Gremlin traversal queries.
+ * REST endpoint for traversal queries (Gremlin, or openCypher with
+ * {@code "language": "cypher"}). Both accept a query template plus parameters:
+ * {@code } placeholders are substituted in the text, and the Cypher engine also
+ * resolves native {@code $name} references.
  */
 @RestController
 @RequestMapping("/api/v1")
@@ -22,9 +25,7 @@ public class QueryController {
 
     @PostMapping("/query")
     public Object query(@RequestBody QueryRequest request) {
-        if (request.returnSubgraph()) {
-            return service.querySubgraph(request.graphName(), request.query(), request.params());
-        }
-        return service.query(request.graphName(), request.query(), request.params());
+        return service.query(request.graphName(), request.query(), request.params(),
+                request.languageOrDefault(), request.returnSubgraph());
     }
 }

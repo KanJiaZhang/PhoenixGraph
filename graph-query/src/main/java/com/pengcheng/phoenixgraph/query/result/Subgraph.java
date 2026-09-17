@@ -1,12 +1,17 @@
-package com.pengcheng.phoenixgraph.query.gremlin;
+package com.pengcheng.phoenixgraph.query.result;
 
 import java.util.List;
 import java.util.Map;
 
 /**
- * The induced subgraph visited by a traversal: the union of every vertex and
- * edge the query touched (start vertices, every hop's edges and the reached
- * neighbours). Used by graph renderers.
+ * The induced subgraph visited by a query: the union of every vertex and edge the
+ * traversal touched (start vertices, every hop's edges and the reached
+ * neighbours). Produced by the Gremlin and Cypher engines alike and consumed by
+ * graph renderers, so it lives next to the storage-agnostic query port.
+ *
+ * <p>An engine that collects a subgraph reads the full properties of the touched
+ * elements once, which is why the vertices/edges carry properties rather than just
+ * references.
  *
  * @param vertices vertices keyed by {@code (label, id)}; properties are read in
  *                 full for the subgraph

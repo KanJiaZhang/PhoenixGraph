@@ -11,6 +11,9 @@
   `efSearch` 默认 50、`has`/`filter` 下沉进 HNSW 搜索
 - 追加（第 18 节）：有向边布局验证（source 存 out-bin、target 存 in-bin，两跳四组合全通）、
   修复 `@PathVariable` 未命名导致 `GET|DELETE /vertices/{id}` 等接口 400/500 的 bug
+- 追加（第 19 节）：**新模块 `graph-query-cypher`**（openCypher 子集：`MATCH`/`WHERE`/`RETURN` + 聚合），
+  HTTP 增加 `language` 字段（`${name}` 与 `$name` 两种参数写法），UI 增加语言选择 / 示例查询下拉 /
+  「结果」表格 tab；`Subgraph` 与 `NeighborVertexResolver` 下沉到 `graph-query` 共用
 
 > 详细设计与实测数据在 `CONTEXT.md`：**第 15 节**（HNSW 引擎、SIFT Demo、召回实测）、
 > **第 16 节**（schema 驱动、自动建边、写入路径、缓存、配置、验证）、

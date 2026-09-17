@@ -130,6 +130,12 @@
       noPath: '两点之间没有路径',
       emptyResult: '查询结果为空（未找到该点）',
       displayName: '显示名',
+      queryLanguage: '查询语言（Gremlin / Cypher）',
+      examples: '示例查询',
+      rows: '结果',
+      rowsHint: 'Cypher 查询的行结果会显示在这里',
+      rowsEmpty: '查询没有返回任何行',
+      cypherError: 'Cypher 查询失败',
     },
     en: {
       title: 'PhoenixGraph Visualizer',
@@ -173,6 +179,12 @@
       noPath: 'No path between the two vertices',
       emptyResult: 'No result (vertex not found)',
       displayName: 'Display name',
+      queryLanguage: 'Query language (Gremlin / Cypher)',
+      examples: 'Example queries',
+      rows: 'Rows',
+      rowsHint: 'Rows returned by a Cypher query show up here',
+      rowsEmpty: 'The query returned no rows',
+      cypherError: 'Cypher query failed',
     },
   };
   let lang = localStorage.getItem('pg.lang') === 'en' ? 'en' : 'zh';
@@ -199,6 +211,12 @@
     idPanel: document.getElementById('idPanel'),
     gremlinPanel: document.getElementById('gremlinPanel'),
     modeToggle: document.getElementById('modeToggle'),
+    languageSelect: document.getElementById('languageSelect'),
+    exampleSelect: document.getElementById('exampleSelect'),
+    rowsHint: document.getElementById('rowsHint'),
+    rowsTable: document.getElementById('rowsTable'),
+    rowsTableWrap: document.getElementById('rowsTableWrap'),
+    rowsPanel: document.getElementById('rowsPanel'),
     queryBtn: document.getElementById('queryBtn'),
     rebalanceBtn: document.getElementById('rebalanceBtn'),
     brushBtn: document.getElementById('brushBtn'),
@@ -238,6 +256,66 @@
   let picked = []; // up to two clicked vertex keys (shortest-path endpoints)
   let pathState = null; // { pathNodes, pathEdges, shortestNodes, shortestEdges }
   let displayFields = {}; // vertex label -> display property names (from /api/graphs)
+
+  /**
+   * Example queries per language and graph, offered in the picker under the query
+   * box. The Cypher ones exercise the supported subset: id matches, both directions,
+   * two hops, filters, aggregation and variable-length paths.
+   */
+  const EXAMPLES = {
+    cypher: {
+      'payment-graph': [
+        ['135 账户本体', "MATCH (a:Account {id:'135'}) RETURN a.id, a.accountType, a.accountStatus, a.firstName, a.lastName"],
+        ['135 的出账（一跳）', "MATCH (a:Account {id:'135'})-[p:Payment]->(b:Account) RETURN b.id AS receiver, p.status ORDER BY receiver LIMIT 10"],
+        ['按状态聚合出账', "MATCH (a:Account {id:'135'})-[p:Payment]->(b:Account) RETURN p.status AS status, count(*) AS n ORDER BY n DESC"],
+        ['135 的双向支付关系', "MATCH (a:Account {id:'135'})-[p:Payment]-(b:Account) RETURN b.id, p.status LIMIT 10"],
+        ['两跳：135 → 中间账户 → 目标', "MATCH (a:Account {id:'135'})-[:Payment]->(:Account)-[:Payment]->(c:Account) RETURN DISTINCT c.id LIMIT 10"],
+        ['变长路径 1..3 跳', "MATCH (a:Account {id:'135'})-[:Payment*1..3]->(c:Account) RETURN DISTINCT c.id LIMIT 20"],
+        ['过滤：活跃对手 + 状态', "MATCH (a:Account {id:'135'})-[p:Payment]->(b:Account) WHERE b.accountStatus = 'ACTIVE' AND p.status = 'SUCCESS' RETURN b.id, b.accountType LIMIT 10"],
+        ['参数化模板（${id}）', "MATCH (a:Account {id: '${id}'}) RETURN a.id, a.accountType, a.accountStatus"],
+        ['参数化模板（$id）', "MATCH (a:Account {id: $id})-[p:Payment]->(b:Account) RETURN b.id, p.status LIMIT 5"],
+        ['聚合：每个账户的入账数', "MATCH (b:Account {id:'1035'})<-[p:Payment]-(a:Account) RETURN a.id AS payer, count(*) AS n ORDER BY n DESC LIMIT 10"],
+        ['跨 schema：账户的手机号', "MATCH (a:Account {id:'1000'})-[:AccountToPhone]->(ph:Phone) RETURN ph.cnCode, ph.phoneNumber"],
+        ['两段路径的连接（join）', "MATCH (a:Account {id:'1000'})-[:AccountToIP]->(ip:IP), (ip)-[:IPToAccount]->(b:Account) RETURN ip.id AS ip, b.id AS account LIMIT 10"],
+      ],
+      'kg-entity-graph': [
+        ['实体概念书本体', "MATCH (e:Entity {id:'concept_book_new_9'}) RETURN e.name, e.shard"],
+        ['按 shard 聚合', "MATCH (e:Entity {id:'concept_book_new_9'})-[r:Entity_Entity]->(x:Entity) RETURN x.shard AS shard, count(*) AS n ORDER BY n DESC"],
+        ['关系与反向关系', "MATCH (e:Entity {id:'concept_book_new_9'})-[r:Entity_Entity]->(x:Entity) RETURN r.relation AS relation, r.xrelation AS inverse, x.id LIMIT 10"],
+        ['过滤某个关系', "MATCH (e:Entity {id:'concept_mammal_animals_2'})-[r:Entity_Entity]->(x:Entity) WHERE r.relation = 'concept:specializationof' RETURN x.id LIMIT 20"],
+        ['两跳同 shard 关系', "MATCH (e:Entity {id:'concept_mammal_animals_2'})-[:Entity_Entity]->(:Entity)-[:Entity_Entity]->(y:Entity) RETURN DISTINCT y.id LIMIT 20"],
+      ],
+      'hnsw-sift': [
+        ['4242 向量本体', "MATCH (v:Vector {id:'4242'}) RETURN v.name, v.bucket, v.category"],
+        ['同 bucket 的邻居（属性过滤）', "MATCH (v:Vector {id:'4242'})-[r:vector_0]->(w:Vector) WHERE w.bucket = 3 RETURN w.id, w.name LIMIT 20"],
+        ['按 bucket 聚合邻居', "MATCH (v:Vector {id:'4242'})-[r:vector_0]->(w:Vector) RETURN w.bucket AS bucket, count(*) AS n ORDER BY n DESC"],
+        ['按 category 聚合邻居', "MATCH (v:Vector {id:'4242'})-[r:vector_0]->(w:Vector) RETURN w.category AS category, count(*) AS n ORDER BY n DESC"],
+        ['层 0 的邻居数（计数）', "MATCH (v:Vector {id:'4242'})-[r:vector_0]->(w:Vector) RETURN count(*) AS neighbours"],
+      ],
+      'hnsw-dynamic': [
+        ['300 文档本体', "MATCH (d:Doc {id:'300'}) RETURN d.name"],
+        ['300 的层 0 邻居', "MATCH (d:Doc {id:'300'})-[r:embedding_0]->(n:Doc) RETURN n.id, n.name LIMIT 10"],
+      ],
+    },
+    gremlin: {
+      'payment-graph': [
+        ['135 的出账（一跳）', "g.V('135','Account').outE('Payment').limit(10)"],
+        ['135 双向两跳', "g.V('135','Account').both('Payment').both('Payment').dedup().limit(50)"],
+        ['账户的手机号', "g.V('1000','Account').out('AccountToPhone')"],
+      ],
+      'kg-entity-graph': [
+        ['概念书的全部关系', "g.V('concept_book_new_9','Entity').bothE().limit(20)"],
+        ['按关系过滤再跳一跳', "g.V('concept_mammal_animals_2','Entity').bothE().filter(relation.equals('concept:specializationof') || xrelation.equals('concept:specializationof')).otherV()"],
+      ],
+      'hnsw-sift': [
+        ['4242 最近的 20 个向量', "g.V('4242','Vector').nearest(20)"],
+        ['带属性过滤的向量检索', "g.V('4242','Vector').nearest(20).has('bucket', 3)"],
+      ],
+      'hnsw-dynamic': [
+        ['300 最近的 5 个向量', "g.V('300','Doc').nearest(5)"],
+      ],
+    },
+  };
   const positions = new Map(); // node key -> {x, y}, so re-renders keep node placement
 
   const DISPLAY_LABEL_MAX = 22;
@@ -276,10 +354,21 @@
     const res = await fetch('/api/query', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ graphName: currentGraph.name, query, params: {}, returnSubgraph: true }),
+      body: JSON.stringify({
+        graphName: currentGraph.name,
+        query,
+        params: {},
+        language: currentLanguage(),
+        returnSubgraph: true,
+      }),
     });
     if (!res.ok) throw await queryError(res, query);
     return res.json();
+  }
+
+  /** The selected query language (the picker next to the query box). */
+  function currentLanguage() {
+    return el.languageSelect && el.languageSelect.value === 'cypher' ? 'cypher' : 'gremlin';
   }
 
   /**
@@ -1239,22 +1328,68 @@
     pathState = null;
     picked = [];
     clearProps(); // the previously selected element no longer exists
+    clearRows();
   }
 
   async function queryCurrent(query) {
     setStatus('查询中…');
     try {
-      const sub = await runQuery(query);
+      const result = await runQuery(query);
+      // Cypher answers with rows plus the subgraph it visited; Gremlin with the subgraph
+      const subgraph = result && result.subgraph ? result.subgraph : result;
       resetGraph();
-      const { addedV, addedE } = merge(sub);
+      const { addedV, addedE } = merge(subgraph);
+      if (result && result.columns) showRows(result.columns, result.rows || []);
+      else clearRows();
       clearAlgo();
       render();
-      if (!graph.vertices.size) toast(t('emptyResult'));
-      setStatus(`查询完成：共点 ${graph.vertices.size}、边 ${graph.edges.size}（新增点 ${addedV}、边 ${addedE}）`);
+      if (!graph.vertices.size && !(result && result.rows && result.rows.length)) toast(t('emptyResult'));
+      const rows = result && result.rows ? `、行 ${result.rows.length}` : '';
+      setStatus(`查询完成：共点 ${graph.vertices.size}、边 ${graph.edges.size}${rows}（新增点 ${addedV}、边 ${addedE}）`);
     } catch (err) {
       setStatus(err.message);
       showQueryError(err);
     }
+  }
+
+  /** Renders the rows of a Cypher result as a table in the "rows" tab. */
+  function showRows(columns, rows) {
+    if (!el.rowsTable) return;
+    el.rowsTable.innerHTML = '';
+    if (!rows.length) {
+      el.rowsTableWrap.hidden = true;
+      el.rowsHint.style.display = '';
+      el.rowsHint.textContent = t('rowsEmpty');
+      return;
+    }
+    const head = document.createElement('tr');
+    for (const column of columns) {
+      const th = document.createElement('th');
+      th.textContent = column;
+      head.appendChild(th);
+    }
+    el.rowsTable.appendChild(head);
+    for (const row of rows) {
+      const tr = document.createElement('tr');
+      for (const column of columns) {
+        const td = document.createElement('td');
+        td.innerHTML = formatValue(row[column]);
+        tr.appendChild(td);
+      }
+      el.rowsTable.appendChild(tr);
+    }
+    el.rowsHint.style.display = 'none';
+    el.rowsTableWrap.hidden = false;
+    activateTab('rows');
+  }
+
+  /** Empties the rows table (a new query, or a Gremlin one). */
+  function clearRows() {
+    if (!el.rowsTable) return;
+    el.rowsTable.innerHTML = '';
+    el.rowsTableWrap.hidden = true;
+    el.rowsHint.style.display = '';
+    el.rowsHint.textContent = t('rowsHint');
   }
 
   /**
@@ -1284,6 +1419,36 @@
     queryCurrent(q);
   }
 
+  /** Fills the query box with an example query of the selected language and graph. */
+  function refreshExamples() {
+    if (!el.exampleSelect) return;
+    const language = currentLanguage();
+    const byGraph = (EXAMPLES[language] || {})[currentGraph ? currentGraph.name : ''] || [];
+    el.exampleSelect.innerHTML = '';
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = t('examples');
+    el.exampleSelect.appendChild(placeholder);
+    for (const [title, query] of byGraph) {
+      const option = document.createElement('option');
+      option.value = query;
+      option.textContent = title;
+      el.exampleSelect.appendChild(option);
+    }
+    el.exampleSelect.hidden = byGraph.length === 0;
+  }
+
+  /** Switching the language also swaps the placeholder and the example list. */
+  function onLanguageChange() {
+    const cypher = currentLanguage() === 'cypher';
+    el.gremlinInput.placeholder = cypher
+      ? "MATCH (a:Account {id:'135'})-[:Payment]->(b:Account) RETURN b.id, p.amount LIMIT 10"
+      : "g.V(888,'Account').batch(40).both('Payment').both('Payment')";
+    el.gremlinInput.classList.toggle('cypher', cypher);
+    clearRows();
+    refreshExamples();
+  }
+
   // ---- init ----
   async function init() {
     const graphs = await fetchGraphs();
@@ -1301,6 +1466,14 @@
       onGraphChange(graphs.find((g) => g.name === el.graphSelect.value));
     });
     el.modeToggle.addEventListener('change', onModeChange);
+    el.languageSelect.addEventListener('change', onLanguageChange);
+    el.exampleSelect.addEventListener('change', () => {
+      const query = el.exampleSelect.value;
+      if (!query) return;
+      el.gremlinInput.value = query;
+      autoGrowGremlin();
+      el.gremlinInput.focus();
+    });
     el.queryBtn.addEventListener('click', () => {
       if (el.modeToggle.checked) onGremlinQuery();
       else onIdQuery();
@@ -1310,6 +1483,7 @@
       if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) onGremlinQuery();
     });
     el.gremlinInput.addEventListener('input', autoGrowGremlin); // grow as lines are added
+    onLanguageChange();
     el.rebalanceBtn.addEventListener('click', rebalance);
     el.brushBtn.addEventListener('click', () => {
       brushMode = !brushMode;
@@ -1374,6 +1548,8 @@
       opt.value = vt; opt.textContent = vt;
       el.vertexTypeSelect.appendChild(opt);
     }
+    clearRows();
+    refreshExamples();
     setStatus(`已选择图 ${g.name}（点类型 ${(g.vertexTypes || []).length}、边类型 ${(g.edgeTypes || []).length}）`);
     render();
   }
@@ -1402,6 +1578,7 @@
     document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === tab));
     document.getElementById('statsPanel').hidden = tab !== 'stats';
     document.getElementById('propsPanel').hidden = tab !== 'props';
+    document.getElementById('rowsPanel').hidden = tab !== 'rows';
   }
 
   init().catch((err) => { setStatus('初始化失败: ' + err.message); });

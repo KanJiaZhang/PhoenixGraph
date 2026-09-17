@@ -3,7 +3,7 @@ package com.pengcheng.phoenixgraph.integration;
 import com.aerospike.client.AerospikeClient;
 import com.pengcheng.phoenixgraph.query.aerospike.AerospikeGraphQuery;
 import com.pengcheng.phoenixgraph.query.gremlin.GremlinGraphQuery;
-import com.pengcheng.phoenixgraph.query.gremlin.NeighborVertexResolver;
+import com.pengcheng.phoenixgraph.query.traversal.NeighborVertexResolver;
 import com.pengcheng.phoenixgraph.schema.GraphSchema;
 import com.pengcheng.phoenixgraph.storage.aerospike.AerospikeEdgeStore;
 import com.pengcheng.phoenixgraph.storage.aerospike.AerospikeVertexStore;
