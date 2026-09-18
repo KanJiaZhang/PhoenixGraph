@@ -65,6 +65,24 @@ public class GraphService {
         this.vectorIndexes = vectorIndexes;
     }
 
+    /**
+     * The same service bound to another graph of this instance.
+     *
+     * <p>The write endpoints are bound to the primary graph at startup; a graph created in
+     * the builder needs the same writes, so this resolves the graph's own stores and schema
+     * and returns a service over them. Graphs whose storage has no write path (the RocksDB
+     * schemes today) are refused with a message that says so.
+     */
+    public GraphService forGraph(GraphRegistry graphs, String graphName) {
+        GraphBinding binding = graphs.require(graphName);
+        if (!binding.hasAerospikeStores()) {
+            throw new IllegalArgumentException("Graph '" + graphName + "' uses "
+                    + binding.storageType().configName() + "; writes go through the primary graph or a loader");
+        }
+        return new GraphService(binding.vertexStore(), binding.edgeStore(), binding.schema(), objectMapper,
+                vectorIndexes);
+    }
+
     // --- vertex ---
 
     /**

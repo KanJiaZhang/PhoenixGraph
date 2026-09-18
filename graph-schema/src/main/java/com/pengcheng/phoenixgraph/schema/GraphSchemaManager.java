@@ -18,6 +18,15 @@ public interface GraphSchemaManager {
     /** Registers a schema instance directly (e.g. a programmatically built one). */
     void register(GraphSchema schema);
 
+    /**
+     * Registers a schema, replacing a previously registered one with the same name.
+     *
+     * <p>{@link #register} refuses a name that is already there (a configuration mistake);
+     * the graph builder, however, is asked to save a graph that it already serves, so it
+     * needs the replacing form.
+     */
+    void registerOrReplace(GraphSchema schema);
+
     /** Returns the cached schema with the given name, or {@code null} if not loaded. */
     GraphSchema get(String name);
 

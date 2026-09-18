@@ -65,6 +65,13 @@ public class FileSystemGraphSchemaManager implements GraphSchemaManager {
         schemas.put(schema.name(), schema);
     }
 
+    @Override
+    public void registerOrReplace(GraphSchema schema) {
+        Objects.requireNonNull(schema, "schema");
+        validateLoaded(schema);
+        schemas.put(schema.name(), schema);
+    }
+
     private void checkDuplicate(GraphSchema schema) {
         GraphSchema byName = schemas.get(schema.name());
         if (byName != null && byName != schema) {

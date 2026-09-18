@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PhoenixGraph · 图管理</title>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="stylesheet" href="css/builder.css">
+</head>
+<body class="builder-page">
+<header class="builder-head">
+  <a class="brand" href="/">
+    <svg viewBox="0 0 48 48" aria-hidden="true">
+      <path d="M24 4c7 6 11 12 11 18a11 11 0 0 1-22 0c0-6 4-12 11-18Z" fill="url(#g1)"/>
+      <path d="M24 16c3 3 5 6 5 9a5 5 0 0 1-10 0c0-3 2-6 5-9Z" fill="#fff" opacity=".85"/>
+      <defs><linearGradient id="g1" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="#ffb347"/><stop offset="1" stop-color="#ff5e62"/>
+      </linearGradient></defs>
+    </svg>
+    <span>PhoenixGraph</span>
+  </a>
+  <h1>图管理 · 建模</h1>
+  <div class="builder-head-actions">
+    <select id="graphPicker" title="打开已有的图"></select>
+    <button id="newGraph" class="btn ghost" type="button">新建图</button>
+    <button id="backToGraph" class="btn ghost" type="button">返回可视化</button>
+  </div>
+</header>
+
+<main class="builder-main">
+  <section class="builder-column">
+    <div class="card">
+      <h2>1 · 图实例</h2>
+      <div class="grid-2">
+        <label>名称<input id="graphName" placeholder="my-graph"></label>
+        <label>id 类型
+          <select id="idType"><option value="string">string</option><option value="long">long</option></select>
+        </label>
+      </div>
+      <label>描述<input id="graphDescription" placeholder="这个图存什么"></label>
+      <div class="grid-2">
+        <label>存储
+          <select id="storageType"></select>
+        </label>
+        <label id="storagePathWrap" hidden>RocksDB 目录<input id="storagePath" placeholder=".rocksdb/my-graph"></label>
+      </div>
+      <p class="hint" id="storageHint"></p>
+    </div>
+
+    <div class="card">
+      <h2>2 · 点类型</h2>
+      <div id="vertexList" class="type-list"></div>
+      <button id="addVertex" class="btn ghost small" type="button">+ 点类型</button>
+    </div>
+
+    <div class="card">
+      <h2>3 · 边类型</h2>
+      <div id="edgeList" class="type-list"></div>
+      <button id="addEdge" class="btn ghost small" type="button">+ 边类型</button>
+    </div>
+  </section>
+
+  <section class="builder-column">
+    <div class="card">
+      <h2>4 · 提交</h2>
+      <div class="builder-actions">
+        <button id="validateBtn" class="btn ghost" type="button">校验</button>
+        <button id="saveBtn" class="btn primary" type="button">保存并加载</button>
+        <button id="exportBtn" class="btn ghost" type="button">导出 JSON</button>
+        <label class="checkbox"><input id="replaceGraph" type="checkbox"> 覆盖同名图</label>
+      </div>
+      <div id="saveResult" class="result" hidden></div>
+      <pre id="jsonPreview" class="json-preview"></pre>
+    </div>
+
+    <div class="card">
+      <h2>5 · 造数据（可选）</h2>
+      <p class="hint">先保存并加载，再往这张图里写点和边；写完可以直接查。</p>
+      <div class="grid-2">
+        <label>点类型<select id="dataVertexType"></select></label>
+        <label>id<input id="dataVertexId" placeholder="p1"></label>
+      </div>
+      <div id="dataVertexProps" class="prop-editor"></div>
+      <button id="addVertexData" class="btn ghost small" type="button">写入点</button>
+      <hr>
+      <div class="grid-2">
+        <label>边类型<select id="dataEdgeType"></select></label>
+        <label>边 id<input id="dataEdgeId" placeholder="e1"></label>
+      </div>
+      <div class="grid-2">
+        <label>起点<input id="dataEdgeSource" placeholder="p1"></label>
+        <label>终点<input id="dataEdgeTarget" placeholder="p2"></label>
+      </div>
+      <div id="dataEdgeProps" class="prop-editor"></div>
+      <button id="addEdgeData" class="btn ghost small" type="button">写入边</button>
+      <div id="dataResult" class="result" hidden></div>
+    </div>
+  </section>
+</main>
+
+<div id="toast" role="status" aria-live="polite"></div>
+<script src="js/builder.js"></script>
+</body>
+</html>

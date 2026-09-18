@@ -11,6 +11,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.client.HttpStatusCodeException;
 import org.springframework.web.client.RestTemplate;
@@ -53,6 +54,55 @@ public class ProxyController {
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
         return headers;
+    }
+
+    // --- the graph builder: schemas are read, validated, saved and then filled ---
+
+    /** A graph schema as the editor reads it (the file's JSON). */
+    @GetMapping("/schema/{graph}")
+    public ResponseEntity<String> schemaJson(@PathVariable("graph") String graph) {
+        return forward(HttpMethod.GET, "/api/v1/schema/" + graph, null);
+    }
+
+    /** An existing graph described the way the builder edits it. */
+    @GetMapping("/schema/{graph}/draft")
+    public ResponseEntity<String> schemaDraft(@PathVariable("graph") String graph) {
+        return forward(HttpMethod.GET, "/api/v1/schema/" + graph + "/draft", null);
+    }
+
+    /** The storage types a new graph can declare. */
+    @GetMapping("/schema-storage-types")
+    public ResponseEntity<String> storageTypes() {
+        return forward(HttpMethod.GET, "/api/v1/schema/storage-types", null);
+    }
+
+    /** Checks a draft without saving it. */
+    @PostMapping("/schema/validate")
+    public ResponseEntity<String> validateSchema(@RequestBody String body) {
+        return forward(HttpMethod.POST, "/api/v1/schema/validate", new HttpEntity<>(body, jsonHeaders()));
+    }
+
+    /** Saves a draft: validated, written to a file and made queryable at once. */
+    @PostMapping("/schema")
+    public ResponseEntity<String> saveSchema(@RequestBody String body,
+                                             @RequestParam(value = "replace", defaultValue = "false")
+                                             boolean replace) {
+        return forward(HttpMethod.POST, "/api/v1/schema?replace=" + replace,
+                new HttpEntity<>(body, jsonHeaders()));
+    }
+
+    /** Writes a vertex into a named graph (the builder fills the graph it just created). */
+    @PostMapping("/graphs/{graph}/vertices")
+    public ResponseEntity<String> upsertVertex(@PathVariable("graph") String graph, @RequestBody String body) {
+        return forward(HttpMethod.POST, "/api/v1/graphs/" + graph + "/vertices",
+                new HttpEntity<>(body, jsonHeaders()));
+    }
+
+    /** Writes an edge into a named graph. */
+    @PostMapping("/graphs/{graph}/edges")
+    public ResponseEntity<String> upsertEdge(@PathVariable("graph") String graph, @RequestBody String body) {
+        return forward(HttpMethod.POST, "/api/v1/graphs/" + graph + "/edges",
+                new HttpEntity<>(body, jsonHeaders()));
     }
 
     @PostMapping("/query")

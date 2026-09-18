@@ -1661,3 +1661,53 @@ latency : count 3, mean 16 ms, p50 6.0, p95 39.9, p99 39.9, max 38
 
 **还没做（下一步）**：schema 编辑器 —— 在图里加属性/加点/加边、先建实例再构造点边，
 提交后生成 graph schema JSON、写入磁盘并直接加载进服务（含「导出保存」按钮）。
+
+---
+
+## 29. 图管理 UI（第二步：建模 / 建图 / 造数据）
+
+新增一个**独立页面** `builder.html`（+ `css/builder.css`、`js/builder.js`，静态资源同样打包进 graph-web），
+侧栏仪表盘右上角「图管理」按钮进入。页面分五块：**图实例 → 点类型 → 边类型 → 提交 → 造数据**。
+
+### 29.1 后端的建模接口（`graph-http`）
+
+| 接口 | 作用 |
+|---|---|
+| `GET /api/v1/schema/{graph}` | 该图的 schema 文件 JSON（导出用） |
+| `GET /api/v1/schema/{graph}/draft` | **把已有图描述成编辑器模型**（打开已有图继续改） |
+| `GET /api/v1/schema/storage-types` | 可选存储类型（Aerospike / Aerospike-Edge / RocksDB-Inline / RocksDB-Edge） |
+| `POST /api/v1/schema/validate` | 只校验，返回 `{valid, errors, warnings}` |
+| `POST /api/v1/schema?replace=` | **校验 → 写 `<name>.json` → 注册 schema → 绑定存储 → 立即可查** |
+| `POST /api/v1/graphs/{graph}/vertices`、`/edges`（+DELETE） | 往**指定图**写点/边（原先的写接口只服务主图） |
+
+关键设计：
+
+- **编辑器模型 `SchemaDraft`**（graph-http 的 dto 包）：只用页面需要的东西 —— 图名/描述/id 类型/存储/点类型/边类型，
+  类型用人类写法（`string`、`int`、`list<double>`、`map<long>`、`enum:A|B`），属性 id 由**声明顺序**自动分配。
+  `SchemaDraft.toSchema(id)` 生成引擎用的 `GraphSchema`，`SchemaDraft.toDraft(schema)` 反向描述 ——
+  所以「打开已有图 → 改 → 保存」是闭环，JSON 预览就是**将来会被加载的那份**（保存时用 `SchemaJsonCodec` 规范化后再落盘）。
+- `GraphSchemaManager` 新增 **`registerOrReplace`**（`register` 仍拒绝重名，避免配置错误；建模页覆盖同名图走新方法）。
+- `GraphRegistry` 改为**可变 + 保序**（`ConcurrentHashMap` + 名字列表）：保存后**无需重启**即可查询，
+  下拉列表立刻出现新图；`GraphService.forGraph(registry, name)` 让写接口服务任意图（RocksDB 方案暂不支持写，会明确报错）。
+- 校验失败是**正常答复**（`valid:false` + 原因），不是 500。
+
+### 29.2 页面行为（headless Edge 实测）
+
+```
+打开 /builder.html → 11 个下拉项（10 张图 + 空）、4 种存储类型
+填「图名 + 点 Person(name, display) + 边 Knows(Person→Person)」
+  → 校验：通过（提示未声明度数上限）
+  → 保存并加载：已保存并加载 ui-built-094364，文件 D:\...\ui-built-094364.json
+  → 下拉里立刻出现 ui-built-094364
+造数据：写入点 p1(name=Ada) → SUCCESS
+查询：g.V('p1','Person').values('name') → ["Ada"]（子图也带回来了）
+导出 JSON：浏览器下载 <name>.json
+```
+
+另外：`POST /api/v1/schema` 对已存在的图返回 400 并提示「加 replace 覆盖」；`replace=true` 后 200 ✓。
+
+### 29.3 测试
+
+`SchemaDraftTest` 9 项：属性序号按声明顺序、display/vector/geo 标志双向保留、边端点与 `isNull`、
+存储类型与 RocksDB 参数、draft↔schema 往返、类型解析（含错误信息）、空名报错、**生成的 schema 能通过 `SchemaValidator`**。
+（顺带修掉一个真问题：draft 里声明的 `idType` 原先没应用到点 id schema 上，现在会。）

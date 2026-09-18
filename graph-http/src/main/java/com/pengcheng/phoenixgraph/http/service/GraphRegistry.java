@@ -2,11 +2,13 @@ package com.pengcheng.phoenixgraph.http.service;
 
 import com.pengcheng.phoenixgraph.schema.GraphSchema;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 /**
@@ -15,17 +17,33 @@ import java.util.stream.Collectors;
  */
 public class GraphRegistry implements GraphResolver {
 
-    private final Map<String, GraphBinding> byName;
+    /** Concurrent, because the graph builder registers a schema while queries are running. */
+    private final Map<String, GraphBinding> byName = new ConcurrentHashMap<>();
+    /** The order graphs were added in (the primary graph first), for the UI's dropdown. */
+    private final List<String> order = Collections.synchronizedList(new ArrayList<>());
 
     public GraphRegistry(List<GraphBinding> bindings) {
         Objects.requireNonNull(bindings, "bindings");
-        Map<String, GraphBinding> map = new LinkedHashMap<>();
         for (GraphBinding binding : bindings) {
-            map.putIfAbsent(binding.name(), binding);
+            register(binding);
         }
-        // LinkedHashMap + unmodifiableMap, so iteration keeps the configuration order
-        // (Map.copyOf would not)
-        this.byName = Collections.unmodifiableMap(map);
+    }
+
+    /**
+     * Adds or replaces a graph, keeping its position in the order when it already exists.
+     * Used at startup and by the graph builder, so a schema created in the UI is queryable
+     * immediately.
+     */
+    public void register(GraphBinding binding) {
+        Objects.requireNonNull(binding, "binding");
+        if (byName.put(binding.name(), binding) == null) {
+            order.add(binding.name());
+        }
+    }
+
+    /** Whether a graph is served. */
+    public boolean contains(String graphName) {
+        return graphName != null && byName.containsKey(graphName);
     }
 
     @Override
@@ -43,6 +61,11 @@ public class GraphRegistry implements GraphResolver {
 
     @Override
     public List<GraphSchema> schemas() {
-        return byName.values().stream().map(GraphBinding::schema).collect(Collectors.toUnmodifiableList());
+        List<String> names;
+        synchronized (order) {
+            names = List.copyOf(order);
+        }
+        return names.stream().map(byName::get).filter(Objects::nonNull)
+                .map(GraphBinding::schema).collect(Collectors.toUnmodifiableList());
     }
 }
