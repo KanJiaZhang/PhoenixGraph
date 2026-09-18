@@ -55,7 +55,13 @@ public class StorageConfig {
      * Graphs whose storage can keep them bind their own {@link MetricsStore} below; the
      * rest keep counting in memory.
      */
+    /**
+     * Flushing on shutdown has to happen while the stores are still open, so this bean depends
+     * on them: Spring destroys dependents first, which flushes the counters into a live database
+     * instead of a closed handle.
+     */
     @Bean(destroyMethod = "close")
+    @org.springframework.context.annotation.DependsOn("rocksDbGraphStores")
     public MetricsRegistry metricsRegistry() {
         return new MetricsRegistry(new InMemoryMetricsStore());
     }

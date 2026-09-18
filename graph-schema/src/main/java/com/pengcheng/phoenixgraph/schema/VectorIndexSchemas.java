@@ -118,11 +118,25 @@ public final class VectorIndexSchemas {
 
     /** The layer edge class of a vector property, or {@code null} when it is not declared. */
     public static EdgeSchema layerSchema(GraphSchema schema, String vertexName, String propertyName, int level) {
-        EdgeSchema edge = schema.edgeSchema(layerEdgeName(propertyName, level));
-        if (edge == null || !connects(edge, vertexName)) {
-            return null;
+        return schema.edgeSchema(layerEdgeNameFor(schema, vertexName, propertyName, level));
+    }
+
+    /**
+     * The layer edge class name of a vector property of one vertex type.
+     *
+     * <p>It is {@code <property>_<level>}, which is what the schemas that declare their layer
+     * classes by hand use. Two vertex types may both call their embedding {@code embedding},
+     * though, and then the name would be taken twice - so the second type gets
+     * {@code <vertex>_<property>_<level>} instead. A name that already exists for this vertex
+     * type keeps being used, so nothing changes for the schemas and data that are already there.
+     */
+    static String layerEdgeNameFor(GraphSchema schema, String vertexName, String propertyName, int level) {
+        String plain = layerEdgeName(propertyName, level);
+        EdgeSchema existing = schema.edgeSchema(plain);
+        if (existing == null || connects(existing, vertexName)) {
+            return plain;
         }
-        return edge;
+        return vertexName + "_" + plain;
     }
 
     /**
@@ -183,7 +197,8 @@ public final class VectorIndexSchemas {
                 PropertyType.ScalarType.STRING, vertex.name());
         EdgeEndpointSchema target = new EdgeEndpointSchema(2, "target", "Second vertex id",
                 PropertyType.ScalarType.STRING, vertex.name());
-        return new EdgeSchema(nextEdgeId(schema, property.name(), layer), layerEdgeName(property.name(), layer),
+        String edgeName = layerEdgeNameFor(schema, vertex.name(), property.name(), layer);
+        return new EdgeSchema(nextEdgeId(schema, edgeName), edgeName,
                 "HNSW layer " + layer + " of the '" + property.name() + "' vector index of " + vertex.name()
                         + " (at most " + maxLinks + " links per vertex)",
                 new EdgePropertySchema(0, "id", "Link id", PropertyType.ScalarType.STRING),
@@ -199,9 +214,9 @@ public final class VectorIndexSchemas {
      * id (top of the range), otherwise the next free id is used, counting upwards
      * from the schema's highest edge id.
      */
-    private static int nextEdgeId(GraphSchema schema, String propertyName, int layer) {
+    private static int nextEdgeId(GraphSchema schema, String edgeName) {
         for (EdgeSchema edge : schema.edgeSchemas()) {
-            if (edge.name().equals(layerEdgeName(propertyName, layer))) {
+            if (edge.name().equals(edgeName)) {
                 return edge.id();
             }
         }

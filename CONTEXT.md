@@ -1767,3 +1767,68 @@ query                                             mean     p50     p95     p99  
    把热点属性拆 bin 或在解码时投影才有收益。
 6. **Cypher 聚合 = N+1**：查询 10 一次聚合花了 **52 次往返 / 51 次点读**（hub 的 50 个接收方各读一次），
    约 53 ms，是上面最快的查询的 20 倍；在 store 里按属性分组（解码时聚合）可同时省掉遍历和读。
+
+---
+
+## 31. 「smart」payment 数据：向量 + 地理，三个流
+
+### 31.1 数据与两个实例
+
+新 schema（`tools/generate-smart-payment-schema.js` 生成，两份除 `storage` 外**完全一致**）：
+
+| | 内容 |
+|---|---|
+| 点 | `Account`（name、accountStatus、city、**embedding 16 维 isVector**、**location isGeo**）、`Merchant`（name、category、embedding、location） |
+| 边 | `Payment`（Account→Account，status/amount/currency）、`Visited`（Account→Merchant，times） |
+
+| 实例 | schema id | 存储 | 为什么 |
+|---|---|---|---|
+| `payment-graph-smart` | 41 | Aerospike（set `payment_smart_v1`） | 向量走 **HNSW**（`POST /api/v1/vector-index/rebuild` 建索引：Account 200 点 9 层 4178 链接 9.9s；Merchant 40 点 7 层 639 链接 1.9s） |
+| `payment-graph-smart-rocksdb` | 42 | RocksDB-Inline（`.rocksdb/payment-graph-smart-rocksdb`） | 地理走**真正的 S2 索引**（Aerospike 社区版无 geo 二级索引，会退化为扫描） |
+
+数据由 `SmartPaymentGraphLoader` 生成（固定种子，**故意结构化**）：**200 账户 / 40 商户 / 400 payment / 300 visit**，
+16 维向量聚成 **5 个簇**，5 个簇同时对应 **5 个商圈**（人民广场 / 徐家汇 / 陆家嘴 / 静安 / 中山公园），
+70% 的 payment 发生在同簇账户之间，visit 只去本商圈商户 —— 所以「相似」和「附近」在数据上是一致的，
+三个流的答案才有意义。实测装载：Aerospike 3.2s、RocksDB-Inline 940 条 0.4s。
+
+```bash
+./mvnw -q -pl graph-integration-test test -Dtest=SmartPaymentGraphLiveLoadTest \
+       -Dsmart.set=payment_smart_v1 -Drocksdb.live.dir=.rocksdb -Dsurefire.failIfNoSpecifiedTests=false
+curl -s -X POST localhost:8081/api/v1/vector-index/rebuild -H 'content-type: application/json' \
+     -d '{"graph":"payment-graph-smart"}'
+```
+
+### 31.2 三个流（实测）
+
+```
+向量：g.V('a7','Account').nearest(5).values('city')
+      → ["Xujiahui","Xujiahui","Xujiahui","Xujiahui","Xujiahui"]   （5 个近邻全在同簇，数据设计生效 ✓）
+
+流 1  最相似用户 → 他们的 payment
+      g.V('a7','Account').nearest(5).outE('Payment')            → 10 条边（子图 16v/13e）
+      …limit(5).values('status')                                 → ["SUCCESS","SUCCESS","FAILED",…]
+
+流 2  payment → 每个接收方最相似的 5 个账户
+      g.V('a7','Account').out('Payment').dedup().count()         → [3]（a7 付给 3 个不同账户）
+      g.V('a7','Account').out('Payment').dedup().nearest(3)      → 8 个点，全在 Xujiahui 簇
+
+流 3  给定经纬度 → 最近商户 → 每个商户最相似 5 个
+      （RocksDB-Inline，真 S2 索引）g.V('m1','Merchant')
+        .circle('{"lat":31.2304,"lon":121.4737,"radius":3000}').limit(5)   → 5 家商户，全 category=coffee
+      （Aerospike）同一句也可用（扫描兜底），结果一致 ✓
+        .circle(…).limit(3).nearest(2)                            → 4 家商户（3 家 + 它们的近邻，去重后）
+```
+
+两个存储的**同一句地理查询返回完全相同的距离**（117.96 / 197.04 / 207.70 m ✓），
+`distanceMeters` 只出现在**结果**里（计算属性不进子图，两套存储行为一致）。
+
+### 31.3 顺带修掉一个引擎 bug：同名向量属性的层边类冲突
+
+`VectorIndexSchemas.ensureLayer` 用 `<属性名>_<层>` 给 HNSW 层边命名，**只按属性名**，
+于是 `Account.embedding` 与 `Merchant.embedding` 撞车 → `Duplicate edge schema id 3`（第二个属性的层边拿到了第一个的 id）✗。
+修复：新增 `layerEdgeNameFor(schema, vertex, property, level)` —— 平名字空闲（或本来就属于该点类型）就沿用
+`<属性名>_<层>`，被别的点类型占用时改用 `<点类型>_<属性名>_<层>`；`layerSchema`、`layerEdge`、`nextEdgeId`
+三处统一走它。**已声明层边的 schema 不受影响**（hnsw-sift 的 `vector_0..14` 原样保留 ✓），
+`VectorLayerNamingTest` 3 项覆盖：单属性沿用平名字、同名属性各自成套、手写层边不被改名。
+
+（这也是为什么数据里两个点类型都用 `embedding` 才能跑起来 —— 现在跑起来了 ✓。）

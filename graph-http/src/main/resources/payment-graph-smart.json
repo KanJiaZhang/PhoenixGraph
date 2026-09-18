@@ -1,0 +1,259 @@
+{
+  "id": 41,
+  "name": "payment-graph-smart",
+  "description": "Accounts and merchants with an embedding and a location: vectors on Aerospike, geo cells on RocksDB",
+  "constraints": {
+    "idSchemaIndex": 0,
+    "createdTimeIndex": -2,
+    "lastUpdatedTimeIndex": -1
+  },
+  "vertexSchemas": [
+    {
+      "id": 1,
+      "name": "Account",
+      "description": "A person with a spending profile (embedding) and a home location",
+      "idSchema": {
+        "id": 0,
+        "name": "id",
+        "description": "Account id",
+        "type": "STRING"
+      },
+      "createdTime": {
+        "id": -2,
+        "name": "createdTime",
+        "description": "Creation time",
+        "type": "LONG"
+      },
+      "lastUpdatedTime": {
+        "id": -1,
+        "name": "lastUpdatedTime",
+        "description": "Last update time",
+        "type": "LONG"
+      },
+      "properties": [
+        {
+          "id": 1,
+          "name": "name",
+          "description": "Display name",
+          "type": "STRING",
+          "display": true
+        },
+        {
+          "id": 2,
+          "name": "accountStatus",
+          "description": "Lifecycle state",
+          "type": {
+            "enum": [
+              "ACTIVE",
+              "FROZEN",
+              "CLOSED"
+            ]
+          },
+          "display": true
+        },
+        {
+          "id": 3,
+          "name": "city",
+          "description": "City the account is registered in",
+          "type": "STRING"
+        },
+        {
+          "id": 4,
+          "name": "embedding",
+          "description": "The 16-dimensional spending profile (HNSW indexed)",
+          "type": {
+            "list": "DOUBLE"
+          },
+          "isVector": true,
+          "metric": "COSINE",
+          "m": 8,
+          "efConstruction": 64,
+          "efSearch": 32
+        },
+        {
+          "id": 5,
+          "name": "location",
+          "description": "Where the account lives, as {lat, lon}; indexed with Google S2 cells",
+          "type": {
+            "map": "DOUBLE"
+          },
+          "isGeo": true
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "Merchant",
+      "description": "A shop with a category, a profile (embedding) and a location",
+      "idSchema": {
+        "id": 0,
+        "name": "id",
+        "description": "Merchant id",
+        "type": "STRING"
+      },
+      "createdTime": {
+        "id": -2,
+        "name": "createdTime",
+        "description": "Creation time",
+        "type": "LONG"
+      },
+      "lastUpdatedTime": {
+        "id": -1,
+        "name": "lastUpdatedTime",
+        "description": "Last update time",
+        "type": "LONG"
+      },
+      "properties": [
+        {
+          "id": 1,
+          "name": "name",
+          "description": "Shop name",
+          "type": "STRING",
+          "display": true
+        },
+        {
+          "id": 2,
+          "name": "category",
+          "description": "Shop category",
+          "type": "STRING",
+          "display": true
+        },
+        {
+          "id": 3,
+          "name": "embedding",
+          "description": "The 16-dimensional shop profile (HNSW indexed)",
+          "type": {
+            "list": "DOUBLE"
+          },
+          "isVector": true,
+          "metric": "COSINE",
+          "m": 8,
+          "efConstruction": 64,
+          "efSearch": 32
+        },
+        {
+          "id": 4,
+          "name": "location",
+          "description": "Where the shop is, as {lat, lon}; indexed with Google S2 cells",
+          "type": {
+            "map": "DOUBLE"
+          },
+          "isGeo": true
+        }
+      ]
+    }
+  ],
+  "edgeSchemas": [
+    {
+      "id": 1,
+      "name": "Payment",
+      "description": "A payment from one account to another",
+      "idSchema": {
+        "id": 0,
+        "name": "id",
+        "description": "Payment id",
+        "type": "STRING"
+      },
+      "source": {
+        "id": 1,
+        "name": "source",
+        "description": "The paying account",
+        "type": "STRING",
+        "vertex": "Account"
+      },
+      "target": {
+        "id": 2,
+        "name": "target",
+        "description": "The receiving account",
+        "type": "STRING",
+        "vertex": "Account"
+      },
+      "createdTime": {
+        "id": -2,
+        "name": "createdTime",
+        "description": "Creation time",
+        "type": "LONG"
+      },
+      "lastUpdatedTime": {
+        "id": -1,
+        "name": "lastUpdatedTime",
+        "description": "Last update time",
+        "type": "LONG"
+      },
+      "direction": "DIRECTED",
+      "properties": [
+        {
+          "id": 3,
+          "name": "status",
+          "description": "Payment state",
+          "type": {
+            "enum": [
+              "PENDING",
+              "SUCCESS",
+              "FAILED"
+            ]
+          },
+          "display": true
+        },
+        {
+          "id": 4,
+          "name": "amount",
+          "description": "Amount",
+          "type": "DOUBLE"
+        },
+        {
+          "id": 5,
+          "name": "currency",
+          "description": "Currency code",
+          "type": "STRING"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "Visited",
+      "description": "An account has been to a shop",
+      "idSchema": {
+        "id": 0,
+        "name": "id",
+        "description": "Visit id",
+        "type": "STRING"
+      },
+      "source": {
+        "id": 1,
+        "name": "source",
+        "description": "The account",
+        "type": "STRING",
+        "vertex": "Account"
+      },
+      "target": {
+        "id": 2,
+        "name": "target",
+        "description": "The shop",
+        "type": "STRING",
+        "vertex": "Merchant"
+      },
+      "createdTime": {
+        "id": -2,
+        "name": "createdTime",
+        "description": "Creation time",
+        "type": "LONG"
+      },
+      "lastUpdatedTime": {
+        "id": -1,
+        "name": "lastUpdatedTime",
+        "description": "Last update time",
+        "type": "LONG"
+      },
+      "direction": "DIRECTED",
+      "properties": [
+        {
+          "id": 3,
+          "name": "times",
+          "description": "How often the account visited",
+          "type": "LONG"
+        }
+      ]
+    }
+  ]
+}

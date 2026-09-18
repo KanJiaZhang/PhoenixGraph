@@ -50,3 +50,14 @@ phoenixgraph:
       # are created while the index grows (see the hnsw-dynamic profile for writes)
       - schema: hnsw-dynamic
         vertex-set: hnsw_dynamic_v1
+      # the smart payment graph: accounts and merchants with a 16-dimensional profile
+      # (isVector, HNSW-indexed on Aerospike) and a home location (isGeo, S2-indexed on RocksDB).
+      # Loaded by SmartPaymentGraphLiveLoadTest; the vector index is built with
+      # POST /api/v1/vector-index/rebuild. The three flows it is meant to show:
+      #   g.V('a7','Account').nearest(5)                          -> the most similar accounts
+      #   g.V('a7','Account').nearest(5).outE('Payment')          -> what those accounts pay
+      #   g.V('a7','Account').out('Payment').dedup().nearest(5)   -> each receiver's lookalikes
+      - schema: payment-graph-smart
+        vertex-set: payment_smart_v1
+      - schema: payment-graph-smart-rocksdb
+        vertex-set: payment_smart_v1
