@@ -87,16 +87,16 @@ class PaymentGraphQueryBenchmarkTest {
             return;
         }
         StringBuilder out = new StringBuilder("\n");
-        out.append(String.format("%-46s %7s %7s %7s %7s %7s %8s %7s %7s%n",
-                "query", "mean", "p50", "p95", "p99", "max", "v-reads", "e-reads", "kv-trips"));
-        out.append("-".repeat(120)).append('\n');
+        out.append(String.format("%-46s %7s %7s %7s %7s %7s %8s %7s %8s %7s%n",
+                "query", "mean", "p50", "p95", "p99", "max", "v-reads", "e-reads", "decoded", "kv-trips"));
+        out.append("-".repeat(130)).append('\n');
         for (Map.Entry<String, Result> entry : results.entrySet()) {
             Result result = entry.getValue();
-            out.append(String.format("%-46s %7.1f %7.1f %7.1f %7.1f %7.1f %8d %7d %7d%n",
+            out.append(String.format("%-46s %7.1f %7.1f %7.1f %7.1f %7.1f %8d %7d %8d %7d%n",
                     entry.getKey(), result.latency.meanMillis(), result.latency.percentileMillis(0.5),
                     result.latency.percentileMillis(0.95), result.latency.percentileMillis(0.99),
                     result.latency.maxMillis(), result.vertexReads / RUNS, result.edgeReads / RUNS,
-                    result.kvTrips / RUNS));
+                    result.decoded(), result.kvTrips / RUNS));
         }
         out.append('\n').append(bottlenecks());
         System.out.println(out);
@@ -148,25 +148,32 @@ class PaymentGraphQueryBenchmarkTest {
         LatencyStats latency = new LatencyStats();
         long vertexReads = 0;
         long edgeReads = 0;
+        long decoded = 0;
         long kvTrips = 0;
         long items = 0;
         for (int i = 0; i < RUNS; i++) {
             long v0 = metrics.value(Metrics.items(Metrics.VERTEX_READ));
             long e0 = metrics.value(Metrics.items(Metrics.EDGE_READ));
+            long d0 = metrics.value(Metrics.EDGE_DECODED);
             long k0 = metrics.value(Metrics.KV_READ_CALL);
             long started = System.nanoTime();
             query.get();
             latency.record(System.nanoTime() - started);
             vertexReads += metrics.value(Metrics.items(Metrics.VERTEX_READ)) - v0;
             edgeReads += metrics.value(Metrics.items(Metrics.EDGE_READ)) - e0;
+            decoded += metrics.value(Metrics.EDGE_DECODED) - d0;
             kvTrips += metrics.value(Metrics.KV_READ_CALL) - k0;
             items += 1;
         }
-        results.put(label, new Result(latency, vertexReads, edgeReads, kvTrips));
+        results.put(label, new Result(latency, vertexReads, edgeReads, decoded / items, kvTrips));
     }
 
-    /** What one query cost: latency plus the items and round trips the storage produced. */
-    private record Result(LatencyStats latency, long vertexReads, long edgeReads, long kvTrips) {
+    /**
+     * What one query cost: latency, the items and round trips the storage produced, and how many
+     * edges the store had to build ({@code decoded}) - the number a count, a condition or a cap
+     * keeps down even though the bin is read either way.
+     */
+    private record Result(LatencyStats latency, long vertexReads, long edgeReads, long decoded, long kvTrips) {
     }
 
     // ------------------------------------------------------------------ analysis
@@ -179,24 +186,29 @@ class PaymentGraphQueryBenchmarkTest {
         return """
                 What the numbers say
                 --------------------
+                The `decoded` column is the number of edges the store had to build. A bin holds every
+                edge of a class - the hub in queries 1-6 has 50 - so a query that counts, keeps the
+                newest few or discards most edges by a condition should build far fewer than that.
+
                 Fixed since the first run of this benchmark:
                   * the Cypher aggregation no longer walks into every target vertex (query 10 went from
                     53.2 ms and 52 round trips to about 3 ms and 2): a pattern variable whose properties
                     the query never reads is now matched by id alone;
                   * a count over an edge hop is answered by the store from the shape of the bin (queries
                     1 and 3), so a hub's 50 edges are no longer decoded just to be counted;
-                  * an edge read decodes only the properties the query asked for (query 6).
+                  * an edge read decodes only the properties the query asked for (query 6);
+                  * a condition over edge properties is evaluated while the bin is walked (query 5):
+                    an edge that fails is never built, and a count of the matches builds nothing at all
+                    - both used to cost a full decode of the hub;
+                  * a cap on an edge hop is the read's cap (queries 4 and 6): the store picks the newest
+                    edges with a bounded selection instead of building all of them and cutting the list.
 
                 Still open, in the order they are worth doing:
-                1. A filter over edge properties is applied after the decode, so query 5 costs what query
-                   1 costs. Pushing the predicate into the store - skipping the edges that do not match
-                   while decoding, or a secondary index per property - is the next win.
-                2. A bounded read pays for the whole bin (query 4): the store hands over 50 edges and the
-                   traversal keeps 10. A capped read, like the window cap of the aggregated edge tables,
-                   would make the expansion in the UI cheaper than the full count.
-                3. Two hops cost one round trip per hop (queries 7 and 8). The reads are already batched
+                1. Two hops cost one round trip per hop (queries 7 and 8). The reads are already batched
                    per hop; what is left is the trip itself, which only a different layout would remove.
-                4. Counting a whole vertex type still needs an anchor (g.V(id, label)); it would need a
+                2. Conditions are evaluated per edge, not by a secondary index: a query whose condition
+                   matches a small part of a huge class still walks the whole bin.
+                3. Counting a whole vertex type still needs an anchor (g.V(id, label)); it would need a
                    scan-based plan.
                 """;
     }

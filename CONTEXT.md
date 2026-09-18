@@ -1864,6 +1864,66 @@ curl -s -X POST localhost:8081/api/v1/vector-index/rebuild -H 'content-type: app
 
 ---
 
+## 34. 按 benchmark 的结论做优化（第二轮）：条件与上限下沉进 store
+
+第 30 节剩下的第 1、2 条（过滤不下推、`limit` 付整个 bin 的代价）这一轮做掉了，
+并且第一次让 benchmark 能**量出**省下来的工作：新增 `storage.edge.decoded` /
+`storage.edge.filtered` 两个计数器（store 把 bin 里的边缘变成对象的条数 / 被条件丢掉、
+根本没被构造的条数）。hub 的 bin 里恒有 50 条边，所以「解码了几条」才是有意义的数字。
+
+| 查询 | 优化前 decoded | 现在 decoded | 说明 |
+|---|---|---|---|
+| 1/2/3 计数（`outE/bothE/out().count()`） | 50 | **0** | bin 的 map size 就是答案 |
+| 4 `outE(Payment).limit(10)` | 50 | **10** | 上限即读的上限，选最新的 10 条 |
+| 5 `outE(Payment).has(status,'SUCCESS').count()` | 50 | **0** | 条件在走 bin 时就判定 |
+| 6 `outE(Payment).limit(20).values('status')` | 50 | **20** | 上限 + 投影 |
+| 7/8 两跳 | 3 / 2 | 3 / 2 | 这两跳的边必须读（要拿端点） |
+| 10 Cypher 分组 | 50 | 50 | 它确实要每条 payment 的 `status` |
+
+延迟仍然被一次往返主导（1.0–1.7 ms，与优化前同一量级）——所以这一轮的收益写在
+「构建了多少对象」那一列，而不是毫秒列。
+
+### 34.1 端口与实现
+
+- **`EdgePropertyFilter`**（`graph-query/storage`）：`List<String> propertyNames` + 
+  `Predicate<Map<String,Object>> matches`，即「一条只读这些属性、并且**可以在解码时判定**的条件」✓；
+- **`GraphQuery`** 新增（都有默认实现，后端零改动即可保持正确）：
+  `readEdges(id, name, edgeName, side, props, filters, maxResults)`、
+  `readEdgesBatch(..., filters, maxResults)`、`countEdges(id, name, edgeName, side, filters)`；
+  默认实现「读完之后在内存里过滤 + 截断」✓；
+- **能力开关 `supportsEdgeReadPushdown()`**（默认 `false` ✓）：只有声明 `true` 的 store 才会收到
+  条件/上限；Aerospike 返回 `true` ✓。这个开关让「优化」与「要求」分开——不支持的 store
+  走老路径 ✓，也不打扰既有的 mock/fake 测试（Mockito 对 default 方法返回默认值 ✓）；
+- **`AerospikeEdgeStore.EdgeRead`**（`projection` / `filterProperties` / `filter` / `maxResults`）：
+  `decodeEdges` 先用 `rawPropertyValues`（只取条件要读的属性，不构造边）测条件 → 再按上限选
+  **最新的 k 条**（`newest()` 用有界选择 + `PriorityQueue`，不再整 bin 排序 ✗）→ 只对留下的边反序列化 ✓；
+  `countEdges(EdgeRead)` 带条件时**一条边都不构造** ✓；`getEdgesFiltered/getEdgesBatchFiltered` 是新的入口 ✓
+  （旧的 `getEdges`/`getEdgesBatch` 保持原样 ✓）；
+- **Gremlin 编译期折叠**（`GremlinGraphQuery.pushEdgeConditions`）：边跳后面**紧邻**的 `has`/`filter`
+  与 `limit` 折进该跳（`outE(x, conditions, cap)`），`…has(…).count()` 直接变成带条件的 `countOutE` ✓；
+  只在**有边类名**时折叠（`bothE()` = 全部边类没法压进一个 bin 读 ✗），也只在 store 声明支持时折叠 ✓；
+  中间夹着 `batch`/`barrier` 不折（不干扰它们）✓。
+
+### 34.2 `limit` 不再往子图里留边
+
+顺带修掉一个不一致：`limit(k)` 以前只是截断结果、**不**把多余的边从子图里去掉 ✗，
+于是「答案 3 条边、画出来 50 条」✗；而下沉后的读只会记录它读到的 k 条 ✓。
+现在 `limit` 也调用 `ctx.dropElement(...)`（和 `has`/`filter`、以及带 cap 的窗口读同一规则）✓——
+这一点是靠新的**等价测试**逼出来的 ✓（见下）。
+
+### 34.3 回归测试
+
+- **`GremlinGraphQueryTest`**：`outE('x').count()` 之类在**不声明能力的 store** 上必须走老路径
+  （保证不变量），并新增 `aCountWithoutAnEdgeClassStillReadsTheEdges`（上一轮那条回归）✓；
+- **`PaymentGraphConsistencyTest.pushedConditionsAndCapsAgreeWithThePlainRead`**（新增，真实 Aerospike）：
+  同一批查询分别跑在「声明支持下沉的 store」与「`supportsEdgeReadPushdown()=false`、其余全部转发的包装 store」上，
+  断言**结果、子图的值、以及画出来的边数**三处完全一致 ✓。这是让下沉保持诚实的测试：
+  11 条查询（`has`/`filter`/带条件计数/`limit`/`limit`+投影/条件+上限/`inE`/两跳首跳）✓。
+- 过程中抓到两个真 bug：① 折叠后的 pushdown 列表与 step 对齐错了（`Collections.nCopies` 预填 + `add` ✗）；
+  ② `AerospikeGraphQuery.readEdgesBatch` 4 参 → 6 参 → 4 参**无限递归** ✗（改成转发 `readEdgesBatchNative` ✓）。
+
+---
+
 ## 33. UI 修正：主页查询行不再错行、建模页配色
 
 ### 33.1 主页

@@ -128,6 +128,79 @@ public interface GraphQuery {
     }
 
     /**
+     * Reads the edges of a class at a vertex, keeping only what the conditions accept, and at
+     * most {@code maxResults} of them ({@code 0} = no cap).
+     *
+     * <p>Both arguments are what a traversal knows before the read and the store can use while it
+     * decodes: {@code outE('Payment').has('status','SUCCESS')} never needs the properties of a
+     * payment that fails the condition, and {@code outE('Payment').limit(10)} never needs more
+     * than the ten newest payments. The cap applies <b>after</b> the conditions, and the edges
+     * come back in the same order the uncapped read returns them, so the answer is the one the
+     * steps would have produced.
+     *
+     * <p>The default applies both to what {@link #readEdges(Object, String, String, EdgeSide, List)}
+     * returns, which keeps every backend correct; a store that can do better overrides it.
+     */
+    default List<EdgeQueryResult> readEdges(Object vertexId, String vertexName, String edgeName,
+                                            EdgeSide direction, List<String> propertyNames,
+                                            List<EdgePropertyFilter> filters, int maxResults) {
+        List<EdgeQueryResult> edges = readEdges(vertexId, vertexName, edgeName, direction, propertyNames);
+        return applyFilters(edges, filters, maxResults);
+    }
+
+    /**
+     * Batched form of the filtered read: conditions and cap apply to the edges of every vertex,
+     * each vertex on its own (this is a per-vertex read, not a shared budget).
+     */
+    default List<List<EdgeQueryResult>> readEdgesBatch(String edgeName, EdgeSide direction,
+                                                       List<Object> vertexIds, List<String> propertyNames,
+                                                       List<EdgePropertyFilter> filters, int maxResults) {
+        List<List<EdgeQueryResult>> out = new ArrayList<>(vertexIds.size());
+        for (Object vertexId : vertexIds) {
+            out.add(readEdges(vertexId, null, edgeName, direction, propertyNames, filters, maxResults));
+        }
+        return out;
+    }
+
+    /**
+     * Counts the edges of a class at a vertex that satisfy the conditions, without materialising
+     * them. The default counts what the filtered read returns; a store that keeps its edges in one
+     * record can answer from the record's shape and never build an edge.
+     */
+    default long countEdges(Object vertexId, String vertexName, String edgeName, EdgeSide direction,
+                            List<EdgePropertyFilter> filters) {
+        if (filters == null || filters.isEmpty()) {
+            return countEdges(vertexId, vertexName, edgeName, direction);
+        }
+        return readEdges(vertexId, vertexName, edgeName, direction, List.of(), filters, 0).size();
+    }
+
+    /** Applies conditions and a cap to already read edges (the shared body of the defaults). */
+    static List<EdgeQueryResult> applyFilters(List<EdgeQueryResult> edges, List<EdgePropertyFilter> filters,
+                                              int maxResults) {
+        List<EdgeQueryResult> kept = edges;
+        if (filters != null && !filters.isEmpty()) {
+            kept = new ArrayList<>(edges.size());
+            for (EdgeQueryResult edge : edges) {
+                boolean matches = true;
+                for (EdgePropertyFilter filter : filters) {
+                    if (!filter.test(edge.properties())) {
+                        matches = false;
+                        break;
+                    }
+                }
+                if (matches) {
+                    kept.add(edge);
+                }
+            }
+        }
+        if (maxResults > 0 && kept.size() > maxResults) {
+            return List.copyOf(kept.subList(0, maxResults));
+        }
+        return kept == edges ? edges : List.copyOf(kept);
+    }
+
+    /**
      * Reads the edges of one class attached to a vertex <b>inside a creation-time window</b>.
      *
      * <p>A backend whose edges are stored in aggregated tables (a vertex with a hundred million
@@ -156,7 +229,23 @@ public interface GraphQuery {
         return readEdges(vertexId, vertexName, edgeName, direction, List.of()).size();
     }
 
-    /** Whether {@link #readEdgesWithin} narrows the read (a big vertex may need a window). */
+    /**
+     * Whether the store evaluates the conditions and the cap of an edge read while it decodes.
+     *
+     * <p>{@code true} lets a traversal hand
+     * {@link #readEdges(Object, String, String, EdgeSide, List, List, int)} (and the count with
+     * conditions) to the store, which is where the saving is: an edge that fails a condition is
+     * never built. A store that answers {@code false} gets the plain reads and the traversal
+     * applies the conditions itself, exactly as it did before the capability existed - so this is
+     * an optimisation a backend opts into, not a requirement.
+     */
+    default boolean supportsEdgeReadPushdown() {
+        return false;
+    }
+
+    /**
+     * Whether {@link #readEdgesWithin} narrows the read (a big vertex may need a window).
+     */
     default boolean supportsEdgeTimeRange() {
         return false;
     }

@@ -1,6 +1,7 @@
 package com.pengcheng.phoenixgraph.query.aerospike;
 
 import com.pengcheng.phoenixgraph.query.QueryException;
+import com.pengcheng.phoenixgraph.query.storage.EdgePropertyFilter;
 import com.pengcheng.phoenixgraph.query.storage.EdgeQueryResult;
 import com.pengcheng.phoenixgraph.query.storage.EdgeSide;
 import com.pengcheng.phoenixgraph.query.storage.GraphQuery;
@@ -25,9 +26,11 @@ import com.pengcheng.phoenixgraph.storage.aerospike.VertexPropertyValue;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * Aerospike-backed {@link GraphQuery} implementation.
@@ -129,6 +132,12 @@ public class AerospikeGraphQuery implements GraphQuery {
     // --- edges ---
 
     @Override
+    public boolean supportsEdgeReadPushdown() {
+        // conditions and caps are evaluated inside the decode loop of the edge bins
+        return true;
+    }
+
+    @Override
     public long countEdges(Object vertexId, String vertexName, String edgeName, EdgeSide direction) {
         EdgeSchema edgeSchema = schema.edgeSchema(edgeName);
         if (edgeSchema == null) {
@@ -149,9 +158,47 @@ public class AerospikeGraphQuery implements GraphQuery {
                 + edgeStore.countEdges(vertexId, edgeSchema.id(), AerospikeEdgeStore.EDGE_DIR_IN);
     }
 
+    /**
+     * Counting with conditions: an edge that fails them is skipped while the bin is walked, so
+     * {@code outE('Payment').has('status','SUCCESS').count()} never builds a payment.
+     */
+    @Override
+    public long countEdges(Object vertexId, String vertexName, String edgeName, EdgeSide direction,
+                           List<EdgePropertyFilter> filters) {
+        Objects.requireNonNull(vertexId, "vertexId");
+        if (filters == null || filters.isEmpty()) {
+            return countEdges(vertexId, vertexName, edgeName, direction);
+        }
+        EdgeSchema edgeSchema = resolveEdgeSchema(edgeName);
+        AerospikeEdgeStore.EdgeRead read = edgeRead(edgeSchema, List.of(), filters, 0);
+        if (edgeSchema.direction() != EdgeDirection.DIRECTED) {
+            return edgeStore.countEdges(vertexId, edgeSchema.id(), AerospikeEdgeStore.EDGE_DIR_BOTH, read);
+        }
+        long total = 0;
+        if (direction == EdgeSide.OUT || direction == EdgeSide.BOTH) {
+            total += edgeStore.countEdges(vertexId, edgeSchema.id(), AerospikeEdgeStore.EDGE_DIR_OUT, read);
+        }
+        if (direction == EdgeSide.IN || direction == EdgeSide.BOTH) {
+            total += edgeStore.countEdges(vertexId, edgeSchema.id(), AerospikeEdgeStore.EDGE_DIR_IN, read);
+        }
+        return total;
+    }
+
     @Override
     public List<EdgeQueryResult> readEdges(Object vertexId, String vertexName, String edgeName,
                                            EdgeSide direction, List<String> propertyNames) {
+        return readEdges(vertexId, vertexName, edgeName, direction, propertyNames, List.of(), 0);
+    }
+
+    /**
+     * Reads a filtered and/or capped list of edges, decoding only what the conditions and the
+     * projection need: {@code has(...)} discards an edge before it is built, and a cap picks the
+     * newest edges instead of building every one of them and cutting the list afterwards.
+     */
+    @Override
+    public List<EdgeQueryResult> readEdges(Object vertexId, String vertexName, String edgeName,
+                                           EdgeSide direction, List<String> propertyNames,
+                                           List<EdgePropertyFilter> filters, int maxResults) {
         Objects.requireNonNull(vertexId, "vertexId");
         Objects.requireNonNull(direction, "direction");
         if (vertexName != null) {
@@ -159,17 +206,59 @@ public class AerospikeGraphQuery implements GraphQuery {
         }
         EdgeSchema edgeSchema = resolveEdgeSchema(edgeName);
         Map<Integer, String> requested = requestedEdgeProperties(edgeSchema, propertyNames);
-        return readEdgesForVertex(vertexId, edgeName, edgeSchema, direction, requested);
+        if ((filters == null || filters.isEmpty()) && maxResults <= 0) {
+            return readEdgesForVertex(vertexId, edgeName, edgeSchema, direction, requested);
+        }
+        AerospikeEdgeStore.EdgeRead read = edgeRead(edgeSchema, propertyNames, filters, maxResults);
+        List<EdgeQueryResult> results = new ArrayList<>();
+        if (edgeSchema.direction() == EdgeDirection.DIRECTED) {
+            if (direction == EdgeSide.OUT || direction == EdgeSide.BOTH) {
+                readInto(results, vertexId, edgeName, edgeSchema, AerospikeEdgeStore.EDGE_DIR_OUT,
+                        EdgeSide.OUT, requested, read);
+            }
+            if (direction == EdgeSide.IN || direction == EdgeSide.BOTH) {
+                readInto(results, vertexId, edgeName, edgeSchema, AerospikeEdgeStore.EDGE_DIR_IN,
+                        EdgeSide.IN, requested, read);
+            }
+        } else {
+            readInto(results, vertexId, edgeName, edgeSchema, AerospikeEdgeStore.EDGE_DIR_BOTH,
+                    EdgeSide.BOTH, requested, read);
+        }
+        results.sort(Comparator.comparingLong(EdgeQueryResult::lastUpdatedTime).reversed()
+                .thenComparing(EdgeQueryResult::edgeId));
+        if (maxResults > 0 && results.size() > maxResults) {
+            return List.copyOf(results.subList(0, maxResults));
+        }
+        return results;
     }
 
     @Override
     public List<List<EdgeQueryResult>> readEdgesBatch(String edgeName, EdgeSide direction,
                                                       List<Object> vertexIds, List<String> propertyNames) {
+        return readEdgesBatch(edgeName, direction, vertexIds, propertyNames, List.of(), 0);
+    }
+
+    /** Batched filtered read: one native batch get, with the conditions applied per vertex. */
+    @Override
+    public List<List<EdgeQueryResult>> readEdgesBatch(String edgeName, EdgeSide direction,
+                                                      List<Object> vertexIds, List<String> propertyNames,
+                                                      List<EdgePropertyFilter> filters, int maxResults) {
         Objects.requireNonNull(vertexIds, "vertexIds");
-        Objects.requireNonNull(direction, "direction");
         if (vertexIds.isEmpty()) {
             return List.of();
         }
+        if ((filters == null || filters.isEmpty()) && maxResults <= 0) {
+            return readEdgesBatchNative(edgeName, direction, vertexIds, propertyNames);
+        }
+        List<List<EdgeQueryResult>> out = new ArrayList<>(vertexIds.size());
+        for (Object vertexId : vertexIds) {
+            out.add(readEdges(vertexId, null, edgeName, direction, propertyNames, filters, maxResults));
+        }
+        return out;
+    }
+
+    private List<List<EdgeQueryResult>> readEdgesBatchNative(String edgeName, EdgeSide direction,
+                                                             List<Object> vertexIds, List<String> propertyNames) {
         EdgeSchema edgeSchema = resolveEdgeSchema(edgeName);
         Map<Integer, String> requested = requestedEdgeProperties(edgeSchema, propertyNames);
 
@@ -252,10 +341,66 @@ public class AerospikeGraphQuery implements GraphQuery {
     private void readInto(List<EdgeQueryResult> results, Object vertexId, String edgeName,
                           EdgeSchema edgeSchema, int directionCode, EdgeSide side,
                           Map<Integer, String> requested) {
-        for (StoredEdgeValue edge : edgeStore.getEdges(vertexId, edgeSchema.id(), directionCode,
-                requested.isEmpty() ? null : new java.util.LinkedHashSet<>(requested.keySet()))) {
+        Set<Integer> only = requested.isEmpty() ? null : new LinkedHashSet<>(requested.keySet());
+        for (StoredEdgeValue edge : edgeStore.getEdges(vertexId, edgeSchema.id(), directionCode, only)) {
             results.add(toEdgeResult(edgeName, edge, side, requested));
         }
+    }
+
+    private void readInto(List<EdgeQueryResult> results, Object vertexId, String edgeName,
+                          EdgeSchema edgeSchema, int directionCode, EdgeSide side,
+                          Map<Integer, String> requested, AerospikeEdgeStore.EdgeRead read) {
+        for (StoredEdgeValue edge : edgeStore.getEdgesFiltered(vertexId, edgeSchema.id(), directionCode, read)) {
+            results.add(toEdgeResult(edgeName, edge, side, requested));
+        }
+    }
+
+    /**
+     * Translates a query's conditions into a store read: the property names become schema ids and
+     * the predicates are evaluated on id-keyed values, which is what the bin holds.
+     */
+    private AerospikeEdgeStore.EdgeRead edgeRead(EdgeSchema edgeSchema, List<String> propertyNames,
+                                                 List<EdgePropertyFilter> filters, int maxResults) {
+        List<String> names = propertyNames == null ? List.of() : propertyNames;
+        Set<Integer> projection = null;
+        if (!names.isEmpty()) {
+            projection = new LinkedHashSet<>();
+            for (String name : names) {
+                projection.add(requireEdgeProperty(edgeSchema, name).id());
+            }
+        }
+        if (filters == null || filters.isEmpty()) {
+            return AerospikeEdgeStore.EdgeRead.filtered(projection, Set.of(), null, maxResults);
+        }
+        Set<Integer> filterIds = new LinkedHashSet<>();
+        List<java.util.function.Predicate<Map<Integer, Object>>> predicates = new ArrayList<>();
+        for (EdgePropertyFilter filter : filters) {
+            Map<Integer, String> byId = new LinkedHashMap<>();
+            for (String name : filter.propertyNames()) {
+                int id = requireEdgeProperty(edgeSchema, name).id();
+                filterIds.add(id);
+                byId.put(id, name);
+            }
+            predicates.add(valuesById -> {
+                Map<String, Object> byName = new LinkedHashMap<>();
+                for (Map.Entry<Integer, String> entry : byId.entrySet()) {
+                    Object value = valuesById.get(entry.getKey());
+                    if (value != null) {
+                        byName.put(entry.getValue(), value);
+                    }
+                }
+                return filter.test(byName);
+            });
+        }
+        java.util.function.Predicate<Map<Integer, Object>> combined = values -> {
+            for (java.util.function.Predicate<Map<Integer, Object>> predicate : predicates) {
+                if (!predicate.test(values)) {
+                    return false;
+                }
+            }
+            return true;
+        };
+        return AerospikeEdgeStore.EdgeRead.filtered(projection, filterIds, combined, maxResults);
     }
 
     private Map<Integer, String> requestedEdgeProperties(EdgeSchema edgeSchema, List<String> propertyNames) {

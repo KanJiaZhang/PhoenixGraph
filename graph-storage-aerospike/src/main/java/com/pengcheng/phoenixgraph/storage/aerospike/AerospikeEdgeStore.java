@@ -1,6 +1,7 @@
 package com.pengcheng.phoenixgraph.storage.aerospike;
 
 import com.aerospike.client.AerospikeClient;
+import com.pengcheng.phoenixgraph.metrics.Metrics;
 import com.pengcheng.phoenixgraph.metrics.MetricsSink;
 import com.pengcheng.phoenixgraph.metrics.MutableMetricsSink;
 import com.aerospike.client.AerospikeException;
@@ -37,9 +38,11 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.function.BiFunction;
 
 /**
@@ -155,6 +158,68 @@ public class AerospikeEdgeStore implements AdjacentEdgeStore {
 
     /** Decodes a raw edge value back into a {@link StoredEdgeValue}. */
     @SuppressWarnings("unchecked")
+    /**
+     * One edge read as the store sees it: which properties to build, which ones the conditions
+     * read, the conditions themselves and how many edges are wanted ({@code 0} = all).
+     *
+     * <p>Property numbers are the schema ids of the edge class. {@code projection} and
+     * {@code filterProperties} are unioned for decoding: an edge that fails a condition is
+     * discarded before the projection is applied, so a condition never costs more than the
+     * properties it actually reads. A {@code null} projection means "every property".
+     */
+    public record EdgeRead(Set<Integer> projection, Set<Integer> filterProperties,
+                           java.util.function.Predicate<Map<Integer, Object>> filter, int maxResults) {
+
+        public EdgeRead {
+            projection = projection == null ? null : Set.copyOf(projection);
+            filterProperties = filterProperties == null ? Set.of() : Set.copyOf(filterProperties);
+        }
+
+        /** Everything, uncapped - what a plain read asks for. */
+        public static EdgeRead all() {
+            return new EdgeRead(null, Set.of(), null, 0);
+        }
+
+        /** Only these properties (a query projection), uncapped. */
+        public static EdgeRead of(Set<Integer> projection) {
+            return new EdgeRead(projection, Set.of(), null, 0);
+        }
+
+        /** A read with conditions and/or a cap. */
+        public static EdgeRead filtered(Set<Integer> projection, Set<Integer> filterProperties,
+                                        java.util.function.Predicate<Map<Integer, Object>> filter,
+                                        int maxResults) {
+            return new EdgeRead(projection, filterProperties, filter, maxResults);
+        }
+
+        public boolean hasFilter() {
+            return filter != null;
+        }
+
+        /** Whether the read is a plain one (no condition, no cap, no projection). */
+        public boolean isPlain() {
+            return filter == null && maxResults <= 0 && projection == null;
+        }
+
+        /** The property ids to decode for the condition test + the result ({@code null} = all). */
+        public Set<Integer> decodedProperties() {
+            if (projection == null) {
+                return null;
+            }
+            if (filterProperties.isEmpty()) {
+                return projection;
+            }
+            Set<Integer> ids = new LinkedHashSet<>(filterProperties);
+            ids.addAll(projection);
+            return Set.copyOf(ids);
+        }
+
+        /** The read that keeps only the parameters of this one but decodes nothing extra. */
+        public EdgeRead withMaxResults(int max) {
+            return new EdgeRead(projection, filterProperties, filter, max);
+        }
+    }
+
     static StoredEdgeValue deserializeEdgeValue(String edgeId, Object raw) {
         return deserializeEdgeValue(edgeId, raw, null);
     }
@@ -736,16 +801,27 @@ public class AerospikeEdgeStore implements AdjacentEdgeStore {
 
     /** Reads and decodes the edges of a vertex for an edge schema and direction, newest first. */
     public List<StoredEdgeValue> getEdges(Object vertexId, int edgeSchemaId, int directionCode) {
-        return getEdges(vertexId, edgeSchemaId, directionCode, null);
+        return getEdgesFiltered(vertexId, edgeSchemaId, directionCode, EdgeRead.all());
     }
 
     /** Reads the edges of one vertex, decoding only the requested properties ({@code null} = all). */
     public List<StoredEdgeValue> getEdges(Object vertexId, int edgeSchemaId, int directionCode,
                                           java.util.Set<Integer> onlyProperties) {
+        return getEdgesFiltered(vertexId, edgeSchemaId, directionCode, EdgeRead.of(onlyProperties));
+    }
+
+    /**
+     * Reads the edges of one vertex with conditions and a cap, decoding no more than the read
+     * needs: a payment that fails {@code has('status','SUCCESS')} never has its other properties
+     * built, and a read that wants the ten newest edges never builds the other forty.
+     */
+    public List<StoredEdgeValue> getEdgesFiltered(Object vertexId, int edgeSchemaId, int directionCode,
+                                                 EdgeRead read) {
+        Objects.requireNonNull(read, "read");
         // project the bin: the caller wants one edge class, and reading one bin keeps the
         // metrics honest (an edge read) as well as the traffic small
         Record record = db.get(null, key(vertexId), edgeBin(edgeSchemaId, directionCode));
-        return isMissing(record) ? List.of() : decodeEdges(record, edgeSchemaId, directionCode, onlyProperties);
+        return isMissing(record) ? List.of() : decodeEdges(record, edgeSchemaId, directionCode, read);
     }
 
     /**
@@ -753,15 +829,36 @@ public class AerospikeEdgeStore implements AdjacentEdgeStore {
      * so its size is the answer and the 50 values of a hub's bin are never built.
      */
     public long countEdges(Object vertexId, int edgeSchemaId, int directionCode) {
+        return countEdges(vertexId, edgeSchemaId, directionCode, EdgeRead.all());
+    }
+
+    /**
+     * Counts the edges of one class that satisfy the read's conditions. Without a condition the
+     * shape of the bin is the answer; with one, only the properties the condition reads are
+     * pulled out of each entry - the edges themselves are never built.
+     */
+    public long countEdges(Object vertexId, int edgeSchemaId, int directionCode, EdgeRead read) {
+        Objects.requireNonNull(read, "read");
         Record record = db.get(null, key(vertexId), edgeBin(edgeSchemaId, directionCode));
         if (isMissing(record)) {
             return 0;
         }
         Object bin = record.bins.get(edgeBin(edgeSchemaId, directionCode));
-        if (bin instanceof java.util.Map<?, ?> map) {
+        if (!(bin instanceof java.util.Map<?, ?> map)) {
+            return bin == null ? 0 : decodeEdges(record, edgeSchemaId, directionCode, read).size();
+        }
+        if (!read.hasFilter()) {
             return map.size();
         }
-        return bin == null ? 0 : decodeEdges(record, edgeSchemaId, directionCode, null).size();
+        long matches = 0;
+        for (Map.Entry<?, ?> entry : map.entrySet()) {
+            if (read.filter().test(rawPropertyValues(entry.getValue(), read.filterProperties()))) {
+                matches++;
+            }
+        }
+        // a count with a condition builds no edge at all: the whole bin is only walked
+        metrics.increment(Metrics.EDGE_FILTERED, map.size() - matches);
+        return matches;
     }
 
     /**
@@ -769,13 +866,20 @@ public class AerospikeEdgeStore implements AdjacentEdgeStore {
      * preserving the request order; each absent vertex yields an empty list.
      */
     public List<List<StoredEdgeValue>> getEdgesBatch(List<Object> vertexIds, int edgeSchemaId, int directionCode) {
-        return getEdgesBatch(vertexIds, edgeSchemaId, directionCode, null);
+        return getEdgesBatchFiltered(vertexIds, edgeSchemaId, directionCode, EdgeRead.all());
     }
 
     /** Batch form of {@link #getEdges(Object, int, int, java.util.Set)}. */
     public List<List<StoredEdgeValue>> getEdgesBatch(List<Object> vertexIds, int edgeSchemaId, int directionCode,
                                                      java.util.Set<Integer> onlyProperties) {
+        return getEdgesBatchFiltered(vertexIds, edgeSchemaId, directionCode, EdgeRead.of(onlyProperties));
+    }
+
+    /** Batch form of {@link #getEdgesFiltered} (conditions and cap per vertex). */
+    public List<List<StoredEdgeValue>> getEdgesBatchFiltered(List<Object> vertexIds, int edgeSchemaId,
+                                                            int directionCode, EdgeRead read) {
         Objects.requireNonNull(vertexIds, "vertexIds");
+        Objects.requireNonNull(read, "read");
         if (vertexIds.isEmpty()) {
             return List.of();
         }
@@ -784,19 +888,101 @@ public class AerospikeEdgeStore implements AdjacentEdgeStore {
         List<List<StoredEdgeValue>> result = new ArrayList<>(vertexIds.size());
         for (int i = 0; i < keys.length; i++) {
             result.add(isMissing(records[i]) ? List.of()
-                    : decodeEdges(records[i], edgeSchemaId, directionCode, onlyProperties));
+                    : decodeEdges(records[i], edgeSchemaId, directionCode, read));
         }
         return result;
     }
 
+    /**
+     * Turns the raw entries of a bin into edges: conditions are tested on the raw properties
+     * first (so a discarded edge is never built), then the wanted edges are decoded and sorted
+     * newest first. A cap keeps the newest {@code maxResults} entries, which is the same list the
+     * uncapped read would have been cut down to.
+     */
     private List<StoredEdgeValue> decodeEdges(Record record, int edgeSchemaId, int directionCode,
-                                              java.util.Set<Integer> onlyProperties) {
+                                              EdgeRead read) {
         Map<String, Object> raw = readEdgeMap(record, edgeBin(edgeSchemaId, directionCode));
-        return raw.entrySet().stream()
-                .map(e -> deserializeEdgeValue(e.getKey(), e.getValue(), onlyProperties))
-                .sorted(Comparator.comparingLong(StoredEdgeValue::lastUpdatedTime).reversed())
+        if (raw.isEmpty()) {
+            return List.of();
+        }
+        List<Map.Entry<String, Object>> kept = new ArrayList<>(raw.entrySet());
+        if (read.hasFilter()) {
+            List<Map.Entry<String, Object>> matched = new ArrayList<>(kept.size());
+            for (Map.Entry<String, Object> entry : kept) {
+                if (read.filter().test(rawPropertyValues(entry.getValue(), read.filterProperties()))) {
+                    matched.add(entry);
+                }
+            }
+            kept = matched;
+        }
+        if (read.maxResults() > 0 && kept.size() > read.maxResults()) {
+            kept = newest(kept, read.maxResults());
+        }
+        Set<Integer> only = read.decodedProperties();
+        List<StoredEdgeValue> edges = kept.stream()
+                .map(e -> deserializeEdgeValue(e.getKey(), e.getValue(), only))
+                .sorted(NEWEST_FIRST)
                 .toList();
+        // what the read cost: the edges it built (a count builds none), next to what the bin holds
+        metrics.increment(Metrics.EDGE_DECODED, edges.size());
+        metrics.increment(Metrics.EDGE_FILTERED, raw.size() - edges.size());
+        return edges;
     }
+
+    /**
+     * The newest {@code limit} entries of a bin, by the lastUpdatedTime at the head of each value.
+     *
+     * <p>A bounded selection, not a sort of the whole bin: a hub's bin can hold many thousands of
+     * edges while a UI expansion asks for a couple hundred, and ordering all of them to keep a
+     * handful is the one part of a capped read that would still grow with the bin.
+     */
+    private static List<Map.Entry<String, Object>> newest(List<Map.Entry<String, Object>> entries, int limit) {
+        // the queue holds the newest `limit` entries seen so far, its head being the least new
+        // of them, so one comparison per entry is enough to keep the answer
+        java.util.PriorityQueue<Map.Entry<String, Object>> kept =
+                new java.util.PriorityQueue<>(Math.max(limit, 1), (a, b) -> -compareNewestFirst(a, b));
+        for (Map.Entry<String, Object> entry : entries) {
+            kept.add(entry);
+            if (kept.size() > limit) {
+                kept.poll();
+            }
+        }
+        List<Map.Entry<String, Object>> out = new ArrayList<>(kept);
+        out.sort(AerospikeEdgeStore::compareNewestFirst);
+        return out;
+    }
+
+    /** Newest first, with the edge id as a tie break so the order is stable. */
+    private static int compareNewestFirst(Map.Entry<String, Object> a, Map.Entry<String, Object> b) {
+        int byTime = Long.compare(lastUpdatedTimeOf(b.getValue()), lastUpdatedTimeOf(a.getValue()));
+        return byTime != 0 ? byTime : a.getKey().compareTo(b.getKey());
+    }
+
+    /**
+     * The values of the given properties inside one raw edge value, without building an edge.
+     * Used by the condition test: {@code [lastUpdatedTime, createdTime, otherVertexId, props]}.
+     */
+    static Map<Integer, Object> rawPropertyValues(Object raw, Set<Integer> propertyIds) {
+        Map<Integer, Object> values = new LinkedHashMap<>();
+        if (!(raw instanceof List<?> list) || list.size() < 4 || !(list.get(3) instanceof Map<?, ?> props)) {
+            return values;
+        }
+        for (Map.Entry<?, ?> entry : props.entrySet()) {
+            int index = toIndex(entry.getKey());
+            if (propertyIds != null && !propertyIds.isEmpty() && !propertyIds.contains(index)) {
+                continue;
+            }
+            Object value = entry.getValue();
+            values.put(index, value instanceof List<?> property && !property.isEmpty()
+                    ? property.get(0) : value);
+        }
+        return values;
+    }
+
+    /** Edges come back newest first, with the edge id as a tie break so the order is stable. */
+    private static final Comparator<StoredEdgeValue> NEWEST_FIRST =
+            Comparator.comparingLong(StoredEdgeValue::lastUpdatedTime).reversed()
+                    .thenComparing(StoredEdgeValue::edgeId);
 
     /** Reads the raw edge map of a vertex for an edge schema and direction. */
     public Map<String, Object> getEdgeMap(Object vertexId, int edgeSchemaId, int directionCode) {

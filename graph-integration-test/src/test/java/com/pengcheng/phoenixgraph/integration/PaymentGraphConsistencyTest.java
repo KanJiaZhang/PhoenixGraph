@@ -9,6 +9,10 @@ import com.pengcheng.phoenixgraph.query.cypher.CypherResult;
 import com.pengcheng.phoenixgraph.query.gremlin.GremlinEdge;
 import com.pengcheng.phoenixgraph.query.gremlin.GremlinGraphQuery;
 import com.pengcheng.phoenixgraph.query.gremlin.GremlinVertex;
+import com.pengcheng.phoenixgraph.query.storage.EdgeQueryResult;
+import com.pengcheng.phoenixgraph.query.storage.EdgeSide;
+import com.pengcheng.phoenixgraph.query.storage.GraphQuery;
+import com.pengcheng.phoenixgraph.query.storage.VertexQueryResult;
 import com.pengcheng.phoenixgraph.query.traversal.NeighborVertexResolver;
 import com.pengcheng.phoenixgraph.schema.GraphSchema;
 import com.pengcheng.phoenixgraph.schema.json.SchemaJsonCodec;
@@ -280,12 +284,114 @@ class PaymentGraphConsistencyTest {
     }
 
     @Test
-    void dedupCollapsesTheRepeatedTargets() {
-        List<Object> toTargets = gremlin.execute("g.V('" + HUB + "','Account').out('Payment').dedup()");
+    void dedupCollapsesTheRepeatedTargets() {        List<Object> toTargets = gremlin.execute("g.V('" + HUB + "','Account').out('Payment').dedup()");
         Set<String> distinct = new LinkedHashSet<>();
         edgeStore.getEdges(HUB, PAYMENT_SCHEMA_ID, AerospikeEdgeStore.EDGE_DIR_OUT)
                 .forEach(edge -> distinct.add(String.valueOf(edge.otherVertexId())));
         assertEquals(distinct.size(), toTargets.size(), "dedup() keeps one traverser per distinct target");
+    }
+
+    /**
+     * The same query, run against a store that evaluates the conditions and the cap while it
+     * decodes and against one that hands the plain read back, must produce the same answer.
+     *
+     * <p>This is the test that keeps the pushdown honest: the engine may hand a condition or a cap
+     * to the store as an optimisation, so both ways of reading have to agree - on the traversers,
+     * on the subgraph a UI would draw, and on the counts.
+     */
+    @Test
+    void pushedConditionsAndCapsAgreeWithThePlainRead() {
+        GremlinGraphQuery plain = new GremlinGraphQuery(new PlainReadQuery(
+                new AerospikeGraphQuery(vertexStore, edgeStore, schema)),
+                NeighborVertexResolver.from(schema));
+
+        List<String> queries = List.of(
+                "g.V('" + HUB + "','Account').outE('Payment').has('status','SUCCESS')",
+                "g.V('" + HUB + "','Account').outE('Payment').has('status','PENDING')",
+                "g.V('" + HUB + "','Account').outE('Payment').has('status')",
+                "g.V('" + HUB + "','Account').outE('Payment').filter(status.equals('SUCCESS')).count()",
+                "g.V('" + HUB + "','Account').outE('Payment').has('status','SUCCESS').count()",
+                "g.V('" + HUB + "','Account').outE('Payment').limit(3)",
+                "g.V('" + HUB + "','Account').outE('Payment').limit(3).values('status')",
+                "g.V('" + HUB + "','Account').outE('Payment').has('status','SUCCESS').limit(2)",
+                "g.V('" + HUB + "','Account').bothE('Payment').has('status','SUCCESS').limit(4)",
+                "g.V('" + HUB + "','Account').inE('Payment').has('status','SUCCESS')",
+                "g.V('" + RING + "','Account').outE('AccountToIP').limit(1)");
+
+        for (String query : queries) {
+            assertEquals(describe(plain.execute(query)), describe(gremlin.execute(query)),
+                    "plain read and pushdown disagree on: " + query);
+            GremlinGraphQuery.Result pushed = gremlin.executeWithSubgraph(query);
+            GremlinGraphQuery.Result plainResult = plain.executeWithSubgraph(query);
+            assertEquals(describe(plainResult.values()), describe(pushed.values()),
+                    "the subgraph run disagrees on: " + query);
+            assertEquals(plainResult.subgraph().edges().size(), pushed.subgraph().edges().size(),
+                    "the drawn edges disagree on: " + query);
+        }
+    }
+
+    /** The elements of a result, as text, so two runs can be compared without sharing objects. */
+    private static List<String> describe(List<Object> values) {
+        List<String> out = new ArrayList<>(values.size());
+        for (Object value : values) {
+            if (value instanceof GremlinEdge edge) {
+                out.add(edge.id() + " " + edge.side() + " " + edge.otherVertexId());
+            } else {
+                out.add(String.valueOf(value));
+            }
+        }
+        return out;
+    }
+
+    /**
+     * The same store with the pushdown switched off: the engine then applies the conditions and the
+     * cap itself, which is what a backend without the capability does.
+     */
+    private static final class PlainReadQuery implements GraphQuery {
+        private final GraphQuery delegate;
+
+        PlainReadQuery(GraphQuery delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public boolean supportsEdgeReadPushdown() {
+            return false;
+        }
+
+        @Override
+        public VertexQueryResult readVertex(Object vertexId, String vertexName, List<String> propertyNames) {
+            return delegate.readVertex(vertexId, vertexName, propertyNames);
+        }
+
+        @Override
+        public List<VertexQueryResult> readVertices(String vertexName, List<Object> vertexIds,
+                                                    List<String> propertyNames) {
+            return delegate.readVertices(vertexName, vertexIds, propertyNames);
+        }
+
+        @Override
+        public List<EdgeQueryResult> readEdges(Object vertexId, String vertexName, String edgeName,
+                                               EdgeSide direction, List<String> propertyNames) {
+            return delegate.readEdges(vertexId, vertexName, edgeName, direction, propertyNames);
+        }
+
+        @Override
+        public List<List<EdgeQueryResult>> readEdgesBatch(String edgeName, EdgeSide direction,
+                                                          List<Object> vertexIds, List<String> propertyNames) {
+            return delegate.readEdgesBatch(edgeName, direction, vertexIds, propertyNames);
+        }
+
+        @Override
+        public List<List<EdgeQueryResult>> readAllEdgesBatch(List<Object> vertexIds, EdgeSide direction,
+                                                             List<String> propertyNames) {
+            return delegate.readAllEdgesBatch(vertexIds, direction, propertyNames);
+        }
+
+        @Override
+        public long countEdges(Object vertexId, String vertexName, String edgeName, EdgeSide direction) {
+            return delegate.countEdges(vertexId, vertexName, edgeName, direction);
+        }
     }
 
     @Test

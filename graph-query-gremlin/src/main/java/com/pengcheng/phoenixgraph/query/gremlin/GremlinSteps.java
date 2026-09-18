@@ -6,6 +6,7 @@ import com.pengcheng.phoenixgraph.hnsw.HnswLevels;
 import com.pengcheng.phoenixgraph.hnsw.HnswSearchResult;
 import com.pengcheng.phoenixgraph.query.QueryException;
 import com.pengcheng.phoenixgraph.query.result.Subgraph;
+import com.pengcheng.phoenixgraph.query.storage.EdgePropertyFilter;
 import com.pengcheng.phoenixgraph.query.storage.EdgeQueryResult;
 import com.pengcheng.phoenixgraph.query.storage.EdgeSide;
 import com.pengcheng.phoenixgraph.query.storage.GraphQuery;
@@ -41,28 +42,54 @@ final class GremlinSteps {
     // --- edge hops (outE / inE / bothE): vertices -> edges ---
 
     static GremlinStep outE(String edgeName) {
-        return (ctx, in) -> hopEdges(ctx, in, edgeName, EdgeSide.OUT);
+        return outE(edgeName, List.of(), 0);
+    }
+
+    /**
+     * An edge hop whose read was planned with conditions and a cap: the store evaluates them while
+     * it decodes (an edge that fails is never built) and stops at the cap instead of building a
+     * hub's whole bin. See {@code GremlinGraphQuery#pushEdgeConditions}.
+     */
+    static GremlinStep outE(String edgeName, List<EdgePropertyFilter> filters, int maxResults) {
+        return (ctx, in) -> hopEdges(ctx, in, edgeName, EdgeSide.OUT, filters, maxResults);
     }
 
     static GremlinStep inE(String edgeName) {
-        return (ctx, in) -> hopEdges(ctx, in, edgeName, EdgeSide.IN);
+        return inE(edgeName, List.of(), 0);
+    }
+
+    /** @see #outE(String, List, int) */
+    static GremlinStep inE(String edgeName, List<EdgePropertyFilter> filters, int maxResults) {
+        return (ctx, in) -> hopEdges(ctx, in, edgeName, EdgeSide.IN, filters, maxResults);
     }
 
     static GremlinStep bothE(String edgeName) {
-        return (ctx, in) -> hopEdges(ctx, in, edgeName, EdgeSide.BOTH);
+        return bothE(edgeName, List.of(), 0);
+    }
+
+    /** @see #outE(String, List, int) */
+    static GremlinStep bothE(String edgeName, List<EdgePropertyFilter> filters, int maxResults) {
+        return (ctx, in) -> hopEdges(ctx, in, edgeName, EdgeSide.BOTH, filters, maxResults);
     }
 
     /**
      * {@code outE('x').count()} in one step: the store counts the edges instead of handing them
-     * over. When a subgraph is being collected the edges are read as before, so the drawing does
+     * over - and with conditions it counts only the edges that satisfy them, without building any
+     * of them. When a subgraph is being collected the edges are read as before, so the drawing does
      * not lose them.
      */
     static GremlinStep countEdges(String edgeName, EdgeSide side) {
+        return countEdges(edgeName, side, List.of());
+    }
+
+    /** @see #countEdges(String, EdgeSide) */
+    static GremlinStep countEdges(String edgeName, EdgeSide side, List<EdgePropertyFilter> filters) {
+        List<EdgePropertyFilter> conditions = filters == null ? List.of() : filters;
         return (ctx, in) -> {
             // no edge class means 'every class': only a store that can count all of them at once
             // could answer that, so those queries take the reading path
             if (edgeName == null || ctx.collectSubgraph()) {
-                List<Object> edges = hopEdges(ctx, in, edgeName, side);
+                List<Object> edges = hopEdges(ctx, in, edgeName, side, conditions, 0);
                 return List.of((long) edges.size());
             }
             List<Object> vertexIds = new ArrayList<>(in.size());
@@ -71,7 +98,7 @@ final class GremlinSteps {
                     vertexIds.add(vertex.id());
                 }
             }
-            return List.of(ctx.countEdges(vertexIds, edgeName, side));
+            return List.of(ctx.countEdges(vertexIds, edgeName, side, conditions));
         };
     }
 
@@ -463,7 +490,20 @@ final class GremlinSteps {
     }
 
     static GremlinStep limit(long n) {
-        return (ctx, in) -> in.stream().limit(n).toList();
+        return (ctx, in) -> {
+            if (n < 0 || in.size() <= n) {
+                return in.stream().limit(n).toList();
+            }
+            // the elements the limit drops are not part of the answer, so they are not part of the
+            // subgraph a UI draws either - the same rule has()/filter() follow, and the same one a
+            // capped read already applies when the store sees the cap
+            for (int i = (int) n; i < in.size(); i++) {
+                if (in.get(i) instanceof GremlinElement element) {
+                    ctx.dropElement(element);
+                }
+            }
+            return new ArrayList<>(in.subList(0, (int) n));
+        };
     }
 
     static GremlinStep dedup() {
@@ -472,8 +512,47 @@ final class GremlinSteps {
 
     // --- internals ---
 
+    /**
+     * Builds the conditions an edge hop pushes into its read from the {@code has}/{@code filter}
+     * steps that follow it. The semantics are those of the steps: a missing property does not
+     * match, and {@code has} compares numbers numerically.
+     */
+    static List<EdgePropertyFilter> edgeFilters(List<GremlinQuery.Step> conditions) {
+        List<EdgePropertyFilter> filters = new ArrayList<>();
+        for (GremlinQuery.Step step : conditions) {
+            if (step.name().equals("has")) {
+                String key = step.args().get(0);
+                String value = step.args().size() > 1 ? step.args().get(1) : null;
+                filters.add(value == null ? EdgePropertyFilter.present(key)
+                        : EdgePropertyFilter.of(key, stored -> stored != null && matches(stored, value)));
+            } else if (step.name().equals("filter")) {
+                GremlinFilterExpression expression =
+                        GremlinFilterExpression.parse(String.join(" || ", step.args()));
+                List<String> keys = List.copyOf(expression.propertyKeys());
+                filters.add(new EdgePropertyFilter(keys, properties -> {
+                    // the condition sees the properties it reads, exactly like the step does
+                    Map<String, Object> present = new LinkedHashMap<>();
+                    for (String key : keys) {
+                        Object value = properties.get(key);
+                        if (value != null) {
+                            present.put(key, value);
+                        }
+                    }
+                    return expression.test(new GremlinEdge("", "", EdgeSide.BOTH, null, present, 0L, 0L));
+                }));
+            }
+        }
+        return filters;
+    }
+
     private static List<Object> hopEdges(GremlinContext ctx, List<Object> in, String edgeName, EdgeSide dir) {
-        List<EdgeQueryResult> allEdges = readAllEdges(ctx, toVertices(in), edgeName, dir, edgeReadProperties(ctx));
+        return hopEdges(ctx, in, edgeName, dir, List.of(), 0);
+    }
+
+    private static List<Object> hopEdges(GremlinContext ctx, List<Object> in, String edgeName, EdgeSide dir,
+                                         List<EdgePropertyFilter> filters, int maxResults) {
+        List<EdgeQueryResult> allEdges = readAllEdges(ctx, toVertices(in), edgeName, dir, edgeReadProperties(ctx),
+                filters, maxResults);
         List<Object> out = new ArrayList<>(allEdges.size());
         for (EdgeQueryResult edge : allEdges) {
             out.add(new GremlinEdge(edge.edgeName(), edge.edgeId(), edge.side(), edge.otherVertexId(),
@@ -485,28 +564,37 @@ final class GremlinSteps {
     private static List<Object> hopVertices(GremlinContext ctx, List<Object> in, String edgeName, EdgeSide dir) {
         // The intermediate edges of a vertex hop are internal: only their otherVertexId
         // is consumed, so no edge property projection is applied here.
-        List<EdgeQueryResult> allEdges = readAllEdges(ctx, toVertices(in), edgeName, dir, List.of());
+        List<EdgeQueryResult> allEdges = readAllEdges(ctx, toVertices(in), edgeName, dir, List.of(), List.of(), 0);
         return new ArrayList<>(readNeighbourVertices(ctx, allEdges));
     }
 
     /** Reads the edges of the given edge class for all input vertices, with per-query dedup + cache. */
     private static List<EdgeQueryResult> readAllEdges(GremlinContext ctx, List<GremlinVertex> vertices,
-                                                      String edgeName, EdgeSide dir, List<String> edgeProperties) {
+                                                      String edgeName, EdgeSide dir, List<String> edgeProperties,
+                                                      List<EdgePropertyFilter> filters, int maxResults) {
+        List<EdgePropertyFilter> conditions = filters == null ? List.of() : filters;
         if (vertices.isEmpty()) {
             return List.of();
         }
         if (edgeName == null) {
-            return readAllEdgeClasses(ctx, vertices, dir, edgeProperties);
+            // every edge class: there is no single bin to push a condition into, so the conditions
+            // are applied to whatever was read
+            List<EdgeQueryResult> all = readAllEdgeClasses(ctx, vertices, dir, edgeProperties);
+            return GraphQuery.applyFilters(all, conditions, maxResults);
         }
-        if (vertices.size() == 1) {
-            GremlinVertex v = vertices.get(0);
-            return ctx.readEdgesCached(v.id(), v.label(), edgeName, dir, edgeProperties);
+        if (conditions.isEmpty() && maxResults <= 0) {
+            if (vertices.size() == 1) {
+                GremlinVertex v = vertices.get(0);
+                return ctx.readEdgesCached(v.id(), v.label(), edgeName, dir, edgeProperties);
+            }
+            List<Object> ids = new ArrayList<>(vertices.size());
+            for (GremlinVertex v : vertices) {
+                ids.add(v.id());
+            }
+            return ctx.readAllEdgesBatchCached(edgeName, dir, ids, edgeProperties);
         }
-        List<Object> ids = new ArrayList<>(vertices.size());
-        for (GremlinVertex v : vertices) {
-            ids.add(v.id());
-        }
-        return ctx.readAllEdgesBatchCached(edgeName, dir, ids, edgeProperties);
+        // a filtered or capped read: the store does the work, one vertex at a time with a budget
+        return ctx.readEdgesFiltered(vertices, edgeName, dir, edgeProperties, conditions, maxResults);
     }
 
     /** Reads the edges of every edge class (the {@code both()}/{@code bothE()} no-argument form). */

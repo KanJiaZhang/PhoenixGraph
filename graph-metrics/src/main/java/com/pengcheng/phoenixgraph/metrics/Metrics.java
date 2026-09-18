@@ -46,6 +46,14 @@ public final class Metrics {
     public static final String EDGE_WRITE_STALE = "storage.edge.write.stale";
     /** Edges dropped because a vertex reached its declared degree limit. */
     public static final String EDGE_EVICTED = "storage.edge.evicted";
+    /**
+     * Edges turned into objects by a read. One bin of a hub holds every edge of a class, so a read
+     * that only counts, only wants the newest handful, or discards most edges by a condition builds
+     * far fewer edges than the bin holds - which is what this counter shows next to the read itself.
+     */
+    public static final String EDGE_DECODED = "storage.edge.decoded";
+    /** Edges a condition discarded before they were built. */
+    public static final String EDGE_FILTERED = "storage.edge.filtered";
     /** Write attempts that had to be retried (CAS/generation conflict or transient error). */
     public static final String WRITE_RETRY = "storage.write.retry";
     /** Counters removed from a vertex because an edge was deleted. */

@@ -40,6 +40,9 @@ public record MetricsView(String graph, String updatedAt,
                 Metrics.VERTEX_WRITE_FAILED));
         storage.put("edgeRead", pair(snapshot, Metrics.EDGE_READ, Metrics.EDGE_READ_ITEMS,
                 Metrics.EDGE_READ_FAILED));
+        // what an edge read cost next to what it read: a count builds nothing, a filtered read
+        // builds only the edges that survive and a capped read only the ones it keeps
+        storage.put("edgeDecode", pair(snapshot, Metrics.EDGE_DECODED, Metrics.EDGE_FILTERED, null));
         storage.put("edgeWrite", pair(snapshot, Metrics.EDGE_WRITE, Metrics.EDGE_WRITE_ITEMS,
                 Metrics.EDGE_WRITE_FAILED));
         storage.put("keyValue", pair(snapshot, Metrics.KV_READ_CALL, Metrics.KV_READ_ITEMS,

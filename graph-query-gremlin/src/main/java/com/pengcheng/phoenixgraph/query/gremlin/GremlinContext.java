@@ -2,6 +2,7 @@ package com.pengcheng.phoenixgraph.query.gremlin;
 
 import com.pengcheng.phoenixgraph.query.result.Subgraph;
 import com.pengcheng.phoenixgraph.query.traversal.NeighborVertexResolver;
+import com.pengcheng.phoenixgraph.query.storage.EdgePropertyFilter;
 import com.pengcheng.phoenixgraph.query.storage.EdgeQueryResult;
 import com.pengcheng.phoenixgraph.storage.TimeRange;
 import com.pengcheng.phoenixgraph.query.storage.EdgeSide;
@@ -549,13 +550,66 @@ public final class GremlinContext {
      *
      * <p>Used by the {@code count()} rewrite: a store that keeps its edges in one record answers
      * from the record's shape, so {@code outE('Payment').count()} stops decoding a hub's payments.
+     * With conditions the store skips the edges that fail them while it walks the bin.
      */
     public long countEdges(List<Object> vertexIds, String edgeName, EdgeSide direction) {
+        return countEdges(vertexIds, edgeName, direction, List.of());
+    }
+
+    /** @see #countEdges(List, String, EdgeSide) */
+    public long countEdges(List<Object> vertexIds, String edgeName, EdgeSide direction,
+                           List<EdgePropertyFilter> filters) {
+        List<EdgePropertyFilter> conditions = filters == null ? List.of() : filters;
         long total = 0;
         for (Object vertexId : vertexIds) {
-            total += graphQuery.countEdges(vertexId, null, edgeName, direction);
+            if (conditions.isEmpty()) {
+                total += graphQuery.countEdges(vertexId, null, edgeName, direction);
+            } else if (hasEdgeTimeRange()) {
+                // the window already reduces the read: the conditions are applied here
+                List<EdgeQueryResult> edges = graphQuery.readEdgesWithin(vertexId, null, edgeName, direction,
+                        edgeTimeRange, List.of(), edgeReadLimit);
+                total += GraphQuery.applyFilters(edges, conditions, 0).size();
+            } else {
+                total += graphQuery.countEdges(vertexId, null, edgeName, direction, conditions);
+            }
         }
         return total;
+    }
+
+    /**
+     * Reads the edges of one class for the given vertices with the conditions and the cap the
+     * compiler pushed into the hop.
+     *
+     * <p>The conditions travel to the store, which skips the edges it would only build to discard;
+     * the cap travels with them, so a bounded read stops early instead of building a hub's whole
+     * bin. A read inside a time window is reduced by the window already (its cap included), so the
+     * conditions are applied to what comes back.
+     */
+    public List<EdgeQueryResult> readEdgesFiltered(List<GremlinVertex> vertices, String edgeName,
+                                                   EdgeSide direction, List<String> propertyNames,
+                                                   List<EdgePropertyFilter> filters, int maxResults) {
+        List<EdgeQueryResult> out = new ArrayList<>();
+        int budget = Math.max(maxResults, 0);
+        for (GremlinVertex vertex : vertices) {
+            List<EdgeQueryResult> edges;
+            if (hasEdgeTimeRange()) {
+                edges = graphQuery.readEdgesWithin(vertex.id(), vertex.label(), edgeName, direction,
+                        edgeTimeRange, propertyNames, edgeReadLimit);
+                edges = GraphQuery.applyFilters(edges, filters, budget);
+            } else {
+                edges = graphQuery.readEdges(vertex.id(), vertex.label(), edgeName, direction,
+                        propertyNames, filters, budget);
+            }
+            recordEdges(vertex.id(), edges);
+            out.addAll(edges);
+            if (budget > 0) {
+                budget -= edges.size();
+                if (budget <= 0) {
+                    break; // the cap is spent: the rest of the traversal order cannot matter
+                }
+            }
+        }
+        return out;
     }
 
     /** Reads the edges of one vertex for an edge class + direction, with caching. */

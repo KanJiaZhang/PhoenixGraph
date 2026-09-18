@@ -5,6 +5,8 @@ import com.pengcheng.phoenixgraph.hnsw.HnswIndex;
 import com.pengcheng.phoenixgraph.query.QueryException;
 import com.pengcheng.phoenixgraph.query.result.Subgraph;
 import com.pengcheng.phoenixgraph.query.traversal.NeighborVertexResolver;
+import com.pengcheng.phoenixgraph.query.storage.EdgePropertyFilter;
+import com.pengcheng.phoenixgraph.query.storage.EdgeSide;
 import com.pengcheng.phoenixgraph.query.storage.GraphQuery;
 import com.pengcheng.phoenixgraph.schema.geo.GeoSearch;
 import com.pengcheng.phoenixgraph.storage.TimeRange;
@@ -331,16 +333,30 @@ public class GremlinGraphQuery {
         // a limit after the first hop of a windowed traversal becomes the window's cap, so the
         // aggregated tables stop reading once they have that many edges
         parsedSteps = pushLimitsIntoWindow(parsedSteps);
+        // the conditions and the cap of an edge hop are decided here, so the resolution loop below
+        // can hand them to the step (the steps that were folded away are gone from the plan). Only
+        // a store that evaluates them while it decodes gets them: for every other backend the
+        // steps stay where they are and the traversal filters what it read, as it always did.
+        List<EdgePushdown> edgePushdowns = new ArrayList<>();
+        if (graphQuery.supportsEdgeReadPushdown()) {
+            parsedSteps = pushEdgeConditions(parsedSteps, edgePushdowns);
+        } else {
+            for (int i = 0; i < parsedSteps.size(); i++) {
+                edgePushdowns.add(null);
+            }
+        }
         // a nearest step absorbs the has/filter conditions directly following it: they
         // are evaluated inside the graph walk, so the search returns the closest k that
         // *match* instead of the k closest of which some happen to match
         List<GremlinQuery.Step> plannedSteps = new ArrayList<>(parsedSteps.size());
         List<HnswFilter> pushedFilters = new ArrayList<>(parsedSteps.size());
+        List<EdgePushdown> plannedPushdowns = new ArrayList<>(parsedSteps.size());
         for (int i = 0; i < parsedSteps.size(); i++) {
             GremlinQuery.Step step = parsedSteps.get(i);
             if (!step.name().equals("nearest")) {
                 plannedSteps.add(step);
                 pushedFilters.add(null);
+                plannedPushdowns.add(edgePushdowns.get(i));
                 continue;
             }
             List<GremlinQuery.Step> conditions = new ArrayList<>();
@@ -351,6 +367,7 @@ public class GremlinGraphQuery {
             }
             plannedSteps.add(step);
             pushedFilters.add(conditions.isEmpty() ? null : GremlinSteps.hnswFilter(conditions));
+            plannedPushdowns.add(null);
             i = next - 1; // the conditions became part of the nearest step
         }
         List<String>[] properties = planProperties(plannedSteps);
@@ -360,12 +377,156 @@ public class GremlinGraphQuery {
         for (int i = 0; i < plannedSteps.size(); i++) {
             GremlinQuery.Step step = plannedSteps.get(i);
             HnswFilter pushed = pushedFilters.get(i);
-            steps.add(pushed == null ? registry.resolve(step.name(), step.args())
-                    : nearestStep(step, pushed));
+            EdgePushdown edgePushed = plannedPushdowns.get(i);
+            if (pushed != null) {
+                steps.add(nearestStep(step, pushed));
+            } else if (edgePushed != null) {
+                steps.add(edgeStep(step, edgePushed));
+            } else {
+                steps.add(registry.resolve(step.name(), step.args()));
+            }
             stepNames.add(step.name());
         }
         return new CompiledQuery(query.vertexIds(), query.vertexName(), properties, startProperties,
                 stepNames, steps);
+    }
+
+    /** What an edge hop pushes into its read: the conditions and the cap of the following steps. */
+    private record EdgePushdown(List<EdgePropertyFilter> filters, int maxResults) {
+    }
+
+    /**
+     * Folds the conditions and the cap that follow an edge hop into the hop itself.
+     *
+     * <p>{@code outE('Payment').has('status','SUCCESS')} does not change what is read - the bin
+     * holds every payment - but it changes how much has to be built: the store evaluates the
+     * condition while it decodes and never turns a payment that fails it into an object. The same
+     * goes for a cap: {@code outE('Payment').limit(10)} only ever needs the ten newest payments of
+     * a hub. A count becomes a store-side count of the matching edges, which builds none of them.
+     *
+     * <p>Only the steps <b>directly</b> after the hop are folded (a {@code batch} in between is not
+     * disturbed), and only for an edge hop of a named class: a condition over "every edge class"
+     * cannot be pushed into a single bin read and is applied to what was read instead.
+     *
+     * @param pushdowns receives one entry per input step ({@code null} = nothing was pushed), so
+     *                    the caller can resolve the compiled steps with it
+     * @return the plan without the steps that became part of a hop
+     */
+    private static List<GremlinQuery.Step> pushEdgeConditions(List<GremlinQuery.Step> steps,
+                                                             List<EdgePushdown> pushdowns) {
+        List<GremlinQuery.Step> out = new ArrayList<>(steps.size());
+        for (int i = 0; i < steps.size(); i++) {
+            GremlinQuery.Step step = steps.get(i);
+            boolean edgeHop = isEdgeHop(step.name());
+            boolean edgeCount = isEdgeCount(step.name());
+            if (!edgeHop && !edgeCount) {
+                add(out, pushdowns, step, null);
+                continue;
+            }
+            List<GremlinQuery.Step> conditions = new ArrayList<>();
+            int next = i + 1;
+            while (next < steps.size() && isFilter(steps.get(next).name())) {
+                conditions.add(steps.get(next));
+                next++;
+            }
+            int cap = 0;
+            if (next < steps.size() && steps.get(next).name().equals("limit")) {
+                cap = (int) Math.min(Integer.MAX_VALUE, positiveLong(steps.get(next).args().get(0), "limit"));
+                next++;
+            }
+            boolean nowCounted = edgeCount;
+            if (!nowCounted && cap == 0 && next < steps.size() && steps.get(next).name().equals("count")) {
+                nowCounted = true;
+                next++;
+            }
+            String edgeName = optionalSingle(step.args(), step.name());
+            boolean pushed = !conditions.isEmpty() || cap > 0 || (nowCounted && !edgeCount);
+            if (edgeName == null || !pushed) {
+                // nothing to push (or an unnamed class): the step keeps its own resolution
+                add(out, pushdowns, step, null);
+                continue;
+            }
+            List<EdgePropertyFilter> filters = GremlinSteps.edgeFilters(conditions);
+            if (nowCounted && !edgeCount) {
+                add(out, pushdowns, new GremlinQuery.Step(countStepName(step.name()), step.args()),
+                        new EdgePushdown(filters, 0));
+            } else {
+                add(out, pushdowns, step, new EdgePushdown(filters, cap));
+            }
+            i = next - 1; // the conditions (and the cap) became part of the hop
+        }
+        return out;
+    }
+
+    private static void add(List<GremlinQuery.Step> steps, List<EdgePushdown> pushdowns,
+                            GremlinQuery.Step step, EdgePushdown pushdown) {
+        steps.add(step);
+        pushdowns.add(pushdown);
+    }
+
+    /** Resolves an edge hop that carries pushed-down conditions and a cap. */
+    private GremlinStep edgeStep(GremlinQuery.Step step, EdgePushdown pushdown) {
+        String edgeName = optionalSingle(step.args(), step.name());
+        if (isEdgeCount(step.name())) {
+            return GremlinSteps.countEdges(edgeName, sideOf(step.name()), pushdown.filters());
+        }
+        return switch (step.name()) {
+            case "outE" -> GremlinSteps.outE(edgeName, pushdown.filters(), pushdown.maxResults());
+            case "inE" -> GremlinSteps.inE(edgeName, pushdown.filters(), pushdown.maxResults());
+            default -> GremlinSteps.bothE(edgeName, pushdown.filters(), pushdown.maxResults());
+        };
+    }
+
+    /** The {@code countOutE} name an edge hop takes when it is only counted. */
+    private static String countStepName(String edgeHop) {
+        return "count" + Character.toUpperCase(edgeHop.charAt(0)) + edgeHop.substring(1);
+    }
+
+    private static EdgeSide sideOf(String stepName) {
+        if (stepName.equals("outE") || stepName.equals("countOutE")) {
+            return EdgeSide.OUT;
+        }
+        if (stepName.equals("inE") || stepName.equals("countInE")) {
+            return EdgeSide.IN;
+        }
+        return EdgeSide.BOTH;
+    }
+
+    private static boolean isEdgeHop(String name) {
+        return name.equals("outE") || name.equals("inE") || name.equals("bothE");
+    }
+
+    private static boolean isEdgeCount(String name) {
+        return name.equals("countOutE") || name.equals("countInE") || name.equals("countBothE");
+    }
+
+    private static long positiveLong(String value, String stepName) {
+        try {
+            long n = Long.parseLong(value.trim());
+            if (n < 1) {
+                throw new QueryException(stepName + " expects a positive number, got: " + value);
+            }
+            return n;
+        } catch (NumberFormatException e) {
+            throw new QueryException(stepName + " expects a number, got: " + value);
+        }
+    }
+
+    /**
+     * An optional step argument: at most one token, blank means "not given".
+     *
+     * <p>Rejects extra arguments itself so a folded step cannot silently ignore them (a folded
+     * step never reaches the registry, which is where that check would otherwise happen).
+     */
+    private static String optionalSingle(List<String> args, String stepName) {
+        if (args.isEmpty()) {
+            return null;
+        }
+        if (args.size() > 1) {
+            throw new QueryException(stepName + " expects at most one argument, got " + args.size());
+        }
+        String value = args.get(0);
+        return value == null || value.isBlank() ? null : value;
     }
 
     /** Resolves a {@code nearest} step that carries pushed-down conditions. */
