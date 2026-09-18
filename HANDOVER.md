@@ -7,8 +7,11 @@
 
 > 2026-09-18 新增：**smart payment 数据**（第 31 节）—— `payment-graph-smart`（Aerospike，向量/HNSW）+
 > `payment-graph-smart-rocksdb`（真 S2 geo 索引），三个流都实测；顺带修掉同名向量属性的 HNSW 层边类冲突；
-> 以及**核对与 benchmark**（第 30 节：12 项一致性 + 10 条查询的延迟/KV 往返与瓶颈分析）、
-> **图建模 UI**（第 29 节： 建图/写盘/热加载/导出）、**建模接口与指标面板**（第 28/27 节）。
+> 以及**按 benchmark 结论做的优化**（第 32 节：Cypher 聚合 N+1 53.2ms→3.9ms、count 走 store 的 bin size、
+> 投影只解码请求的属性；并修掉 both() 无类计数被误改写的回归）、
+> **核对与 benchmark**（第 30 节：12 项一致性 + 10 条查询的延迟/KV 往返与瓶颈分析）、
+> **图建模 UI**（第 29 节： 建图/写盘/热加载/导出）、**建模接口与指标面板**（第 28/27 节）、
+> **UI 修正**（第 33 节：主页查询行不错行、建模页改浅色可读）。
 >
 > 2026-09-18 新增：**系统 metrics**（第 27 节）——`graph-metrics` 模块、Aerospike/RocksDB 两套持久化、
 > `/api/v1/metrics` 接口；`QueryService` 增加 `source` 字段（UI 传 `ui`）。
