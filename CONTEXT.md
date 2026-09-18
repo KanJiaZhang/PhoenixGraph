@@ -1886,3 +1886,12 @@ headless Edge 实测（1600×950，ID 模式）：`sameRow true`、`noOverlap tr
 headless Edge 实测：`body bg rgb(238,241,248) / color rgb(15,23,42)`（可见 ✓）、卡片白底 ✓、
 输入框白底深字 ✓、预览浅灰底 `rgb(247,249,253)` ✓、5 张卡片标题 `1 · 图实例 | 2 · 点 | 3 · 边 | 4 · 提交 | 5 · 造数据` ✓、
 无 JS 报错 ✓、图下拉 12 项 ✓。顺带把建模页的「点类型/边类型」也统一成「点/边」。
+
+### 32.4 回归：`both()`（不带边类）= 全部边类
+
+上一条 count 改写引入过一个真 bug：`both().count()` 这类**不带边类**的计数也被改写成了 `countBothE`，
+而「全部边类」不是某一个 bin 能回答的 → store 返回 0 ✗（`QueryApiIntegrationTest` 的
+`g.V('150','Account').both().both().count()` 期望 5000 得到 0 才暴露出来）。
+修复：`GremlinSteps.countEdges` 在 `edgeName == null` 时**退回读边**（子图采集时同样退回）；
+新增 `GremlinGraphQueryTest.aCountWithoutAnEdgeClassStillReadsTheEdges` 断言这一点。
+带边类的 `<hop>E('x').count()` 仍然走快路径 ✓。

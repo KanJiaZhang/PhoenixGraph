@@ -59,7 +59,9 @@ final class GremlinSteps {
      */
     static GremlinStep countEdges(String edgeName, EdgeSide side) {
         return (ctx, in) -> {
-            if (ctx.collectSubgraph()) {
+            // no edge class means 'every class': only a store that can count all of them at once
+            // could answer that, so those queries take the reading path
+            if (edgeName == null || ctx.collectSubgraph()) {
                 List<Object> edges = hopEdges(ctx, in, edgeName, side);
                 return List.of((long) edges.size());
             }

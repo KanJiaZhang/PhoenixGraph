@@ -1168,6 +1168,46 @@ class GremlinGraphQueryTest {
     }
 
     @Test
+    void aCountWithoutAnEdgeClassStillReadsTheEdges() {
+        // both() without a class means every class; a store cannot count that from one bin, so the
+        // step must fall back to reading (this is what the API integration test caught)
+        int[] counted = {0};
+        List<String> reads = new ArrayList<>();
+        GraphQuery gq = new GraphQuery() {
+            @Override
+            public VertexQueryResult readVertex(Object id, String name, List<String> props) {
+                return new VertexQueryResult("p", id, Map.of(), 1L, 2L);
+            }
+
+            @Override
+            public List<EdgeQueryResult> readEdges(Object id, String name, String edgeName, EdgeSide dir, List<String> props) {
+                reads.add("readEdges");
+                return List.of(new EdgeQueryResult("knows", "e1", EdgeSide.OUT, "n1", Map.of(), 1L, 2L),
+                        new EdgeQueryResult("knows", "e2", EdgeSide.OUT, "n2", Map.of(), 1L, 2L));
+            }
+
+            @Override
+            public List<List<EdgeQueryResult>> readAllEdgesBatch(List<Object> ids, EdgeSide dir,
+                                                                  List<String> props) {
+                return ids.stream().map(id -> readEdges(id, null, null, dir, props)).toList();
+            }
+
+            @Override
+            public long countEdges(Object id, String name, String edgeName, EdgeSide dir) {
+                counted[0]++;
+                return 0;
+            }
+        };
+        GremlinGraphQuery query = new GremlinGraphQuery(gq,
+                NeighborVertexResolver.of(Map.of("knows", "p"), Map.of()));
+
+        List<Object> answer = query.execute("g.V('v1','p').both().count()");
+
+        assertEquals(List.of(2L), answer, "both() counts every edge of the seed");
+        assertEquals(0, counted[0], "the store was not asked to count an unnamed class");
+    }
+
+    @Test
     void longMultiLineLogicCompilesOnce() {
         String logic = """
                 .has('name', 'x')
