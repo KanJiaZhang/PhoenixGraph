@@ -85,20 +85,30 @@ public final class FuzzyFunctions {
                     }
                     return start == text.length() ? null : text.substring(start);
                 });
-        register("regex", "regex(field, 'pattern')", 1,
-                "What the pattern matches: its first group if it has one, else the whole match",
+        register("regex", "regex(field, 'pattern'[, group])", 1,
+                "What the pattern matches: the whole match, or the group it is asked for (the first "
+                        + "capturing group when the pattern has one), as the fragment of the key",
                 (value, args) -> {
                     String text = trimmed(value);
                     if (text == null) {
                         return null;
                     }
                     Matcher matcher = compile(args.get(1), "regex").matcher(text);
+                    // a group the expression does not have is a mistake in the pattern, so it is
+                    // reported even when this particular value does not match
+                    int group = args.size() > 2 && !args.get(2).isBlank() ? groupIndex(args, 2) : -1;
+                    if (group > matcher.groupCount()) {
+                        throw new FuzzyPatternException("The regular expression '" + args.get(1) + "' has "
+                                + matcher.groupCount() + " capturing group(s), so group " + group
+                                + " does not exist");
+                    }
                     if (!matcher.find()) {
                         return null;
                     }
-                    String matched = matcher.groupCount() >= 1 && matcher.group(1) != null
-                            ? matcher.group(1) : matcher.group();
-                    return matched.isBlank() ? null : matched.toLowerCase(Locale.ROOT);
+                    if (group >= 0) {
+                        return lower(matcher.group(group));
+                    }
+                    return lower(matcher.groupCount() >= 1 ? matcher.group(1) : matcher.group());
                 });
         register("emailDomain", "emailDomain(field)", 0, "The domain of an email address (mail.ru)",
                 (value, args) -> {
@@ -211,6 +221,28 @@ public final class FuzzyFunctions {
         return text.isEmpty() ? null : text;
     }
 
+    /** A regular expression group number: zero is the whole match. */
+    private static int groupIndex(List<String> args, int index) {
+        String text = args.get(index);
+        try {
+            int group = Integer.parseInt(text.trim());
+            if (group < 0) {
+                throw new FuzzyPatternException("A group number must not be negative, got '" + text + "'");
+            }
+            return group;
+        } catch (NumberFormatException e) {
+            throw new FuzzyPatternException("A group number must be a number, got '" + text + "'");
+        }
+    }
+
+    /** A matched fragment, lower cased (a blank match counts as no match). */
+    private static String lower(String matched) {
+        if (matched == null || matched.isBlank()) {
+            return null;
+        }
+        return matched.toLowerCase(Locale.ROOT);
+    }
+
     private static String digits(String value) {
         String text = trimmed(value);
         if (text == null) {
@@ -225,8 +257,7 @@ public final class FuzzyFunctions {
         return out.isEmpty() ? null : out.toString();
     }
 
-    private static String first(String value, int n) {
-        if (value == null || value.length() < n) {
+    private static String first(String value, int n) {        if (value == null || value.length() < n) {
             return value == null ? null : value;
         }
         return value.substring(0, n);

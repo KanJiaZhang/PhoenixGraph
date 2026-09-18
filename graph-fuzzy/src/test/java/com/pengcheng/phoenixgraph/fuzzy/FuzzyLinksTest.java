@@ -184,6 +184,55 @@ class FuzzyLinksTest {
     }
 
     @Test
+    void aPatternCarriesTheExampleThatShowsItWorking() {
+        FuzzyPattern pattern = FuzzyDemo.SHARED_HABITS;
+
+        assertFalse(pattern.example().isEmpty(), "the shipped patterns come with a context to try");
+        FuzzyLink link = pattern.exampleLink();
+        assertEquals(0, link.patternId());
+        assertEquals("mail.ru_86_10.20_zhang", link.key());
+        assertEquals("fl_0_mail.ru_86_10.20_zhang", link.linkVertexId());
+        assertEquals(".out('FuzzyLinkedTo').outE('Payment').otherV()", pattern.demoStepsOrDefault(),
+                "the demo walks from the ring to where the money went");
+        assertEquals("pattern -> ring -> payments -> receiver", pattern.demoTitle());
+        assertEquals(".out('FuzzyLinkedTo')", FuzzyDemo.MACHINE_MAIL.demoStepsOrDefault());
+    }
+
+    @Test
+    void theDemoPatternsUseARegularExpressionThatKeepsItsBackslashes() {
+        // the shipped patterns extract the user name word and the leading digits of an email name
+        assertTrue(FuzzyDemo.SHARED_HABITS.expression().contains("regex(username, '^([a-z]+)')"));
+        assertTrue(FuzzyDemo.MACHINE_MAIL.expression().contains("regex(emailName(email), '^(\\d{4})')"),
+                "the digits are a backslash class, so it has to survive as written");
+
+        assertEquals("mail.ru_86_10.20_zhang", FuzzyDemo.SHARED_HABITS.key(FuzzyDemo.demoContext()));
+        assertEquals("10.20.31_621700_1988", FuzzyDemo.MACHINE_MAIL.key(FuzzyDemo.demoContext()));
+    }
+
+    @Test
+    void anExampleAndADemoSurviveTheFile(@TempDir Path dir) throws Exception {
+        Path file = dir.resolve("p.json");
+        FileFuzzyPatterns patterns = new FileFuzzyPatterns(file, "g");
+        patterns.save(FuzzyDemo.SHARED_HABITS);
+
+        FuzzyPattern read = new FileFuzzyPatterns(file, "g").require(0);
+
+        assertEquals(FuzzyDemo.exampleContext(), read.example(), "the context comes back as it was written");
+        assertEquals("pattern -> ring -> payments -> receiver", read.demoTitle());
+        assertEquals(".out('FuzzyLinkedTo').outE('Payment').otherV()", read.demoSteps());
+        assertEquals("mail.ru_86_10.20_zhang", read.exampleLink().key());
+    }
+
+    @Test
+    void aPatternWithoutAnExampleSaysNothingRatherThanGuessing() {
+        FuzzyPattern plain = FuzzyPattern.of(4, "ip2(ip)");
+
+        assertTrue(plain.example().isEmpty());
+        assertNull(plain.exampleLink());
+        assertEquals(".out('FuzzyLinkedTo')", plain.demoStepsOrDefault(), "a default demo step still works");
+    }
+
+    @Test
     void signaturesDescribeEveryFunctionForTheEditor() {
         List<FuzzyFunctions.Signature> signatures = FuzzyFunctions.signatures();
 

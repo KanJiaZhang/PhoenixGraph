@@ -338,6 +338,14 @@ public final class FuzzyExpression {
             return new Node.Call(name, List.copyOf(args));
         }
 
+        /**
+         * A quoted value: a literal separator ({@code '_'}) or a regular expression.
+         *
+         * <p>A backslash is only an escape for the quote itself and for a backslash; anything else
+         * keeps it, because the value is very often a regular expression and {@code '^\d{4}$'}
+         * has to reach the engine as it was written - reading {@code \d} as an escaped {@code d}
+         * would turn the pattern into {@code ^d} and silently match nothing.
+         */
         private String quoted() {
             char quote = text.charAt(pos);
             int start = pos;
@@ -346,8 +354,14 @@ public final class FuzzyExpression {
             while (pos < text.length()) {
                 char c = text.charAt(pos);
                 if (c == '\\' && pos + 1 < text.length()) {
-                    out.append(text.charAt(pos + 1));
-                    pos += 2;
+                    char next = text.charAt(pos + 1);
+                    if (next == quote || next == '\\') {
+                        out.append(next);
+                        pos += 2;
+                        continue;
+                    }
+                    out.append(c);
+                    pos++;
                     continue;
                 }
                 if (c == quote) {

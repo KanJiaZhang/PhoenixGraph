@@ -5,6 +5,12 @@
 
 **最后一次会话：2026-09-18（周四）· 在 2026-09-17 的 8 个提交之后继续 · 工作树干净 · `./mvnw test` **21 个模块**全绿。**
 
+> 2026-09-18 新增（傍晚）：**模糊关联的 `regex` 修正与示例按钮**（第 35.8 节）——
+> `regex` 里 `\d`/`\w`/`\s` 以前被当转义吃掉（看起来像「没实现」）✗ → 现在反斜杠原样保留 ✓，
+> 并支持 `regex(field, 'pattern'[, group])`（0 = 整个匹配，越界报错）；两个演示模式改用正则（key 不变）；
+> 模式可自带 `example`/`demoTitle`/`demoSteps`，主页新增「模糊关联示例」按钮
+> （`GET /api/fuzzy/demo`，只在有示例的模式上出现，一点即跑完整链路 ✓ 实测 8 点 / 18 边）。
+
 > 2026-09-18 新增（下半天）：**模糊关联 Fuzzy Linking**（第 35 节）—— 新模块 `graph-fuzzy`
 > （模式语言 `emailDomain/ip2/ip3/countryCode/cardBin/alphaPrefix/regex/hash/opt` …、
 > key 归一化、确定性 id、`FuzzyLinks.plan` 读写共用一份计划）、Gremlin 新步 `fuzzyLink(patternId[, context])`、

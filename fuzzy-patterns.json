@@ -2,14 +2,32 @@
   "payment-graph" : [ {
     "id" : 0,
     "name" : "email domain + country + ip/16 + name word",
-    "expression" : "emailDomain(email)+'_'+countryCode(phone)+'_'+ip2(ip)+'_'+alphaPrefix(username)",
-    "description" : "Accounts that share an email provider, a country, a /16 network and a name prefix.",
-    "enabled" : true
+    "expression" : "emailDomain(email)+'_'+countryCode(phone)+'_'+ip2(ip)+'_'+regex(username, '^([a-z]+)')",
+    "description" : "Accounts that share an email provider, a country, a /16 network and the letters their user name starts with.",
+    "enabled" : true,
+    "example" : {
+      "email" : "19880101@mail.ru",
+      "phone" : "+8613800138000",
+      "ip" : "10.20.31.7",
+      "username" : "zhang1988",
+      "cardNumber" : "6217000010001234"
+    },
+    "demoTitle" : "pattern -> ring -> payments -> receiver",
+    "demoSteps" : ".out('FuzzyLinkedTo').outE('Payment').otherV()"
   }, {
     "id" : 1,
     "name" : "ip/24 + email digits + card BIN",
-    "expression" : "ip3(ip)+'_'+cardBin(cardNumber)+'_'+regex(emailName(email), '^([0-9]{4})')",
-    "description" : "Accounts whose email local part is digits only, on the same /24 network and with the same card BIN.",
-    "enabled" : true
+    "expression" : "ip3(ip)+'_'+cardBin(cardNumber)+'_'+regex(emailName(email), '^(\\d{4})')",
+    "description" : "Accounts whose email local part starts with four digits, on the same /24 network and with the same card BIN.",
+    "enabled" : true,
+    "example" : {
+      "email" : "44100101@qq.com",
+      "phone" : "+8612800128001",
+      "ip" : "10.30.40.11",
+      "username" : "user4410",
+      "cardNumber" : "6217000090009001"
+    },
+    "demoTitle" : "pattern -> the accounts that share the key",
+    "demoSteps" : ".out('FuzzyLinkedTo')"
   } ]
 }

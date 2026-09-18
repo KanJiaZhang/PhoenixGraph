@@ -2056,3 +2056,50 @@ headless Edge 实测：`body bg rgb(238,241,248) / color rgb(15,23,42)`（可见
    需要更严格的语义时可以给 `opt` 加标记位；
 4. `countryCode` 依赖内置国家码表（约 45 个常见码），表外号码的模式不生效 —— 可以改成可配置；
 5. UI 还没有「一键把某点关联」的入口（只有建模页的表单），示例里也没有 pattern→accounts→payments 的图形化解释。
+
+### 35.8 修正与补充（同日追加）
+
+**① `regex` 的回车/反斜杠 bug（用户报的那个「udf regex 没实现」）**
+
+现象：`regex(username, '^\d+$')` 恒为 `null` ✗ —— 解析器把引号里的 `\X` 一律当转义（`\d` → `d`）✗，
+于是正则变成 `^d+$` ✗，静默不匹配（看起来就是「这个函数没实现」）。修复：**反斜杠只在转义引号本身和 `\` 时
+才吃掉**，其余原样保留 ✓（`\d`、`\w`、`\s`、`\.` 都能到引擎 ✓）。
+
+顺带把 `regex` 补成 `regex(field, 'pattern'[, group])`：
+
+- 不给 group：有捕获组取第一组、否则取整个匹配（原行为 ✓）；
+- 给了 group：取第 N 组（`0` = 整个匹配 ✓，`groupIndex` 允许 0 ✓）；
+- 组号超出捕获组数量 → **即使当前值不匹配也报错** ✓（这是模式写错了，不是数据问题 ✓），
+  消息里带上正则和实际组数 ✓；匹配到的片段仍然会 `lower()` 后**拼进 key** ✓（「匹配了把 regex 表达式拼到 pattern 上」✓ —
+  片段是**匹配到的值**，不是正则原文本身，否则所有同形状的用户名会被并到一起 ✗）。
+
+新增测试：`aRegularExpressionKeepsItsBackslashes`（`\d{4}` / `([a-z]+)\d+` / `@(\w+)\.(\w+)`）、
+`aRegularExpressionCanBeAskedForAGroup`（第 2 组、第 0 组、越界报错）、`aQuoteInsideAValueIsStillEscapable`（`'it\'s'`）。
+
+**② 两个演示模式现在真的用上正则**（key 不变，所以数据/节点 id 全不变 ✓）：
+
+- 模式 0：`…+'_'+regex(username, '^([a-z]+)')`（原来是 `alphaPrefix(username)`）→ 片段仍是 `zhang` ✓；
+- 模式 1：`…+'_'+regex(emailName(email), '^(\d{4})')`（原来是 `^( [0-9]{4} )`）→ 片段仍是 `1988` ✓，
+  且顺带验证了 `\d` 的修复 ✓。
+
+**③ 模式自带「怎么试」**：`FuzzyPattern` 增加三个可选字段（都随模式一起写进 `fuzzy-patterns.json` ✓）：
+
+| 字段 | 作用 |
+|---|---|
+| `example` | 一段样例 context（对象），编辑器与 UI 示例按钮都用它 —— 模式自带可跑的例子 ✓ |
+| `demoTitle` | 这个例子展示什么（例如 `pattern -> ring -> payments -> receiver`） |
+| `demoSteps` | 跟在 `g.V().fuzzyLink(id, ctx)` 后面的步骤（缺省 `.out('FuzzyLinkedTo')`） |
+
+**④ UI 示例按钮**：`GET /api/v1/fuzzy/demo?graph=` 返回第一个**带 example 的启用模式**的
+`{patternId, title, context, key, linkVertexId, query}`（query = 链接步 + `demoSteps` ✓）；
+主页工具栏新增图标按钮 `#fuzzyBtn`（与「示例」「图管理」同组 ✓）：**只在当前图有这类模式时才显示** ✓，
+点击即把 query 填进查询框并执行（Cypher 模式下自动切回 Gremlin ✓）。i18n zh/en ✓；
+`ProxyController` 转发 `/api/fuzzy/demo` ✓。
+
+headless Edge 实测（payment-graph，模式 0 的 demoSteps 是完整链路）：按钮可见 ✓、tooltip 带 title ✓、
+点击后查询框填入 `g.V().fuzzyLink(0, '{…}').out('FuzzyLinkedTo').outE('Payment').otherV()` ✓、
+画布 **8 个点 / 18 条边** ✓（= link + 6 个团伙账户 + 收款方；6 条 FuzzyLinkedTo + 12 笔 Payment ✓）。
+
+测试：`graph-fuzzy` 34 项（新增 example/demo 往返、模式自带例子能算出 link、无例子时不猜 ✓）、
+`FuzzyControllerTest` 14 项（新增 `/demo` 两个 ✓）。curl 实测：
+`{"patternId":0,"title":"pattern -> ring -> payments -> receiver","key":"mail.ru_86_10.20_zhang","query":"g.V().fuzzyLink(0, '{…}')…"}` ✓。

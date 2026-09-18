@@ -185,13 +185,104 @@ every account whose fragments agree produces the same key, so they end up on one
 A pattern is data, written by an analyst:
 
 ```
-emailDomain(email)+'_'+countryCode(phone)+'_'+ip2(ip)+'_'+alphaPrefix(username)
+emailDomain(email)+'_'+countryCode(phone)+'_'+ip2(ip)+'_'+regex(username, '^([a-z]+)')
 ```
 
 It is evaluated against a **context** (a JSON object, or the properties of a vertex) and each
 part produces a fragment; the fragments joined are the key. A part with no value makes the
 whole pattern not apply - an account without an email is not linked by a pattern that needs
 the email domain - and `opt(...)` marks a part as optional.
+
+A regular expression is how a fragment is pulled out of a free-form value, and what it matches is
+what goes into the key:
+
+```
+regex(username, '^([a-z]+)')            // the leading letters: zhang1988 -> zhang
+regex(emailName(email), '^(\d{4})')     // the first four digits of the local part
+regex(email, '@(\w+)\.(\w+)$', 2)     // the second group: a@mail.ru -> ru (0 is the whole match)
+```
+
+Backslashes are kept as written (`\d`, `\w`, `\s`), so a class means what it says. A group the
+expression does not have is reported when the pattern is used, and a value the expression does not
+match contributes nothing - which makes the pattern not apply.
+
+A pattern can carry how to try it: an `example` context, a `demoTitle` and the `demoSteps` a demo
+query continues with. The dashboard's fuzzy button reads exactly that - it only appears for a graph
+whose patterns have an example, and it runs `g.V().fuzzyLink(id, context)` plus those steps, so the
+demo walks from the fragments to the ring, its payments and the account they reach.
+
+```groovy
+g.V().fuzzyLink(0, '{"email":"19880101@mail.ru","phone":"+8613800138001",
+                   "ip":"10.20.31.7","username":"zhang1988"}')
+    .out('FuzzyLinkedTo')                 // the accounts that share those fragments
+    .outE('Payment').otherV()             // where their money went
+
+g.V('fz_a1','Account').fuzzyLink(0)       // which ring does this account belong to
+```
+
+What it is made of:
+
+- **`graph-fuzzy`** (a module of its own): the pattern language
+  (`emailDomain`, `emailName`, `ip2`/`ip3`, `countryCode`, `phonePrefix`, `cardBin`,
+  `alphaPrefix`, `digitSuffix`, `regex`, `digits`, `first`/`last`, `hash`, `opt`, …),
+  the key normalisation, the deterministic ids (`pattern_<id>`, `fl_<pattern>_<key>`) and
+  the link plan - a pure function of a pattern and a context, which is why the reader and
+  the writer agree by construction;
+- **patterns as a file** (`fuzzy-patterns.json`, per graph), edited in the builder page and
+  re-read when it changes, so a new pattern is used by the next query without a restart;
+- **the `fuzzyLink` step**: it computes the key from the context, reads the link vertex with
+  that id and continues the traversal from it. It works from a context alone
+  (`g.V().fuzzyLink(0, '{...}')`) or from an account (`g.V('a1','Account').fuzzyLink(0)`,
+  whose own properties are the context);
+- **the schema**: a `FuzzyLink` vertex, a `FuzzyPattern` vertex and one `FuzzyLinkedTo`
+  edge from a link to an account, with out- and in-degree limits of 1000 - a pattern like
+  "same /16" can group a lot of accounts, and the edge has to allow it;
+- **the writes**: `POST /api/v1/graphs/{graph}/fuzzy-links` links one vertex (and the demo
+  loader seeds two rings), through the ordinary write path, so links are validated and
+  indexed like any other vertex - and linking twice leaves one node and one edge, because
+  the ids are the key.
+
+`FuzzyLinkIntegrationTest` seeds two rings (six accounts sharing an email provider, a
+country, a `/16` and a name word; four hiding behind machine-made addresses on one `/24`
+with one card BIN) plus honest accounts that share nothing, and then asserts that the
+pattern finds exactly the ring, that the link node and its members agree both ways, and
+that the query above walks to twelve payments at the collection account.
+
+## Requirements
+
+- JDK 21+ (the project compiles with `--release 21`)
+- Maven 3.9+ (or use the included Maven wrapper: `./mvnw`)
+
+## Build
+
+```bash
+./mvnw clean package
+```
+
+On Windows (cmd/PowerShell):
+
+```bat
+mvnw.cmd clean package
+```
+
+## Run the web service
+
+```bash
+./mvnw -pl graph-web spring-boot:run
+```
+
+Then open <http://localhost:8080/api/v1/graph/health>.
+, 2)   // the second group: a@mail.ru -> ru (0 is the whole match)
+```
+
+Backslashes are kept as written (`\d`, `\w`, `\s`), so a class means what it says; a group the
+expression does not have is reported when the pattern is used, and a value the expression does not
+match contributes nothing - which makes the pattern not apply.
+
+A pattern can carry how to try it: an `example` context, a `demoTitle` and the `demoSteps` a demo
+query continues with. The dashboard's fuzzy button reads exactly that - it only appears for a graph
+whose patterns have an example, and it runs `g.V().fuzzyLink(id, context)` plus those steps, so the
+demo walks from the fragments to the ring, its payments and the account they reach.
 
 ```groovy
 g.V().fuzzyLink(0, '{"email":"19880101@mail.ru","phone":"+8613800138001",

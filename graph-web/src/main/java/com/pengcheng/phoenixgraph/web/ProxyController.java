@@ -120,6 +120,12 @@ public class ProxyController {
         return forward(HttpMethod.GET, "/api/v1/fuzzy/functions", null);
     }
 
+    /** The example query of a graph's patterns, for the UI's "run an example" button. */
+    @GetMapping("/fuzzy/demo")
+    public ResponseEntity<String> fuzzyDemo(@RequestParam("graph") String graph) {
+        return forward(HttpMethod.GET, "/api/v1/fuzzy/demo?graph=" + graph, null);
+    }
+
     /** Validates a fuzzy expression and shows what it produced for a context. */
     @PostMapping("/fuzzy/validate")
     public ResponseEntity<String> fuzzyValidate(@RequestBody String body) {

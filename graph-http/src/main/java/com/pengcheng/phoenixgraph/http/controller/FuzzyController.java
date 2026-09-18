@@ -121,6 +121,45 @@ public class FuzzyController {
         return out;
     }
 
+    /**
+     * The example query of a graph: a pattern that carries an example context, the context itself
+     * and the query that walks from it.
+     *
+     * <p>What a "run the example" button needs, and why a pattern carries its example: a pattern an
+     * analyst writes comes with a context that shows it working, instead of a placeholder that
+     * returns nothing.
+     */
+    @GetMapping("/demo")
+    public Map<String, Object> demo(@RequestParam("graph") String graph) {
+        graphs.require(graph);
+        for (FuzzyPattern pattern : patterns.patterns(graph)) {
+            if (pattern.example().isEmpty() || !pattern.enabled()) {
+                continue;
+            }
+            String context = FuzzyContexts.toJson(FuzzyContext.of(pattern.example()));
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("graph", graph);
+            out.put("patternId", pattern.id());
+            out.put("name", pattern.name());
+            out.put("expression", pattern.expression());
+            out.put("title", pattern.demoTitle());
+            out.put("context", context);
+            out.put("key", pattern.key(FuzzyContext.of(pattern.example())));
+            out.put("linkVertexId", pattern.linkVertexId(FuzzyContext.of(pattern.example())));
+            out.put("query", "g.V().fuzzyLink(" + pattern.id() + ", '" + context.replace("'", "\'")
+                    + "')" + pattern.demoStepsOrDefault());
+            return out;
+        }
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("graph", graph);
+        out.put("patternId", null);
+        out.put("query", null);
+        out.put("title", "");
+        out.put("hint", "No pattern of this graph carries an example context, so there is nothing to run. "
+                + "Add one in the builder page: the example is what the button uses.");
+        return out;
+    }
+
     /** Adds or replaces a pattern of a graph. */
     @PostMapping("/patterns")
     public Map<String, Object> save(@RequestBody FuzzyPatternRequest request) {
@@ -191,6 +230,9 @@ public class FuzzyController {
         view.put("enabled", pattern.enabled());
         view.put("fields", pattern.parsed().fields());
         view.put("vertexId", pattern.vertexId());
+        view.put("example", pattern.example());
+        view.put("demoTitle", pattern.demoTitle());
+        view.put("demoSteps", pattern.demoStepsOrDefault());
         return view;
     }
 

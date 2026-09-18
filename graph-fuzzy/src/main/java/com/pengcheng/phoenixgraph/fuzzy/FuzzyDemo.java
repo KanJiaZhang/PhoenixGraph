@@ -16,36 +16,63 @@ public final class FuzzyDemo {
 
     /**
      * Pattern 0 - the "open a new account, keep the habits" pattern: the same email provider, the
-     * same country, the same network and a user name that is a word followed by digits.
+     * same country, the same network and a user name whose leading letters are the same (a regular
+     * expression pulls the word out of {@code zhang1988}, so the letters are the fragment and the
+     * digits after them are not).
      */
-    public static final FuzzyPattern SHARED_HABITS = new FuzzyPattern(0, "email domain + country + ip/16 + name word",
-            "emailDomain(email)+'_'+countryCode(phone)+'_'+ip2(ip)+'_'+alphaPrefix(username)",
-            "Accounts that share an email provider, a country, a /16 network and a name prefix.",
-            true);
+    public static final FuzzyPattern SHARED_HABITS = withDemo(new FuzzyPattern(0,
+            "email domain + country + ip/16 + name word",
+            "emailDomain(email)+'_'+countryCode(phone)+'_'+ip2(ip)+'_'+regex(username, '^([a-z]+)')",
+            "Accounts that share an email provider, a country, a /16 network and the letters their "
+                    + "user name starts with.",
+            true));
 
     /**
-     * Pattern 1 - the "same address block, machine-made email" pattern: a /24 network, the same
-     * card BIN, and an email local part that starts with four digits (its first group is the
-     * registration year).
+     * Pattern 1 - the "same address block, machine-made email" pattern: a /24 network, one card BIN,
+     * and the four digits an email local part starts with (a capturing group, so {@code \d} picks
+     * the digits out of {@code 44100101}).
      */
-    public static final FuzzyPattern MACHINE_MAIL = new FuzzyPattern(1, "ip/24 + email digits + card BIN",
-            "ip3(ip)+'_'+cardBin(cardNumber)+'_'+regex(emailName(email), '^([0-9]{4})')",
-            "Accounts whose email local part is digits only, on the same /24 network and with the "
-                    + "same card BIN.",
-            true);
+    public static final FuzzyPattern MACHINE_MAIL = withDemo(new FuzzyPattern(1,
+            "ip/24 + email digits + card BIN",
+            "ip3(ip)+'_'+cardBin(cardNumber)+'_'+regex(emailName(email), '^(\\d{4})')",
+            "Accounts whose email local part starts with four digits, on the same /24 network and "
+                    + "with the same card BIN.",
+            true));
 
     /** The patterns the demo graphs start with. */
     public static final List<FuzzyPattern> DEMO_PATTERNS = List.of(SHARED_HABITS, MACHINE_MAIL);
 
     /** A context both demo patterns apply to. */
     public static FuzzyContext demoContext() {
+        return FuzzyContext.of(exampleContext());
+    }
+
+    /** The context the demo patterns carry, as the values an editor shows. */
+    public static Map<String, Object> exampleContext() {
         Map<String, Object> values = new LinkedHashMap<>();
         values.put("email", "19880101@mail.ru");
         values.put("phone", "+8613800138000");
         values.put("ip", "10.20.31.7");
         values.put("username", "zhang1988");
         values.put("cardNumber", "6217000010001234");
-        return FuzzyContext.of(values);
+        return values;
+    }
+
+    /**
+     * Everything a UI button needs to run the demo of a pattern: what it shows, the context to use
+     * and the steps to walk after the link node.
+     */
+    public static FuzzyPattern withDemo(FuzzyPattern pattern) {
+        Map<String, Object> context = exampleContext();
+        String steps = pattern.id() == 0
+                // the first pattern walks all the way: the ring, its outgoing payments and where
+                // they went - which is the question a risk analyst actually asks
+                ? ".out('" + FuzzySchema.LINK_EDGE + "').outE('Payment').otherV()"
+                : ".out('" + FuzzySchema.LINK_EDGE + "')";
+        String title = pattern.id() == 0
+                ? "pattern -> ring -> payments -> receiver"
+                : "pattern -> the accounts that share the key";
+        return pattern.withDemo(title, steps, context);
     }
 
     /** The context of one of the demo accounts, so a caller can link it the way the loader did. */

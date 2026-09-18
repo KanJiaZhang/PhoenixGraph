@@ -194,6 +194,32 @@ class FuzzyControllerTest {
     }
 
     @Test
+    void theExampleQueryOfAGraphComesFromItsPatterns() throws Exception {
+        patterns.save(GRAPH, FuzzyDemo.SHARED_HABITS);
+
+        api.perform(get("/api/v1/fuzzy/demo").param("graph", GRAPH))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.patternId").value(0))
+                .andExpect(jsonPath("$.title").value("pattern -> ring -> payments -> receiver"))
+                .andExpect(jsonPath("$.key").value("mail.ru_86_10.20_zhang"))
+                .andExpect(jsonPath("$.query").value(org.hamcrest.Matchers.allOf(
+                        org.hamcrest.Matchers.containsString("g.V().fuzzyLink(0, '"),
+                        org.hamcrest.Matchers.containsString("\"email\":\"19880101@mail.ru\""),
+                        org.hamcrest.Matchers.containsString(
+                                ".out('FuzzyLinkedTo').outE('Payment').otherV()"))));
+    }
+
+    @Test
+    void aGraphWhosePatternsHaveNoExampleSaysSo() throws Exception {
+        patterns.save(GRAPH, FuzzyPattern.of(3, "ip2(ip)"));
+
+        api.perform(get("/api/v1/fuzzy/demo").param("graph", GRAPH))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.query").doesNotExist())
+                .andExpect(jsonPath("$.hint").value(org.hamcrest.Matchers.containsString("example")));
+    }
+
+    @Test
     void theFunctionLibraryIsDocumentedForTheEditor() throws Exception {
         api.perform(get("/api/v1/fuzzy/functions"))
                 .andExpect(status().isOk())

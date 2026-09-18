@@ -81,6 +81,15 @@ public final class FuzzyPatterns {
                     node.put("description", pattern.description());
                 }
                 node.put("enabled", pattern.enabled());
+                if (!pattern.example().isEmpty()) {
+                    node.set("example", mapper.valueToTree(pattern.example()));
+                }
+                if (!pattern.demoTitle().isEmpty()) {
+                    node.put("demoTitle", pattern.demoTitle());
+                }
+                if (!pattern.demoSteps().isEmpty()) {
+                    node.put("demoSteps", pattern.demoSteps());
+                }
             }
         }
         try {
@@ -88,6 +97,21 @@ public final class FuzzyPatterns {
         } catch (Exception e) {
             throw new FuzzyPatternException("Cannot write the fuzzy patterns: " + e.getMessage(), e);
         }
+    }
+
+    /** The example context of a pattern: a JSON object of field -> value. */
+    private static Map<String, Object> readExample(JsonNode element) {
+        JsonNode example = element.path("example");
+        if (!example.isObject()) {
+            return Map.of();
+        }
+        Map<String, Object> values = new LinkedHashMap<>();
+        example.fields().forEachRemaining(entry -> {
+            JsonNode value = entry.getValue();
+            values.put(entry.getKey(), value.isNumber() ? value.numberValue()
+                    : value.isBoolean() ? value.booleanValue() : value.isNull() ? null : value.asText());
+        });
+        return values;
     }
 
     /** The patterns of one entry, validated as they are read. */
@@ -111,7 +135,9 @@ public final class FuzzyPatterns {
             try {
                 out.add(new FuzzyPattern(id, element.path("name").asText(null), expression,
                         element.path("description").asText(""), !element.has("enabled")
-                                || element.path("enabled").asBoolean(true)));
+                                || element.path("enabled").asBoolean(true),
+                        readExample(element), element.path("demoTitle").asText(""),
+                        element.path("demoSteps").asText("")));
             } catch (FuzzyPatternException e) {
                 throw new FuzzyPatternException("Pattern " + id + " of graph '" + graph + "': "
                         + e.getMessage(), e);

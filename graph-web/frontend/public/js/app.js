@@ -161,6 +161,7 @@
       displayName: '显示名',
       queryLanguage: '查询语言（Gremlin / Cypher）',
       examples: '示例查询',
+      fuzzyExample: '模糊关联示例（模式 → 团伙 → 出款 → 收款方）',
       rows: '结果',
       rowsHint: 'Cypher 查询的行结果会显示在这里',
       rowsEmpty: '查询没有返回任何行',
@@ -245,6 +246,7 @@
       displayName: 'Display name',
       queryLanguage: 'Query language (Gremlin / Cypher)',
       examples: 'Example queries',
+      fuzzyExample: 'Fuzzy linking example (pattern -> ring -> payments -> receiver)',
       rows: 'Rows',
       rowsHint: 'Rows returned by a Cypher query show up here',
       rowsEmpty: 'The query returned no rows',
@@ -285,6 +287,7 @@
     languageSelect: document.getElementById('languageSelect'),
     exampleSelect: document.getElementById('exampleSelect'),
     examplesBtn: document.getElementById('examplesBtn'),
+    fuzzyBtn: document.getElementById('fuzzyBtn'),
     valuePanel: document.getElementById('valuePanel'),
     valueTitle: document.getElementById('valueTitle'),
     valueBody: document.getElementById('valueBody'),
@@ -1721,6 +1724,43 @@
     el.exampleSelect.hidden = byGraph.length === 0;
   }
 
+  /**
+   * The fuzzy linking example: asks the graph for a pattern that carries an example context and runs
+   * the query it describes - which for the payment demo walks from the fragments of a context to the
+   * ring, its outgoing payments and the account they reach.
+   *
+   * The button only shows up for a graph that has such a pattern, so it is never a button that
+   * returns nothing.
+   */
+  async function refreshFuzzyButton() {
+    if (!el.fuzzyBtn || !currentGraph) return;
+    el.fuzzyBtn.hidden = true;
+    try {
+      const res = await fetch('/api/fuzzy/demo?graph=' + encodeURIComponent(currentGraph.name));
+      if (!res.ok) return;
+      const demo = await res.json();
+      el.fuzzyBtn.hidden = !demo.query;
+      el.fuzzyBtn.dataset.query = demo.query || '';
+      el.fuzzyBtn.dataset.title = demo.title || '';
+      el.fuzzyBtn.title = t('fuzzyExample') + (demo.title ? ' · ' + demo.title : '');
+    } catch (err) {
+      el.fuzzyBtn.hidden = true;
+    }
+  }
+
+  /** Loads the graph's fuzzy example into the query box and runs it. */
+  async function runFuzzyExample() {
+    const query = el.fuzzyBtn?.dataset.query;
+    if (!query) return;
+    if (currentLanguage() === 'cypher') {
+      el.languageSelect.value = 'gremlin';
+      onLanguageChange();
+    }
+    el.gremlinInput.value = query;
+    autoGrowGremlin();
+    await queryCurrent(query);
+  }
+
   /** Switching the language also swaps the placeholder and the example list. */
   function onLanguageChange() {
     const cypher = currentLanguage() === 'cypher';
@@ -1778,6 +1818,7 @@
     el.modeToggle.addEventListener('change', onModeChange);
     el.languageSelect.addEventListener('change', onLanguageChange);
     el.examplesBtn.addEventListener('click', toggleExamples);
+    el.fuzzyBtn.addEventListener('click', runFuzzyExample);
     el.exampleSelect.addEventListener('change', () => {
       const query = el.exampleSelect.value;
       if (!query) return;
@@ -1854,6 +1895,7 @@
 
   function onGraphChange(g) {
     currentGraph = g;
+    refreshFuzzyButton().catch(() => {});
     // the metrics panel follows the graph selection
     if (!document.getElementById('metricsPanel').hidden) {
       loadMetrics();

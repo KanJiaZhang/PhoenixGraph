@@ -77,6 +77,41 @@ class FuzzyExpressionTest {
     }
 
     @Test
+    void aRegularExpressionKeepsItsBackslashes() {
+        // '^\d{4}$' has to reach the engine as it was written: reading \d as an escaped 'd' would
+        // turn the pattern into '^d{4}$' and silently match nothing
+        FuzzyExpression digits = FuzzyExpression.parse("regex(username, '^\\d{4}$')");
+        FuzzyExpression word = FuzzyExpression.parse("regex(username, '^([a-z]+)\\d+$')");
+        FuzzyExpression domain = FuzzyExpression.parse("regex(email, '@(\\w+)\\.(\\w+)$')");
+
+        assertEquals("1988", digits.key(context(Map.of("username", "1988"))));
+        assertNull(digits.key(context(Map.of("username", "zhang1988"))));
+        assertEquals("zhang", word.key(context(Map.of("username", "zhang1988"))));
+        assertEquals("mail", domain.key(context(Map.of("email", "a@mail.ru"))));
+    }
+
+    @Test
+    void aRegularExpressionCanBeAskedForAGroup() {
+        FuzzyExpression second = FuzzyExpression.parse("regex(email, '@(\\w+)\\.(\\w+)$', 2)");
+        FuzzyExpression whole = FuzzyExpression.parse("regex(email, '[a-z]+@[a-z]+', 0)");
+
+        assertEquals("ru", second.key(context(Map.of("email", "a@mail.ru"))));
+        assertEquals("xxa@mailyy", whole.key(context(Map.of("email", "xxa@mailyy.ru"))),
+                "group 0 is the whole match");
+        FuzzyPatternException missing = assertThrows(FuzzyPatternException.class,
+                () -> FuzzyExpression.parse("regex(email, '@(\\w+)$', 3)")
+                        .key(context(Map.of("email", "a@mail.ru"))));
+        assertTrue(missing.getMessage().contains("does not exist"), missing.getMessage());
+    }
+
+    @Test
+    void aQuoteInsideAValueIsStillEscapable() {
+        FuzzyExpression expression = FuzzyExpression.parse("regex(username, 'it\\'s')");
+
+        assertEquals("it's", expression.key(context(Map.of("username", "it's-here"))));
+    }
+
+    @Test
     void aPatternOverAMissingFieldDoesNotApply() {
         FuzzyExpression expression = FuzzyExpression.parse("cardBin(cardNumber)");
 
