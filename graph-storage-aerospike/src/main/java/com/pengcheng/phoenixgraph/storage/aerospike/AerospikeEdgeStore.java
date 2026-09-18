@@ -156,6 +156,16 @@ public class AerospikeEdgeStore implements AdjacentEdgeStore {
     /** Decodes a raw edge value back into a {@link StoredEdgeValue}. */
     @SuppressWarnings("unchecked")
     static StoredEdgeValue deserializeEdgeValue(String edgeId, Object raw) {
+        return deserializeEdgeValue(edgeId, raw, null);
+    }
+
+    /**
+     * Same, keeping only the requested properties ({@code null} keeps all of them).
+     *
+     * <p>A query that asks for {@code status} alone does not need the other properties of an edge
+     * to be built: the values are in the bin either way, but the objects are not.
+     */
+    static StoredEdgeValue deserializeEdgeValue(String edgeId, Object raw, java.util.Set<Integer> only) {
         if (!(raw instanceof List<?> list) || list.size() < 4) {
             throw new IllegalArgumentException("Malformed edge value for " + edgeId);
         }
@@ -166,6 +176,9 @@ public class AerospikeEdgeStore implements AdjacentEdgeStore {
         if (list.get(3) instanceof Map<?, ?> rawProps) {
             for (Map.Entry<?, ?> entry : rawProps.entrySet()) {
                 int index = toIndex(entry.getKey());
+                if (only != null && !only.contains(index)) {
+                    continue;
+                }
                 List<?> pv = (List<?>) entry.getValue();
                 properties.put(index, new EdgePropertyValue(
                         pv.get(0),
@@ -723,10 +736,32 @@ public class AerospikeEdgeStore implements AdjacentEdgeStore {
 
     /** Reads and decodes the edges of a vertex for an edge schema and direction, newest first. */
     public List<StoredEdgeValue> getEdges(Object vertexId, int edgeSchemaId, int directionCode) {
+        return getEdges(vertexId, edgeSchemaId, directionCode, null);
+    }
+
+    /** Reads the edges of one vertex, decoding only the requested properties ({@code null} = all). */
+    public List<StoredEdgeValue> getEdges(Object vertexId, int edgeSchemaId, int directionCode,
+                                          java.util.Set<Integer> onlyProperties) {
         // project the bin: the caller wants one edge class, and reading one bin keeps the
         // metrics honest (an edge read) as well as the traffic small
         Record record = db.get(null, key(vertexId), edgeBin(edgeSchemaId, directionCode));
-        return isMissing(record) ? List.of() : decodeEdges(record, edgeSchemaId, directionCode);
+        return isMissing(record) ? List.of() : decodeEdges(record, edgeSchemaId, directionCode, onlyProperties);
+    }
+
+    /**
+     * Counts the edges of one class without decoding them: the bin is a CDT map keyed by edge id,
+     * so its size is the answer and the 50 values of a hub's bin are never built.
+     */
+    public long countEdges(Object vertexId, int edgeSchemaId, int directionCode) {
+        Record record = db.get(null, key(vertexId), edgeBin(edgeSchemaId, directionCode));
+        if (isMissing(record)) {
+            return 0;
+        }
+        Object bin = record.bins.get(edgeBin(edgeSchemaId, directionCode));
+        if (bin instanceof java.util.Map<?, ?> map) {
+            return map.size();
+        }
+        return bin == null ? 0 : decodeEdges(record, edgeSchemaId, directionCode, null).size();
     }
 
     /**
@@ -734,6 +769,12 @@ public class AerospikeEdgeStore implements AdjacentEdgeStore {
      * preserving the request order; each absent vertex yields an empty list.
      */
     public List<List<StoredEdgeValue>> getEdgesBatch(List<Object> vertexIds, int edgeSchemaId, int directionCode) {
+        return getEdgesBatch(vertexIds, edgeSchemaId, directionCode, null);
+    }
+
+    /** Batch form of {@link #getEdges(Object, int, int, java.util.Set)}. */
+    public List<List<StoredEdgeValue>> getEdgesBatch(List<Object> vertexIds, int edgeSchemaId, int directionCode,
+                                                     java.util.Set<Integer> onlyProperties) {
         Objects.requireNonNull(vertexIds, "vertexIds");
         if (vertexIds.isEmpty()) {
             return List.of();
@@ -742,15 +783,17 @@ public class AerospikeEdgeStore implements AdjacentEdgeStore {
         Record[] records = db.get(new BatchPolicy(), keys, edgeBin(edgeSchemaId, directionCode));
         List<List<StoredEdgeValue>> result = new ArrayList<>(vertexIds.size());
         for (int i = 0; i < keys.length; i++) {
-            result.add(isMissing(records[i]) ? List.of() : decodeEdges(records[i], edgeSchemaId, directionCode));
+            result.add(isMissing(records[i]) ? List.of()
+                    : decodeEdges(records[i], edgeSchemaId, directionCode, onlyProperties));
         }
         return result;
     }
 
-    private List<StoredEdgeValue> decodeEdges(Record record, int edgeSchemaId, int directionCode) {
+    private List<StoredEdgeValue> decodeEdges(Record record, int edgeSchemaId, int directionCode,
+                                              java.util.Set<Integer> onlyProperties) {
         Map<String, Object> raw = readEdgeMap(record, edgeBin(edgeSchemaId, directionCode));
         return raw.entrySet().stream()
-                .map(e -> deserializeEdgeValue(e.getKey(), e.getValue()))
+                .map(e -> deserializeEdgeValue(e.getKey(), e.getValue(), onlyProperties))
                 .sorted(Comparator.comparingLong(StoredEdgeValue::lastUpdatedTime).reversed())
                 .toList();
     }

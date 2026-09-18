@@ -144,6 +144,18 @@ public interface GraphQuery {
         return readEdges(vertexId, vertexName, edgeName, direction, propertyNames);
     }
 
+    /**
+     * Counts the edges of one class at a vertex without materialising them.
+     *
+     * <p>Counting is the most common aggregation a dashboard asks for, and a store that keeps the
+     * edges in one record can answer it from the record's shape - so this is a separate call
+     * rather than {@code readEdges(...).size()}. The default reads and counts, which every
+     * implementation supports; stores that can do better override it.
+     */
+    default long countEdges(Object vertexId, String vertexName, String edgeName, EdgeSide direction) {
+        return readEdges(vertexId, vertexName, edgeName, direction, List.of()).size();
+    }
+
     /** Whether {@link #readEdgesWithin} narrows the read (a big vertex may need a window). */
     default boolean supportsEdgeTimeRange() {
         return false;

@@ -129,6 +129,27 @@ public class AerospikeGraphQuery implements GraphQuery {
     // --- edges ---
 
     @Override
+    public long countEdges(Object vertexId, String vertexName, String edgeName, EdgeSide direction) {
+        EdgeSchema edgeSchema = schema.edgeSchema(edgeName);
+        if (edgeSchema == null) {
+            return 0;
+        }
+        boolean directed = edgeSchema.direction() == com.pengcheng.phoenixgraph.schema.EdgeDirection.DIRECTED;
+        if (!directed) {
+            // undirected and bidirectional edges are stored in the 'both' bin
+            return edgeStore.countEdges(vertexId, edgeSchema.id(), AerospikeEdgeStore.EDGE_DIR_BOTH);
+        }
+        if (direction == EdgeSide.OUT) {
+            return edgeStore.countEdges(vertexId, edgeSchema.id(), AerospikeEdgeStore.EDGE_DIR_OUT);
+        }
+        if (direction == EdgeSide.IN) {
+            return edgeStore.countEdges(vertexId, edgeSchema.id(), AerospikeEdgeStore.EDGE_DIR_IN);
+        }
+        return edgeStore.countEdges(vertexId, edgeSchema.id(), AerospikeEdgeStore.EDGE_DIR_OUT)
+                + edgeStore.countEdges(vertexId, edgeSchema.id(), AerospikeEdgeStore.EDGE_DIR_IN);
+    }
+
+    @Override
     public List<EdgeQueryResult> readEdges(Object vertexId, String vertexName, String edgeName,
                                            EdgeSide direction, List<String> propertyNames) {
         Objects.requireNonNull(vertexId, "vertexId");
@@ -170,7 +191,8 @@ public class AerospikeGraphQuery implements GraphQuery {
         }
         for (int dirCode : dirCodes) {
             EdgeSide side = sideOf(dirCode);
-            List<List<StoredEdgeValue>> batches = edgeStore.getEdgesBatch(vertexIds, edgeSchema.id(), dirCode);
+            List<List<StoredEdgeValue>> batches = edgeStore.getEdgesBatch(vertexIds, edgeSchema.id(), dirCode,
+                    requested.isEmpty() ? null : new java.util.LinkedHashSet<>(requested.keySet()));
             for (int i = 0; i < vertexIds.size(); i++) {
                 for (StoredEdgeValue edge : batches.get(i)) {
                     perVertex.get(i).add(toEdgeResult(edgeName, edge, side, requested));
@@ -230,7 +252,8 @@ public class AerospikeGraphQuery implements GraphQuery {
     private void readInto(List<EdgeQueryResult> results, Object vertexId, String edgeName,
                           EdgeSchema edgeSchema, int directionCode, EdgeSide side,
                           Map<Integer, String> requested) {
-        for (StoredEdgeValue edge : edgeStore.getEdges(vertexId, edgeSchema.id(), directionCode)) {
+        for (StoredEdgeValue edge : edgeStore.getEdges(vertexId, edgeSchema.id(), directionCode,
+                requested.isEmpty() ? null : new java.util.LinkedHashSet<>(requested.keySet()))) {
             results.add(toEdgeResult(edgeName, edge, side, requested));
         }
     }

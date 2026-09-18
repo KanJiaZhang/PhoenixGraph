@@ -1832,3 +1832,32 @@ curl -s -X POST localhost:8081/api/v1/vector-index/rebuild -H 'content-type: app
 `VectorLayerNamingTest` 3 项覆盖：单属性沿用平名字、同名属性各自成套、手写层边不被改名。
 
 （这也是为什么数据里两个点类型都用 `embedding` 才能跑起来 —— 现在跑起来了 ✓。）
+
+---
+
+## 32. 按 benchmark 的结论做优化（第一轮）
+
+第 30 节的六条瓶颈，这一轮修掉三条最值钱的，并补上回归测试；benchmark 的说明文字也随之改成
+「已修 / 待修」两段（数字仍在每次运行时打印）。
+
+### 32.1 修掉的三条
+
+| 优化 | 做法 | 效果（payment-graph，Aerospike） |
+|---|---|---|
+| **Cypher 聚合的 N+1** | `CypherGraphQuery` 新增「哪些变量真的需要属性」分析：投影里以 `<var>.<属性>`（`id` 除外）出现、WHERE/ORDER BY 用到、内联约束约束到非 id 属性、或直接把变量本身返回（`RETURN b`，调用方要画它）才算需要。不需要的变量（含被 `count(*)` 聚合的目标点）**只按 id+label 绑定，不读记录**。分析既走表达式树也走**源码文本**（正则 `<var>\.(?!id)`），所以将来新增表达式类型也不会悄悄漏读/多读 | 查询 10：**53.2 ms / 51 次点读 / 52 次往返 → ~3 ms / 1 次点读 / 2 次往返**（那 1 次是种子点的存在性检查） |
+| **`count()` 白解码** | 新端口 `GraphQuery.countEdges(vertexId, vertexName, edgeName, side)`（默认读后取 size）；Aerospike 用 **bin 的 map size** 直接回答（不解码 50 条边）。编译器把 `<hop>E('x').count()`（中间无 `has/filter`）改写成单步 `countOutE/countInE/countBothE`；**要采集子图时自动退回读边**，所以 UI 画图不受影响 | 查询 1：2.4 → 1.6 ms；查询 3（`out(...).count()` 也被改写成 countOutE）：1.7 → **0.9 ms** |
+| **投影仍解码全部属性** | `AerospikeEdgeStore.deserializeEdgeValue/getEdges/getEdgesBatch` 增加「只解码请求的属性 id」重载，`AerospikeGraphQuery` 把解析好的投影传进去（值本来就在同一个 bin 里，省的是对象构造） | 查询 6 的解码量随投影变小（往返不变，符合第 30 节第 5 条的判断） |
+
+### 32.2 回归测试
+
+- `GremlinGraphQueryTest`：两条 count 改写测试改为断言**单步** `countOutE/countInE/countBothE`，并断言
+  store 的 `countEdges` 被调用（而不是 `readEdges`）；
+- `CypherGraphQueryTest` 新增 3 项：**聚合关系属性不读目标点**（只读 1 次种子）、
+  `RETURN b.accountType` 仍读点、`RETURN b` 仍带属性返回。
+
+### 32.3 还剩的（已写进 benchmark 输出）
+
+1. 边属性过滤在解码之后做（查询 5 ≈ 查询 1）→ 把谓词下沉进 store；
+2. `limit` 仍付整个 bin 的代价（查询 4）→ 带上限的读；
+3. 两跳 = 两跳的往返（7/8，已经是批读，剩下的是往返本身）；
+4. 按类型计数还需要锚点（`g.V(id,label)`）。

@@ -52,6 +52,27 @@ final class GremlinSteps {
         return (ctx, in) -> hopEdges(ctx, in, edgeName, EdgeSide.BOTH);
     }
 
+    /**
+     * {@code outE('x').count()} in one step: the store counts the edges instead of handing them
+     * over. When a subgraph is being collected the edges are read as before, so the drawing does
+     * not lose them.
+     */
+    static GremlinStep countEdges(String edgeName, EdgeSide side) {
+        return (ctx, in) -> {
+            if (ctx.collectSubgraph()) {
+                List<Object> edges = hopEdges(ctx, in, edgeName, side);
+                return List.of((long) edges.size());
+            }
+            List<Object> vertexIds = new ArrayList<>(in.size());
+            for (Object element : in) {
+                if (element instanceof GremlinVertex vertex) {
+                    vertexIds.add(vertex.id());
+                }
+            }
+            return List.of(ctx.countEdges(vertexIds, edgeName, side));
+        };
+    }
+
     // --- vertex hops (out / in / both): vertices -> vertices ---
 
     static GremlinStep out(String edgeName) {

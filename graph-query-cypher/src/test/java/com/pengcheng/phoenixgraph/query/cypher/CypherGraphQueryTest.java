@@ -32,6 +32,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class CypherGraphQueryTest {
 
+    /** How many vertex records the queries read (the fake counts them). */
+    private static final java.util.concurrent.atomic.AtomicInteger VERTEX_READS =
+            new java.util.concurrent.atomic.AtomicInteger();
+
+    private static int vertexReads() {
+        return VERTEX_READS.get();
+    }
+
     private final FakeGraph graph = new FakeGraph();
     private final CypherGraphQuery cypher = new CypherGraphQuery(graph, NeighborVertexResolver.of(
             Map.of("Payment", "Account", "PhoneToAccount", "Account"),
@@ -53,6 +61,46 @@ class CypherGraphQueryTest {
         CypherResult result = cypher.execute(
                 "MATCH (a:Account) WHERE a.id = '100' RETURN a.accountType");
         assertEquals(List.of(Map.of("a.accountType", "savings")), result.rows());
+    }
+
+    /**
+     * The N+1 the benchmark found: grouping a relationship's property must not read the target
+     * vertices, which is what turned one aggregation into 52 round trips on the demo graph.
+     */
+    @Test
+    void anAggregationOverRelationshipsDoesNotReadTheTargetVertices() {
+        VERTEX_READS.set(0);
+        CypherResult grouped = cypher.execute(
+                "MATCH (a:Account {id:'100'})-[p:Payment]->(b:Account) RETURN p.status, count(*)", Map.of());
+
+        assertEquals(List.of(Map.of("p.status", "SUCCESS", "count(*)", 1L),
+                Map.of("p.status", "PENDING", "count(*)", 1L)), grouped.rows());
+        // the seed is read once (that is how the engine finds out it exists), the two targets are not
+        assertEquals(1, vertexReads(), "only the seed is read, not one record per matched relationship");
+    }
+
+    @Test
+    void askingForAPropertyStillReadsTheVertex() {
+        VERTEX_READS.set(0);
+        CypherResult result = cypher.execute(
+                "MATCH (a:Account {id:'100'})-[p:Payment]->(b:Account) RETURN b.accountType", Map.of());
+
+        assertEquals(2, result.rows().size());
+        assertTrue(vertexReads() > 0, "the projection needs the neighbour's properties, so it is read");
+    }
+
+    @Test
+    void aBareVariableStillComesBackWithItsProperties() {
+        VERTEX_READS.set(0);
+        CypherResult result = cypher.execute(
+                "MATCH (a:Account {id:'100'})-[p:Payment]->(b:Account) RETURN b", Map.of());
+
+        assertEquals(2, result.rows().size());
+        assertTrue(vertexReads() > 0, "returning an element hands its properties to the caller");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> properties = (Map<String, Object>)
+                ((Map<String, Object>) result.rows().get(0).get("b")).get("properties");
+        assertTrue(properties.containsKey("accountType"), "the properties are there: " + properties);
     }
 
     @Test
@@ -268,6 +316,7 @@ class CypherGraphQueryTest {
 
         @Override
         public VertexQueryResult readVertex(Object vertexId, String vertexName, List<String> propertyNames) {
+            VERTEX_READS.incrementAndGet();
             Map<String, Map<String, Object>> source = "Phone".equals(vertexName) ? phones : accounts;
             Map<String, Object> properties = source.get(String.valueOf(vertexId));
             return properties == null ? null

@@ -1076,8 +1076,9 @@ class GremlinGraphQueryTest {
     }
 
     @Test
-    void countAfterVertexHopIsRewrittenToEdgeHop() {
+    void countAfterAVertexHopIsAnsweredByTheStoreWithoutReadingTheEdges() {
         List<String> resolved = new ArrayList<>();
+        int[] counted = {0};
         GremlinStepRegistry counting = new GremlinStepRegistry() {
             @Override
             public GremlinStep resolve(String name, List<String> args) {
@@ -1105,14 +1106,22 @@ class GremlinGraphQueryTest {
             public List<List<EdgeQueryResult>> readEdgesBatch(String edgeName, EdgeSide dir, List<Object> ids, List<String> props) {
                 return List.of();
             }
+
+            @Override
+            public long countEdges(Object id, String name, String edgeName, EdgeSide dir) {
+                counted[0]++;
+                return 1;
+            }
         };
         GremlinGraphQuery query = new GremlinGraphQuery(gq,
                 NeighborVertexResolver.of(Map.of("knows", "p"), Map.of()), counting);
 
-        query.execute("g.V('v1','p').out('knows').count()");
+        List<Object> answer = query.execute("g.V('v1','p').out('knows').count()");
 
-        // out(...).count() was rewritten to outE(...).count()
-        assertEquals(List.of("outE", "count"), resolved);
+        // out(...).count() is compiled into one counting step the store answers itself
+        assertEquals(List.of("countOutE"), resolved);
+        assertEquals(List.of(1L), answer);
+        assertEquals(1, counted[0], "the store counted the edges");
     }
 
     @Test
@@ -1150,9 +1159,11 @@ class GremlinGraphQueryTest {
             GremlinGraphQuery query = new GremlinGraphQuery(gq,
                     NeighborVertexResolver.of(Map.of("knows", "p"), Map.of()), counting);
 
-            query.execute("g.V('v1','p')." + hop + "('knows').count()");
+            List<Object> answer = query.execute("g.V('v1','p')." + hop + "('knows').count()");
 
-            assertEquals(List.of(hop + "E", "count"), resolved, hop);
+            assertEquals(List.of("count" + Character.toUpperCase(hop.charAt(0)) + hop.substring(1) + "E"),
+                    resolved, hop);
+            assertEquals(List.of(1L), answer, hop);
         }
     }
 

@@ -25,6 +25,7 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -111,8 +112,8 @@ class AerospikeGraphQueryTest {
     void readDirectedEdgesReadsBothOutAndInBins() {
         StoredEdgeValue out = knowsEdge("e1", "n1", 0.5, 2020L);
         StoredEdgeValue in = knowsEdge("e2", "n2", 0.25, 2021L);
-        when(edgeStore.getEdges("v1", 1, AerospikeEdgeStore.EDGE_DIR_OUT)).thenReturn(List.of(out));
-        when(edgeStore.getEdges("v1", 1, AerospikeEdgeStore.EDGE_DIR_IN)).thenReturn(List.of(in));
+        when(edgeStore.getEdges(eq("v1"), eq(1), eq(AerospikeEdgeStore.EDGE_DIR_OUT), any())).thenReturn(List.of(out));
+        when(edgeStore.getEdges(eq("v1"), eq(1), eq(AerospikeEdgeStore.EDGE_DIR_IN), any())).thenReturn(List.of(in));
 
         List<EdgeQueryResult> results = query.readEdges("v1", "person", "knows", (String[]) null);
 
@@ -124,15 +125,15 @@ class AerospikeGraphQueryTest {
         assertEquals(EdgeSide.IN, results.get(1).side());
         assertEquals("n2", results.get(1).otherVertexId());
 
-        verify(edgeStore).getEdges("v1", 1, AerospikeEdgeStore.EDGE_DIR_OUT);
-        verify(edgeStore).getEdges("v1", 1, AerospikeEdgeStore.EDGE_DIR_IN);
+        verify(edgeStore).getEdges(eq("v1"), eq(1), eq(AerospikeEdgeStore.EDGE_DIR_OUT), any());
+        verify(edgeStore).getEdges(eq("v1"), eq(1), eq(AerospikeEdgeStore.EDGE_DIR_IN), any());
     }
 
     @Test
     void readEdgesWithoutPropertyListReturnsAllDeclaredProperties() {
         StoredEdgeValue out = knowsEdge("e1", "n1", 0.5, 2020L);
-        when(edgeStore.getEdges("v1", 1, AerospikeEdgeStore.EDGE_DIR_OUT)).thenReturn(List.of(out));
-        when(edgeStore.getEdges("v1", 1, AerospikeEdgeStore.EDGE_DIR_IN)).thenReturn(List.of());
+        when(edgeStore.getEdges(eq("v1"), eq(1), eq(AerospikeEdgeStore.EDGE_DIR_OUT), any())).thenReturn(List.of(out));
+        when(edgeStore.getEdges(eq("v1"), eq(1), eq(AerospikeEdgeStore.EDGE_DIR_IN), any())).thenReturn(List.of());
 
         List<EdgeQueryResult> results = query.readEdges("v1", "person", "knows", (String[]) null);
 
@@ -148,8 +149,8 @@ class AerospikeGraphQueryTest {
     @Test
     void readEdgesWithPropertyListReturnsOnlyRequestedProperties() {
         StoredEdgeValue out = knowsEdge("e1", "n1", 0.5, 2020L);
-        when(edgeStore.getEdges("v1", 1, AerospikeEdgeStore.EDGE_DIR_OUT)).thenReturn(List.of(out));
-        when(edgeStore.getEdges("v1", 1, AerospikeEdgeStore.EDGE_DIR_IN)).thenReturn(List.of());
+        when(edgeStore.getEdges(eq("v1"), eq(1), eq(AerospikeEdgeStore.EDGE_DIR_OUT), any())).thenReturn(List.of(out));
+        when(edgeStore.getEdges(eq("v1"), eq(1), eq(AerospikeEdgeStore.EDGE_DIR_IN), any())).thenReturn(List.of());
 
         List<EdgeQueryResult> results = query.readEdges("v1", "person", "knows", "weight");
 
@@ -158,8 +159,7 @@ class AerospikeGraphQueryTest {
 
     @Test
     void readUndirectedEdgesReadsBothBin() {
-        when(edgeStore.getEdges("v1", 2, AerospikeEdgeStore.EDGE_DIR_BOTH))
-                .thenReturn(List.of(friendEdge("e1", "n1", 1)));
+        when(edgeStore.getEdges(eq("v1"), eq(2), eq(AerospikeEdgeStore.EDGE_DIR_BOTH), any())).thenReturn(List.of(friendEdge("e1", "n1", 1)));
 
         List<EdgeQueryResult> results =
                 query.readEdges("v1", "person", "friend", (String[]) null);
@@ -185,8 +185,8 @@ class AerospikeGraphQueryTest {
     @Test
     void readEdgesUnknownPropertyThrows() {
         StoredEdgeValue out = knowsEdge("e1", "n1", 0.5, 2020L);
-        when(edgeStore.getEdges("v1", 1, AerospikeEdgeStore.EDGE_DIR_OUT)).thenReturn(List.of(out));
-        when(edgeStore.getEdges("v1", 1, AerospikeEdgeStore.EDGE_DIR_IN)).thenReturn(List.of());
+        when(edgeStore.getEdges(eq("v1"), eq(1), eq(AerospikeEdgeStore.EDGE_DIR_OUT), any())).thenReturn(List.of(out));
+        when(edgeStore.getEdges(eq("v1"), eq(1), eq(AerospikeEdgeStore.EDGE_DIR_IN), any())).thenReturn(List.of());
 
         assertThrows(QueryException.class,
                 () -> query.readEdges("v1", "person", "knows", "nope"));
@@ -195,7 +195,7 @@ class AerospikeGraphQueryTest {
     @Test
     void readDirectedOutEdgesOnlyReadsOutBin() {
         StoredEdgeValue out = knowsEdge("e1", "n1", 0.5, 2020L);
-        when(edgeStore.getEdges("v1", 1, AerospikeEdgeStore.EDGE_DIR_OUT)).thenReturn(List.of(out));
+        when(edgeStore.getEdges(eq("v1"), eq(1), eq(AerospikeEdgeStore.EDGE_DIR_OUT), any())).thenReturn(List.of(out));
 
         List<EdgeQueryResult> results =
                 query.readEdges("v1", "person", "knows", EdgeSide.OUT, (String[]) null);
@@ -203,14 +203,14 @@ class AerospikeGraphQueryTest {
         assertEquals(1, results.size());
         assertEquals("e1", results.get(0).edgeId());
         assertEquals(EdgeSide.OUT, results.get(0).side());
-        verify(edgeStore).getEdges("v1", 1, AerospikeEdgeStore.EDGE_DIR_OUT);
+        verify(edgeStore).getEdges(eq("v1"), eq(1), eq(AerospikeEdgeStore.EDGE_DIR_OUT), any());
         verify(edgeStore, never()).getEdges("v1", 1, AerospikeEdgeStore.EDGE_DIR_IN);
     }
 
     @Test
     void readDirectedInEdgesOnlyReadsInBin() {
         StoredEdgeValue in = knowsEdge("e2", "n2", 0.25, 2021L);
-        when(edgeStore.getEdges("v1", 1, AerospikeEdgeStore.EDGE_DIR_IN)).thenReturn(List.of(in));
+        when(edgeStore.getEdges(eq("v1"), eq(1), eq(AerospikeEdgeStore.EDGE_DIR_IN), any())).thenReturn(List.of(in));
 
         List<EdgeQueryResult> results =
                 query.readEdges("v1", "person", "knows", EdgeSide.IN, (String[]) null);
@@ -218,14 +218,13 @@ class AerospikeGraphQueryTest {
         assertEquals(1, results.size());
         assertEquals("e2", results.get(0).edgeId());
         assertEquals(EdgeSide.IN, results.get(0).side());
-        verify(edgeStore).getEdges("v1", 1, AerospikeEdgeStore.EDGE_DIR_IN);
+        verify(edgeStore).getEdges(eq("v1"), eq(1), eq(AerospikeEdgeStore.EDGE_DIR_IN), any());
         verify(edgeStore, never()).getEdges("v1", 1, AerospikeEdgeStore.EDGE_DIR_OUT);
     }
 
     @Test
     void readUndirectedEdgesIgnoresDirectionAndReadsBothBin() {
-        when(edgeStore.getEdges("v1", 2, AerospikeEdgeStore.EDGE_DIR_BOTH))
-                .thenReturn(List.of(friendEdge("e1", "n1", 1)));
+        when(edgeStore.getEdges(eq("v1"), eq(2), eq(AerospikeEdgeStore.EDGE_DIR_BOTH), any())).thenReturn(List.of(friendEdge("e1", "n1", 1)));
 
         List<EdgeQueryResult> results =
                 query.readEdges("v1", "person", "friend", EdgeSide.OUT, (String[]) null);
@@ -233,14 +232,14 @@ class AerospikeGraphQueryTest {
         assertEquals(1, results.size());
         assertEquals(EdgeSide.BOTH, results.get(0).side());
         assertEquals(Map.of("strength", 1), results.get(0).properties());
-        verify(edgeStore).getEdges("v1", 2, AerospikeEdgeStore.EDGE_DIR_BOTH);
+        verify(edgeStore).getEdges(eq("v1"), eq(2), eq(AerospikeEdgeStore.EDGE_DIR_BOTH), any());
     }
 
     @Test
     void readEdgesAllowsNullVertexNameForTraversal() {
         StoredEdgeValue out = knowsEdge("e1", "n1", 0.5, 2020L);
-        when(edgeStore.getEdges("v1", 1, AerospikeEdgeStore.EDGE_DIR_OUT)).thenReturn(List.of(out));
-        when(edgeStore.getEdges("v1", 1, AerospikeEdgeStore.EDGE_DIR_IN)).thenReturn(List.of());
+        when(edgeStore.getEdges(eq("v1"), eq(1), eq(AerospikeEdgeStore.EDGE_DIR_OUT), any())).thenReturn(List.of(out));
+        when(edgeStore.getEdges(eq("v1"), eq(1), eq(AerospikeEdgeStore.EDGE_DIR_IN), any())).thenReturn(List.of());
 
         List<EdgeQueryResult> results =
                 query.readEdges("v1", null, "knows", EdgeSide.OUT, (String[]) null);

@@ -116,6 +116,32 @@ public final class CypherGraphQuery {
         private final Map<String, List<EdgeQueryResult>> edgeCache = new LinkedHashMap<>();
         private final Map<String, Subgraph.Vertex> subgraphVertices = new LinkedHashMap<>();
         private final Map<String, Subgraph.Edge> subgraphEdges = new LinkedHashMap<>();
+        /**
+         * The variables whose properties the query reads. A pattern variable that is only used
+         * for its identity - matched, counted, grouped by something else - is bound without
+         * reading its vertex, which is what keeps an aggregation like
+         * {@code MATCH (a {id:'135'})-[p:Payment]->(b) RETURN p.status, count(*)} from turning
+         * into one read per matched row.
+         */
+        private Set<String> variablesWithProperties = Set.of();
+
+        /** Every variable the query's patterns bind. */
+        private static Set<String> boundVariables(CypherQuery query) {
+            Set<String> variables = new LinkedHashSet<>();
+            for (CypherPattern.Path path : query.matches()) {
+                for (CypherPattern.Node node : path.nodes()) {
+                    if (node.variable() != null) {
+                        variables.add(node.variable());
+                    }
+                }
+                for (CypherPattern.Relationship relationship : path.relationships()) {
+                    if (relationship.variable() != null) {
+                        variables.add(relationship.variable());
+                    }
+                }
+            }
+            return variables;
+        }
 
         private Execution(CypherParameters params, boolean collectSubgraph) {
             this.params = params;
@@ -131,6 +157,7 @@ public final class CypherGraphQuery {
                     .map(key -> new CypherQuery.OrderKey(bind(key.expression()), key.text(), key.descending()))
                     .toList();
 
+            variablesWithProperties = variablesNeedingProperties(query);
             List<CypherRow> rows = new ArrayList<>();
             rows.add(new CypherRow());
             for (CypherPattern.Path path : bindPatterns(query.matches())) {
@@ -441,7 +468,11 @@ public final class CypherGraphQuery {
                 if (neighborLabel == null) {
                     neighborLabel = target.label() != null ? target.label() : from.typeName();
                 }
-                CypherElement neighbour = readVertex(neighborLabel, edge.otherVertexId());
+                // only read the neighbour when the query uses its properties: an aggregation over the
+            // relationship alone needs its id, not a record
+            CypherElement neighbour = needsProperties(target.variable())
+                    ? readVertex(neighborLabel, edge.otherVertexId())
+                    : vertexReference(neighborLabel, edge.otherVertexId());
                 if (neighbour == null) {
                     continue;
                 }
@@ -522,6 +553,140 @@ public final class CypherGraphQuery {
                 }
             }
             return row;
+        }
+
+
+        /**
+         * The variables whose property values the query reads: those a projection mentions as a
+         * property (other than {@code id}, which is the record key), those a WHERE/ORDER BY
+         * mentions, those an inline node constraint constrains on a property, and - because the
+         * caller may draw it - any variable returned on its own.
+         *
+         * <p>Everything else is matched by id and label only.
+         */
+        private static Set<String> variablesNeedingProperties(CypherQuery query) {
+            boolean allVariables = query.projection().size() == 1
+                    && "*".equals(query.projection().get(0).text().trim());
+            if (allVariables) {
+                return boundVariables(query);
+            }
+            Set<String> needed = new LinkedHashSet<>();
+            Set<String> everyVariable = boundVariables(query);
+            for (CypherQuery.ReturnItem item : query.projection()) {
+                if (isBareVariable(item.expression())) {
+                    needed.add(((CypherExpression.VariableReference) item.expression()).name());
+                }
+                collectPropertyVariables(item.expression(), needed);
+                collectPropertyVariablesFromText(item.text(), everyVariable, needed);
+            }
+            collectPropertyVariables(query.where(), needed);
+            collectPropertyVariablesFromText(query.where() == null ? null : query.where().toString(), everyVariable,
+                    needed);
+            for (CypherQuery.OrderKey key : query.orderBy()) {
+                collectPropertyVariables(key.expression(), needed);
+                collectPropertyVariablesFromText(key.text(), everyVariable, needed);
+            }
+            for (CypherPattern.Path path : query.matches()) {
+                for (CypherPattern.Node node : path.nodes()) {
+                    if (node.variable() == null) {
+                        continue;
+                    }
+                    for (String property : node.properties().keySet()) {
+                        if (!"id".equals(property)) {
+                            needed.add(node.variable());
+                        }
+                    }
+                }
+            }
+            return needed;
+        }
+
+        /**
+         * The same, read off the source text: {@code b.accountType} needs the neighbour's
+         * properties, while {@code b.id} does not (the id is the record key).
+         *
+         * <p>The walk above covers the expression tree; this covers whatever shape the parser
+         * gives an expression, so a new expression type cannot silently skip a read.
+         */
+        private static void collectPropertyVariablesFromText(String text, Set<String> variables, Set<String> out) {
+            if (text == null || text.isBlank()) {
+                return;
+            }
+            for (String variable : variables) {
+                java.util.regex.Matcher matcher = java.util.regex.Pattern
+                        .compile("\\b" + java.util.regex.Pattern.quote(variable)
+                                + "\\.([A-Za-z_][A-Za-z0-9_]*)")
+                        .matcher(text);
+                while (matcher.find()) {
+                    if (!"id".equals(matcher.group(1))) {
+                        out.add(variable);
+                    }
+                }
+            }
+        }
+
+        /** Whether an expression is just a variable name ({@code RETURN b}). */
+        private static boolean isBareVariable(CypherExpression expression) {
+            return expression instanceof CypherExpression.VariableReference;
+        }
+
+        /** Collects the variables an expression reads a property of ({@code id} is the key, not a read). */
+        private static void collectPropertyVariables(CypherExpression expression, Set<String> out) {
+            if (expression == null) {
+                return;
+            }
+            if (expression instanceof CypherExpression.Property property) {
+                if (!"id".equals(property.key())) {
+                    out.add(property.variable());
+                }
+                return;
+            }
+            for (CypherExpression child : childrenOf(expression)) {
+                collectPropertyVariables(child, out);
+            }
+        }
+
+        /** The sub-expressions of an expression, so the walk above can reach every property use. */
+        private static List<CypherExpression> childrenOf(CypherExpression expression) {
+            if (expression instanceof CypherExpression.Compare compare) {
+                return List.of(compare.left(), compare.right());
+            }
+            if (expression instanceof CypherExpression.And and) {
+                return and.operands();
+            }
+            if (expression instanceof CypherExpression.Or or) {
+                return or.operands();
+            }
+            if (expression instanceof CypherExpression.Not not) {
+                return List.of(not.operand());
+            }
+            if (expression instanceof CypherExpression.In in) {
+                List<CypherExpression> children = new ArrayList<>();
+                children.add(in.value());
+                children.addAll(in.list());
+                return children;
+            }
+            if (expression instanceof CypherExpression.IsNull isNull) {
+                return List.of(isNull.value());
+            }
+            if (expression instanceof CypherExpression.StringOp stringOp) {
+                return List.of(stringOp.value());
+            }
+            if (expression instanceof CypherExpression.Function function) {
+                return function.arguments();
+            }
+            return List.of();
+        }
+
+        /** Binds a vertex by id and label without reading it (its properties are not used). */
+        private CypherElement vertexReference(String label, Object id) {
+            recordVertex(label, id, Map.of(), 0L, 0L);
+            return CypherElement.vertex(label, id, Map.of());
+        }
+
+        /** Whether a variable's properties have to be read. */
+        private boolean needsProperties(String variable) {
+            return variable == null || variablesWithProperties.contains(variable);
         }
 
         // --- reads ---

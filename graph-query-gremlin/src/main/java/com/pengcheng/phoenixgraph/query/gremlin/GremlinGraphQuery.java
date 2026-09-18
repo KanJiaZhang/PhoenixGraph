@@ -401,6 +401,19 @@ public class GremlinGraphQuery {
                 next++;
             }
             if (next < result.size() && result.get(next).name().equals("count")) {
+                // an edge hop that is only counted can be counted by the store: no decoding, and
+                // no vertex reads (executed by GremlinSteps.countEdges, which falls back to the
+                // edge hop when a subgraph is being collected)
+                boolean countable = true;
+                for (int j = i + 1; j < next; j++) {
+                    countable = countable && !isFilter(result.get(j).name());
+                }
+                if (countable && (edgeHop.equals("outE") || edgeHop.equals("inE") || edgeHop.equals("bothE"))) {
+                    result.set(i, new GremlinQuery.Step("count" + Character.toUpperCase(edgeHop.charAt(0))
+                            + edgeHop.substring(1), result.get(i).args()));
+                    result.remove(next);
+                    continue;
+                }
                 result.set(i, new GremlinQuery.Step(edgeHop, result.get(i).args()));
             }
         }

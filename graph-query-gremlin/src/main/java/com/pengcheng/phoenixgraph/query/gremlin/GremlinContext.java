@@ -544,6 +544,20 @@ public final class GremlinContext {
         return all;
     }
 
+    /**
+     * Counts the edges of one class for every given vertex, without materialising them.
+     *
+     * <p>Used by the {@code count()} rewrite: a store that keeps its edges in one record answers
+     * from the record's shape, so {@code outE('Payment').count()} stops decoding a hub's payments.
+     */
+    public long countEdges(List<Object> vertexIds, String edgeName, EdgeSide direction) {
+        long total = 0;
+        for (Object vertexId : vertexIds) {
+            total += graphQuery.countEdges(vertexId, null, edgeName, direction);
+        }
+        return total;
+    }
+
     /** Reads the edges of one vertex for an edge class + direction, with caching. */
     public List<EdgeQueryResult> readEdgesCached(Object vertexId, String vertexName, String edgeName,
                                                  EdgeSide direction, List<String> propertyNames) {

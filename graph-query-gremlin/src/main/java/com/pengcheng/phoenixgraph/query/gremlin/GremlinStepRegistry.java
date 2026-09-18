@@ -1,6 +1,7 @@
 package com.pengcheng.phoenixgraph.query.gremlin;
 
 import com.pengcheng.phoenixgraph.query.QueryException;
+import com.pengcheng.phoenixgraph.query.storage.EdgeSide;
 import com.pengcheng.phoenixgraph.storage.TimeRange;
 
 import java.util.LinkedHashMap;
@@ -56,6 +57,10 @@ public class GremlinStepRegistry {
         register("in", args -> GremlinSteps.in(optionalSingle(args, "in")));
         register("both", args -> GremlinSteps.both(optionalSingle(args, "both")));
         register("outE", args -> GremlinSteps.outE(optionalSingle(args, "outE")));
+        // the shapes the compiler rewrites <hop>E(...).count() into
+        register("countOutE", args -> GremlinSteps.countEdges(optionalSingle(args, "countOutE"), EdgeSide.OUT));
+        register("countInE", args -> GremlinSteps.countEdges(optionalSingle(args, "countInE"), EdgeSide.IN));
+        register("countBothE", args -> GremlinSteps.countEdges(optionalSingle(args, "countBothE"), EdgeSide.BOTH));
         register("inE", args -> GremlinSteps.inE(optionalSingle(args, "inE")));
         register("bothE", args -> GremlinSteps.bothE(optionalSingle(args, "bothE")));
         register("otherV", args -> {

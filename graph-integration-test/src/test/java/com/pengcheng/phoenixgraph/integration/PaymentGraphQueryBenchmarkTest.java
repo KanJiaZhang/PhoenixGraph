@@ -172,42 +172,33 @@ class PaymentGraphQueryBenchmarkTest {
     // ------------------------------------------------------------------ analysis
 
     /**
-     * The bottlenecks the numbers above point at, printed with the table so a run explains
-     * itself. Every item names the query it comes from.
+     * What the numbers point at, printed with the table so a run explains itself: what the last
+     * round of optimization fixed, and what is still worth doing in the order it is worth doing.
      */
     private static String bottlenecks() {
-        List<String> notes = new ArrayList<>();
-        notes.add("""
-                Bottlenecks under the current design
-                -----------------------------------
-                1. Filtered counts still read everything (queries 1 vs 5: 2.4 ms vs 1.6 ms, both one
-                   round trip). A `has(...)` on an edge
-                   property is applied after the bin is decoded, so it costs the same as the
-                   unfiltered count. Pushing the predicate into the store (skip edges whose
-                   property does not match while decoding, or a per-property secondary index)
-                   would make 5 cheaper than 1 instead of equal.
-                2. `count()` decodes values it never looks at (queries 1, 3). The bin is a CDT map,
-                   so its size is known before decoding: a count fast path can answer 1/3 without
-                   materialising 50 edges. That is the cheapest win available.
-                3. Traversals fan out at the second hop (queries 7, 8: 3 round trips over two hops). The first hop's edges give
-                   the vertex ids, the second hop reads each of them separately, so the round trips
-                   grow with the fan-out; nothing batches across the hop boundary yet. Batching the
-                   second hop (readEdgesBatch over the whole frontier) would cut the trips to one
-                   per batch, which is where the multi-hop latency actually goes.
-                4. A bounded read pays for the same round trip as an unbounded one (queries 4, 6,
-                   versus 1). `limit` stops the traversal but the storage still hands over the whole
-                   bin; a capped read (like the window cap of the aggregated edge tables) would make
-                   the UI's expansion cheaper than the full count.
-                5. Projection does not reduce traffic (query 6). Edge properties live in one bin, so
-                   asking for `status` only still reads and decodes every property of every edge.
-                   Splitting hot properties into their own bin, or projecting inside the decode,
-                   would make projections pay off.
-                6. Cypher aggregation pays for every target vertex (query 10: 52 round trips and 51
-                   vertex reads for one aggregation, ~53 ms - 20x the hub count). It walks the 50
-                   payments and reads each target separately; the same aggregation done in the store
-                   (group by a property while decoding) would avoid both the walk and the reads.
-                """);
-        return String.join("\n", notes);
+        return """
+                What the numbers say
+                --------------------
+                Fixed since the first run of this benchmark:
+                  * the Cypher aggregation no longer walks into every target vertex (query 10 went from
+                    53.2 ms and 52 round trips to about 3 ms and 2): a pattern variable whose properties
+                    the query never reads is now matched by id alone;
+                  * a count over an edge hop is answered by the store from the shape of the bin (queries
+                    1 and 3), so a hub's 50 edges are no longer decoded just to be counted;
+                  * an edge read decodes only the properties the query asked for (query 6).
+
+                Still open, in the order they are worth doing:
+                1. A filter over edge properties is applied after the decode, so query 5 costs what query
+                   1 costs. Pushing the predicate into the store - skipping the edges that do not match
+                   while decoding, or a secondary index per property - is the next win.
+                2. A bounded read pays for the whole bin (query 4): the store hands over 50 edges and the
+                   traversal keeps 10. A capped read, like the window cap of the aggregated edge tables,
+                   would make the expansion in the UI cheaper than the full count.
+                3. Two hops cost one round trip per hop (queries 7 and 8). The reads are already batched
+                   per hop; what is left is the trip itself, which only a different layout would remove.
+                4. Counting a whole vertex type still needs an anchor (g.V(id, label)); it would need a
+                   scan-based plan.
+                """;
     }
 
     private static GraphSchema loadSchema() {
