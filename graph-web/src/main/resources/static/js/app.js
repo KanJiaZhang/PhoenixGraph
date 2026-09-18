@@ -91,7 +91,8 @@
     zh: {
       title: 'PhoenixGraph 可视化',
       graph: '图实例',
-      vertexType: '顶点类型',
+      vertexType: '顶点',
+      builder: '图管理 · 建模',
       vertexIdPlaceholder: '输入顶点 ID，多个用逗号分隔，如 888, 1000, 1001',
       gremlinToggle: '切换 Gremlin 查询输入框',
       query: '查询',
@@ -174,7 +175,8 @@
     en: {
       title: 'PhoenixGraph Visualizer',
       graph: 'Graph',
-      vertexType: 'Vertex type',
+      vertexType: 'Vertex',
+      builder: 'Graph builder',
       vertexIdPlaceholder: 'Vertex ID(s), comma separated, e.g. 888, 1000, 1001',
       gremlinToggle: 'Toggle Gremlin query input',
       query: 'Query',
@@ -263,6 +265,7 @@
     document.title = t('title');
     document.querySelectorAll('[data-i18n]').forEach((n) => { n.textContent = t(n.dataset.i18n); });
     document.querySelectorAll('[data-i18n-title]').forEach((n) => { n.title = t(n.dataset.i18nTitle); });
+    document.querySelectorAll('[data-i18n-aria-label]').forEach((n) => { n.setAttribute('aria-label', t(n.dataset.i18nAriaLabel)); });
     document.querySelectorAll('[data-i18n-placeholder]').forEach((n) => { n.placeholder = t(n.dataset.i18nPlaceholder); });
     document.querySelectorAll('.lang-opt').forEach((n) => n.classList.toggle('active', n.dataset.lang === lang));
     renderLegend();

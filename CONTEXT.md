@@ -1861,3 +1861,28 @@ curl -s -X POST localhost:8081/api/v1/vector-index/rebuild -H 'content-type: app
 2. `limit` 仍付整个 bin 的代价（查询 4）→ 带上限的读；
 3. 两跳 = 两跳的往返（7/8，已经是批读，剩下的是往返本身）；
 4. 按类型计数还需要锚点（`g.V(id,label)`）。
+
+---
+
+## 33. UI 修正：主页查询行不再错行、建模页配色
+
+### 33.1 主页
+
+- **图管理入口改成纯图标**（`#builderBtn`，放在 `.actions` 里与语言切换、示例、查询按钮同组），
+  不再作为 `idPanel` 前面的独立块 —— 之前它把「顶点类型 + 顶点 ID 输入」和右侧按钮挤成两行 ✗；
+- 标签 **「顶点类型」→「顶点」**（英文 `Vertex type → Vertex`），少占地方；
+- **示例下拉限宽**：仍是查询框的 1/3，但加 `max-width: 320px` 与省略号，宽屏下不再无限长。
+
+headless Edge 实测（1600×950，ID 模式）：`sameRow true`、`noOverlap true`（ID 输入右边界 905px，按钮组左边界 1136px）、
+`pageOverflow false`、`builderIsIcon true`、`builderInActions true`、`examplesMaxWidth 320px`、标签 `顶点` ✓。
+
+### 33.2 建模页配色
+
+根因：`builder.css` 里写的是**深色兜底**（`var(--panel, #151b24)`、`var(--input-bg, #0d1219)`），
+而仪表盘是**浅色主题**（`--bg:#eef1f8`、`--text:#0f172a`）——于是卡片/输入框拿到深底、文字拿到深色 → 看不见 ✗。
+现在整套改用仪表盘的变量并配**浅色兜底**：页面 `--bg`、卡片 `--surface`、边框 `--border-2`、
+主按钮 `--accent` 白字、结果块用浅绿/浅红、JSON 预览浅灰底 + `--text-2`、toast 深底白字。
+
+headless Edge 实测：`body bg rgb(238,241,248) / color rgb(15,23,42)`（可见 ✓）、卡片白底 ✓、
+输入框白底深字 ✓、预览浅灰底 `rgb(247,249,253)` ✓、5 张卡片标题 `1 · 图实例 | 2 · 点 | 3 · 边 | 4 · 提交 | 5 · 造数据` ✓、
+无 JS 报错 ✓、图下拉 12 项 ✓。顺带把建模页的「点类型/边类型」也统一成「点/边」。
