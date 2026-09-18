@@ -10,6 +10,7 @@ import com.pengcheng.phoenixgraph.query.cypher.CypherGraphQuery;
 import com.pengcheng.phoenixgraph.query.cypher.CypherResult;
 import com.pengcheng.phoenixgraph.http.dto.QueryResponse;
 import com.pengcheng.phoenixgraph.fuzzy.FuzzyPatternRegistry;
+import com.pengcheng.phoenixgraph.gemini.GeminiCluster;
 import com.pengcheng.phoenixgraph.query.gremlin.GremlinGraphQuery;
 import com.pengcheng.phoenixgraph.query.result.Subgraph;
 import com.pengcheng.phoenixgraph.query.traversal.NeighborVertexResolver;
@@ -66,11 +67,21 @@ public class QueryService {
      */
     private FuzzyPatternStore fuzzyPatterns;
 
+    /** The cluster the DIST algorithm steps run on (null when this instance has none). */
+    private GeminiCluster geminiCluster;
+
     /** Wires the patterns fuzzy linking reads ({@code fuzzyLink(patternId, context)}). */
     @Autowired(required = false)
     public void fuzzyPatterns(FuzzyPatternStore fuzzyPatterns) {
         this.fuzzyPatterns = fuzzyPatterns;
         engines.clear(); // a new registry is a new plan
+    }
+
+    /** Wires the Gemini cluster the distributed algorithm steps run on. */
+    @Autowired(required = false)
+    public void geminiCluster(GeminiCluster geminiCluster) {
+        this.geminiCluster = geminiCluster;
+        engines.clear();
     }
     private final Map<String, CypherGraphQuery> cypherEngines = new ConcurrentHashMap<>();
 
@@ -271,6 +282,9 @@ public class QueryService {
                     .geoProperties(geoPropertyByVertexType(binding.schema()));
             if (fuzzyPatterns != null) {
                 engine.fuzzyPatterns(fuzzyPatterns.registryOf(name));
+            }
+            if (geminiCluster != null) {
+                engine.geminiCluster(geminiCluster);
             }
             // vector search: every property the schema flags isVector gets a nearest(k)
             // step (the index is shared with the write path, so freshly written

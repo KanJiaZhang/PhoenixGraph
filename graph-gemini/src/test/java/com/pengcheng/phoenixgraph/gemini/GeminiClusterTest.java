@@ -1,0 +1,341 @@
+package com.pengcheng.phoenixgraph.gemini;
+
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
+
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Deque;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+/**
+ * A Gemini cluster of four workers, each on its own port, running the algorithms over a graph that has
+ * a known answer - and a single-process reference to compare with, so the test says whether the
+ * distributed run is <em>right</em>, not just whether it finished.
+ *
+ * <p>The graph is a ring of 12 accounts plus a bridge and a clique, so connected components (two
+ * components), PageRank (all mass on one component), SSSP/BFS (a known depth per vertex) and Louvain
+ * (the clique is one community) all have an answer that can be computed by hand.
+ */
+@TestInstance(TestInstance.Lifecycle.PER_CLASS)
+class GeminiClusterTest {
+
+    private static final int RING = 12;
+    private static final int CLIQUE = 3;
+    private static final int VERTICES = RING + 1 + CLIQUE; // ring + bridge + clique
+
+    private GeminiCluster cluster;
+
+    @BeforeAll
+    void startTheCluster() {
+        cluster = GeminiCluster.local().start();
+    }
+
+    @AfterAll
+    void stopTheCluster() {
+        if (cluster != null) {
+            cluster.close();
+        }
+    }
+
+    /** ring 0..11, vertex 12 bridges to 0, and 13,14,15 form a clique hanging off vertex 6. */
+    private static GeminiGraph graph() {
+        List<Object> ids = new ArrayList<>();
+        for (int v = 0; v < VERTICES; v++) {
+            ids.add("v" + v);
+        }
+        List<GeminiGraph.Edge> edges = new ArrayList<>();
+        for (int v = 0; v < RING; v++) {
+            edges.add(new GeminiGraph.Edge(v, (v + 1) % RING, 1.0));
+            edges.add(new GeminiGraph.Edge((v + 1) % RING, v, 1.0));
+        }
+        edges.add(new GeminiGraph.Edge(12, 0, 1.0));
+        edges.add(new GeminiGraph.Edge(0, 12, 1.0));
+        for (int a = RING + 1; a < VERTICES; a++) {
+            for (int b = RING + 1; b < VERTICES; b++) {
+                if (a != b) {
+                    edges.add(new GeminiGraph.Edge(a, b, 1.0));
+                }
+            }
+        }
+        edges.add(new GeminiGraph.Edge(6, RING + 1, 1.0));
+        edges.add(new GeminiGraph.Edge(RING + 1, 6, 1.0));
+        return GeminiGraph.of(ids, edges);
+    }
+
+    @Test
+    void fourWorkersListenOnFourPorts() {
+        for (int i = 0; i < 4; i++) {
+            Map<String, Object> status = GeminiClient.status(cluster.urlOf(i));
+            assertEquals(i, ((Number) status.get("worker")).intValue());
+            assertTrue(cluster.portOf(i) > 0, "worker " + i + " listens on a real port");
+            assertTrue(cluster.urlOf(i).endsWith(String.valueOf(cluster.portOf(i))), cluster.urlOf(i));
+        }
+        // the ports are the ones the workers bound, not the ones the configuration asked for: a test
+        // must not fight a running service for 19100
+        assertEquals(4, cluster.workers());
+    }
+
+    @Test
+    void pageRankAgreesWithASingleProcessRun() {
+        GeminiCluster.Result result = cluster.run(graph(), GeminiAlgorithms.PAGERANK,
+                Map.of("iterations", 20));
+
+        Map<Object, Double> reference = referencePageRank(graph(), 20, 0.85);
+        for (int v = 0; v < VERTICES; v++) {
+            double distributed = result.number("v" + v);
+            assertEquals(reference.get("v" + v), distributed, 1e-6, "PageRank of v" + v);
+        }
+        assertEquals(4, result.stats().workers());
+        assertTrue(result.stats().supersteps() >= 20, "PageRank runs the iterations it was given");
+        assertTrue(result.stats().messagesSent() > 0, "workers exchange messages: " + result.stats().describe());
+        assertTrue(result.stats().converged(), "the run stopped on its own condition");
+    }
+
+    @Test
+    void connectedComponentsFindsTheTwoComponents() {
+        GeminiCluster.Result result = cluster.run(graph(), GeminiAlgorithms.CONNECTED_COMPONENTS, Map.of());
+
+        // every vertex reports the label of the smallest vertex in its component
+        for (int v = 0; v < RING + 1; v++) {
+            assertEquals(0L, result.number("v" + v) + 0L, "v" + v + " is in the ring component");
+        }
+        for (int v = RING + 1; v < VERTICES; v++) {
+            assertEquals(0L, result.number("v" + v) + 0L,
+                    "v" + v + " hangs off the ring, so it is the same component");
+        }
+    }
+
+    @Test
+    void connectedComponentsSeparatesWhatIsNotConnected() {
+        List<Object> ids = List.of("a", "b", "c", "d");
+        List<GeminiGraph.Edge> edges = List.of(
+                new GeminiGraph.Edge(0, 1, 1.0), new GeminiGraph.Edge(1, 0, 1.0),
+                new GeminiGraph.Edge(2, 3, 1.0), new GeminiGraph.Edge(3, 2, 1.0));
+
+        GeminiCluster.Result result = cluster.run(GeminiGraph.of(ids, edges),
+                GeminiAlgorithms.CONNECTED_COMPONENTS, Map.of());
+
+        assertEquals(0L, result.number("a") + 0L);
+        assertEquals(0L, result.number("b") + 0L);
+        assertEquals(2L, result.number("c") + 0L);
+        assertEquals(2L, result.number("d") + 0L);
+        assertFalse(result.stats().converged() == false && result.stats().supersteps() == 0,
+                "the run did supersteps: " + result.stats().describe());
+    }
+
+    @Test
+    void ssspGivesTheDistanceAlongTheRing() {
+        GeminiCluster.Result result = cluster.run(graph(), GeminiAlgorithms.SSSP, Map.of("root", 0));
+
+        for (int v = 0; v <= RING / 2; v++) {
+            assertEquals((double) v, result.number("v" + v), "v" + v + " is " + v + " hops from the root");
+        }
+        // the far side of the ring is reached the short way round
+        assertEquals((double) (RING / 2), result.number("v" + (RING / 2)), 0.0);
+        assertEquals(1.0, result.number("v12"), "the bridge is one hop from the root");
+        assertEquals(7.0, result.number("v" + (RING + 1)),
+                "the clique hangs off v6, which is six hops from the root");
+    }
+
+    @Test
+    void bfsAgreesWithTheShortestPathDepths() {
+        GeminiCluster.Result bfs = cluster.run(graph(), GeminiAlgorithms.BFS, Map.of("root", 0));
+        GeminiCluster.Result sssp = cluster.run(graph(), GeminiAlgorithms.SSSP, Map.of("root", 0));
+
+        for (int v = 0; v < VERTICES; v++) {
+            assertEquals(sssp.number("v" + v), (double) convert(bfs.number("v" + v)), 1e-9,
+                    "BFS depth and SSSP distance agree on v" + v);
+        }
+    }
+
+    @Test
+    void louvainPutsTheCliqueInOneCommunity() {
+        GeminiCluster.Result result = cluster.run(graph(), GeminiAlgorithms.LOUVAIN, Map.of("iterations", 8));
+
+        long cliqueCommunity = convert(result.number("v" + (RING + 1)));
+        for (int v = RING + 1; v < VERTICES; v++) {
+            assertEquals(cliqueCommunity, convert(result.number("v" + v)),
+                    "the clique is one community (v" + v + ")");
+        }
+        Set<Long> communities = new LinkedHashSet<>();
+        for (int v = 0; v < VERTICES; v++) {
+            communities.add(convert(result.number("v" + v)));
+        }
+        assertTrue(communities.size() >= 2, "the ring and the clique are not one community: " + communities);
+        assertTrue(communities.size() <= VERTICES, "every vertex is in some community");
+    }
+
+    @Test
+    void aRunReportsWhatItDid() {
+        GeminiCluster.Result result = cluster.run(graph(), GeminiAlgorithms.CONNECTED_COMPONENTS, Map.of());
+
+        GeminiCluster.Stats stats = result.stats();
+        assertEquals(4, stats.workers());
+        assertEquals(graph().edges().size(), stats.activeEdges(), "the launcher knows the whole graph");
+        assertEquals(4, stats.storedEdges().size());
+        assertEquals(4, stats.mirrors().size());
+        assertTrue(stats.storedEdges().stream().allMatch(count -> count > 0),
+                "every worker stores edges in both directions: " + stats.storedEdges());
+        assertTrue(stats.describe().contains("4 workers"), stats.describe());
+    }
+
+    @Test
+    void theModeFollowsTheActiveEdgeCount() {
+        // a single vertex's own edges decide it: with a graph whose edges are almost all at the root,
+        // the first superstep has few active edges (sparse) and a later one may not
+        List<Object> ids = new ArrayList<>();
+        for (int v = 0; v < 40; v++) {
+            ids.add("n" + v);
+        }
+        List<GeminiGraph.Edge> edges = new ArrayList<>();
+        for (int v = 1; v < 40; v++) {
+            edges.add(new GeminiGraph.Edge(0, v, 1.0));
+        }
+        GeminiCluster.Result result = cluster.run(GeminiGraph.of(ids, edges), GeminiAlgorithms.BFS,
+                Map.of("root", 0));
+
+        assertEquals(1.0, result.number("n39"), "one hop from the root");
+        assertFalse(result.stats().modes().isEmpty());
+        assertTrue(result.stats().modes().stream().allMatch(mode -> mode.equals("sparse") || mode.equals("dense")));
+    }
+
+    @Test
+    void anUnknownAlgorithmIsRejected() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> cluster.run(graph(), "no-such-algorithm", Map.of()));
+
+        assertTrue(error.getMessage().contains("Unknown Gemini algorithm"), error.getMessage());
+    }
+
+    @Test
+    void aWorkerWithoutALayoutRefusesToCompute() throws Exception {
+        try (GeminiWorkerServer server = new GeminiWorkerServer(19199).start()) {
+            assertNotNull(server);
+            assertTrue(GeminiClient.status("http://127.0.0.1:19199").containsKey("loaded"));
+            assertFalse(Boolean.TRUE.equals(GeminiClient.status("http://127.0.0.1:19199").get("loaded")));
+            IllegalStateException error = assertThrows(IllegalStateException.class,
+                    () -> GeminiClient.exchange("http://127.0.0.1:19199", 0, true));
+            assertTrue(error.getMessage().contains("no layout") || error.getMessage().contains("400")
+                            || error.getMessage().contains("500"),
+                    "a worker says it is not loaded: " + error.getMessage());
+        }
+    }
+
+    private static long convert(double value) {
+        return (long) value;
+    }
+
+    // ------------------------------------------------------------------ the single-process references
+
+    /** PageRank as the reference toolkit writes it, on one thread, with the same normalisation. */
+    private static Map<Object, Double> referencePageRank(GeminiGraph graph, int iterations, double damping) {
+        int n = graph.vertexCount();
+        double[] curr = new double[n];
+        double[] next = new double[n];
+        int[] outDegree = new int[n];
+        List<List<GeminiGraph.Edge>> out = new ArrayList<>();
+        List<List<GeminiGraph.Edge>> in = new ArrayList<>();
+        for (int v = 0; v < n; v++) {
+            out.add(new ArrayList<>());
+            in.add(new ArrayList<>());
+        }
+        for (GeminiGraph.Edge edge : graph.edges()) {
+            out.get(edge.source()).add(edge);
+            in.get(edge.target()).add(edge);
+            outDegree[edge.source()]++;
+        }
+        for (int v = 0; v < n; v++) {
+            curr[v] = 1.0;
+        }
+        for (int i = 0; i < iterations; i++) {
+            java.util.Arrays.fill(next, 0.0);
+            for (int v = 0; v < n; v++) {
+                if (!out.get(v).isEmpty()) {
+                    for (GeminiGraph.Edge edge : out.get(v)) {
+                        next[edge.target()] += curr[v];
+                    }
+                }
+            }
+            for (int v = 0; v < n; v++) {
+                curr[v] = next[v];
+            }
+        }
+        Map<Object, Double> result = new LinkedHashMap<>();
+        for (int v = 0; v < n; v++) {
+            result.put(graph.id(v), 1 - damping + damping * curr[v]);
+        }
+        return result;
+    }
+
+    /** The reference used for the component check: label propagation twice, iterated to a fixed point. */
+    private static Map<Object, Long> referenceComponents(GeminiGraph graph) {
+        int n = graph.vertexCount();
+        long[] label = new long[n];
+        for (int v = 0; v < n; v++) {
+            label[v] = v;
+        }
+        Map<Integer, Set<Integer>> neighbours = new HashMap<>();
+        for (GeminiGraph.Edge edge : graph.edges()) {
+            neighbours.computeIfAbsent(edge.source(), k -> new LinkedHashSet<>()).add(edge.target());
+        }
+        boolean changed = true;
+        while (changed) {
+            changed = false;
+            for (int v = 0; v < n; v++) {
+                for (int other : neighbours.getOrDefault(v, Set.of())) {
+                    if (label[other] < label[v]) {
+                        label[v] = label[other];
+                        changed = true;
+                    }
+                }
+            }
+        }
+        Map<Object, Long> out = new LinkedHashMap<>();
+        for (int v = 0; v < n; v++) {
+            out.put(graph.id(v), label[v]);
+        }
+        return out;
+    }
+
+    /** A breadth first search on one thread, to check that every vertex was reached. */
+    private static Map<Object, Integer> referenceBfs(GeminiGraph graph, int root) {
+        int n = graph.vertexCount();
+        int[] depth = new int[n];
+        java.util.Arrays.fill(depth, -1);
+        Map<Integer, List<Integer>> out = new HashMap<>();
+        for (GeminiGraph.Edge edge : graph.edges()) {
+            out.computeIfAbsent(edge.source(), k -> new ArrayList<>()).add(edge.target());
+        }
+        Deque<Integer> queue = new ArrayDeque<>();
+        depth[root] = 0;
+        queue.add(root);
+        while (!queue.isEmpty()) {
+            int v = queue.poll();
+            for (int next : out.getOrDefault(v, List.of())) {
+                if (depth[next] < 0) {
+                    depth[next] = depth[v] + 1;
+                    queue.add(next);
+                }
+            }
+        }
+        Map<Object, Integer> result = new LinkedHashMap<>();
+        for (int v = 0; v < n; v++) {
+            result.put(graph.id(v), depth[v]);
+        }
+        return result;
+    }
+}

@@ -252,6 +252,42 @@ with one card BIN) plus honest accounts that share nothing, and then asserts tha
 pattern finds exactly the ring, that the link node and its members agree both ways, and
 that the query above walks to twelve payments at the collection account.
 
+### Distributed graph algorithms (Gemini)
+
+The algorithm steps also exist in a distributed form, after Gemini (OSDI '16): the graph is cut
+into contiguous chunks, one per worker, every edge is stored twice (where its destination lives for
+a push, where its source lives for a pull), and each superstep picks the cheaper direction from the
+number of active edges - the rule the paper takes from Ligra, `sparse when activeEdges < |E| / 20` -
+so a traversal pays for the work it causes rather than for a fixed strategy.
+
+```groovy
+g.V('135','Account').bothE('Payment').otherV().pagerank(DIST, 10)   // on the payment edges reached
+g.V('a1,a2,a3','Account').cc(DIST)                                  // connected components
+g.V('a1,a2,a3','Account').louvain(DIST, 20)                         // communities
+g.V('a1,a2,a3','Account').sssp(DIST, 'a1')                          // shortest paths from a1
+```
+
+- **`DIST` means the distributed engine and nothing else**: with no cluster configured the step is an
+  error, never a quiet fall back to the in-process implementation (`pagerank()` without the marker still
+  runs in memory, which is what the three algorithms that have both forms are for).
+- Workers are **processes with a port**: `graph-http` starts four on 19100-19103 by default
+  (`phoenixgraph.gemini.workers`, `first-port`, `mode=local|process`), each worker answers on its own
+  HTTP endpoint, and `GeminiWorkerMain` is the program a helper script (or a YARN container) starts. The
+  messages between workers are batched per peer and buffered on arrival, so no two workers wait on each
+  other; the launcher only decides the mode of each superstep and adds up the totals an algorithm needs.
+- The graph computed on is the **induced subgraph the traversal reached** - the same one the in-memory
+  steps use - so the two engines can be compared on one query. The edge classes come from the traversal
+  (`bothE('Payment')` means the payment edges only).
+- A whole-class seed (`g.E('payment').pagerank(DIST)` with no vertices) is not supported yet: it needs a
+  scan port, which is the same gap as counting a whole vertex type. Seed the vertices the graph is about.
+
+See `CONTEXT.md` section 36 for the mapping onto the paper (chunk partitioning, the dual edge copy,
+the signal/slot API, mirror scheduling, the bitmap-assisted CSR and doubly-compressed CSC), what was
+adapted for HTTP and single-process workers, the bugs the first runs turned up, and the measured runs:
+four workers on one machine, connected components converging in seven supersteps, PageRank matching a
+hand-written single-process reference to 1e-6, and a live `pagerank(DIST)` over the payment demo
+answering for fifty accounts in 2.8 seconds including loading the graph.
+
 ## Requirements
 
 - JDK 21+ (the project compiles with `--release 21`)

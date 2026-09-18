@@ -1,6 +1,8 @@
 package com.pengcheng.phoenixgraph.query.gremlin;
 
 import com.pengcheng.phoenixgraph.fuzzy.FuzzyPatternRegistry;
+import com.pengcheng.phoenixgraph.gemini.GeminiAlgorithms;
+import com.pengcheng.phoenixgraph.gemini.GeminiCluster;
 import com.pengcheng.phoenixgraph.hnsw.HnswFilter;
 import com.pengcheng.phoenixgraph.hnsw.HnswIndex;
 import com.pengcheng.phoenixgraph.query.QueryException;
@@ -56,6 +58,7 @@ public class GremlinGraphQuery {
     private final Map<String, HnswIndex> hnswIndexes = new LinkedHashMap<>();
     private Map<String, String> geoProperties = Map.of();
     private FuzzyPatternRegistry fuzzyPatterns = FuzzyPatternRegistry.empty();
+    private GeminiCluster geminiCluster;
     private Supplier<Map<String, HnswIndex>> hnswIndexSource;
     private final Map<String, CompiledQuery> compiledCache = new ConcurrentHashMap<>();
     private boolean cacheEnabled = true;
@@ -86,6 +89,15 @@ public class GremlinGraphQuery {
             int ef = args.size() > 1 ? positiveInt(args.get(1), "nearest") : 0;
             return GremlinSteps.nearest(vertexType -> resolvedHnswIndexes().get(vertexType), k, ef);
         });
+        // the algorithm steps exist in two forms: the in-memory one (no argument) and the one that
+        // runs on a Gemini cluster, asked for with the DIST marker. A query that asks for DIST and has
+        // no cluster is an error, never a quiet fallback - the marker is there to say which engine runs.
+        for (String algorithm : new String[]{GeminiAlgorithms.PAGERANK, GeminiAlgorithms.LOUVAIN,
+                GeminiAlgorithms.CONNECTED_COMPONENTS, GeminiAlgorithms.SSSP, GeminiAlgorithms.BFS}) {
+            registry.register(algorithm, args -> GremlinDistAlgorithms.wantsDistributed(args)
+                    ? GremlinDistAlgorithms.dist(geminiCluster, algorithm, args)
+                    : inMemoryAlgorithm(algorithm, args));
+        }
         // the fuzzyLink step turns a context into the key of a link node: patterns are data, so the
         // registry is consulted per execution (a pattern added in the builder page is used at once)
         registry.register("fuzzyLink", args -> {
@@ -126,6 +138,44 @@ public class GremlinGraphQuery {
         this.geoProperties = geoPropertyByVertexType == null ? Map.of() : Map.copyOf(geoPropertyByVertexType);
         compiledCache.clear();
         return this;
+    }
+
+    /**
+     * The Gemini cluster the {@code (DIST)} forms of the algorithm steps run on.
+     *
+     * <p>One cluster serves every graph this engine answers for: a run loads the workers with the
+     * graph it is about to compute, so a cluster is not bound to a graph.
+     */
+    public GremlinGraphQuery geminiCluster(GeminiCluster cluster) {
+        this.geminiCluster = cluster;
+        compiledCache.clear();
+        return this;
+    }
+
+    /** The cluster this engine runs distributed algorithm steps on, or {@code null}. */
+    public GeminiCluster geminiCluster() {
+        return geminiCluster;
+    }
+
+    /**
+     * The in-memory form of an algorithm step: the default when no {@code DIST} marker is given.
+     *
+     * <p>Three of the five have an in-memory implementation (they are small enough to run over the
+     * traversers in one process); a shortest path step exists only in its distributed form, and says
+     * so instead of answering with something else.
+     */
+    private static GremlinStep inMemoryAlgorithm(String algorithm, java.util.List<String> args) {
+        if (!args.isEmpty()) {
+            throw new QueryException(algorithm + " takes no argument unless it is asked to run distributed:"
+                    + " write " + algorithm + "() or " + algorithm + "(DIST)");
+        }
+        return switch (algorithm) {
+            case GeminiAlgorithms.PAGERANK -> GremlinAlgorithms.pagerank();
+            case GeminiAlgorithms.LOUVAIN -> GremlinAlgorithms.louvain();
+            case GeminiAlgorithms.CONNECTED_COMPONENTS -> GremlinAlgorithms.cc();
+            default -> throw new QueryException(algorithm + " has no in-memory implementation; ask for the"
+                    + " distributed one with " + algorithm + "(DIST)");
+        };
     }
 
     /**

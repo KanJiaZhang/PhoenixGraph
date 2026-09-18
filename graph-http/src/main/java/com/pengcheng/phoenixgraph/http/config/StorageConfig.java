@@ -1,9 +1,11 @@
 package com.pengcheng.phoenixgraph.http.config;
 
+import org.springframework.beans.factory.annotation.Value;
 import com.aerospike.client.AerospikeClient;
 import com.pengcheng.phoenixgraph.http.service.GraphBinding;
 import com.pengcheng.phoenixgraph.metrics.GraphMetrics;
 import com.pengcheng.phoenixgraph.metrics.InMemoryMetricsStore;
+import com.pengcheng.phoenixgraph.gemini.GeminiCluster;
 import com.pengcheng.phoenixgraph.metrics.MetricsRegistry;
 import com.pengcheng.phoenixgraph.metrics.MetricsStore;
 import com.pengcheng.phoenixgraph.storage.MetricsBusinessLog;
@@ -44,6 +46,26 @@ import java.util.List;
 @Configuration
 @EnableConfigurationProperties(StorageProperties.class)
 public class StorageConfig {
+
+    /**
+     * The Gemini cluster the {@code (DIST)} algorithm steps run on.
+     *
+     * <p>One cluster serves every graph: a run loads the workers with the graph it is about to compute
+     * on, and a lock serialises the runs (a cluster is a set of workers, one computation at a time).
+     * The defaults are four workers on four ports in this process; {@code phoenixgraph.gemini.mode}
+     * can be set to {@code process} to start each worker as its own program, which is the standalone
+     * (or YARN container) deployment.
+     */
+    @Bean(destroyMethod = "close")
+    public GeminiCluster geminiCluster(
+            @Value("${phoenixgraph.gemini.workers:4}") int workers,
+            @Value("${phoenixgraph.gemini.first-port:19100}") int firstPort,
+            @Value("${phoenixgraph.gemini.mode:local}") String mode) {
+        GeminiCluster cluster = new GeminiCluster(new GeminiCluster.Config(Math.max(1, workers), firstPort,
+                "process".equalsIgnoreCase(mode) ? GeminiCluster.Mode.PROCESS : GeminiCluster.Mode.LOCAL,
+                "127.0.0.1"));
+        return cluster.start();
+    }
 
     @Bean(destroyMethod = "close")
     public AerospikeClient aerospikeClient(StorageProperties properties) {

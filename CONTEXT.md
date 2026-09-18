@@ -2135,3 +2135,101 @@ headless Edge 实测（payment-graph，模式 0 的 demoSteps 是完整链路）
    `example`/`demoSteps` **保留** ✓（仍被测试覆盖 ✓）。
 2. **图实例下拉宽度 = 原来的 3/4**：`#graphSelect { width: 238px; }`（实测 317px → **238px** ✓）；
    headless 实测同时确认：查询行仍然同一行 ✓、不重叠 ✓、页面无横向滚动 ✓、模糊按钮 `hidden: true` ✓。
+
+---
+
+## 36. 分布式图算法（Gemini 复刻）：`graph-gemini`
+
+依据 Gemini（Zhu et al., **OSDI '16**）与其官方实现（`thu-pacman/GeminiGraph`，C++/MPI）在本项目里做的
+Java 复刻：**每个 worker 持有图的一个分片（点+边）并在内存中计算，worker 之间用 HTTP 交换消息，
+既能在本进程起（每个 worker 一个端口），也能作为独立程序启动（对应 YARN/脚本拉起）**。
+
+### 36.1 论文里照搬的部分
+
+| Gemini 原文 | 本实现 |
+|---|---|
+| **chunk-based 分区**：点数组按 **连续 chunk** 切开，一个 chunk 一个 worker；边按下面两条规则**存两份** | `GeminiPartitioner.chunk`：`cut[i]` 单调递增的连续区间（`Plan.ownerOf(v)` 一次范围判断 ✓，点状态数组用全局 dense id 直接索引 ✓） |
+| 稀疏（push）边集 `E^S_i = {(src,dst) | dst ∈ V_i}`，稠密（pull）边集 `E^D_i = {(src,dst) | src ∈ V_i}` | `Partition.sparse/dense` ✓：`sparse` = 目的地落在本 chunk 的边（本 worker 持有它的**出边**，即 mirror），`dense` = 源落在本 chunk 的边 ✓；测试断言「每条边两份、每份的端点归属正确」✓ |
+| **locality-aware chunking**：按 `α·|V_i| + |E^D_i|` 平衡（α 默认 `8·(p-1)`） | 同式 ✓（两遍细化：先按点数切，再用前缀和把切点挪向平衡位置 ✓）；测试对比「只平衡边」的退化配置 ✓ |
+| **稀疏/稠密自适应**：`sparse = activeEdges < |E|/20`（Ligra 的规则，源码 `core/graph.hpp` 原文） | `GeminiWorker.sparseMode(activeEdges)` ✓，`activeEdges` = 活跃点**全局出度**之和（由各 worker 上报后由 launcher 汇总 ✓），每个 superstep 全局选一次模式 ✓，模式序列在 `Stats.modes` 里可查 ✓ |
+| **signal/slot 抽象**：`sparseSignal/sparseSlot` 与 `denseSignal/denseSlot` + `reduce` | `GeminiComputation` 接口 ✓（`initialValue/startsActive/sparseSignal/sparseSlot/denseSignal/denseSlot/aggregate/share/converged`）；`sparseSlot` 拿到的是**本 worker 为某个 mirror 持有的那些出边**（论文里 mirror 走本地出边的语义 ✓），`denseSignal` 只读**本 worker 拥有的源**（论文的 pull 语义 ✓） |
+| **mirror/master**：点由一个 worker 拥有，其它 worker 只持有它的**边** | `WorkerLayout`: `owns(v)` / 每个 mirror 的 owner（`mirrorOwner` ✓）/ `pushTargets(v)` = 「拥有 v 出边的 worker 集合」（消息往哪发 ✓ —— 这是论文 ring 调度的 `send_buffer[i]` 在 HTTP 上的对应物 ✓） |
+| 两个索引增强：**bitmap 辅助的 CSR**（稀疏模式跳过没有本地出边的 mirror）、**doubly-compressed CSC** | `WorkerLayout.hasOutEdges(v)`（一条位测试就丢掉无关消息 ✓）与 `denseVerticesInOrder()`（只列出**有**本地入边的点 ✓） |
+| **BSP + 每 peer 批量消息**（原文按 partition 组的 ring 收发） | 一个 superstep 两半：`exchange`（每个 worker 把本轮消息**按 peer 批量** POST 到对端 `/gemini/messages`，对端先**缓存**不阻塞 ✓，自己那份直接本地投递 ✓）+ `compute`（应用到达的消息 + 本地密集计算 ✓）；launcher 顺序驱动，所以不存在互相等待 ✓ |
+| **mini-chunk = 64 点** + 工作窃取 | `GeminiWorker.MINI_CHUNK = 64` 常量 ✓（本地边处理以 64 点为粒度分派 ✓；一个进程=一个 worker，所以没有 socket 级子分区 ✓ 文档里说明为简化点） |
+| 五个应用（PR/CC/SSSP/BFS/BC） | `GeminiAlgorithms`：**pagerank、louvain、cc、sssp、bfs** ✓（BC 未实现 ✗；Louvain 是本项目加的分析算法 ✓）；PR/SSSP 的 sparse+dense 两半都写 ✓（与官方 `toolkits/*.cpp` 同构 ✓），Louvain 只用 push ✓（论文允许只提供一种模式 ✓） |
+
+### 36.2 与论文不同的地方（都在代码注释里写明）
+
+1. **传输层**：MPI → HTTP/JSON（每个 worker 一个 JDK `HttpServer` ✓，零依赖 ✓）。批量消息、ring 顺序的语义保留，
+   但没有做 **计算/通信重叠**（论文里通信线程与计算线程并行 ✗）—— launcher 顺序驱动，一个 superstep
+   的 exchange 全部返回后才 compute ✓（简单、无死锁 ✓）。
+2. **one process = one worker**：NUMA/socket 级子分区与 socket 内共享内存 ✗（论文的另一半是单机多核优化 ✓）。
+3. **稠密模式不做镜像值广播** ✗：论文里 pull 从「本 worker 拥有的源」出发 ✓，部分聚合发给目的地 owner 合并 ✓ ——
+   所以**不需要**保存远端点的值副本（我的 `WorkerState.values` 只对拥有的点有效 ✓）；这一点是刻意简化的 ✓
+   （少了镜像值数组与同步 ✓），代价是 dense 模式下**每条入边贡献都被 partial 消息承载** ✓（和论文的语义一致 ✓）。
+4. **Louvain 的收敛细节**（论文没有这个算法）：一轮内所有点同时决策会互相「追标签」✗ → 采用
+   **只向更小 id 的社区合并**（社区以最小成员命名 ✓，与串行更新的结果一致 ✓ 且 id 单调下降 → 必然终止 ✓）；
+   另加**从第一轮起就下发全局社区权重** ✓（否则第一轮没有分辨率惩罚 → 过度合并 ✗）和**确定性 tie-break**（按社区 id 升序 ✓）。
+5. **本地引用实现**用于对照：`GeminiClusterTest` 里手写单进程 PR/CC/BFS 参考实现，逐一较值 ✓。
+
+### 36.3 这一轮踩到并修掉的真 bug（每条都有测试守住）
+
+| 现象 | 根因 | 修法 |
+|---|---|---|
+| 4-worker 的 CC 只传播一跳就收敛、PR 值只有参考值的 1/4 | **对端 partial 被覆盖**：`inbox.putAll` 以点为键 ✗，一个点有多个源分片时会丢掉只剩最后一个 partial | 收件箱改成 `点 -> List<partial>` ✓，`compute` 对**每个** partial 调用一次 `denseSlot`（min/sum/map 合并由算法自己决定 ✓） |
+| PR 值变成 `1 + 上一轮值` | 累加直接写在**当前值**上 ✗（论文是 `next` 累加后再 swap ✓） | `WorkerState` 增加 **pending 缓冲** + `commit()`（superstep 末尾一次 swap ✓） |
+| CC 的 `(long) message` 抛 `ClassCastException` | 消息/值过了 **JSON**：`Long` 可能变 `Double` ✗ | 算法一律用 `asLong/asDouble(Number)` 读 ✓（并让整数消息在 wire 上保持整数 ✓） |
+| BFS 的 dense signal NPE | 读了**目的地**的值 ✗（目的地可能是 mirror，值不在本 worker ✓） | dense signal 只读本 worker 的源 ✓（是否已访问由 owner 的 slot 判断 ✓） |
+| Louvain 社区数爆炸、`totalWeight` 每轮 ×4 | launcher 把 **所有** aggregate 键**相加** ✗（`totalWeight` 是全局常量 ✗） | 只对 `community:*` 求和 ✓，其余键原样传递（文档写明 ✓） |
+| 图比 worker 少时 `ArrayIndexOutOfBounds` | 切点搜索窗口可能出现 `high < low` ✗ | `positionOf` 夹紧窗口 + 切点单调化 ✓ |
+| **跑不完（1800s 超时）** | 每次请求都 `HttpClient.newBuilder()` ✗ → 上千个 selector 线程与连接池 ✗ | 全进程**一个共享 client** ✓ + worker 线程池按核数放大（exchange 处理里会嵌套请求 ✓） |
+| 集群测试里「拿不到 worker」而只有连接被关闭 | handler 里抛异常时连接被直接关掉 ✗ | 所有端点包一层 `answer(...)` → 500 + `{error, exception, where}`（**带 worker 侧栈帧** ✓，分布式里没有别的线索 ✓） |
+
+### 36.4 Gremlin 的 `DIST` 形式
+
+* `g.V('135','Account').bothE('Payment').otherV().pagerank(DIST, 10)` ✓（实测见下）
+* `g.V(ids,'Account').cc(DIST)` / `louvain(DIST[, iterations])` / `sssp(DIST[, rootId])` / `bfs(DIST[, rootId])`
+* 语义：**只有 DIST 才用分布式实现** ✓；没有配置 cluster 时**直接报错**（明确说不会退回单机 ✓）。
+  不带 `DIST` 时走原来的内存实现（pagerank/louvain/cc ✓；sssp/bfs 只有分布式形式 ✓，会明确报错 ✓）。
+* 计算对象 = **遍历已经到达的子图**（`GeminiGraph.of(graphQuery, scope, directed)` ✓）：顶点来自当前 traverser
+  （点，或边的另一端 ✓），边类来自经过的边（`bothE('Payment')` → 只算 Payment ✓），去存储读诱导子图 ✓ ——
+  与内存版算法步**同一张图** ✓，可以互相校验 ✓。
+* **已知限制（下一步）**：`g.E('payment').pagerank(DIST)`（**空种子 + 只给边类** = 全图某类边 ✗）还不支持 ✗ ——
+  它需要一个「按类扫全图」的端口（`graph-query` 目前只有按 id 读 ✓；这与第 30 节「按类型计数需要扫描计划」是同一件事 ✓）。
+  现在需要用**点种子**写法（上面的形式 ✓）。
+
+### 36.5 实测（4 个 worker，本机不同端口）
+
+* 单元/集成：`graph-gemini` **26 项**（分区/双表示/镜像/模式规则/直接执行/HTTP/4 worker 集群/子进程 worker ✓）、
+  `GremlinDistStepsTest` **12 项**（DIST 五种步、无 cluster 报错、非 DIST 参数报错、根不在子图报错、内存版仍在 ✓）
+* 集群跑（16 点、40 边；4 worker）：CC 7 supersteps 收敛 ✓、PR 20 轮与单进程参考值逐一相符（1e-6 ✓）、
+  SSSP/BFS 深度一致 ✓、Louvain 第一轮收敛（clique 一个社区 ✓）
+* **真实 payment-graph 走 HTTP API**：`g.V('135','Account').bothE('Payment').otherV().pagerank(DIST, 10)`
+  → **50 个点**、分数和 2,509,590、**2.8 秒**（含从 Aerospike 读 50 条 Payment 边 + 4 worker 加载 + 10 轮 ✓）
+* 服务启动即起 4 个 worker：`curl 127.0.0.1:19100..19103/gemini/status` 全 200 ✓
+  （`phoenixgraph.gemini.workers/first-port/mode` 可配，`mode=process` 时每个 worker 是独立 JVM ✓，
+  实测 `GeminiProcessWorkerTest` 2 个独立进程跑通同一个环 ✓）
+
+### 36.6 代码地图
+
+```
+graph-gemini/
+  GeminiGraph            输入图：dense id 映射、边表、从 GraphQuery 读诱导子图（Scope：点、边类、权重属性）
+  GeminiPartitioner      chunk 分区（α·|V|+|E^D| 平衡）+ 每分片的 sparse/dense 边集
+  GeminiLauncherLayout   每个 worker 的 payload：拥有的点、双向边、全局出度、镜像 owner、push 目标
+  WorkerLayout           一个 worker 的 CSR(稀疏,bitmap)/CSC(稠密,压缩) + peer 表
+  WorkerState            按全局 dense id 的取值数组 + pending 缓冲（next/commit）+ 活跃集
+  GeminiWorker           exchange/compute 两半 + 聚合 + 统计
+  GeminiWorkerServer     JDK HttpServer 端点：status/active/layout/exchange/messages/compute/values/aggregate/share/halt
+  GeminiWorkerMain       独立 worker 程序（--worker/--port/--workers/--load）
+  GeminiWire/GeminiClient wire 格式 + 一个共享 HttpClient
+  GeminiCluster          启动（LOCAL/PROCESS）、装载、驱动 superstep、汇总结果与统计
+  GeminiAlgorithms       pagerank/louvain/cc/sssp/bfs（signal/slot 形式）
+graph-query-gremlin/
+  GremlinDistAlgorithms  DIST 标记解析 + 子图 scope + 调 cluster
+  GremlinGraphQuery      geminiCluster(...) + 五种算法的两种形式注册
+graph-http/
+  StorageConfig          geminiCluster bean（workers/first-port/mode）
+  QueryService           engine.geminiCluster(...)
+```

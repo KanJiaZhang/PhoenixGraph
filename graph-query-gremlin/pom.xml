@@ -21,6 +21,10 @@
         </dependency>
         <dependency>
             <groupId>com.pengcheng.phoenixgraph</groupId>
+            <artifactId>graph-gemini</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.pengcheng.phoenixgraph</groupId>
             <artifactId>graph-fuzzy</artifactId>
         </dependency>
         <dependency>
