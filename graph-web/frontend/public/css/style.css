@@ -761,3 +761,106 @@ button.btn-primary:hover, #queryBtn:hover { filter: brightness(1.07); }
 .value-scalar { font-size: 24px; font-weight: 700; color: var(--accent); }
 .value-small { font-size: 13px; font-weight: 600; color: var(--text); }
 .value-detail { margin-top: 5px; color: var(--muted); font-size: 11.5px; }
+
+/* ---------------------------------------------------------------- system metrics */
+.metrics-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.metrics-graph {
+  font-weight: 600;
+  font-size: 14px;
+}
+.metrics-updated {
+  color: var(--muted, #8a94a6);
+  font-size: 11px;
+}
+.metrics-head .icon-btn {
+  margin-left: auto;
+}
+.metrics-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.metric-card {
+  border: 1px solid var(--line, #2a3242);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: var(--panel-2, rgba(255, 255, 255, 0.02));
+}
+.metric-card h4 {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--muted, #8a94a6);
+  text-transform: uppercase;
+}
+.metric-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+.metric-label {
+  min-width: 104px;
+  color: var(--text-2, #c8d0dc);
+}
+.metric-values {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  font-variant-numeric: tabular-nums;
+}
+.metric-today {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--accent, #4cc2ff);
+}
+.metric-dash { color: var(--muted, #8a94a6); }
+.metric-total {
+  font-size: 12px;
+  color: var(--muted, #8a94a6);
+}
+.metric-sub,
+.metric-bad {
+  font-size: 11px;
+  color: var(--muted, #8a94a6);
+}
+.metric-bad { color: #ff6b6b; }
+.metric-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  padding: 1px 8px;
+  margin-right: 6px;
+  border-radius: 999px;
+  border: 1px solid var(--line, #2a3242);
+  font-size: 11px;
+  color: var(--text-2, #c8d0dc);
+}
+.metric-chip b {
+  color: var(--accent, #4cc2ff);
+}
+.latency-values {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.latency-values span {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  font-variant-numeric: tabular-nums;
+}
+.latency-values i {
+  font-style: normal;
+  font-size: 10px;
+  color: var(--muted, #8a94a6);
+  text-transform: uppercase;
+}

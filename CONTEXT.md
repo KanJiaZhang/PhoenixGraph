@@ -1636,3 +1636,28 @@ latency : count 3, mean 16 ms, p50 6.0, p95 39.9, p99 39.9, max 38
 `graph-metrics` 16（计数器/每日切片/快照回灌/注册表/百分位精度）、`MetricsBusinessLogTest` 5、
 `RocksDbMetricsStoreTest` 6（含关闭重开、只读不丢桶、metrics CF 不计流量）、`QueryMetricsTest` 5、
 `MetricsControllerTest` 5；相关模块全绿（284 个测试）。
+
+---
+
+## 28. 图管理 UI（第一步：系统指标面板）
+
+在既有侧栏上加了一个 **「指标」tab**（`data-tab="metrics"`），切换即拉取
+`GET /api/metrics/{graph}`（graph-web 新增代理路由 → `graph-http` 的 `MetricsController`），
+显示三张卡片：
+
+- **存储读写**：读点 / 写点 / 读边 / 写边 / KV 往返 —— 每行 `今天 / 累计`，并带 `条数`（items）
+  与红色 `失败`；数字用等宽数字（`font-variant-numeric: tabular-nums`），今天用高亮色；
+- **写入质量**：边溢出（度数淘汰）、点更新 stale、边更新 stale、重试；
+- **查询**：按 `语言` 分行、`来源`（ui/http/algorithm/internal）做成 chip 计数；
+  下面一行是 **延迟**（count · avg · p50 · p95 · p99 · max，每项一个 `<i>` 小标签 + 等宽数值），
+  再一行是 **翻译成 KV 查询**（读点 / 读边 / KV 往返）。
+
+刷新按钮手动重拉，切换图时若面板可见会自动重拉；没有任何计数时显示「还没有任何指标：先查一次…」。
+
+顺带把 UI 发出的查询打上 `source: 'ui'`（原先会被计成 `http`），这样「查询来源」在面板上真能区分
+——headless Edge 实测：在页面上执行 `g.V('135','Account').out('Payment').limit(3)`
+→ 面板 chip 由 `ui 2` 变 `ui 3`，延迟 `avg14 / p50 15.2 / p95 26.21 / p99 26.21 / max 26`，
+读点 `54 / 54`（今天/累计）。
+
+**还没做（下一步）**：schema 编辑器 —— 在图里加属性/加点/加边、先建实例再构造点边，
+提交后生成 graph schema JSON、写入磁盘并直接加载进服务（含「导出保存」按钮）。

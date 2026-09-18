@@ -104,6 +104,34 @@
       clearSearch: '清除搜索',
       stats: '统计',
       props: '属性',
+      metrics: '指标',
+      metricsHint: '正在读取系统指标…',
+      metricsRefresh: '刷新',
+      metricsEmpty: '还没有任何指标：先查一次，或切换到一个用过的图',
+      metricsStorage: '存储读写',
+      metricsQuality: '写入质量',
+      metricsQueries: '查询',
+      metricsLatency: '延迟',
+      metricsTotal: '累计',
+      metricsToday: '今天',
+      metricsItems: '条数',
+      metricsFailed: '失败',
+      metricsSource: '来源',
+      metricsLanguage: '语言',
+      metricsTranslated: '翻译成 KV 查询',
+      metricsVertexRead: '读点',
+      metricsVertexWrite: '写点',
+      metricsEdgeRead: '读边',
+      metricsEdgeWrite: '写边',
+      metricsKeyValue: 'KV 往返',
+      metricsEvicted: '边溢出',
+      metricsStaleVertex: '点更新 stale',
+      metricsStaleEdge: '边更新 stale',
+      metricsRetries: '重试',
+      metricsDeletes: '删除',
+      metricsCount: '次数',
+      metricsMean: '平均',
+      metricsMax: '最大',
       vertices: '顶点',
       edges: '边',
       propsHint: '点击图中某点或某边查看其全部属性',
@@ -159,6 +187,34 @@
       clearSearch: 'Clear search',
       stats: 'Stats',
       props: 'Properties',
+      metrics: 'Metrics',
+      metricsHint: 'Reading system metrics…',
+      metricsRefresh: 'Refresh',
+      metricsEmpty: 'Nothing recorded yet: run a query, or pick a graph that has been used',
+      metricsStorage: 'Storage traffic',
+      metricsQuality: 'Write quality',
+      metricsQueries: 'Queries',
+      metricsLatency: 'Latency',
+      metricsTotal: 'total',
+      metricsToday: 'today',
+      metricsItems: 'items',
+      metricsFailed: 'failed',
+      metricsSource: 'source',
+      metricsLanguage: 'language',
+      metricsTranslated: 'translated to KV queries',
+      metricsVertexRead: 'vertex reads',
+      metricsVertexWrite: 'vertex writes',
+      metricsEdgeRead: 'edge reads',
+      metricsEdgeWrite: 'edge writes',
+      metricsKeyValue: 'key-value trips',
+      metricsEvicted: 'edge evictions',
+      metricsStaleVertex: 'stale vertex updates',
+      metricsStaleEdge: 'stale edge updates',
+      metricsRetries: 'retries',
+      metricsDeletes: 'deletes',
+      metricsCount: 'count',
+      metricsMean: 'mean',
+      metricsMax: 'max',
       vertices: 'Vertices',
       edges: 'Edges',
       propsHint: 'Click a vertex or edge to view all its properties',
@@ -397,6 +453,7 @@
         language: currentLanguage(),
         returnSubgraph: true,
         includeResult: true, // the answer (a count, values, rows) next to the graph
+        source: 'ui',        // the dashboard wants to see where its queries come from
       }),
     });
     if (!res.ok) throw await queryError(res, query);
@@ -1770,6 +1827,8 @@
       });
     });
     document.querySelectorAll('.tab').forEach((t) => t.addEventListener('click', onTabChange));
+    const metricsRefresh = document.getElementById('metricsRefresh');
+    if (metricsRefresh) metricsRefresh.addEventListener('click', () => loadMetrics());
     document.querySelectorAll('[data-close]').forEach((node) => {
       node.addEventListener('click', () => closeModal(node.dataset.close));
     });
@@ -1789,6 +1848,10 @@
 
   function onGraphChange(g) {
     currentGraph = g;
+    // the metrics panel follows the graph selection
+    if (!document.getElementById('metricsPanel').hidden) {
+      loadMetrics();
+    }
     displayFields = g.displayProperties || {};
     graph.vertices.clear();
     graph.edges.clear();
@@ -1824,6 +1887,133 @@
     ta.style.height = `${Math.min(ta.scrollHeight + 2, 280)}px`;
   }
 
+
+  // ---------------------------------------------------------------- system metrics
+
+  /** The metrics endpoint of the backend this page talks to. */
+  const METRICS_PATH = '/api/metrics';
+
+  let metricsLoading = false;
+
+  /** Reads the metrics of the selected graph and paints the panel. */
+  async function loadMetrics() {
+    const graph = el.graphSelect && el.graphSelect.value;
+    const body = document.getElementById('metricsBody');
+    const name = document.getElementById('metricsGraph');
+    const updated = document.getElementById('metricsUpdated');
+    if (!body) return;
+    if (!graph) {
+      body.innerHTML = `<p class="muted">${t('metricsEmpty')}</p>`;
+      return;
+    }
+    if (name) name.textContent = graph;
+    if (metricsLoading) return;
+    metricsLoading = true;
+    try {
+      const res = await fetch(`${METRICS_PATH}/${encodeURIComponent(graph)}`);
+      if (res.status === 404) {
+        body.innerHTML = `<p class="muted">${t('metricsEmpty')}</p>`;
+        if (updated) updated.textContent = '';
+        return;
+      }
+      const data = await res.json();
+      renderMetrics(data);
+      if (updated) updated.textContent = data.updatedAt ? new Date(data.updatedAt).toLocaleTimeString() : '';
+    } catch (err) {
+      body.innerHTML = `<p class="muted">${t('metricsEmpty')}</p>`;
+    } finally {
+      metricsLoading = false;
+    }
+  }
+
+  /** A number with thousands separators, or a dash. */
+  function metricNumber(value) {
+    if (value === null || value === undefined) return '—';
+    return Number(value).toLocaleString();
+  }
+
+  /** One metric row: label, today's number and the total. */
+  function metricRow(label, entry) {
+    if (!entry) return '';
+    const items = entry.itemsTotal === undefined ? ''
+      : `<span class="metric-sub">${metricNumber(entry.itemsToday)} / ${metricNumber(entry.itemsTotal)} ${t('metricsItems')}</span>`;
+    const failed = entry.failedTotal ? `<span class="metric-bad">${metricNumber(entry.failedTotal)} ${t('metricsFailed')}</span>` : '';
+    return `<div class="metric-row">
+      <span class="metric-label">${label}</span>
+      <span class="metric-values">
+        <span class="metric-today">${metricNumber(entry.today)}</span>
+        <span class="metric-dash">/</span>
+        <span class="metric-total">${metricNumber(entry.total)}</span>
+      </span>
+      ${items}${failed}
+    </div>`;
+  }
+
+  /** A card with a title and a few rows. */
+  function metricCard(title, rows) {
+    return `<div class="metric-card"><h4>${title}</h4>${rows}</div>`;
+  }
+
+  /** Paints the whole panel from the endpoint's answer. */
+  function renderMetrics(data) {
+    const body = document.getElementById('metricsBody');
+    if (!body) return;
+    const storage = data.storage || {};
+    const quality = data.quality || {};
+    const queries = data.queries || {};
+    const counters = data.counters || {};
+    const isEmpty = Object.keys(counters).length === 0;
+
+    const storageCard = metricCard(t('metricsStorage'),
+      metricRow(t('metricsVertexRead'), storage.vertexRead)
+      + metricRow(t('metricsVertexWrite'), storage.vertexWrite)
+      + metricRow(t('metricsEdgeRead'), storage.edgeRead)
+      + metricRow(t('metricsEdgeWrite'), storage.edgeWrite)
+      + metricRow(t('metricsKeyValue'), storage.keyValue));
+
+    const qualityCard = metricCard(t('metricsQuality'),
+      metricRow(t('metricsEvicted'), quality.evicted)
+      + metricRow(t('metricsStaleVertex'), quality.staleVertexWrites)
+      + metricRow(t('metricsStaleEdge'), quality.staleEdgeWrites)
+      + metricRow(t('metricsRetries'), quality.retries));
+
+    // query counts, one column per language and source
+    const byLanguage = queries.byLanguageAndSource || {};
+    const queryRows = Object.entries(byLanguage).map(([language, sources]) => {
+      const parts = Object.entries(sources).map(([source, count]) =>
+        `<span class="metric-chip">${source} <b>${metricNumber(count)}</b></span>`).join('');
+      return `<div class="metric-row">
+        <span class="metric-label">${t('metricsLanguage')} ${language}</span>
+        <span class="metric-values">${parts}</span>
+      </div>`;
+    }).join('');
+    const latency = queries.latency;
+    const latencyRow = latency ? `<div class="metric-row metric-latency">
+        <span class="metric-label">${t('metricsLatency')} (${metricNumber(latency.count)} ${t('metricsCount')})</span>
+        <span class="metric-values latency-values">
+          <span><i>avg</i>${latency.meanMs} ms</span>
+          <span><i>p50</i>${latency.p50Ms} ms</span>
+          <span><i>p95</i>${latency.p95Ms} ms</span>
+          <span><i>p99</i>${latency.p99Ms} ms</span>
+          <span><i>max</i>${latency.maxMs} ms</span>
+        </span>
+      </div>` : '';
+    const translated = queries.translated || {};
+    const translatedRow = `<div class="metric-row">
+        <span class="metric-label">${t('metricsTranslated')}</span>
+        <span class="metric-values latency-values">
+          <span><i>${t('metricsVertexRead')}</i>${metricNumber(translated.vertexReads)}</span>
+          <span><i>${t('metricsEdgeRead')}</i>${metricNumber(translated.edgeReads)}</span>
+          <span><i>${t('metricsKeyValue')}</i>${metricNumber(translated.keyValueReads)}</span>
+        </span>
+      </div>`;
+    const queryCard = metricCard(t('metricsQueries'), queryRows + latencyRow + translatedRow);
+
+    body.innerHTML = isEmpty
+      ? `<p class="muted">${t('metricsEmpty')}</p>`
+      : storageCard + qualityCard + queryCard;
+  }
+
   function onTabChange(e) {
     activateTab(e.target.dataset.tab);
   }
@@ -1840,6 +2030,10 @@
     document.getElementById('statsPanel').hidden = wanted !== 'stats';
     document.getElementById('propsPanel').hidden = wanted !== 'props';
     document.getElementById('rowsPanel').hidden = wanted !== 'rows';
+    document.getElementById('metricsPanel').hidden = wanted !== 'metrics';
+    if (wanted === 'metrics') {
+      loadMetrics();
+    }
   }
 
   /** Shows or hides the result tab (it only exists for Cypher results). */

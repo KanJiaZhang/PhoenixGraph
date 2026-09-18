@@ -7,6 +7,7 @@ import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -34,6 +35,24 @@ public class ProxyController {
     @GetMapping("/graphs")
     public ResponseEntity<String> graphs() {
         return forward(HttpMethod.GET, "/api/v1/graphs", null);
+    }
+
+    /** The system metrics of one graph (see {@code MetricsController}). */
+    @GetMapping("/metrics/{graph}")
+    public ResponseEntity<String> metrics(@PathVariable("graph") String graph) {
+        return forward(HttpMethod.GET, "/api/v1/metrics/" + graph, null);
+    }
+
+    /** Writes a graph's metrics through to storage on demand. */
+    @PostMapping("/metrics/{graph}/flush")
+    public ResponseEntity<String> flushMetrics(@PathVariable("graph") String graph) {
+        return forward(HttpMethod.POST, "/api/v1/metrics/" + graph + "/flush", new HttpEntity<>("{}", jsonHeaders()));
+    }
+
+    private HttpHeaders jsonHeaders() {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        return headers;
     }
 
     @PostMapping("/query")
