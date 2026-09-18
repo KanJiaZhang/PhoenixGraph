@@ -16,7 +16,8 @@
 > `regex` 里 `\d`/`\w`/`\s` 以前被当转义吃掉（看起来像「没实现」）✗ → 现在反斜杠原样保留 ✓，
 > 并支持 `regex(field, 'pattern'[, group])`（0 = 整个匹配，越界报错）；两个演示模式改用正则（key 不变）；
 > 模式可自带 `example`/`demoTitle`/`demoSteps`，主页新增「模糊关联示例」按钮
-> （`GET /api/fuzzy/demo`，只在有示例的模式上出现，一点即跑完整链路 ✓ 实测 8 点 / 18 边）。
+> （`GET /api/fuzzy/demo`，只在有示例的模式上出现，一点即跑完整链路 ✓ 实测 8 点 / 18 边；
+> **该按钮当晚已按反馈隐藏** ✗，见下一条）。
 
 > 2026-09-18 新增（下半天）：**模糊关联 Fuzzy Linking**（第 35 节）—— 新模块 `graph-fuzzy`
 > （模式语言 `emailDomain/ip2/ip3/countryCode/cardBin/alphaPrefix/regex/hash/opt` …、
@@ -269,16 +270,20 @@ curl -s -X POST localhost:8081/api/v1/vector-index/rebuild \
 
 | 文档 | 内容 |
 |---|---|
-| `README.md` | 模块表、四种存储对比、Geo search、时间窗大点读法、两种查询语言 |
-| `CONTEXT.md` | **第 21 节** RocksDB 两实现；**第 22 节** GEO；**第 23 节** 四项修正；**第 24 节** UI 三处；**第 25 节** Aerospike-Edge（含 25.7 TODO）；**第 26 节** UI 居中 + 大点有界扩展；更早：第 15–20 节（HNSW/向量索引/UI） |
+| `README.md` | 模块表、四种存储对比、Geo search、时间窗大点读法、两种查询语言、向量检索、模糊关联 |
+| `CONTEXT.md` | **第 32–35 节**（2026-09-18：两轮 store 下沉优化 / 模糊关联 / regex 形状语义 / UI 三处）；**第 27–31 节**（同日：系统 metrics、指标面板、建模 UI、benchmark、smart 数据）；**第 21–26 节**（2026-09-17：RocksDB 两实现、GEO、四项修正、UI 三处、Aerospike-Edge、居中与有界扩展）；更早：第 15–20 节（HNSW/向量索引/UI） |
+| `DAILY-2026-09-18.md` | **按天笔记**：今天 15 个提交的思考与结果、关键决定、复现命令、遗留事项（与昨天的 `CONTEXT.md` §21–31 互不覆盖） |
 | `HANDOVER.md` | 本文件（结论 / 现场 / 明天第一件事 / 命令 / 设计要点 / 限制 / 代码地图） |
 
 ---
 
 ## 8. 怎么查历史（含完整思考与输出）
 
-**结论类**：本文件 §0（今天的结论）+ `CONTEXT.md` §21–26（设计与实测）+ `git log --oneline --since=…`（改动本身）。
-这三处只有**结论**，没有推理过程。
+**结论类**：本文件 §0（今天的结论）+ `CONTEXT.md`（设计与实测）+ **`DAILY-2026-09-18.md`（按天：思考与结果）** + `git log --oneline --since=…`（改动本身）。
+这几处只有**结论**，没有逐步的推理过程。
+
+> 按天的**思考**（为什么这么做、掉过哪些坑、哪些方案被放弃）在 `DAILY-*.md` 里；
+> **逐步的推理过程**只在会话导出里（下一节）；`CONTEXT.md` 是滚动的设计文档（昨天 §21–31、今天 §32–35，互不覆盖）。
 
 **完整过程类**：pi 把每一轮会话存成 JSONL（含用户输入、模型的 thinking、每次工具调用与输出、以及历次压缩摘要）：
 
@@ -295,14 +300,21 @@ C:\Users\Pengshan Zhang\.pi\agent\sessions\--D--workspace-eclipse-PhoenixGraph--
 
 ```bash
 # 今天一整天（本地时区），含思考、工具调用与输出、压缩摘要
-node tools/session-export.mjs --from 2026-09-17 --to 2026-09-17 --out .sessions/2026-09-17-full.md
+node tools/session-export.mjs --from 2026-09-18 --to 2026-09-18 --thinking full --tools full \
+     --max-chars 4000 --out .sessions/2026-09-18-full.md
 
-# 只看问答（思考压到 1.2k 字符、不含工具输出）
-node tools/session-export.mjs --from 2026-09-17 --thinking brief --tools none \
-     --out .sessions/2026-09-17-answers-only.md
+# 只看问答（不含思考与工具输出）
+node tools/session-export.mjs --from 2026-09-18 --to 2026-09-18 --thinking none --tools none \
+     --out .sessions/2026-09-18-answers-only.md
 
 # 常用开关：--session <路径|id|latest> --thinking full|brief|none --tools full|brief|none --max-chars N
 ```
 
-已导出到 `'.sessions/`（已 gitignore，不入库）：`2026-09-17-full.md`（1.4 MB，14 个用户轮次 / 965 个助手轮次 / 369 段思考 /
-368 段工具输出 / 2 次压缩摘要）、`2026-09-17-answers-only.md`（0.6 MB，速读用）。
+已导出到 `'.sessions/`（已 gitignore，不入库）：
+
+| 文件 | 内容 |
+|---|---|
+| `2026-09-17-full.md`（1.4 MB） | 09-17：14 个用户轮次 / 965 个助手轮次 / 369 段思考 / 368 段工具输出 / 2 次压缩 |
+| `2026-09-17-answers-only.md`（0.6 MB） | 09-17 速读版 |
+| `2026-09-18-full.md`（3.0 MB） | **09-18：932 轮，含全部 thinking 与工具输出** |
+| `2026-09-18-answers-only.md`（0.17 MB） | **09-18 速读版** |
