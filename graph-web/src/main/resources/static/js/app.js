@@ -344,6 +344,10 @@
    * box. The Cypher ones exercise the supported subset: id matches, both directions,
    * two hops, filters, aggregation and variable-length paths.
    */
+  // The fuzzy example button is hidden until the feature settles: the endpoint it uses
+  // (GET /api/fuzzy/demo) and the pattern examples stay, only the button is off.
+  const SHOW_FUZZY_EXAMPLE = false;
+
   const EXAMPLES = {
     cypher: {
       'payment-graph': [
@@ -1735,6 +1739,9 @@
   async function refreshFuzzyButton() {
     if (!el.fuzzyBtn || !currentGraph) return;
     el.fuzzyBtn.hidden = true;
+    if (!SHOW_FUZZY_EXAMPLE) {
+      return; // the button is hidden for now: flip this to put it back
+    }
     try {
       const res = await fetch('/api/fuzzy/demo?graph=' + encodeURIComponent(currentGraph.name));
       if (!res.ok) return;

@@ -93,6 +93,10 @@ body {
   white-space: nowrap;
 }
 
+/* The graph instance picker: three quarters of the width it used to take (317px), so a long
+   "name . storage" entry does not push the query row apart. */
+#graphSelect { width: 238px; }
+
 .actions { margin-left: auto; display: flex; align-items: center; gap: 12px; }
 
 /* language segmented switch */

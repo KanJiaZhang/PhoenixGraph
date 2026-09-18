@@ -91,7 +91,8 @@ class FuzzyLinksTest {
         assertEquals(List.of("mail.ru", "_", "86", "_", "10.20", "_", "zhang"), links.get(0).fragments());
         assertTrue(links.get(0).complete());
         assertEquals(1, links.get(1).patternId());
-        assertEquals("fl_1_10.20.31_621700_1988", links.get(1).linkVertexId());
+        assertTrue(links.get(1).linkVertexId().startsWith("fl_1_10.20.31_621700_re_"),
+                "the machine-made email contributes its shape: " + links.get(1).linkVertexId());
     }
 
     @Test
@@ -200,13 +201,34 @@ class FuzzyLinksTest {
 
     @Test
     void theDemoPatternsUseARegularExpressionThatKeepsItsBackslashes() {
-        // the shipped patterns extract the user name word and the leading digits of an email name
-        assertTrue(FuzzyDemo.SHARED_HABITS.expression().contains("regex(username, '^([a-z]+)')"));
-        assertTrue(FuzzyDemo.MACHINE_MAIL.expression().contains("regex(emailName(email), '^(\\d{4})')"),
+        // the shipped patterns reduce the value to a word and to a shape
+        assertTrue(FuzzyDemo.SHARED_HABITS.expression().contains("regexValue(username, '^([a-z]+)')"),
+                "the word is what the value is reduced to");
+        assertTrue(FuzzyDemo.MACHINE_MAIL.expression().contains("regex(emailName(email), '^\\d{4}')"),
                 "the digits are a backslash class, so it has to survive as written");
 
         assertEquals("mail.ru_86_10.20_zhang", FuzzyDemo.SHARED_HABITS.key(FuzzyDemo.demoContext()));
-        assertEquals("10.20.31_621700_1988", FuzzyDemo.MACHINE_MAIL.key(FuzzyDemo.demoContext()));
+        assertTrue(FuzzyDemo.MACHINE_MAIL.key(FuzzyDemo.demoContext()).startsWith("10.20.31_621700_re_"),
+                FuzzyDemo.MACHINE_MAIL.key(FuzzyDemo.demoContext()));
+    }
+
+    @Test
+    void aShapeLinksValuesThatDifferButLookAlike() {
+        // the point of putting the shape in the key: zhang1988 and xia1999 are different accounts that
+        // share the way their user name is built, and nothing else
+        FuzzyPattern shape = FuzzyPattern.of(9,
+                "ip2(ip)+'_'+regex(username, '^[a-z]+\\d+$')");
+        FuzzyPattern value = FuzzyPattern.of(9,
+                "ip2(ip)+'_'+regexValue(username, '^([a-z]+)\\d+$')");
+        FuzzyContext zhang = FuzzyContext.of(Map.of("ip", "10.20.1.1", "username", "zhang1988"));
+        FuzzyContext xia = FuzzyContext.of(Map.of("ip", "10.20.2.2", "username", "xia1999"));
+
+        assertEquals(shape.key(zhang), shape.key(xia),
+                "the shape is what they share, so a shape pattern links them");
+        assertNotEquals(value.key(zhang), value.key(xia),
+                "a value pattern keeps them apart, which is what it is for");
+        assertNull(FuzzyPattern.of(9, "regex(username, '^\\d+$')").key(zhang),
+                "a value of another shape does not satisfy the pattern at all");
     }
 
     @Test

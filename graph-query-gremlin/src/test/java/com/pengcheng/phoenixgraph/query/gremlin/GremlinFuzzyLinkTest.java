@@ -35,13 +35,22 @@ class GremlinFuzzyLinkTest {
             + "\"ip\":\"10.20.88.4\",\"username\":\"zhang1979\",\"cardNumber\":\"6217000099998888\"}";
 
     private static final String LINK_A = linkOf(CONTEXT_A);
-    private static final String LINK_HONEST = "fl_0_qq.com_86_172.16_liwei";
-    private static final String LINK_MACHINE = "fl_1_10.20.31_621700_1988";
+    private static final String LINK_HONEST = FuzzyDemo.SHARED_HABITS.linkVertexId(
+            com.pengcheng.phoenixgraph.fuzzy.FuzzyContexts.fromJson(
+                    "{\"email\":\"li.wei@qq.com\",\"phone\":\"+8613700137000\",\"ip\":\"172.16.5.9\","
+                            + "\"username\":\"liwei\"}"));
+    // the second pattern puts the shape of the machine-made email in the key, so the id is computed
+    private static final String LINK_MACHINE = FuzzyDemo.MACHINE_MAIL.linkVertexId(
+            com.pengcheng.phoenixgraph.fuzzy.FuzzyContexts.fromJson(
+                    "{\"email\":\"19880101@mail.ru\",\"ip\":\"10.20.31.7\","
+                            + "\"cardNumber\":\"6217000010001234\"}"));
 
     private static final Map<String, Map<String, Object>> VERTICES = Map.of(
             LINK_A, linkProperties("mail.ru_86_10.20_zhang", 0),
             LINK_HONEST, linkProperties("qq.com_86_172.16_liwei", 0),
-            LINK_MACHINE, linkProperties("10.20.31_621700_1988", 1),
+            LINK_MACHINE, linkProperties(FuzzyDemo.MACHINE_MAIL.key(
+                    com.pengcheng.phoenixgraph.fuzzy.FuzzyContexts.fromJson(
+                            "{\"email\":\"19880101@mail.ru\",\"ip\":\"10.20.31.7\",\"cardNumber\":\"6217000010001234\"}")), 1),
             "a1", account("Zhang", "zhang1988", "19880101@mail.ru", "+8613800138000", "10.20.31.7"),
             "a2", account("Zhang", "zhang1979", "19790101@mail.ru", "+8613900139000", "10.20.88.4"),
             "a3", account("Li", "liwei", "li.wei@qq.com", "+8613700137000", "172.16.5.9"),

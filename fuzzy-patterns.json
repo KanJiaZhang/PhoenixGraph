@@ -2,7 +2,7 @@
   "payment-graph" : [ {
     "id" : 0,
     "name" : "email domain + country + ip/16 + name word",
-    "expression" : "emailDomain(email)+'_'+countryCode(phone)+'_'+ip2(ip)+'_'+regex(username, '^([a-z]+)')",
+    "expression" : "emailDomain(email)+'_'+countryCode(phone)+'_'+ip2(ip)+'_'+regexValue(username, '^([a-z]+)')",
     "description" : "Accounts that share an email provider, a country, a /16 network and the letters their user name starts with.",
     "enabled" : true,
     "example" : {
@@ -16,9 +16,9 @@
     "demoSteps" : ".out('FuzzyLinkedTo').outE('Payment').otherV()"
   }, {
     "id" : 1,
-    "name" : "ip/24 + email digits + card BIN",
-    "expression" : "ip3(ip)+'_'+cardBin(cardNumber)+'_'+regex(emailName(email), '^(\\d{4})')",
-    "description" : "Accounts whose email local part starts with four digits, on the same /24 network and with the same card BIN.",
+    "name" : "ip/24 + machine-made email + card BIN",
+    "expression" : "ip3(ip)+'_'+cardBin(cardNumber)+'_'+regex(emailName(email), '^\\d{4}')",
+    "description" : "Accounts whose email local part is four digits, on the same /24 network and with the same card BIN. The regular expression contributes its shape to the key, so any address of that shape counts.",
     "enabled" : true,
     "example" : {
       "email" : "44100101@qq.com",

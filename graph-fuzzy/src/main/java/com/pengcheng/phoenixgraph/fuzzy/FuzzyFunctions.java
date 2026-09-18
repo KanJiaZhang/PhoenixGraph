@@ -85,17 +85,40 @@ public final class FuzzyFunctions {
                     }
                     return start == text.length() ? null : text.substring(start);
                 });
-        register("regex", "regex(field, 'pattern'[, group])", 1,
-                "What the pattern matches: the whole match, or the group it is asked for (the first "
-                        + "capturing group when the pattern has one), as the fragment of the key",
+        register("regex", "regex(field, 'pattern')", 1,
+                "Requires the value to match the pattern and puts the pattern itself - the shape, not "
+                        + "what it matched - into the key, so every value of that shape shares the "
+                        + "fragment (use regexValue to put what it matched instead)",
                 (value, args) -> {
                     String text = trimmed(value);
                     if (text == null) {
                         return null;
                     }
                     Matcher matcher = compile(args.get(1), "regex").matcher(text);
-                    // a group the expression does not have is a mistake in the pattern, so it is
-                    // reported even when this particular value does not match
+                    if (args.size() > 2 && !args.get(2).isBlank()) {
+                        // a group the expression does not have is a mistake in the pattern, so it is
+                        // reported even when this particular value does not match
+                        int group = groupIndex(args, 2);
+                        if (group > matcher.groupCount()) {
+                            throw new FuzzyPatternException("The regular expression '" + args.get(1)
+                                    + "' has " + matcher.groupCount() + " capturing group(s), so group "
+                                    + group + " does not exist");
+                        }
+                    }
+                    if (!matcher.find()) {
+                        return null; // the shape does not hold: the pattern does not apply
+                    }
+                    return shape(args.get(1));
+                });
+        register("regexValue", "regexValue(field, 'pattern'[, group])", 1,
+                "What the pattern matched - the whole match, or the group it is asked for (the first "
+                        + "capturing group when the pattern has one) - as the fragment of the key",
+                (value, args) -> {
+                    String text = trimmed(value);
+                    if (text == null) {
+                        return null;
+                    }
+                    Matcher matcher = compile(args.get(1), "regexValue").matcher(text);
                     int group = args.size() > 2 && !args.get(2).isBlank() ? groupIndex(args, 2) : -1;
                     if (group > matcher.groupCount()) {
                         throw new FuzzyPatternException("The regular expression '" + args.get(1) + "' has "
@@ -241,6 +264,27 @@ public final class FuzzyFunctions {
             return null;
         }
         return matched.toLowerCase(Locale.ROOT);
+    }
+
+    /**
+     * The fragment a regular expression contributes: its own shape, not what it matched.
+     *
+     * <p>Extracting the value would link {@code zhang1988} to {@code zhang1979} but leave
+     * {@code xia1999} - a value of the same shape - on a node of its own, so a pattern that means
+     * "a word followed by digits" would only group accounts that happen to share the word. The
+     * shape is what the pattern asks for, so the shape is the fragment.
+     *
+     * <p>The shape is read as a fragment of a record key, so it is written as {@code re_<shape>_<hash>}:
+     * a reader of the key sees which sub-pattern it stands for, and the hash keeps two shapes that
+     * normalise alike ({\@code ^([a-z]+)} and {\@code ^[a-z]+}) apart. The pattern editor shows the expression itself.
+     */
+    static String shape(String regex) {
+        String readable = regex.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]+", "_");
+        readable = readable.replaceAll("^_+", "").replaceAll("_+$", "");
+        if (readable.length() > 24) {
+            readable = readable.substring(0, 24);
+        }
+        return "re_" + readable + "_" + sha256(regex).substring(0, 8);
     }
 
     private static String digits(String value) {

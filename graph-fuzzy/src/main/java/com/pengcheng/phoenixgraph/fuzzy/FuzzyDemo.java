@@ -16,27 +16,27 @@ public final class FuzzyDemo {
 
     /**
      * Pattern 0 - the "open a new account, keep the habits" pattern: the same email provider, the
-     * same country, the same network and a user name whose leading letters are the same (a regular
-     * expression pulls the word out of {@code zhang1988}, so the letters are the fragment and the
-     * digits after them are not).
+     * same country, the same network and the same word at the start of the user name
+     * ({@code regexValue} takes the letters out of {@code zhang1988}, so the word is the fragment).
      */
     public static final FuzzyPattern SHARED_HABITS = withDemo(new FuzzyPattern(0,
             "email domain + country + ip/16 + name word",
-            "emailDomain(email)+'_'+countryCode(phone)+'_'+ip2(ip)+'_'+regex(username, '^([a-z]+)')",
+            "emailDomain(email)+'_'+countryCode(phone)+'_'+ip2(ip)+'_'+regexValue(username, '^([a-z]+)')",
             "Accounts that share an email provider, a country, a /16 network and the letters their "
                     + "user name starts with.",
             true));
 
     /**
      * Pattern 1 - the "same address block, machine-made email" pattern: a /24 network, one card BIN,
-     * and the four digits an email local part starts with (a capturing group, so {@code \d} picks
-     * the digits out of {@code 44100101}).
+     * and an email local part of the machine-made shape. The regular expression contributes its own
+     * shape to the key, so every account on that network with that BIN whose address has that shape
+     * is on one node - which is what asking for a shape is for.
      */
     public static final FuzzyPattern MACHINE_MAIL = withDemo(new FuzzyPattern(1,
-            "ip/24 + email digits + card BIN",
-            "ip3(ip)+'_'+cardBin(cardNumber)+'_'+regex(emailName(email), '^(\\d{4})')",
-            "Accounts whose email local part starts with four digits, on the same /24 network and "
-                    + "with the same card BIN.",
+            "ip/24 + machine-made email + card BIN",
+            "ip3(ip)+'_'+cardBin(cardNumber)+'_'+regex(emailName(email), '^\\d{4}')",
+            "Accounts whose email local part is four digits, on the same /24 network and with the "
+                    + "same card BIN.",
             true));
 
     /** The patterns the demo graphs start with. */

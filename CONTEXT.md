@@ -2103,3 +2103,35 @@ headless Edge 实测（payment-graph，模式 0 的 demoSteps 是完整链路）
 测试：`graph-fuzzy` 34 项（新增 example/demo 往返、模式自带例子能算出 link、无例子时不猜 ✓）、
 `FuzzyControllerTest` 14 项（新增 `/demo` 两个 ✓）。curl 实测：
 `{"patternId":0,"title":"pattern -> ring -> payments -> receiver","key":"mail.ru_86_10.20_zhang","query":"g.V().fuzzyLink(0, '{…}')…"}` ✓。
+
+### 35.9 regex 的语义改为「形状」而不是「抽值」（同日追加，按用户反馈）
+
+**改动的理由**：抽值会让 `zhang1988` 和 `zhang1979` 关联 ✓，但同样满足「字母+数字」形状的 `xia1999`
+落在自己的节点上 ✗ —— 正则想表达的其实是「**形状**」，所以形状才是片段。
+
+- **`regex(field, 'pattern'[, group])`（改语义）**：**要求**值满足该形状（不满足 → 整个模式不生效 ✓），
+  但写入 key 的片段是**形状本身**：`re_<可读形状>_<sha256 前 8 位>` ✓
+  —— 可读部分让人看出这个片段代表哪个子模式 ✓，哈希后缀保证两个归一化后相撞的形状（`^([a-z]+)` 与
+  `^[a-z]+` ✓）仍然是两个片段 ✓（`twoShapesThatNormaliseAlikeStayApart` 断言这一点 ✓）；给了 group
+  只做**校验**（越界报错 ✓），不改片段 ✓。
+- **`regexValue(field, 'pattern'[, group])`（新函数）**：原来的语义 —— 把**匹配到的值**（有捕获组取第一组 ✓
+  或按 group 取 ✓）作为片段 ✓。
+- 演示模式：模式 0 用 `regexValue(username, '^([a-z]+)')` ✓（key 不变 → `mail.ru_86_10.20_zhang` ✓，
+  两圈数据与既有断言不受影响 ✓）；模式 1 用 `regex(emailName(email), '^\d{4}')` ✓（形状 ✓，
+  key 变成 `10.30.40_621700_re_d_4_8aafc7c1` ✓，仍然是 1 个节点 4 个成员 ✓）。
+
+真实 Aerospike 实测（形状语义生效 ✓）：
+
+| 查询 | 结果 |
+|---|---|
+| 模式 1 + 种子 context（`44100101@qq.com` / `10.30.40.11` / 卡 …9001） | 节点 `fl_1_10.30.40_621700_re_d_4_8aafc7c1` + 4 个成员 ✓ |
+| 模式 1 + **全新** context（`99990101@qq.com` / `10.30.40.99` / 卡 …9099） | **同一个节点** ✓ —— 形状相同就关联 ✓（这就是用户要的） |
+| 模式 0 + 全新 context（`xia1999`） | 算出自己的 key（`mail.ru_86_10.20_xia`）→ 无成员 → 空 ✓ 与 `zhang*` 不混 ✓ |
+
+### 35.10 UI 两处调整（按用户反馈）
+
+1. **模糊关联图标先隐藏**：`app.js` 增加开关 `SHOW_FUZZY_EXAMPLE = false`（一行即可恢复 ✓），
+   `refreshFuzzyButton()` 直接返回、按钮保持 `hidden` ✓；`/api/v1/fuzzy/demo` 接口与模式里的
+   `example`/`demoSteps` **保留** ✓（仍被测试覆盖 ✓）。
+2. **图实例下拉宽度 = 原来的 3/4**：`#graphSelect { width: 238px; }`（实测 317px → **238px** ✓）；
+   headless 实测同时确认：查询行仍然同一行 ✓、不重叠 ✓、页面无横向滚动 ✓、模糊按钮 `hidden: true` ✓。

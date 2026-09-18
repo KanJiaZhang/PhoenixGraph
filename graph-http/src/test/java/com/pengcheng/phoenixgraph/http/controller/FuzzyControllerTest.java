@@ -27,6 +27,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -246,7 +247,9 @@ class FuzzyControllerTest {
     void theDemoPatternsReadTheContextTheyDocument() {
         FuzzyContext context = FuzzyDemo.demoContext();
 
-        assertEquals("mail.ru_86_10.20_zhang", FuzzyDemo.SHARED_HABITS.key(context));
-        assertEquals("10.20.31_621700_1988", FuzzyDemo.MACHINE_MAIL.key(context));
+        assertEquals("mail.ru_86_10.20_zhang", FuzzyDemo.SHARED_HABITS.key(context),
+                "the word the value is reduced to is the fragment");
+        assertTrue(FuzzyDemo.MACHINE_MAIL.key(context).startsWith("10.20.31_621700_re_"),
+                "the machine-made email contributes its shape: " + FuzzyDemo.MACHINE_MAIL.key(context));
     }
 }

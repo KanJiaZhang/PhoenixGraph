@@ -9,6 +9,7 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -68,8 +69,8 @@ class FuzzyExpressionTest {
     }
 
     @Test
-    void regexTakesTheFirstGroupWhenThePatternHasOne() {
-        FuzzyExpression expression = FuzzyExpression.parse("regex(username, '([a-z]+)[0-9]+')");
+    void regexValueTakesTheFirstGroupWhenThePatternHasOne() {
+        FuzzyExpression expression = FuzzyExpression.parse("regexValue(username, '([a-z]+)[0-9]+')");
 
         assertEquals("zhang", expression.key(ZHANG));
         assertNull(expression.key(context(Map.of("username", "1988"))),
@@ -77,36 +78,69 @@ class FuzzyExpressionTest {
     }
 
     @Test
-    void aRegularExpressionKeepsItsBackslashes() {
+    void aRegularExpressionPutsItsOwnShapeInTheKey() {
         // '^\d{4}$' has to reach the engine as it was written: reading \d as an escaped 'd' would
         // turn the pattern into '^d{4}$' and silently match nothing
         FuzzyExpression digits = FuzzyExpression.parse("regex(username, '^\\d{4}$')");
         FuzzyExpression word = FuzzyExpression.parse("regex(username, '^([a-z]+)\\d+$')");
-        FuzzyExpression domain = FuzzyExpression.parse("regex(email, '@(\\w+)\\.(\\w+)$')");
 
-        assertEquals("1988", digits.key(context(Map.of("username", "1988"))));
-        assertNull(digits.key(context(Map.of("username", "zhang1988"))));
-        assertEquals("zhang", word.key(context(Map.of("username", "zhang1988"))));
-        assertEquals("mail", domain.key(context(Map.of("email", "a@mail.ru"))));
+        assertNull(digits.key(context(Map.of("username", "zhang1988"))),
+                "a value of another shape makes the pattern not apply");
+        assertEquals(digits.key(context(Map.of("username", "1988"))),
+                digits.key(context(Map.of("username", "4410"))),
+                "every value of the shape shares the fragment, so two accounts of one shape link up");
+        assertEquals(word.key(context(Map.of("username", "zhang1988"))),
+                word.key(context(Map.of("username", "xia1999"))),
+                "a word followed by digits is one shape, whichever word it is");
+        assertNotEquals(digits.key(context(Map.of("username", "1988"))),
+                word.key(context(Map.of("username", "zhang1988"))),
+                "two shapes are two fragments");
+        assertTrue(digits.key(context(Map.of("username", "1988"))).startsWith("re_"),
+                "the fragment says it stands for a shape: " + digits.key(context(Map.of("username", "1988"))));
     }
 
     @Test
-    void aRegularExpressionCanBeAskedForAGroup() {
-        FuzzyExpression second = FuzzyExpression.parse("regex(email, '@(\\w+)\\.(\\w+)$', 2)");
-        FuzzyExpression whole = FuzzyExpression.parse("regex(email, '[a-z]+@[a-z]+', 0)");
+    void twoShapesThatNormaliseAlikeStayApart() {
+        FuzzyExpression group = FuzzyExpression.parse("regex(username, '^([a-z]+)')");
+        FuzzyExpression plain = FuzzyExpression.parse("regex(username, '^[a-z]+')");
+        FuzzyContext context = context(Map.of("username", "zhang1988"));
+
+        assertNotEquals(group.key(context), plain.key(context),
+                "the shape is read as a key, so the hash keeps two alike shapes apart");
+    }
+
+    @Test
+    void regexValuePutsWhatItMatchedInTheKey() {
+        FuzzyExpression second = FuzzyExpression.parse("regexValue(email, '@(\\w+)\\.(\\w+)$', 2)");
+        FuzzyExpression whole = FuzzyExpression.parse("regexValue(email, '[a-z]+@[a-z]+', 0)");
+        FuzzyExpression first = FuzzyExpression.parse("regexValue(username, '^([a-z]+)\\d+$')");
 
         assertEquals("ru", second.key(context(Map.of("email", "a@mail.ru"))));
         assertEquals("xxa@mailyy", whole.key(context(Map.of("email", "xxa@mailyy.ru"))),
                 "group 0 is the whole match");
+        assertEquals("zhang", first.key(context(Map.of("username", "zhang1988"))),
+                "the first capturing group when the pattern has one");
+        assertNotEquals(first.key(context(Map.of("username", "zhang1988"))),
+                first.key(context(Map.of("username", "xia1999"))),
+                "extracting a value distinguishes the words, which is why it is a function of its own");
         FuzzyPatternException missing = assertThrows(FuzzyPatternException.class,
-                () -> FuzzyExpression.parse("regex(email, '@(\\w+)$', 3)")
+                () -> FuzzyExpression.parse("regexValue(email, '@(\\w+)$', 3)")
                         .key(context(Map.of("email", "a@mail.ru"))));
         assertTrue(missing.getMessage().contains("does not exist"), missing.getMessage());
     }
 
     @Test
+    void aGroupARegularExpressionDoesNotHaveIsReported() {
+        FuzzyPatternException missing = assertThrows(FuzzyPatternException.class,
+                () -> FuzzyExpression.parse("regex(email, '@(\\w+)$', 2)")
+                        .key(context(Map.of("email", "a@mail.ru"))));
+
+        assertTrue(missing.getMessage().contains("capturing group"), missing.getMessage());
+    }
+
+    @Test
     void aQuoteInsideAValueIsStillEscapable() {
-        FuzzyExpression expression = FuzzyExpression.parse("regex(username, 'it\\'s')");
+        FuzzyExpression expression = FuzzyExpression.parse("regexValue(username, 'it\\'s')");
 
         assertEquals("it's", expression.key(context(Map.of("username", "it's-here"))));
     }
@@ -206,7 +240,10 @@ class FuzzyExpressionTest {
 
     @Test
     void theDemoPatternsApplyToTheDemoContext() {
-        assertEquals("mail.ru_86_10.20_zhang", FuzzyDemo.SHARED_HABITS.key(FuzzyDemo.demoContext()));
-        assertEquals("10.20.31_621700_1988", FuzzyDemo.MACHINE_MAIL.key(FuzzyDemo.demoContext()));
+        assertEquals("mail.ru_86_10.20_zhang", FuzzyDemo.SHARED_HABITS.key(FuzzyDemo.demoContext()),
+                "the word the value is reduced to is the fragment");
+        assertTrue(FuzzyDemo.MACHINE_MAIL.key(FuzzyDemo.demoContext()).startsWith("10.20.31_621700_re_"),
+                "the machine-made email contributes its shape: "
+                        + FuzzyDemo.MACHINE_MAIL.key(FuzzyDemo.demoContext()));
     }
 }

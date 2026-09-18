@@ -185,7 +185,7 @@ every account whose fragments agree produces the same key, so they end up on one
 A pattern is data, written by an analyst:
 
 ```
-emailDomain(email)+'_'+countryCode(phone)+'_'+ip2(ip)+'_'+regex(username, '^([a-z]+)')
+emailDomain(email)+'_'+countryCode(phone)+'_'+ip2(ip)+'_'+regexValue(username, '^([a-z]+)')
 ```
 
 It is evaluated against a **context** (a JSON object, or the properties of a vertex) and each
@@ -193,23 +193,27 @@ part produces a fragment; the fragments joined are the key. A part with no value
 whole pattern not apply - an account without an email is not linked by a pattern that needs
 the email domain - and `opt(...)` marks a part as optional.
 
-A regular expression is how a fragment is pulled out of a free-form value, and what it matches is
-what goes into the key:
+A regular expression is how a pattern asks for a *shape*, and there are two ways to use one:
 
 ```
-regex(username, '^([a-z]+)')            // the leading letters: zhang1988 -> zhang
-regex(emailName(email), '^(\d{4})')     // the first four digits of the local part
-regex(email, '@(\w+)\.(\w+)$', 2)     // the second group: a@mail.ru -> ru (0 is the whole match)
+regex(username, '^[a-z]+\d+$')             // requires the shape, and puts the shape in the key
+regexValue(username, '^([a-z]+)\d+$')      // requires it, and puts what it matched in the key: zhang
+regexValue(email, '@(\w+)\.(\w+)$', 2)    // a group of it: a@mail.ru -> ru (0 is the whole match)
 ```
 
-Backslashes are kept as written (`\d`, `\w`, `\s`), so a class means what it says. A group the
-expression does not have is reported when the pattern is used, and a value the expression does not
-match contributes nothing - which makes the pattern not apply.
+The difference decides who ends up on one node. With `regex`, `zhang1988` and `xia1999` - two accounts
+that share the way their user name is built and nothing else - are linked; with `regexValue`, only
+accounts whose extracted word is the same are. The shape itself is the fragment
+(`re_<shape>_<hash>`, so a reader sees which sub-pattern it stands for and two shapes that normalise
+alike stay apart), and a value that does not have the shape makes the pattern not apply at all.
+
+Backslashes are kept as written (`\d`, `\w`, `\s`), so a class means what it says. A group a
+`regexValue` asks for but the expression does not have is reported when the pattern is used.
 
 A pattern can carry how to try it: an `example` context, a `demoTitle` and the `demoSteps` a demo
-query continues with. The dashboard's fuzzy button reads exactly that - it only appears for a graph
-whose patterns have an example, and it runs `g.V().fuzzyLink(id, context)` plus those steps, so the
-demo walks from the fragments to the ring, its payments and the account they reach.
+query continues with, so the demo walks from the fragments to the ring, its payments and the account
+they reach. (The dashboard button that ran it is switched off in `app.js` for now - the endpoint and
+the pattern examples stay.)
 
 ```groovy
 g.V().fuzzyLink(0, '{"email":"19880101@mail.ru","phone":"+8613800138001",
