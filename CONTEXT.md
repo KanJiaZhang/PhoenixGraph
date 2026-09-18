@@ -1711,3 +1711,59 @@ latency : count 3, mean 16 ms, p50 6.0, p95 39.9, p99 39.9, max 38
 `SchemaDraftTest` 9 项：属性序号按声明顺序、display/vector/geo 标志双向保留、边端点与 `isNull`、
 存储类型与 RocksDB 参数、draft↔schema 往返、类型解析（含错误信息）、空名报错、**生成的 schema 能通过 `SchemaValidator`**。
 （顺带修掉一个真问题：draft 里声明的 `idType` 原先没应用到点 id schema 上，现在会。）
+
+---
+
+## 30. payment-graph（Aerospike）的核对与 benchmark
+
+新增两个集成测试（真实 Aerospike，缺数据/缺服务自动 skip；数据来自 `http_demo_v1`，可用
+`-Dpayment.vertexSet=` 覆盖；schema 直接读 `graph-http/src/main/resources/payment-graph.json` 保持一致）：
+
+### 30.1 `PaymentGraphConsistencyTest`（12 项，全绿）
+
+| 检查 | 做法 |
+|---|---|
+| 一跳出边 | `outE('Payment')` 与 store 解码出的 `ve_1_2` bin **逐条比对**：条数、edgeId 集合、对端顶点集合、`status` 值 |
+| 一跳入边 | 同上，比 `ve_1_1` bin（account `135` 与 `1000` 两个起点） |
+| `both()` | = 出 bin + 入 bin 的并集 |
+| **原始记录 vs store** | 直接用 `AerospikeClient.get` 取 bin，**bin 的 key 集合 == store 返回的 edgeId 集合** |
+| 点属性 | Gremlin 读出的属性与 `readVertex` 的存储值逐字段一致 |
+| 两跳（`Payment→Payment`、`AccountToIP→IPToAccount`、`AccountToPhone→PhoneToAccount`） | 每一跳的条数都与**中间顶点自己的 bin** 对齐，逐条展开验证 |
+| 两跳可达集 | `out('AccountToPhone').out('PhoneToAccount')` 的结果集 == 从 bin 手工推导的集合 |
+| `has('status','SUCCESS')` | 计数 == bin 里 `status=SUCCESS` 的条数（顺带发现属性 id 是 **3** 不是 1 —— 现在从 schema 取，不硬编码） |
+| `filter(status.equals('PENDING'))` | 与 `has(...)` 同值 |
+| `limit/dedup/values` | `limit(3)` 三条、`limit(3).values('status')` 仍投影出 3 个值、`dedup()` == 去重后的对端数 |
+| Cypher 分组 | `RETURN p.status, count(*)` 的分组计数 == bin 里按 status 统计的结果 |
+
+### 30.2 `PaymentGraphQueryBenchmarkTest`（10 条查询，每次 3 预热 + 15 次计时）
+
+延迟用 `graph-metrics` 的直方图（mean/p50/p95/p99/max），**代价用同一次运行里 store 的指标差值**：
+点读条目、边读条目、KV 往返次数。实测（本机 Aerospike，单位 ms / 每 query）：
+
+```
+query                                             mean     p50     p95     p99  v-reads e-reads kv-trips
+1. V(135) outE(Payment).count()                    2.4     2.3     3.7     3.7        0       1       1
+2. V(135) bothE(Payment).count()                   2.7     2.8     3.4     3.4        0       2       2
+3. V(135) out(Payment).count()                     1.7     1.7     2.2     2.2        0       1       1
+4. V(135) outE(Payment).limit(10)                  1.5     1.5     1.9     1.9        0       1       1
+5. V(135) outE(Payment).has(status=SUCCESS).count() 1.6    1.6     1.9     1.9        0       1       1
+6. V(135) outE(Payment).limit(20).values(status)    1.9    1.8     2.9     2.9        0       1       1
+7. V(1000) out(AccountToIP).out(IPToAccount)        5.1    5.0     7.3     7.3        1       3       3
+8. V(1000) out(AccountToPhone).out(PhoneToAccount)  3.1    3.1     4.2     4.2        0       3       2
+9. V(1000) bothE(Payment).dedup()                   2.8    2.6     3.8     3.8        0       2       2
+10. cypher group by status                         53.2   53.1    60.8    60.8       51       1      52
+```
+
+**瓶颈（测试会随表一起打印，每条都用上面的数字说话）**：
+
+1. **过滤不下推**：查询 5 与 1 同价（都是一次往返、一次解码）——`has` 在解码后过滤，
+   2 与 5 的差异只是 tag 而已。要更快只能把谓词送进 store（解码时跳过/二级索引）。
+2. **`count()` 白解码**：bin 是 CDT map，**不取 values 就知道 size**；查询 1/3 完全可以只读 size。
+3. **第二跳不批量**：查询 7/8 的往返数随 fan-out 增长（3 次），跨 hop 边界没有合批；
+   把第二跳改成对 frontier 的 `readEdgesBatch` 能直接砍掉往返。
+4. **`limit` 不省流量**：查询 4/6 与 1 一样付一次完整 bin 的代价 —— 需要"带上限的读"
+   （像聚合边表的窗口 cap 那样）。
+5. **投影不省流量**：边属性同在一个 bin，`values('status')` 仍解码所有属性；
+   把热点属性拆 bin 或在解码时投影才有收益。
+6. **Cypher 聚合 = N+1**：查询 10 一次聚合花了 **52 次往返 / 51 次点读**（hub 的 50 个接收方各读一次），
+   约 53 ms，是上面最快的查询的 20 倍；在 store 里按属性分组（解码时聚合）可同时省掉遍历和读。
