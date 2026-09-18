@@ -1,6 +1,8 @@
 package com.pengcheng.phoenixgraph.storage.aerospike;
 
 import com.aerospike.client.AerospikeClient;
+import com.pengcheng.phoenixgraph.metrics.MetricsSink;
+import com.pengcheng.phoenixgraph.metrics.MutableMetricsSink;
 import com.aerospike.client.AerospikeException;
 import com.aerospike.client.BatchRecord;
 import com.aerospike.client.BatchWrite;
@@ -46,6 +48,10 @@ public final class AerospikeEdgeChunkStore {
     public static final int MAX_WINDOW_EDGES = 500_000;
 
     private final AerospikeClient client;
+    /** The same client, with every round trip counted into {@link #metrics}. */
+    private final AerospikeOperations db;
+    /** Where this store records its traffic; the graph's metrics are wired in later. */
+    private final MutableMetricsSink metrics = new MutableMetricsSink();
     private final String namespace;
     private final String baseSet;
     private final BusinessLog businessLog;
@@ -58,6 +64,7 @@ public final class AerospikeEdgeChunkStore {
     public AerospikeEdgeChunkStore(AerospikeClient client, String namespace, String baseSet,
                                    BusinessLog businessLog) {
         this.client = Objects.requireNonNull(client, "client");
+        this.db = AerospikeOperations.metered(this.client, metrics);
         this.namespace = Objects.requireNonNull(namespace, "namespace");
         this.baseSet = Objects.requireNonNull(baseSet, "baseSet");
         this.businessLog = businessLog == null ? entry -> { } : businessLog;
@@ -92,7 +99,7 @@ public final class AerospikeEdgeChunkStore {
     }
 
     private HubInfo readHub(EdgeSchema edgeSchema, int directionCode, Object vertexId) {
-        Record record = client.get(null, new Key(namespace, AerospikeEdgeChunks.hubSet(baseSet),
+        Record record = db.get(null, new Key(namespace, AerospikeEdgeChunks.hubSet(baseSet),
                 AerospikeEdgeChunks.hubKey(edgeSchema, directionCode, vertexId)));
         if (record == null || record.bins == null) {
             return null;
@@ -153,7 +160,7 @@ public final class AerospikeEdgeChunkStore {
             if (edges.size() >= cap) {
                 break;
             }
-            Record record = client.get(null, chunkKey(set, vertexId, chunk));
+            Record record = db.get(null, chunkKey(set, vertexId, chunk));
             if (record == null || record.bins == null) {
                 continue;
             }
@@ -169,7 +176,7 @@ public final class AerospikeEdgeChunkStore {
     /** Walks one level down, collecting the level-0 chunks whose span overlaps the window. */
     private void descend(String set, Object vertexId, int level, long min, long max,
                          long from, long to, List<AerospikeEdgeChunks.ChunkRecord> chunks) {
-        Record record = client.get(null, new Key(namespace, set,
+        Record record = db.get(null, new Key(namespace, set,
                 AerospikeEdgeChunks.chunkKey(vertexId, min, max, level)));
         if (record == null || record.bins == null) {
             return;
@@ -266,7 +273,7 @@ public final class AerospikeEdgeChunkStore {
 
         // the marker the query looks at first: how many levels there are and what they cover
         AerospikeEdgeChunks.ChunkRecord root = records.get(records.size() - 1);
-        client.put(new WritePolicy(), new Key(namespace, AerospikeEdgeChunks.hubSet(baseSet),
+        db.put(new WritePolicy(), new Key(namespace, AerospikeEdgeChunks.hubSet(baseSet),
                         AerospikeEdgeChunks.hubKey(edgeSchema, directionCode, vertexId)),
                 new Bin(AerospikeEdgeChunks.VERTEX_BIN, String.valueOf(vertexId)),
                 new Bin(AerospikeEdgeChunks.LEVEL_BIN, root.level() + 1),
@@ -285,7 +292,7 @@ public final class AerospikeEdgeChunkStore {
             return;
         }
         try {
-            client.operate(new BatchPolicy(), writes);
+            db.operate(new BatchPolicy(), writes);
         } catch (AerospikeException e) {
             throw new IllegalStateException("Bulk edge write failed: " + e.getMessage(), e);
         }
@@ -305,4 +312,13 @@ public final class AerospikeEdgeChunkStore {
         Object value = record.bins.get(bin);
         return value instanceof Number number ? number.longValue() : 0L;
     }
+    /**
+     * Points this store's metrics at a graph's counters. Called while wiring the
+     * application (and by tests); until then the store records nothing.
+     */
+    public AerospikeEdgeChunkStore metrics(MetricsSink sink) {
+        metrics.target(sink);
+        return this;
+    }
+
 }

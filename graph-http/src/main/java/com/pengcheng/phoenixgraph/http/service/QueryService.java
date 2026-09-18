@@ -1,5 +1,8 @@
 package com.pengcheng.phoenixgraph.http.service;
 
+import com.pengcheng.phoenixgraph.metrics.GraphMetrics;
+import com.pengcheng.phoenixgraph.metrics.Metrics;
+import com.pengcheng.phoenixgraph.metrics.MetricsRegistry;
 import com.pengcheng.phoenixgraph.query.QueryException;
 import com.pengcheng.phoenixgraph.query.aerospike.AerospikeGraphQuery;
 import com.pengcheng.phoenixgraph.query.aerospike.AerospikeHnswIndexFactory;
@@ -14,6 +17,7 @@ import com.pengcheng.phoenixgraph.schema.GraphSchema;
 import com.pengcheng.phoenixgraph.schema.GraphSchemaManagers;
 import com.pengcheng.phoenixgraph.storage.aerospike.AerospikeEdgeStore;
 import com.pengcheng.phoenixgraph.storage.aerospike.AerospikeVertexStore;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Service;
 
@@ -50,12 +54,20 @@ public class QueryService {
 
     private final GraphResolver graphs;
     private final VectorIndexManager vectorIndexes;
+    private final MetricsRegistry metrics;
     private final Map<String, GremlinGraphQuery> engines = new ConcurrentHashMap<>();
     private final Map<String, CypherGraphQuery> cypherEngines = new ConcurrentHashMap<>();
 
     public QueryService(GraphResolver graphs, @Nullable VectorIndexManager vectorIndexes) {
+        this(graphs, vectorIndexes, null);
+    }
+
+    @Autowired
+    public QueryService(GraphResolver graphs, @Nullable VectorIndexManager vectorIndexes,
+                        @Nullable MetricsRegistry metrics) {
         this.graphs = Objects.requireNonNull(graphs, "graphs");
         this.vectorIndexes = vectorIndexes;
+        this.metrics = metrics;
     }
 
     /**
@@ -64,6 +76,69 @@ public class QueryService {
      */
     public static QueryService ambient(AerospikeVertexStore vertexStore, AerospikeEdgeStore edgeStore) {
         return new QueryService(GraphResolver.ambient(vertexStore, edgeStore), null);
+    }
+
+    /** The metrics of a graph, or a sink that forgets everything when none are wired. */
+    private GraphMetrics metricsOf(String graphName) {
+        return metrics == null ? GraphMetrics.noop() : metrics.forGraph(graphName);
+    }
+
+    /**
+     * Runs a query and records what it cost: one count for the language and the caller,
+     * the latency, the storage traffic it caused (the delta of the vertex and edge read
+     * counters, in key-value operations) and the elements it returned.
+     *
+     * <p>The delta is read from the graph's counters before and after the call, so the
+     * parallel seed reads a traversal fans out are all attributed to it.
+     */
+    private <T> T measured(String graphName, String language, String source, java.util.function.Supplier<T> body) {
+        GraphMetrics graph = metricsOf(graphName);
+        if (!graph.recording()) {
+            return body.get();
+        }
+        long vertexReads = graph.value(Metrics.VERTEX_READ);
+        long edgeReads = graph.value(Metrics.EDGE_READ);
+        long kvReads = graph.value(Metrics.KV_READ_CALL);
+        long kvWrites = graph.value(Metrics.KV_WRITE_CALL);
+        long storageItems = graph.value(Metrics.items(Metrics.VERTEX_READ))
+                + graph.value(Metrics.items(Metrics.EDGE_READ));
+        long started = System.nanoTime();
+        try {
+            T result = body.get();
+            graph.increment(Metrics.QUERY_ITEMS, elementsOf(result));
+            return result;
+        } catch (RuntimeException | Error e) {
+            graph.increment(Metrics.queryFailed(language, source));
+            throw e;
+        } finally {
+            graph.increment(Metrics.queryCount(language, source));
+            graph.recordLatencyMillis(Metrics.queryLatency(language),
+                    (System.nanoTime() - started) / 1_000_000L);
+            graph.increment(Metrics.QUERY_VERTEX_READ, graph.value(Metrics.VERTEX_READ) - vertexReads);
+            graph.increment(Metrics.QUERY_EDGE_READ, graph.value(Metrics.EDGE_READ) - edgeReads);
+            graph.increment(Metrics.QUERY_KV_READ, graph.value(Metrics.KV_READ_CALL) - kvReads);
+            graph.increment(Metrics.QUERY_KV_WRITE, graph.value(Metrics.KV_WRITE_CALL) - kvWrites);
+            graph.increment(Metrics.QUERY_STORAGE_ITEMS,
+                    graph.value(Metrics.items(Metrics.VERTEX_READ)) + graph.value(Metrics.items(Metrics.EDGE_READ))
+                            - storageItems);
+        }
+    }
+
+    /** How many elements a query answered with (a traverser list, a subgraph, some rows). */
+    private static long elementsOf(Object result) {
+        if (result instanceof java.util.Collection<?> collection) {
+            return collection.size();
+        }
+        if (result instanceof Subgraph subgraph) {
+            return subgraph.vertices().size() + subgraph.edges().size();
+        }
+        if (result instanceof QueryResponse response) {
+            return elementsOf(response.result());
+        }
+        if (result instanceof CypherResult rows) {
+            return rows.rows() == null ? 0 : rows.rows().size();
+        }
+        return result == null ? 0 : 1;
     }
 
     /** Substitutes {@code ${...}} parameters and executes the query, returning the raw traversers. */
@@ -111,7 +186,20 @@ public class QueryService {
      */
     public Object query(String graphName, String query, Map<String, String> params, String language,
                         boolean returnSubgraph, boolean includeResult) {
+        return query(graphName, query, params, language, returnSubgraph, includeResult, Metrics.SOURCE_HTTP);
+    }
+
+    /** Runs a query, recording it under the given source (the UI says {@code ui}). */
+    public Object query(String graphName, String query, Map<String, String> params, String language,
+                        boolean returnSubgraph, boolean includeResult, String source) {
         String selected = language == null || language.isBlank() ? GREMLIN : language.trim().toLowerCase();
+        String caller = source == null || source.isBlank() ? Metrics.SOURCE_HTTP : source.trim().toLowerCase();
+        return measured(graphName, selected, caller, () -> execute(graphName, query, params, selected,
+                returnSubgraph, includeResult));
+    }
+
+    private Object execute(String graphName, String query, Map<String, String> params, String selected,
+                           boolean returnSubgraph, boolean includeResult) {
         return switch (selected) {
             case GREMLIN -> {
                 String substituted = substitute(query, params);
@@ -130,7 +218,7 @@ public class QueryService {
                         ? engine.executeSubgraph(substituted, cypherParameters(params))
                         : engine.execute(substituted, cypherParameters(params));
             }
-            default -> throw new QueryException("Unknown query language '" + language
+            default -> throw new QueryException("Unknown query language '" + selected
                     + "'; supported: " + GREMLIN + ", " + CYPHER);
         };
     }

@@ -131,6 +131,12 @@ final class RocksDbInlineEdgeCodec {
      * @return a new bin (the input is not mutated)
      */
     static Bin merge(Bin bin, Map<String, RocksDbStoredEdge> incoming, int degreeLimit) {
+        return merge(bin, incoming, degreeLimit, null);
+    }
+
+    /** Same, counting the edges the degree limit pushed out of the bin. */
+    static Bin merge(Bin bin, Map<String, RocksDbStoredEdge> incoming, int degreeLimit,
+                     com.pengcheng.phoenixgraph.metrics.MetricsSink metrics) {
         Map<String, RocksDbStoredEdge> merged = new LinkedHashMap<>(bin.edges());
         for (Map.Entry<String, RocksDbStoredEdge> entry : incoming.entrySet()) {
             RocksDbStoredEdge existing = merged.get(entry.getKey());
@@ -144,7 +150,7 @@ final class RocksDbInlineEdgeCodec {
             }
             // otherwise the stored edge is newer: keep it
         }
-        evictOldest(merged, degreeLimit);
+        evictOldest(merged, degreeLimit, metrics);
         return new Bin(bin.name(), merged);
     }
 
@@ -182,8 +188,14 @@ final class RocksDbInlineEdgeCodec {
 
     /** Removes the oldest edges (by lastUpdatedTime, then id) beyond {@code degreeLimit}. */
     static void evictOldest(Map<String, RocksDbStoredEdge> edges, int degreeLimit) {
+        evictOldest(edges, degreeLimit, null);
+    }
+
+    /** Same, counting the evictions. */
+    static int evictOldest(Map<String, RocksDbStoredEdge> edges, int degreeLimit,
+                           com.pengcheng.phoenixgraph.metrics.MetricsSink metrics) {
         if (degreeLimit <= 0 || edges.size() <= degreeLimit) {
-            return;
+            return 0;
         }
         List<String> toEvict = edges.entrySet().stream()
                 .sorted((a, b) -> {
@@ -194,6 +206,10 @@ final class RocksDbInlineEdgeCodec {
                 .map(Map.Entry::getKey)
                 .toList();
         toEvict.forEach(edges::remove);
+        if (metrics != null && !toEvict.isEmpty()) {
+            metrics.increment(com.pengcheng.phoenixgraph.metrics.Metrics.EDGE_EVICTED, toEvict.size());
+        }
+        return toEvict.size();
     }
 
     /** Finds a bin by name, or an empty one. */

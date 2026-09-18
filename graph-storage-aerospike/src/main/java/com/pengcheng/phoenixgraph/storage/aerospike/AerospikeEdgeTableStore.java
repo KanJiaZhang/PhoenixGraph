@@ -1,6 +1,8 @@
 package com.pengcheng.phoenixgraph.storage.aerospike;
 
 import com.aerospike.client.AerospikeClient;
+import com.pengcheng.phoenixgraph.metrics.MetricsSink;
+import com.pengcheng.phoenixgraph.metrics.MutableMetricsSink;
 import com.aerospike.client.Bin;
 import com.aerospike.client.Record;
 import com.aerospike.client.Value;
@@ -21,6 +23,10 @@ import java.util.Objects;
 public class AerospikeEdgeTableStore implements EdgeTableStore {
 
     private final AerospikeClient client;
+    /** The same client, with every round trip counted into {@link #metrics}. */
+    private final AerospikeOperations db;
+    /** Where this store records its traffic; the graph's metrics are wired in later. */
+    private final MutableMetricsSink metrics = new MutableMetricsSink();
     private final String namespace;
     private final String edgeSet;
     private final String sourceIndexSet;
@@ -33,6 +39,7 @@ public class AerospikeEdgeTableStore implements EdgeTableStore {
     public AerospikeEdgeTableStore(AerospikeClient client, String namespace,
                                    String edgeSet, String sourceIndexSet, String destinationIndexSet) {
         this.client = Objects.requireNonNull(client, "client");
+        this.db = AerospikeOperations.metered(this.client, metrics);
         this.namespace = Objects.requireNonNull(namespace, "namespace");
         this.edgeSet = Objects.requireNonNull(edgeSet, "edgeSet");
         this.sourceIndexSet = Objects.requireNonNull(sourceIndexSet, "sourceIndexSet");
@@ -41,7 +48,7 @@ public class AerospikeEdgeTableStore implements EdgeTableStore {
 
     @Override
     public void put(StoredEdge edge) {
-        client.put(null, AerospikeKeys.of(namespace, edgeSet, edge.edgeId()),
+        db.put(null, AerospikeKeys.of(namespace, edgeSet, edge.edgeId()),
                 new Bin("edgeSchemaId", edge.edgeSchemaId()),
                 new Bin("source", Value.get(edge.source())),
                 new Bin("destination", Value.get(edge.destination())),
@@ -54,7 +61,7 @@ public class AerospikeEdgeTableStore implements EdgeTableStore {
 
     @Override
     public StoredEdge get(Object edgeId) {
-        Record record = client.get(null, AerospikeKeys.of(namespace, edgeSet, edgeId));
+        Record record = db.get(null, AerospikeKeys.of(namespace, edgeSet, edgeId));
         return record == null ? null : toEdge(edgeId, record.bins);
     }
 
@@ -65,7 +72,7 @@ public class AerospikeEdgeTableStore implements EdgeTableStore {
             removeFromIndex(sourceIndexSet, edge.source(), edgeId);
             removeFromIndex(destinationIndexSet, edge.destination(), edgeId);
         }
-        client.delete(null, AerospikeKeys.of(namespace, edgeSet, edgeId));
+        db.delete(null, AerospikeKeys.of(namespace, edgeSet, edgeId));
     }
 
     @Override
@@ -79,7 +86,7 @@ public class AerospikeEdgeTableStore implements EdgeTableStore {
     }
 
     private void appendIndex(String indexSet, Object vertexId, Object edgeId) {
-        Record record = client.get(null, AerospikeKeys.of(namespace, indexSet, vertexId));
+        Record record = db.get(null, AerospikeKeys.of(namespace, indexSet, vertexId));
         List<Object> ids = new ArrayList<>();
         if (record != null && record.bins.get("edgeIds") instanceof List<?> existing) {
             ids.addAll(existing);
@@ -87,22 +94,22 @@ public class AerospikeEdgeTableStore implements EdgeTableStore {
         if (!ids.contains(edgeId)) {
             ids.add(edgeId);
         }
-        client.put(null, AerospikeKeys.of(namespace, indexSet, vertexId), new Bin("edgeIds", ids));
+        db.put(null, AerospikeKeys.of(namespace, indexSet, vertexId), new Bin("edgeIds", ids));
     }
 
     private void removeFromIndex(String indexSet, Object vertexId, Object edgeId) {
-        Record record = client.get(null, AerospikeKeys.of(namespace, indexSet, vertexId));
+        Record record = db.get(null, AerospikeKeys.of(namespace, indexSet, vertexId));
         if (record == null || !(record.bins.get("edgeIds") instanceof List<?> existing)) {
             return;
         }
         List<Object> ids = new ArrayList<>(existing);
         if (ids.remove(edgeId)) {
-            client.put(null, AerospikeKeys.of(namespace, indexSet, vertexId), new Bin("edgeIds", ids));
+            db.put(null, AerospikeKeys.of(namespace, indexSet, vertexId), new Bin("edgeIds", ids));
         }
     }
 
     private Collection<StoredEdge> edgesByIndex(String indexSet, Object vertexId) {
-        Record record = client.get(null, AerospikeKeys.of(namespace, indexSet, vertexId));
+        Record record = db.get(null, AerospikeKeys.of(namespace, indexSet, vertexId));
         if (record == null || !(record.bins.get("edgeIds") instanceof List<?> ids)) {
             return List.of();
         }
@@ -126,4 +133,13 @@ public class AerospikeEdgeTableStore implements EdgeTableStore {
                 (Map<String, Object>) bins.get("columns"),
                 ((Number) bins.get("lastUpdatedTime")).longValue());
     }
+    /**
+     * Points this store's metrics at a graph's counters. Called while wiring the
+     * application (and by tests); until then the store records nothing.
+     */
+    public AerospikeEdgeTableStore metrics(MetricsSink sink) {
+        metrics.target(sink);
+        return this;
+    }
+
 }

@@ -22,6 +22,10 @@
         </dependency>
         <dependency>
             <groupId>com.pengcheng.phoenixgraph</groupId>
+            <artifactId>graph-metrics</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.pengcheng.phoenixgraph</groupId>
             <artifactId>graph-query</artifactId>
         </dependency>
         <dependency>

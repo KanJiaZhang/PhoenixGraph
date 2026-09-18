@@ -21,7 +21,7 @@ import java.util.Map;
  *                       value, so a UI asks for both
  */
 public record QueryRequest(String graphName, String query, Map<String, String> params,
-                           boolean returnSubgraph, String language, Boolean includeResult) {
+                           boolean returnSubgraph, String language, Boolean includeResult, String source) {
 
     /** Absent parameters become an empty map, so callers never see {@code null}. */
     public QueryRequest {
@@ -31,19 +31,30 @@ public record QueryRequest(String graphName, String query, Map<String, String> p
 
     /** A Gremlin request; the language was added later and defaults to it. */
     public QueryRequest(String graphName, String query, Map<String, String> params, boolean returnSubgraph) {
-        this(graphName, query, params, returnSubgraph, "gremlin", null);
+        this(graphName, query, params, returnSubgraph, "gremlin", null, null);
     }
 
     /** A Gremlin request that only says which language to use. */
     public QueryRequest(String graphName, String query, Map<String, String> params, boolean returnSubgraph,
                         String language) {
-        this(graphName, query, params, returnSubgraph, language, null);
+        this(graphName, query, params, returnSubgraph, language, null, null);
+    }
+
+    /** A request with the language and the value flag, but no source. */
+    public QueryRequest(String graphName, String query, Map<String, String> params, boolean returnSubgraph,
+                        String language, Boolean includeResult) {
+        this(graphName, query, params, returnSubgraph, language, includeResult, null);
     }
 
     /** The language to execute, defaulting to Gremlin when it is absent. */
     public String languageOrDefault() {
         return language == null || language.isBlank()
                 ? "gremlin" : language.trim().toLowerCase(Locale.ROOT);
+    }
+
+    /** Who asked: {@code ui}, {@code http} (default), {@code algorithm} or {@code internal}. */
+    public String sourceOrDefault() {
+        return source == null || source.isBlank() ? "http" : source.trim().toLowerCase(Locale.ROOT);
     }
 
     /** Whether the answer is wanted as well as the subgraph. */

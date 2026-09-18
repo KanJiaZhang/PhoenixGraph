@@ -1,6 +1,8 @@
 package com.pengcheng.phoenixgraph.storage.aerospike;
 
 import com.aerospike.client.AerospikeClient;
+import com.pengcheng.phoenixgraph.metrics.MetricsSink;
+import com.pengcheng.phoenixgraph.metrics.MutableMetricsSink;
 import com.aerospike.client.Bin;
 import com.aerospike.client.Record;
 import com.pengcheng.phoenixgraph.storage.AdjacentEdgeStore;
@@ -25,6 +27,10 @@ import java.util.Objects;
 public class AerospikeAdjacentEdgeStore implements AdjacentEdgeStore {
 
     private final AerospikeClient client;
+    /** The same client, with every round trip counted into {@link #metrics}. */
+    private final AerospikeOperations db;
+    /** Where this store records its traffic; the graph's metrics are wired in later. */
+    private final MutableMetricsSink metrics = new MutableMetricsSink();
     private final String namespace;
     private final String vertexSet;
     private final int maxOutgoingEdges;
@@ -37,6 +43,7 @@ public class AerospikeAdjacentEdgeStore implements AdjacentEdgeStore {
     public AerospikeAdjacentEdgeStore(AerospikeClient client, String namespace, String vertexSet,
                                       int maxOutgoingEdges, int maxIncomingEdges) {
         this.client = Objects.requireNonNull(client, "client");
+        this.db = AerospikeOperations.metered(this.client, metrics);
         this.namespace = Objects.requireNonNull(namespace, "namespace");
         this.vertexSet = Objects.requireNonNull(vertexSet, "vertexSet");
         this.maxOutgoingEdges = maxOutgoingEdges;
@@ -95,6 +102,7 @@ public class AerospikeAdjacentEdgeStore implements AdjacentEdgeStore {
                 .map(v -> StoredEdgeCodec.deserialize((Map<String, Object>) v))
                 .sorted(Comparator.comparingLong(StoredEdge::lastUpdatedTime)) // oldest first
                 .toList();
+        metrics.increment(com.pengcheng.phoenixgraph.metrics.Metrics.EDGE_EVICTED, excess);
         for (StoredEdge evicted : edges.subList(0, excess)) {
             raw.remove(String.valueOf(evicted.edgeId()));
             if (outbound) {
@@ -115,7 +123,7 @@ public class AerospikeAdjacentEdgeStore implements AdjacentEdgeStore {
 
     @SuppressWarnings("unchecked")
     private Map<String, Object> readEdgeMap(Object vertexId, String column) {
-        Record record = client.get(null, AerospikeKeys.of(namespace, vertexSet, vertexId));
+        Record record = db.get(null, AerospikeKeys.of(namespace, vertexSet, vertexId));
         if (record == null || !(record.bins.get(column) instanceof Map<?, ?> existing)) {
             return new LinkedHashMap<>();
         }
@@ -123,7 +131,7 @@ public class AerospikeAdjacentEdgeStore implements AdjacentEdgeStore {
     }
 
     private void writeEdgeMap(Object vertexId, String column, Map<String, Object> map) {
-        client.put(null, AerospikeKeys.of(namespace, vertexSet, vertexId), new Bin(column, map));
+        db.put(null, AerospikeKeys.of(namespace, vertexSet, vertexId), new Bin(column, map));
     }
 
     private List<StoredEdge> sorted(Map<String, Object> edgeMap, int edgeSchemaId) {
@@ -133,4 +141,13 @@ public class AerospikeAdjacentEdgeStore implements AdjacentEdgeStore {
                 .sorted(Comparator.comparingLong(StoredEdge::lastUpdatedTime).reversed())
                 .toList();
     }
+    /**
+     * Points this store's metrics at a graph's counters. Called while wiring the
+     * application (and by tests); until then the store records nothing.
+     */
+    public AerospikeAdjacentEdgeStore metrics(MetricsSink sink) {
+        metrics.target(sink);
+        return this;
+    }
+
 }

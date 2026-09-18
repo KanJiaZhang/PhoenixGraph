@@ -1,5 +1,7 @@
 package com.pengcheng.phoenixgraph.http.config;
 
+import com.pengcheng.phoenixgraph.metrics.GraphMetrics;
+import com.pengcheng.phoenixgraph.metrics.MetricsStore;
 import com.pengcheng.phoenixgraph.query.storage.GraphQuery;
 import com.pengcheng.phoenixgraph.schema.GraphSchema;
 import com.pengcheng.phoenixgraph.schema.GraphStorageSchema;
@@ -35,6 +37,7 @@ public final class RocksDbGraphStores implements AutoCloseable {
     private final Path root;
     private final Map<String, AutoCloseable> stores = new LinkedHashMap<>();
     private final Map<String, String> paths = new LinkedHashMap<>();
+    private final Map<String, MetricsStore> metricsStores = new LinkedHashMap<>();
 
     public RocksDbGraphStores() {
         this(null);
@@ -57,6 +60,15 @@ public final class RocksDbGraphStores implements AutoCloseable {
      * @throws IllegalArgumentException when the schema's storage is not a RocksDB scheme
      */
     public GraphQuery open(GraphSchema schema) {
+        return open(schema, null);
+    }
+
+    /**
+     * Opens a graph's directory and, when {@code metrics} is given, counts its key-value
+     * traffic and remembers where the graph's metrics are persisted (inside the same
+     * directory, so nothing else has to be running).
+     */
+    public GraphQuery open(GraphSchema schema, GraphMetrics metrics) {
         GraphStorageSchema storage = schema.storage();
         if (storage == null || !storage.isRocksDb()) {
             throw new IllegalArgumentException("Graph '" + schema.name() + "' is not served by RocksDB");
@@ -69,11 +81,19 @@ public final class RocksDbGraphStores implements AutoCloseable {
             case ROCKSDB_INLINE -> {
                 RocksDbInlineStore store = RocksDbInlineStore.open(schema, config);
                 register(name, path, store);
+                if (metrics != null) {
+                    store.metrics(metrics);
+                    metricsStores.put(name, store.metricsStore());
+                }
                 yield new RocksDbInlineGraphQuery(store, schema);
             }
             case ROCKSDB_EDGE -> {
                 RocksDbEdgeStore store = RocksDbEdgeStore.open(schema, config);
                 register(name, path, store);
+                if (metrics != null) {
+                    store.metrics(metrics);
+                    metricsStores.put(name, store.metricsStore());
+                }
                 yield new RocksDbEdgeGraphQuery(store, schema);
             }
             default -> throw new IllegalArgumentException(
@@ -88,6 +108,11 @@ public final class RocksDbGraphStores implements AutoCloseable {
             closeQuietly(previous);
         }
         paths.put(graphName, path);
+    }
+
+    /** Where a graph's metrics are persisted, or {@code null} when it is not a RocksDB graph. */
+    public MetricsStore metricsStore(String graphName) {
+        return metricsStores.get(graphName);
     }
 
     /** The directory opened for a graph, or {@code null} when it is not a RocksDB graph. */

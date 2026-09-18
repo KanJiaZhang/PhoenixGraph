@@ -5,6 +5,30 @@ A High Scaled and High Performance HTAP Graph Database.
 > **Resuming work?** Start with [HANDOVER.md](HANDOVER.md) - current state, how
 > to start the services and what is next.
 
+## System metrics
+
+Every graph collects its own counters and latency histograms, and persists them in the storage it
+already uses: an Aerospike graph writes one record per graph into the `graph_metrics` system set,
+a RocksDB graph writes one key into a `metrics` column family inside its own directory. A restart
+therefore resumes counting instead of starting over, and today's numbers stay today's.
+
+Collected per graph, in total and per day: vertex/edge reads and writes (with the items they moved),
+reads and writes that failed after their retries, stale property updates, edges evicted by a degree
+limit, key-value round trips, and — for queries — the count by language and caller, the elements
+they returned, the key-value reads they translated into, and the latency as mean/p50/p95/p99/max.
+
+```
+GET  /api/v1/metrics                 # every graph that recorded something
+GET  /api/v1/metrics/{graph}         # storage / quality / queries, ready for a dashboard
+POST /api/v1/metrics/{graph}/flush   # write through now (a timer does it every 30 s)
+POST /api/v1/metrics/{graph}/reset   # start the counters over
+```
+
+The counters live in `graph-metrics` (`GraphMetrics`, `LatencyStats`, `MetricsStore`,
+`MetricsRegistry`); the storage schemes count their traffic where it is issued
+(`AerospikeOperations` for Aerospike, `RocksDbHandle` for RocksDB) and the query service
+attributes the difference to each query, parallel seed reads included.
+
 ## Modules
 
 | Module                | Description                                                     |

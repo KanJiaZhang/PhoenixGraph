@@ -2,6 +2,14 @@ package com.pengcheng.phoenixgraph.http.config;
 
 import com.aerospike.client.AerospikeClient;
 import com.pengcheng.phoenixgraph.http.service.GraphBinding;
+import com.pengcheng.phoenixgraph.metrics.GraphMetrics;
+import com.pengcheng.phoenixgraph.metrics.InMemoryMetricsStore;
+import com.pengcheng.phoenixgraph.metrics.MetricsRegistry;
+import com.pengcheng.phoenixgraph.metrics.MetricsStore;
+import com.pengcheng.phoenixgraph.storage.MetricsBusinessLog;
+import com.pengcheng.phoenixgraph.storage.aerospike.AerospikeMetricsStore;
+import com.pengcheng.phoenixgraph.storage.log.JulBusinessLog;
+import com.pengcheng.phoenixgraph.storage.log.JulErrorLog;
 import com.pengcheng.phoenixgraph.http.service.GraphRegistry;
 import com.pengcheng.phoenixgraph.query.aerospike.AerospikeEdgeGraphQuery;
 import com.pengcheng.phoenixgraph.query.aerospike.AerospikeGraphQuery;
@@ -42,9 +50,33 @@ public class StorageConfig {
         return new AerospikeClient(properties.host(), properties.port());
     }
 
+    /**
+     * The system metrics of every graph, flushed to storage on a timer and on shutdown.
+     * Graphs whose storage can keep them bind their own {@link MetricsStore} below; the
+     * rest keep counting in memory.
+     */
+    @Bean(destroyMethod = "close")
+    public MetricsRegistry metricsRegistry() {
+        return new MetricsRegistry(new InMemoryMetricsStore());
+    }
+
+    /**
+     * The stores behind the write endpoints. They carry the same metrics as the query
+     * stores of the primary graph, so a write through the REST API shows up in the same
+     * counters as a write done by a loader.
+     */
     @Bean
-    public AerospikeVertexStore vertexStore(AerospikeClient client, StorageProperties properties) {
-        return new AerospikeVertexStore(client, properties.namespace(), properties.vertexSet());
+    public AerospikeVertexStore vertexStore(AerospikeClient client, StorageProperties properties,
+                                            MetricsRegistry metrics) {
+        return new AerospikeVertexStore(client, properties.namespace(), properties.vertexSet(),
+                new MetricsBusinessLog(new JulBusinessLog(), primaryMetrics(properties, metrics)),
+                new JulErrorLog()).metrics(primaryMetrics(properties, metrics));
+    }
+
+    /** The metrics of the primary graph, or a sink that forgets everything when there is none. */
+    private static GraphMetrics primaryMetrics(StorageProperties properties, MetricsRegistry metrics) {
+        List<GraphProperties> definitions = properties.graphDefinitions();
+        return definitions.isEmpty() ? GraphMetrics.noop() : metrics.forGraph(definitions.get(0).schema());
     }
 
     @Bean
@@ -59,8 +91,11 @@ public class StorageConfig {
     }
 
     @Bean
-    public AerospikeEdgeStore edgeStore(AerospikeClient client, StorageProperties properties, GraphSchema graphSchema) {
-        return new AerospikeEdgeStore(client, properties.namespace(), properties.vertexSet(), graphSchema);
+    public AerospikeEdgeStore edgeStore(AerospikeClient client, StorageProperties properties,
+                                        GraphSchema graphSchema, MetricsRegistry metrics) {
+        return new AerospikeEdgeStore(client, properties.namespace(), properties.vertexSet(), graphSchema,
+                new MetricsBusinessLog(new JulBusinessLog(), primaryMetrics(properties, metrics)),
+                new JulErrorLog()).metrics(primaryMetrics(properties, metrics));
     }
 
     /**
@@ -84,12 +119,17 @@ public class StorageConfig {
      */
     @Bean
     public GraphRegistry graphRegistry(AerospikeClient client, StorageProperties properties,
-                                       RocksDbGraphStores rocksDbStores) {
+                                       RocksDbGraphStores rocksDbStores, MetricsRegistry metrics) {
         List<GraphBinding> bindings = new ArrayList<>();
         for (GraphProperties definition : properties.graphDefinitions()) {
             GraphSchema schema = loadSchema(definition.schema());
+            GraphMetrics graphMetrics = metrics.forGraph(schema.name());
             if (RocksDbGraphStores.isRocksDb(schema)) {
-                GraphQuery query = rocksDbStores.open(schema);
+                GraphQuery query = rocksDbStores.open(schema, graphMetrics);
+                MetricsStore store = rocksDbStores.metricsStore(schema.name());
+                if (store != null) {
+                    metrics.bind(schema.name(), store);
+                }
                 bindings.add(GraphBinding.of(schema, query));
                 continue;
             }
@@ -99,15 +139,20 @@ public class StorageConfig {
                 AerospikeGeoIndex.ensureIndexes(client, properties.namespace(), definition.vertexSet(),
                         schema, null);
             }
-            AerospikeVertexStore vertexStore =
-                    new AerospikeVertexStore(client, properties.namespace(), definition.vertexSet());
-            AerospikeEdgeStore edgeStore =
-                    new AerospikeEdgeStore(client, properties.namespace(), definition.vertexSet(), schema);
+            AerospikeVertexStore vertexStore = new AerospikeVertexStore(client, properties.namespace(),
+                    definition.vertexSet(), new MetricsBusinessLog(new JulBusinessLog(), graphMetrics),
+                    new JulErrorLog()).metrics(graphMetrics);
+            AerospikeEdgeStore edgeStore = new AerospikeEdgeStore(client, properties.namespace(),
+                    definition.vertexSet(), schema,
+                    new MetricsBusinessLog(new JulBusinessLog(), graphMetrics), new JulErrorLog())
+                    .metrics(graphMetrics);
+            // every Aerospike graph persists its metrics in the same cluster, in a system set
+            metrics.bind(schema.name(), new AerospikeMetricsStore(client, properties.namespace()));
             if (schema.storage().type() == GraphStorageType.AEROSPIKE_EDGE) {
                 // big vertices live in the aggregated Edge_Out / Edge_In tables, written by a bulk
                 // import; the read path merges them with the edges still inline in the vertex record
                 AerospikeEdgeChunkStore chunks = new AerospikeEdgeChunkStore(client, properties.namespace(),
-                        definition.vertexSet());
+                        definition.vertexSet()).metrics(graphMetrics);
                 GraphQuery query = new AerospikeEdgeGraphQuery(
                         new AerospikeGraphQuery(vertexStore, edgeStore, schema), chunks, schema);
                 bindings.add(new GraphBinding(schema, vertexStore, edgeStore, client,

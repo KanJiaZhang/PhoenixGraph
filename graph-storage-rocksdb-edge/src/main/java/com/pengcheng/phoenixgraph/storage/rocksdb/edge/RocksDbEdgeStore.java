@@ -12,6 +12,7 @@ import com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbEdgeUpsert;
 import com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbHash;
 import com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbGeoIndex;
 import com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbHandle;
+import com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbMetricsStore;
 import com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbKeys;
 import com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbLruCache;
 import com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbEdgeProperty;
@@ -108,6 +109,7 @@ public final class RocksDbEdgeStore implements AutoCloseable {
             families.add(familyOf(edgeSchema));
         }
         families.addAll(RocksDbGeoIndex.columnFamilies(schema));
+        families.add(RocksDbMetricsStore.FAMILY); // the graph's metrics live next to its data
         return families;
     }
 
@@ -160,6 +162,17 @@ public final class RocksDbEdgeStore implements AutoCloseable {
 
     public RocksDbStoreConfig config() {
         return config;
+    }
+
+    /** Counts this graph's key-value traffic into {@code metrics}. */
+    public RocksDbEdgeStore metrics(com.pengcheng.phoenixgraph.metrics.MetricsSink metrics) {
+        handle.metrics(metrics);
+        return this;
+    }
+
+    /** The metrics of this graph, kept in the `metrics` column family. */
+    public RocksDbMetricsStore metricsStore() {
+        return new RocksDbMetricsStore(handle);
     }
 
     /** The column families that exist in this store. */

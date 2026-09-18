@@ -1,6 +1,8 @@
 package com.pengcheng.phoenixgraph.storage.aerospike;
 
 import com.aerospike.client.AerospikeClient;
+import com.pengcheng.phoenixgraph.metrics.MetricsSink;
+import com.pengcheng.phoenixgraph.metrics.MutableMetricsSink;
 import com.aerospike.client.AerospikeException;
 import com.aerospike.client.BatchRecord;
 import com.aerospike.client.BatchWrite;
@@ -84,6 +86,10 @@ public class AerospikeVertexStore implements VertexStore {
     public static final long EXPIRED_LAST_UPDATED_TIME = 0L;
 
     private final AerospikeClient client;
+    /** The same client, with every round trip counted into {@link #metrics}. */
+    private final AerospikeOperations db;
+    /** Where this store records its traffic; the graph's metrics are wired in later. */
+    private final MutableMetricsSink metrics = new MutableMetricsSink();
     private final String namespace;
     private final String set;
     private final int maxWriteAttempts;
@@ -103,6 +109,7 @@ public class AerospikeVertexStore implements VertexStore {
     public AerospikeVertexStore(AerospikeClient client, String namespace, String set,
                                 BusinessLog businessLog, ErrorLog errorLog, int maxWriteAttempts) {
         this.client = Objects.requireNonNull(client, "client");
+        this.db = AerospikeOperations.metered(this.client, metrics);
         this.namespace = Objects.requireNonNull(namespace, "namespace");
         this.set = Objects.requireNonNull(set, "set");
         this.businessLog = Objects.requireNonNull(businessLog, "businessLog");
@@ -233,7 +240,7 @@ public class AerospikeVertexStore implements VertexStore {
         for (int attempt = 1; attempt <= maxWriteAttempts; attempt++) {
             Record record;
             try {
-                record = client.get(null, key(vertexId));
+                record = db.get(null, key(vertexId));
             } catch (AerospikeException e) {
                 last = e;
                 continue;
@@ -242,7 +249,7 @@ public class AerospikeVertexStore implements VertexStore {
             try {
                 if (record == null) {
                     long effectiveUpdated = maxPropertyLastModified(properties, lastUpdatedTime);
-                    client.operate(createOnlyPolicy(), key(vertexId),
+                    db.operate(createOnlyPolicy(), key(vertexId),
                             buildCreateOps(properties, createdTime, effectiveUpdated));
                 } else {
                     Map<Integer, VertexPropertyValue> toWrite = decideUpdates(vertexId, record, properties);
@@ -254,7 +261,7 @@ public class AerospikeVertexStore implements VertexStore {
                     long newUpdated = Math.max(readLong(record, LAST_UPDATED_TIME_BIN),
                             mergedPropertyMax(record, toWrite));
                     boolean missingCreatedTime = record.bins.get(CREATED_TIME_BIN) == null;
-                    client.operate(generationPolicy(record.generation), key(vertexId),
+                    db.operate(generationPolicy(record.generation), key(vertexId),
                             buildUpdateOps(toWrite, newUpdated, missingCreatedTime ? createdTime : null));
                 }
                 businessLog.record(BusinessLogEntry.success("upsertVertex", target, payload));
@@ -312,7 +319,7 @@ public class AerospikeVertexStore implements VertexStore {
             writes.clear();
             writeIndices.clear();
 
-            Record[] records = client.get(new BatchPolicy(), keys);
+            Record[] records = db.get(new BatchPolicy(), keys);
             for (int i = 0; i < merged.size(); i++) {
                 VertexUpsert upsert = merged.get(i);
                 Record record = records[i];
@@ -336,7 +343,7 @@ public class AerospikeVertexStore implements VertexStore {
                 }
             }
             if (!writes.isEmpty()) {
-                client.operate(new BatchPolicy(), writes);
+                db.operate(new BatchPolicy(), writes);
             }
         });
 
@@ -508,13 +515,13 @@ public class AerospikeVertexStore implements VertexStore {
 
     /** Reads the vertex and decodes its properties and metadata (all bins). */
     public StoredVertex readVertex(Object vertexId) {
-        Record record = client.get(null, key(vertexId));
+        Record record = db.get(null, key(vertexId));
         return isMissing(record) ? null : decode(vertexId, record);
     }
 
     /** Reads the vertex reading only the given property bins (plus meta bins). */
     public StoredVertex readVertex(Object vertexId, List<Integer> propertyIndexes) {
-        Record record = client.get(null, key(vertexId), propertyBins(propertyIndexes));
+        Record record = db.get(null, key(vertexId), propertyBins(propertyIndexes));
         return isMissing(record) ? null : decode(vertexId, record);
     }
 
@@ -528,7 +535,7 @@ public class AerospikeVertexStore implements VertexStore {
             return List.of();
         }
         Key[] keys = vertexIds.stream().map(this::key).toArray(Key[]::new);
-        Record[] records = client.get(new BatchPolicy(), keys);
+        Record[] records = db.get(new BatchPolicy(), keys);
         return decodeAll(vertexIds, records);
     }
 
@@ -539,7 +546,7 @@ public class AerospikeVertexStore implements VertexStore {
             return List.of();
         }
         Key[] keys = vertexIds.stream().map(this::key).toArray(Key[]::new);
-        Record[] records = client.get(new BatchPolicy(), keys, propertyBins(propertyIndexes));
+        Record[] records = db.get(new BatchPolicy(), keys, propertyBins(propertyIndexes));
         return decodeAll(vertexIds, records);
     }
 
@@ -588,7 +595,7 @@ public class AerospikeVertexStore implements VertexStore {
     /** Reads a single property value by property index. */
     @Override
     public Object getVertexProperty(Object vertexId, int propertyIndex) {
-        Record record = client.get(null, key(vertexId));
+        Record record = db.get(null, key(vertexId));
         return record == null ? null : record.bins.get(propertyBin(propertyIndex));
     }
 
@@ -616,7 +623,7 @@ public class AerospikeVertexStore implements VertexStore {
         policy.sendKey = true;
         policy.includeBinData = true;
         List<StoredVertex> vertices = Collections.synchronizedList(new ArrayList<>());
-        client.scanAll(policy, namespace, set, (key, record) -> {
+        db.scanAll(policy, namespace, set, (key, record) -> {
             if (record == null || record.bins == null
                     || !record.bins.containsKey(propertyBin(requiredPropertyIndex))) {
                 return;
@@ -635,7 +642,7 @@ public class AerospikeVertexStore implements VertexStore {
 
     /** Reads a single property's {@code lastModifiedTime}, or {@code null} if absent. */
     public Long getVertexPropertyLastModifiedTime(Object vertexId, int propertyIndex) {
-        Record record = client.get(null, key(vertexId));
+        Record record = db.get(null, key(vertexId));
         if (record == null || record.bins.get(propertyTimeBin(propertyIndex)) == null) {
             return null;
         }
@@ -644,7 +651,7 @@ public class AerospikeVertexStore implements VertexStore {
 
     /** Reads the stored {@code createdTime}, or {@code null} if absent. */
     public Long createdTime(Object vertexId) {
-        Record record = client.get(null, key(vertexId));
+        Record record = db.get(null, key(vertexId));
         if (record == null || record.bins.get(CREATED_TIME_BIN) == null) {
             return null;
         }
@@ -653,7 +660,7 @@ public class AerospikeVertexStore implements VertexStore {
 
     /** Reads the stored {@code lastUpdatedTime}, or {@code null} if absent. */
     public Long lastUpdatedTime(Object vertexId) {
-        Record record = client.get(null, key(vertexId));
+        Record record = db.get(null, key(vertexId));
         if (record == null || record.bins.get(LAST_UPDATED_TIME_BIN) == null) {
             return null;
         }
@@ -667,7 +674,7 @@ public class AerospikeVertexStore implements VertexStore {
         for (int attempt = 1; attempt <= maxWriteAttempts; attempt++) {
             Record record;
             try {
-                record = client.get(null, key(vertexId));
+                record = db.get(null, key(vertexId));
             } catch (AerospikeException e) {
                 last = e;
                 continue;
@@ -677,7 +684,7 @@ public class AerospikeVertexStore implements VertexStore {
                 return WriteOutcome.SUCCESS;
             }
             try {
-                client.operate(generationPolicy(record.generation), key(vertexId),
+                db.operate(generationPolicy(record.generation), key(vertexId),
                         Operation.put(new Bin(LAST_UPDATED_TIME_BIN, EXPIRED_LAST_UPDATED_TIME)));
                 businessLog.record(BusinessLogEntry.success("deleteVertex", target,
                         Map.of("expired", EXPIRED_LAST_UPDATED_TIME)));
@@ -707,7 +714,7 @@ public class AerospikeVertexStore implements VertexStore {
         for (int attempt = 1; attempt <= maxWriteAttempts; attempt++) {
             Record record;
             try {
-                record = client.get(null, key(vertexId));
+                record = db.get(null, key(vertexId));
             } catch (AerospikeException e) {
                 last = e;
                 continue;
@@ -717,7 +724,7 @@ public class AerospikeVertexStore implements VertexStore {
                 return WriteOutcome.SUCCESS;
             }
             try {
-                client.operate(generationPolicy(record.generation), key(vertexId),
+                db.operate(generationPolicy(record.generation), key(vertexId),
                         Operation.put(Bin.asNull(bin)),
                         Operation.put(Bin.asNull(timeBin)));
                 businessLog.record(BusinessLogEntry.success("deleteVertexProperty", target, Map.of("bin", bin)));
@@ -784,7 +791,7 @@ public class AerospikeVertexStore implements VertexStore {
             Collections.fill(outcomes, null);
             writes.clear();
             writeIndices.clear();
-            Record[] records = client.get(new BatchPolicy(), keys);
+            Record[] records = db.get(new BatchPolicy(), keys);
             for (int i = 0; i < keys.length; i++) {
                 Record record = records[i];
                 if (isMissing(record)) {
@@ -800,7 +807,7 @@ public class AerospikeVertexStore implements VertexStore {
                 writeIndices.add(i);
             }
             if (!writes.isEmpty()) {
-                client.operate(new BatchPolicy(), writes);
+                db.operate(new BatchPolicy(), writes);
             }
         });
 
@@ -875,4 +882,13 @@ public class AerospikeVertexStore implements VertexStore {
     private Key key(Object vertexId) {
         return AerospikeKeys.of(namespace, set, vertexId);
     }
+    /**
+     * Points this store's metrics at a graph's counters. Called while wiring the
+     * application (and by tests); until then the store records nothing.
+     */
+    public AerospikeVertexStore metrics(MetricsSink sink) {
+        metrics.target(sink);
+        return this;
+    }
+
 }

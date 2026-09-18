@@ -1,6 +1,8 @@
 package com.pengcheng.phoenixgraph.storage.aerospike;
 
 import com.aerospike.client.AerospikeClient;
+import com.pengcheng.phoenixgraph.metrics.MetricsSink;
+import com.pengcheng.phoenixgraph.metrics.MutableMetricsSink;
 import com.pengcheng.phoenixgraph.schema.EdgeDirection;
 import com.pengcheng.phoenixgraph.schema.EdgePropertySchema;
 import com.pengcheng.phoenixgraph.schema.EdgeSchema;
@@ -41,6 +43,10 @@ import java.util.Objects;
 public class AerospikeEdgeBulkImporter {
 
     private final AerospikeClient client;
+    /** The same client, with every round trip counted into {@link #metrics}. */
+    private final AerospikeOperations db;
+    /** Where this store records its traffic; the graph's metrics are wired in later. */
+    private final MutableMetricsSink metrics = new MutableMetricsSink();
     private final String namespace;
     private final String baseSet;
     private final GraphSchema schema;
@@ -57,6 +63,7 @@ public class AerospikeEdgeBulkImporter {
     public AerospikeEdgeBulkImporter(AerospikeClient client, String namespace, String baseSet,
                                      GraphSchema schema, int chunkSize, BusinessLog businessLog) {
         this.client = Objects.requireNonNull(client, "client");
+        this.db = AerospikeOperations.metered(this.client, metrics);
         this.namespace = Objects.requireNonNull(namespace, "namespace");
         this.baseSet = Objects.requireNonNull(baseSet, "baseSet");
         this.schema = Objects.requireNonNull(schema, "schema");
@@ -188,4 +195,13 @@ public class AerospikeEdgeBulkImporter {
     public AerospikeEdgeChunkStore chunkStore() {
         return store;
     }
+    /**
+     * Points this store's metrics at a graph's counters. Called while wiring the
+     * application (and by tests); until then the store records nothing.
+     */
+    public AerospikeEdgeBulkImporter metrics(MetricsSink sink) {
+        metrics.target(sink);
+        return this;
+    }
+
 }

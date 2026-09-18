@@ -15,6 +15,7 @@
     <modules>
         <module>graph-core</module>
         <module>graph-schema</module>
+        <module>graph-metrics</module>
         <module>graph-storage</module>
         <module>graph-storage-aerospike</module>
         <module>graph-storage-rocksdb</module>
@@ -62,6 +63,11 @@
             <dependency>
                 <groupId>com.pengcheng.phoenixgraph</groupId>
                 <artifactId>graph-schema</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.pengcheng.phoenixgraph</groupId>
+                <artifactId>graph-metrics</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>

@@ -11,6 +11,7 @@ import com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbEdgeProperty;
 import com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbEdgeUpsert;
 import com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbGeoIndex;
 import com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbHandle;
+import com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbMetricsStore;
 import com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbKeys;
 import com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbLruCache;
 import com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbStoreConfig;
@@ -59,6 +60,9 @@ public final class RocksDbInlineStore implements AutoCloseable {
     private final BusinessLog businessLog;
     private final RocksDbVertexTable vertexTable;
     private final RocksDbLruCache<List<RocksDbInlineEdgeCodec.Bin>> edgeCache;
+    /** Where the graph's counters live (degree evictions today). */
+    private final com.pengcheng.phoenixgraph.metrics.MutableMetricsSink metrics =
+            new com.pengcheng.phoenixgraph.metrics.MutableMetricsSink();
 
     private RocksDbInlineStore(RocksDbHandle handle, GraphSchema schema, RocksDbStoreConfig config,
                                BusinessLog businessLog) {
@@ -99,6 +103,7 @@ public final class RocksDbInlineStore implements AutoCloseable {
             families.add(familyOf(edgeSchema));
         }
         families.addAll(RocksDbGeoIndex.columnFamilies(schema));
+        families.add(RocksDbMetricsStore.FAMILY); // the graph's metrics live next to its data
         return families;
     }
 
@@ -134,6 +139,18 @@ public final class RocksDbInlineStore implements AutoCloseable {
 
     public RocksDbStoreConfig config() {
         return config;
+    }
+
+    /** Counts this graph's key-value traffic into {@code metrics}. */
+    public RocksDbInlineStore metrics(com.pengcheng.phoenixgraph.metrics.MetricsSink metrics) {
+        handle.metrics(metrics);
+        this.metrics.target(metrics);
+        return this;
+    }
+
+    /** The metrics of this graph, kept in the `metrics` column family. */
+    public RocksDbMetricsStore metricsStore() {
+        return new RocksDbMetricsStore(handle);
     }
 
     /** The column families that exist in this store. */
@@ -232,7 +249,7 @@ public final class RocksDbInlineStore implements AutoCloseable {
                     int directionCode = directionOfBin(edgeSchema, binName);
                     int limit = RocksDbEdgeBins.degreeLimit(edgeSchema, directionCode);
                     RocksDbInlineEdgeCodec.Bin merged = RocksDbInlineEdgeCodec.merge(
-                            RocksDbInlineEdgeCodec.bin(updated, binName), binEntry.getValue(), limit);
+                            RocksDbInlineEdgeCodec.bin(updated, binName), binEntry.getValue(), limit, metrics);
                     updated = RocksDbInlineEdgeCodec.withBin(updated, merged);
                 }
                 writeBins(family, vertexId, updated);

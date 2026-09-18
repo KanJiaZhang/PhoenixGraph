@@ -1545,3 +1545,94 @@ toast: 该点是聚合大点，已只读取最近的 200 条边 ✓
 - `AerospikeEdgeIntegrationTest`（+1）：cap=200 / 7 的窗口读分别返回 200 / 7 条，cap=0 返回整年 5000 条 ✓；
   Gremlin 形式 `…createdBetween('1970-01-01T00:00:00','2100-01-01T00:00:00').both().limit(50).count()` 有界 ✓；
 - 全量 `./mvnw test`：**19 个模块 BUILD SUCCESS**。
+
+---
+
+## 27. 系统 metrics：采集、持久化与接口
+
+### 27.1 采集了什么
+
+新增模块 **`graph-metrics`**（唯一依赖 `graph-schema`，不引入任何第三方库），提供：
+
+- `GraphMetrics`：线程安全计数器（`LongAdder`）+ 延迟直方图；每个计数器同时保留**总量**与**按天切片**
+  （天用一秒缓存解析，热路径不分配 `LocalDate`）；`increment/recordLatency/snapshot/merge/reset`；
+- `LatencyStats`：固定分桶直方图 —— 1 µs 以下 1 ns 一格，以上每个 2 的幂 **16 格**（比值 1.044）；
+  记录是一次原子自增，内存固定（1776 个 long/直方图），百分位在桶内**线性插值**；
+  实测四种分布（均匀 / 常数 / 指数 / 对数均匀）下 **P50/P90/P95/P99 误差 ≤ 1.7 %**（`PercentileAccuracyTest`）；
+- `MetricsSnapshot` / `LatencySnapshot`：不可变快照（含每日切片与桶，可回灌）；
+- `MetricsStore`（端口）+ `InMemoryMetricsStore` + `MetricsRegistry`（每图一个实例、按图绑定存储、
+  每 30 s 定时 flush、关闭时 flush、支持 `reset`）。
+
+指标清单（名字即接口，`name{k=v}` 形式便于切片）：
+
+| 组 | 指标 |
+|---|---|
+| 读 | `storage.vertex.read`(+`.items`/`.failed`)、`storage.edge.read`(+…)、`storage.geo.read` |
+| 写 | `storage.vertex.write`(+`.items`/`.failed`)、`storage.edge.write`(+…)、`storage.vertex.write.stale`、`storage.edge.write.stale` |
+| 质量 | `storage.edge.evicted`（度数溢出）、`storage.write.retry`、`storage.vertex.delete`、`storage.edge.delete` |
+| KV | `storage.kv.read.call`/`.items`/`.failed`、`storage.kv.write.call`/`.items`/`.failed` |
+| 查询 | `query.count{language,source}`、`query.failed{language,source}`、`query.items`、`query.latency{language}`（直方图） |
+| 查询→存储 | `query.storage.vertex.read`、`query.storage.edge.read`、`query.storage.kv.read`、`query.storage.kv.write`、`query.storage.items` |
+
+### 27.2 怎么采（三个漏斗，零散点插桩）
+
+1. **Aerospike 的每一次往返**：新增 `AerospikeOperations`（接口 + `Metered` 实现），把 store 里的
+   `client.get/put/delete/operate/scanAll/query/getNodes/createIndex` 全部换到 `db.*`；
+   批量调用按 key 数计入 items，scan 用回调计数，异常计入 `kv.*.failed`。
+   读还会按“请求的 bin 是否是 `ve_*`／set 是否是 `*_edge_*`”归到 **vertex / edge** ——
+   为此把 `AerospikeEdgeStore.getEdges/getEdgesBatch` 改成**只投影该边类的 bin**（少读数据 ✓，指标也更准 ✓）。
+2. **RocksDB 的每一次读写**：全部经 `RocksDbHandle`，在那里按 **column family 前缀**
+   （`vertex:` / `edge:`+`edge-inline:` / `geo:`）分类计数，batch put/delete 累计、`write(batch)` 一次调用计入一批；
+   `metrics` CF 自身不计（否则“指标的指标”会无限自增）。
+3. **写的结果（成功 / stale / 失败）**：store 本来就把每次写记进 `BusinessLog`，新增
+   **`MetricsBusinessLog`** 装饰器把它翻译成指标（operation 含 "edge" → 边，否则点；
+   details 里 `stale`/`conflict` → `*.stale`，其它失败 → `*.failed`），**不用改任何 store 方法**。
+
+查询侧在 `QueryService` 里包一层 `measured(...)`：语言 + 来源（`source` 字段，UI 传 `ui`，默认 `http`）、
+延迟直方图、失败计数、返回元素数，以及**本次查询造成的存储流量** ——
+用执行前后 `VERTEX_READ`/`EDGE_READ`/`KV_*` 的**差值**，所以并行 seed 读也全部归到该次查询 ✓
+（`graph-http/src/test/.../QueryMetricsTest` 用假 store 验证了差值口径）。
+
+### 27.3 持久化（默认存储里各写各的）
+
+| 存储 | 位置 | 形状 |
+|---|---|---|
+| Aerospike | 新增系统 set **`graph_metrics`**（键 `metrics:<graph>`） | bins：`counters`、`counter_days`（嵌套 map）、`latency_buckets`、`latency_totals`（count/sum/max）、`updated_at` |
+| RocksDB（Inline/Edge 均） | **该图自己的目录**里的新 column family **`metrics`**（键 = 图名） | 每行一个数：`c <metric> <total>`、`d <metric> <day> <v>`、`l <metric> <count> <sum> <max> <bucket>:<hits>,…` |
+
+两者都保留**每日切片**，所以“今天”跨重启不被清零；直方图桶也保留，重启后 P95/P99 仍是之前的样本算出来的。
+flush 由 `MetricsRegistry` 每 30 s 与关闭时执行（也可 `POST /api/v1/metrics/{graph}/flush` 手动）。
+
+**踩到的两个坑（都已修 + 回归测试）**：
+- `reset()` 原先**替换** `GraphMetrics` 实例 → store 手里还是旧实例 → 重置后存储指标全为 0 ✗
+  → 改成**原地清空** ✓（`GraphMetrics.reset()`）；
+- `bind(store)` 常常发生在 `forGraph()` 之后（store 需要 metrics 才能建、metrics store 又要 store 才拿得到）
+  → 首次加载读的是内存空存储 ✗ → `bind` 现在会**立即从新存储合并一次快照** ✓。
+
+### 27.4 HTTP 接口与实测
+
+```
+GET  /api/v1/metrics                 # 所有图：分组视图 + 扁平 counters
+GET  /api/v1/metrics/{graph}         # 单图：storage / quality / queries（含 P50·P95·P99）/ counters
+POST /api/v1/metrics/{graph}/flush   # 立即落盘
+POST /api/v1/metrics/{graph}/reset   # 清零（并存删除已落盘快照）
+```
+
+线上实测（8081，`payment-graph` Aerospike + `payment-graph-rocksdb-inline`）：
+
+```
+storage : vertexRead 104 / edgeRead 3 / keyValue 57 calls · 107 items      （Aerospike）
+          vertexRead 2 / items 102 / edgeRead 1 / keyValue 3 · 103 items   （RocksDB）
+queries : {"gremlin":{"ui":3},"cypher":{"http":1}}  translated {vertexReads:104, edgeReads:3, keyValueReads:57}
+latency : count 3, mean 16 ms, p50 6.0, p95 39.9, p99 39.9, max 38
+写：POST /api/v1/vertices → SUCCESS；同一属性用更旧 lastModifiedTime → 409 CONFLICT
+          vertexWrite 3 / staleVertexWrites 2
+重启：flush → 重启 → “restored from storage: 12 counters, 1 histograms”，
+          vertexRead 51 / edgeRead 1 / kv 2 / uiQueries 1 / latency count 1 / p95 28.31 ✓（两套存储都验过）
+```
+
+### 27.5 测试
+
+`graph-metrics` 16（计数器/每日切片/快照回灌/注册表/百分位精度）、`MetricsBusinessLogTest` 5、
+`RocksDbMetricsStoreTest` 6（含关闭重开、只读不丢桶、metrics CF 不计流量）、`QueryMetricsTest` 5、
+`MetricsControllerTest` 5；相关模块全绿（284 个测试）。

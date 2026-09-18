@@ -12,6 +12,8 @@ import org.rocksdb.RocksDBException;
 import org.rocksdb.RocksIterator;
 import org.rocksdb.Slice;
 import org.rocksdb.WriteBatch;
+import com.pengcheng.phoenixgraph.metrics.Metrics;
+import com.pengcheng.phoenixgraph.metrics.MetricsSink;
 import org.rocksdb.WriteOptions;
 
 import java.nio.charset.StandardCharsets;
@@ -51,6 +53,10 @@ public final class RocksDbHandle implements AutoCloseable {
             StandardCharsets.UTF_8);
 
     private final Map<String, ColumnFamilyHandle> families;
+    /** Where key-value traffic is counted; a no-op until the graph wires its metrics in. */
+    private volatile MetricsSink metrics = MetricsSink.NOOP;
+    /** Keys added to the batch being built, per column family (applied on {@link #write}). */
+    private final Map<String, Long> batchItems = new java.util.concurrent.ConcurrentHashMap<>();
 
     private RocksDbHandle(RocksDbStoreConfig config, DBOptions dbOptions, WriteOptions writeOptions,
                           ColumnFamilyOptions columnFamilyOptions, RocksDB db,
@@ -113,6 +119,17 @@ public final class RocksDbHandle implements AutoCloseable {
         return open(RocksDbStoreConfig.of(path), columnFamilies);
     }
 
+    /** Counts every key-value operation of this handle into {@code metrics}. */
+    public RocksDbHandle metrics(MetricsSink metrics) {
+        this.metrics = metrics == null ? MetricsSink.NOOP : metrics;
+        return this;
+    }
+
+    /** The metrics sink of this handle. */
+    public MetricsSink metrics() {
+        return metrics;
+    }
+
     public RocksDbStoreConfig config() {
         return config;
     }
@@ -157,15 +174,82 @@ public final class RocksDbHandle implements AutoCloseable {
         }
     }
 
+    // --- metrics ---
+
+    /** What a column family holds, so traffic can be attributed to vertices, edges or geo cells. */
+    private enum Family {
+        VERTEX, EDGE, GEO, OTHER;
+
+        static Family of(String columnFamily) {
+            if (columnFamily == null) {
+                return OTHER;
+            }
+            if (columnFamily.startsWith("vertex:")) {
+                return VERTEX;
+            }
+            if (columnFamily.startsWith("edge:") || columnFamily.startsWith("edge-inline:")) {
+                return EDGE;
+            }
+            if (columnFamily.startsWith("geo:")) {
+                return GEO;
+            }
+            return OTHER;
+        }
+    }
+
+    private static String callMetric(Family family, boolean read) {
+        String prefix = switch (family) {
+            case VERTEX -> "storage.vertex.";
+            case EDGE -> "storage.edge.";
+            case GEO -> "storage.geo.";
+            case OTHER -> "storage.";
+        };
+        return prefix + (read ? "read" : "write");
+    }
+
+    private void recordRead(String columnFamily, long items, boolean success) {
+        if (RocksDbMetricsStore.FAMILY.equals(columnFamily)) {
+            return; // the metrics of the metrics are not interesting
+        }
+        String call = callMetric(Family.of(columnFamily), true);
+        metrics.increment(call);
+        metrics.increment(Metrics.items(call), items);
+        metrics.increment(Metrics.KV_READ_CALL);
+        metrics.increment(Metrics.KV_READ_ITEMS, items);
+        if (!success) {
+            metrics.increment(Metrics.failed(call));
+            metrics.increment(Metrics.KV_READ_FAILED);
+        }
+    }
+
+    private void recordWrite(String columnFamily, long items, boolean success) {
+        if (RocksDbMetricsStore.FAMILY.equals(columnFamily)) {
+            return;
+        }
+        String call = callMetric(Family.of(columnFamily), false);
+        metrics.increment(call);
+        metrics.increment(Metrics.items(call), items);
+        metrics.increment(Metrics.KV_WRITE_CALL);
+        metrics.increment(Metrics.KV_WRITE_ITEMS, items);
+        if (!success) {
+            metrics.increment(Metrics.failed(call));
+            metrics.increment(Metrics.KV_WRITE_FAILED);
+        }
+    }
+
     // --- point operations ---
 
     /** Reads one key, or {@code null} when it is absent. */
     public byte[] get(String columnFamily, byte[] key) {
+        byte[] value;
         try {
-            return db.get(columnFamily(columnFamily), key);
+            value = db.get(columnFamily(columnFamily), key);
         } catch (RocksDBException e) {
+            recordRead(columnFamily, 0, false);
             throw new RocksDbException("get(" + columnFamily + ") failed: " + e.getMessage(), e);
         }
+        recordRead(columnFamily, value == null ? 0 : 1, true);
+        return value;
     }
 
     /** Reads many keys of one family in a single call; a missing key yields {@code null}. */
@@ -179,8 +263,11 @@ public final class RocksDbHandle implements AutoCloseable {
             for (int i = 0; i < keys.size(); i++) {
                 handles.add(handle);
             }
-            return db.multiGetAsList(handles, keys);
+            List<byte[]> values = db.multiGetAsList(handles, keys);
+            recordRead(columnFamily, keys.size(), true);
+            return values;
         } catch (RocksDBException e) {
+            recordRead(columnFamily, 0, false);
             throw new RocksDbException("multiGet(" + columnFamily + ") failed: " + e.getMessage(), e);
         }
     }
@@ -189,7 +276,9 @@ public final class RocksDbHandle implements AutoCloseable {
     public void put(String columnFamily, byte[] key, byte[] value) {
         try {
             db.put(columnFamily(columnFamily), writeOptions, key, value);
+            recordWrite(columnFamily, 1, true);
         } catch (RocksDBException e) {
+            recordWrite(columnFamily, 0, false);
             throw new RocksDbException("put(" + columnFamily + ") failed: " + e.getMessage(), e);
         }
     }
@@ -198,7 +287,9 @@ public final class RocksDbHandle implements AutoCloseable {
     public void delete(String columnFamily, byte[] key) {
         try {
             db.delete(columnFamily(columnFamily), writeOptions, key);
+            recordWrite(columnFamily, 1, true);
         } catch (RocksDBException e) {
+            recordWrite(columnFamily, 0, false);
             throw new RocksDbException("delete(" + columnFamily + ") failed: " + e.getMessage(), e);
         }
     }
@@ -210,10 +301,11 @@ public final class RocksDbHandle implements AutoCloseable {
         return new WriteBatch();
     }
 
-    /** Adds a put to a batch. */
+    /** Adds a put to a batch (counted when the batch is applied, one write call per batch). */
     public void put(WriteBatch batch, String columnFamily, byte[] key, byte[] value) {
         try {
             batch.put(columnFamily(columnFamily), key, value);
+            batchItems.merge(columnFamily, 1L, Long::sum);
         } catch (RocksDBException e) {
             throw new RocksDbException("batch put(" + columnFamily + ") failed: " + e.getMessage(), e);
         }
@@ -223,18 +315,23 @@ public final class RocksDbHandle implements AutoCloseable {
     public void delete(WriteBatch batch, String columnFamily, byte[] key) {
         try {
             batch.delete(columnFamily(columnFamily), key);
+            batchItems.merge(columnFamily, 1L, Long::sum);
         } catch (RocksDBException e) {
             throw new RocksDbException("batch delete(" + columnFamily + ") failed: " + e.getMessage(), e);
         }
     }
 
-    /** Applies a batch atomically across column families. */
+    /** Applies a batch atomically across column families; one write call, one item per key. */
     public void write(WriteBatch batch) {
+        Map<String, Long> items = Map.copyOf(batchItems);
+        batchItems.clear();
         try {
             db.write(writeOptions, batch);
         } catch (RocksDBException e) {
+            items.forEach((family, count) -> recordWrite(family, 0, false));
             throw new RocksDbException("batch write failed: " + e.getMessage(), e);
         }
+        items.forEach((family, count) -> recordWrite(family, count, true));
     }
 
     // --- iteration ---
@@ -255,7 +352,9 @@ public final class RocksDbHandle implements AutoCloseable {
         }
         RocksIterator iterator = db.newIterator(columnFamily(columnFamily), options);
         iterator.seekToFirst();
-        return new RocksDbRange(iterator, options, lower, upper);
+        boolean hasFirst = iterator.isValid();
+        recordRead(columnFamily, hasFirst ? 1 : 0, true); // the iterator opens on its first record
+        return new RocksDbRange(iterator, options, lower, upper, metrics, callMetric(Family.of(columnFamily), true));
     }
 
     /** Flushes memtables (used after a bulk load and by tests). */
@@ -299,12 +398,17 @@ public final class RocksDbHandle implements AutoCloseable {
         private final ReadOptions options;
         private final Slice lower;
         private final Slice upper;
+        private final MetricsSink metrics;
+        private final String itemsMetric;
 
-        private RocksDbRange(RocksIterator iterator, ReadOptions options, Slice lower, Slice upper) {
+        private RocksDbRange(RocksIterator iterator, ReadOptions options, Slice lower, Slice upper,
+                             MetricsSink metrics, String itemsMetric) {
             this.iterator = iterator;
             this.options = options;
             this.lower = lower;
             this.upper = upper;
+            this.metrics = metrics == null ? MetricsSink.NOOP : metrics;
+            this.itemsMetric = itemsMetric;
         }
 
         public boolean isValid() {
@@ -313,10 +417,16 @@ public final class RocksDbHandle implements AutoCloseable {
 
         public void next() {
             iterator.next();
+            if (iterator.isValid()) {
+                metrics.increment(itemsMetric); // every record the caller consumes is an item
+            }
         }
 
         public void seek(byte[] key) {
             iterator.seek(key);
+            if (iterator.isValid()) {
+                metrics.increment(itemsMetric);
+            }
         }
 
         public byte[] key() {

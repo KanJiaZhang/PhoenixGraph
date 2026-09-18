@@ -26,6 +26,7 @@ public class QueryController {
     @PostMapping("/query")
     public Object query(@RequestBody QueryRequest request) {
         return service.query(request.graphName(), request.query(), request.params(),
-                request.languageOrDefault(), request.returnSubgraph(), request.includeResultOrDefault());
+                request.languageOrDefault(), request.returnSubgraph(), request.includeResultOrDefault(),
+                request.sourceOrDefault());
     }
 }
