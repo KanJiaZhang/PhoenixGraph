@@ -1,9 +1,16 @@
 # Handover — resume here
 
 > 本文件是**断点续做手记**：今天做了什么（结论）、现场怎么恢复、明天从哪继续。
-> 详细设计与实测数据在 `CONTEXT.md`（今天新增 **第 21–26 节**）。
+> 详细设计与实测数据在 `CONTEXT.md`：**2026-09-18 新增 §32–36**（两轮 store 下沉优化 / 模糊关联 / regex 形状语义 / UI / **分布式算法**）；2026-09-17 是 §21–31。
 
-**最后一次会话：2026-09-18（周四）· 在 2026-09-17 的 8 个提交之后继续 · 工作树干净 · `./mvnw test` **21 个模块**全绿。**
+**最后一次会话：2026-09-18（周四，约 17 个提交）· 工作树干净 · 全项目编译通过 · 受影响的模块测试全绿**
+**（`graph-gemini` 26 + `graph-query-gremlin` 115 + `graph-http` 68 + `graph-fuzzy` 37；服务在跑，见 §1.1）**
+**下一次从 §2「明天第一件事」第 1 条开始：给 `graph-query` 加扫描端口，让 `g.E('class').algo(DIST)` 这类无 id 种子可用。**
+
+> 2026-09-18 新增（**最新**）：**分布式图算法（Gemini 复刻）** —— 新模块 `graph-gemini`（chunk 分区 +
+> 双份边表示 + 稀疏/稠密自适应 + signal/slot + HTTP worker + LOCAL/PROCESS 两种启动 + 五个算法）、
+> Gremlin 的 `DIST` 形式五个步、`graph-http` 默认起 **4 个 worker（19100–19103）**。
+> 详见 `CONTEXT.md` **§36** 与 `DAILY-2026-09-18.md` **§6**（含 9 个真 bug 的根因与修法、实测数字、已知限制）。
 
 > 2026-09-18 新增（夜间）：**regex 改为「形状」语义 + 两处 UI 调整**（第 35.9/35.10 节）——
 > `regex(field, 'pattern')` 现在**要求形状、并把形状写进 key**（`re_<形状>_<hash>`），
@@ -43,6 +50,15 @@
 
 ## 0. 今日结论（按提交顺序）
 
+### 0.1 2026-09-18（17 个提交，分三段）
+
+| 段 | 提交 | 结果 |
+|---|---|---|
+| 系统 metrics | `fe02c14` `c9455be` | 新模块 `graph-metrics`：三漏斗采集（KV 层 / 业务日志 / 查询前后差值）+ Aerospike `graph_metrics` 与 RocksDB `metrics` CF 两套持久化 + `/api/v1/metrics` + UI 指标面板（§27–28） |
+| 建模 / benchmark / 两轮优化 | `c4348ae` `f3d3ef3` `c41a686` `23f0508` `a6fcc7e` `df86f26` `6d0a4a3` `3bab63d` `190478b` `67b63c7` | 建模 UI（热加载）、payment-graph 12 项一致性 + 10 条查询 benchmark、smart 数据（向量+地理）、**Cypher 聚合 53.2→3.9 ms**、count 走 bin size、条件/上限下沉进 store（`decoded` 50→0/10/20）、UI 两处修正（§29–34） |
+| 模糊关联 + 分布式算法 | `356ac79` `bc38edb` `feecf8c` `a091cd6` `865a143` | **Fuzzy Linking**（`graph-fuzzy` + `fuzzyLink` 步 + 两圈演示数据 + 接口 + 建模页卡片）、`regex` 反斜杠修复 → **形状语义** + `regexValue`、示例按钮（先隐藏）、图实例下拉 3/4、**Gemini 分布式算法**（§35–36） |
+
+
 | 提交 | 任务 | 结论 |
 |---|---|---|
 | `6c515bf` `998c41e` | UI：示例查询收进小按钮；查询结果值浮窗 | 示例框默认隐藏、按钮展开；HTTP 新增 `includeResult`，一次执行同时返回答案与子图（兼容旧形状）；浮窗优先展示"值"而不是数量 |
@@ -67,11 +83,19 @@
 
 ## 1. 现场状态（明天开机即用）
 
+### 1.0 两个记录在案的坑（今天踩过）
+
+* `-Dspring-boot.repackage.skip=true` 会把 **thin jar 覆盖到同一个路径** ✗ —— 之后再 `java -jar` 就报
+  `ClassNotFoundException: ch.qos.logback...sprit.ThrowableProxy`。**跑之前重新 `./mvnw -pl graph-http -DskipTests package`（不带该 flag）** ✓。
+* 被占用的 jar 无法删除（`clean` 失败）→ 先 `taskkill /F /PID` 再 `clean package` ✓；
+  测试若要起 worker，用 `GeminiCluster.Config.local(n)`（端口 0 = 系统分配 ✓），别用 19100 硬编码 ✗。
+
 ### 1.1 正在跑的服务
 
 | 端口 | 进程 | 内容 |
 |---|---|---|
-| **8081** | `graph-http`（默认 profile） | **9 个图**：`payment-graph`、`payment-graph-rocksdb-inline`、`payment-graph-rocksdb-edge`、`geo-merchants-rocksdb-inline`、`geo-merchants-rocksdb-edge`、`payment-graph-as-edge`、`kg-entity-graph`、`hnsw-sift`、`hnsw-dynamic` |
+| **8081** | `graph-http`（默认 profile） | **11 个图**：payment ×3、geo ×2、`payment-graph-as-edge`、`kg-entity-graph`、`hnsw-sift`、`hnsw-dynamic`、**`payment-graph-smart`**、**`payment-graph-smart-rocksdb`** |
+| **19100–19103** | 同 8081 进程内的 **4 个 Gemini worker** | `GET /gemini/status`；`graph-http` 启动即监听（`phoenixgraph.gemini.workers/first-port/mode`）；`mode=process` 时每个 worker 是独立 JVM |
 | **8080** | `graph-web` | UI（`/api/graphs` 列图、`/api/query` 代理到 8081） |
 | **8083** | `graph-http --spring.profiles.active=hnsw-dynamic` | 写入即索引的向量 demo（REST 写点 → 立即可 `nearest`） |
 
@@ -103,6 +127,15 @@ curl -s localhost:8081/api/v1/graphs | head -c 200
 # RocksDB 四个实例（payment ×2 + geo ×2）
 ./mvnw -q -pl graph-integration-test -am test -Dtest='RocksDbLiveLoadTest' \
        -Drocksdb.live.dir=D:/workspace/eclipse/PhoenixGraph/.rocksdb -Dsurefire.failIfNoSpecifiedTests=false
+
+# 分布式算法（4 个 worker 默认就在 8081 进程里；PROCESS 模式=各自独立 JVM）
+curl -s 127.0.0.1:19100/gemini/status            # 单个 worker 的状态（supersteps/mode/messages）
+#   分布式步：点种子 + 边类（无 id 种子尚未支持，见 §2 第 0 条）
+#   g.V('135','Account').bothE('Payment').otherV().pagerank(DIST, 10)     # 50 点 / 2.8 s
+#   g.V('135','Account').both('Payment').cc(DIST)                          # 50 点 / 1 个分量 / 1.9 s
+#   g.V('a1,a2,a3','Account').louvain(DIST, 20) / sssp(DIST, 'a1') / bfs(DIST, 'a1')
+# 测试：graph-gemini（分区/双表示/集群/子进程）、GremlinDistStepsTest（DIST 五种步）
+./mvnw -q -pl graph-gemini,graph-query-gremlin test
 
 # 模糊关联的两圈演示数据（幂等，可反复跑；payment-graph / set http_demo_v1）
 ./mvnw -q -pl graph-integration-test -am test -Dtest='FuzzyLinkIntegrationTest' -Dsurefire.failIfNoSpecifiedTests=false
@@ -141,6 +174,12 @@ g.V().fuzzyLink(1, '{"email":"44100101@qq.com","ip":"10.30.40.11","cardNumber":"
 ---
 
 ## 2. 明天第一件事（按优先级）
+
+0. **分布式算法的「无 id 种子」**（今天留给明天的第一条）：给 `graph-query` 加可选扫描端口
+   （`scanVertices(vertexName)` / `scanEdges(edgeName)`，Aerospike 走 `scanAll`、RocksDB 走迭代器），
+   于是 `g.E('payment').pagerank(DIST)`、`g.V().filter(...).bothE('payment').cc(DIST)` 这类写法可用
+   （与 §5 的「按类型计数需要扫描计划」是同一个缺口）；随后把 `DIST` 加进 UI 示例下拉、
+   再补 BC 算法（`GeminiAlgorithms` 里加一个 signal/slot 实现即可）。
 
 1. **Aerospike-Edge 近线更新（今天明确列入 TODO，第 25.7 节）** —— 读路径已正确（内联 + 聚合 merge ✓），
    待补写入侧：
@@ -232,6 +271,13 @@ curl -s -X POST localhost:8081/api/v1/vector-index/rebuild \
 
 ## 5. 已知问题 / 限制
 
+* **分布式算法**：`g.E('class').algo(DIST)`（空种子只给边类 = 全图某类边）**不支持** ✗（需要扫描端口，见 §2 第 0 条）；
+  BC 未实现；不做 NUMA/socket 子分区与计算/通信重叠（论文单机多核那半）；一个集群同时只跑一次计算（launcher 串行驱动）。
+* **算法步要吃「点」**：`outE(...)` 之后 traverser 是边、起点会丢 ✗，所以写法是
+  `bothE('class').otherV().algo(DIST)` 或多起点 `g.V('a,b,c','Account').algo(DIST)`。
+* **模糊关联**：写点不自动建链（按需求先不做）；无「按 key 前缀列节点」的反向索引；`countryCode` 依赖内置码表；
+  `regex` 是形状语义、`regexValue` 是抽值语义（别混）。
+
 1. **Aerospike-Edge 写入侧 gap**（见 §2.1）：删除、窗口外新增、重聚合未做（读路径已 merge，正确性 OK）。
 2. **前端两处源**（`frontend/public` vs `static/`）靠手工 `cp` 同步。
 3. **Docker 未实测**（本机无外网到 Docker Hub）。
@@ -245,6 +291,16 @@ curl -s -X POST localhost:8081/api/v1/vector-index/rebuild \
 ---
 
 ## 6. 代码地图（今天新增/改动）
+
+**`graph-gemini`（新模块，12 类）**：`GeminiGraph`（输入图+scope）、`GeminiPartitioner`（chunk + 双份边）、
+`GeminiLauncherLayout`（每 worker payload：拥有/出度/镜像 owner/push 目标）、`WorkerLayout`（CSR bitmap + 压缩 CSC）、
+`WorkerState`（值 + pending/commit + 活跃集）、`GeminiWorker`（exchange/compute/聚合/统计）、
+`GeminiWorkerServer`（10 个端点）、`GeminiWorkerMain`（独立程序）、`GeminiWire`/`GeminiClient`（wire + 共享 HttpClient）、
+`GeminiCluster`（LOCAL/PROCESS + 逐轮驱动 + 结果与统计）、`GeminiAlgorithms`（pagerank/louvain/cc/sssp/bfs）。
+配套：`GremlinDistAlgorithms` + `GremlinGraphQuery.geminiCluster(...)`、
+`StorageConfig.geminiCluster` bean、`QueryService` 注入、`graph-http`/`graph-query-gremlin` 的 pom。
+测试：`GeminiPartitionerTest`(7)、`GeminiWorkerDirectTest`(7)、`GeminiClusterTest`(11)、`GeminiProcessWorkerTest`(1)、
+`GremlinDistStepsTest`(12)。
 
 **新增模块**：`graph-storage-rocksdb`（共享底座：键/区域/CF/属性编解码/顶点表/条带锁/LRU/`S2Cells`/`RocksDbGeoIndex`）、
 `graph-storage-rocksdb-inline`、`graph-storage-rocksdb-edge`。
@@ -271,8 +327,8 @@ curl -s -X POST localhost:8081/api/v1/vector-index/rebuild \
 | 文档 | 内容 |
 |---|---|
 | `README.md` | 模块表、四种存储对比、Geo search、时间窗大点读法、两种查询语言、向量检索、模糊关联 |
-| `CONTEXT.md` | **第 32–35 节**（2026-09-18：两轮 store 下沉优化 / 模糊关联 / regex 形状语义 / UI 三处）；**第 27–31 节**（同日：系统 metrics、指标面板、建模 UI、benchmark、smart 数据）；**第 21–26 节**（2026-09-17：RocksDB 两实现、GEO、四项修正、UI 三处、Aerospike-Edge、居中与有界扩展）；更早：第 15–20 节（HNSW/向量索引/UI） |
-| `DAILY-2026-09-18.md` | **按天笔记**：今天 15 个提交的思考与结果、关键决定、复现命令、遗留事项（与昨天的 `CONTEXT.md` §21–31 互不覆盖） |
+| `CONTEXT.md` | **第 36 节**（2026-09-18：分布式图算法 Gemini —— 论文映射/适配/bug/实测/限制）；**第 32–35 节**（2026-09-18：两轮 store 下沉优化 / 模糊关联 / regex 形状语义 / UI 三处）；**第 27–31 节**（同日：系统 metrics、指标面板、建模 UI、benchmark、smart 数据）；**第 21–26 节**（2026-09-17：RocksDB 两实现、GEO、四项修正、UI 三处、Aerospike-Edge、居中与有界扩展）；更早：第 15–20 节（HNSW/向量索引/UI） |
+| `DAILY-2026-09-18.md` | **按天笔记**：今天 17 个提交的思考与结果（§6 = 分布式算法那一段：9 个 bug 的根因、实测、限制）、复现命令、遗留事项（与昨天的 `CONTEXT.md` §21–31 互不覆盖） |
 | `HANDOVER.md` | 本文件（结论 / 现场 / 明天第一件事 / 命令 / 设计要点 / 限制 / 代码地图） |
 
 ---
