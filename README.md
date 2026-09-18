@@ -5,6 +5,28 @@ A High Scaled and High Performance HTAP Graph Database.
 > **Resuming work?** Start with [HANDOVER.md](HANDOVER.md) - current state, how
 > to start the services and what is next.
 
+## Profiles, locations and the questions they answer
+
+`payment-graph-smart` is a second payment graph whose accounts and merchants carry a 16-dimensional
+profile (`embedding`, a vector property) and a home location (`location`, a geo property). Profiles form
+five clusters and the clusters are also five districts of Shanghai, most payments stay inside a cluster
+and visits only go to shops of the same district - so similar and nearby agree, which is what makes
+these three questions answer something:
+
+```groovy
+g.V('a7','Account').nearest(5)                          // the five most similar accounts (all in Xujiahui)
+g.V('a7','Account').nearest(5).outE('Payment')          // ... and what those accounts pay
+g.V('a7','Account').out('Payment').dedup().nearest(5)   // each receiver, and its own lookalikes
+g.V('m1','Merchant').circle('{"lat":31.2304,"lon":121.4737,"radius":3000}').limit(5)
+                                                        // the five shops nearest a point ...
+...limit(3).nearest(2)                                  // ... and each shop's two closest neighbours
+```
+
+The same schema is served twice, because the two indexes live in different places: the vector index on
+Aerospike (HNSW; build it with `POST /api/v1/vector-index/rebuild`) and the geo index on RocksDB-Inline
+(a real S2 index - a community Aerospike has no geo secondary index and scans). Load the data with
+`SmartPaymentGraphLiveLoadTest`; see CONTEXT.md section 31.
+
 ## System metrics
 
 Every graph collects its own counters and latency histograms, and persists them in the storage it
