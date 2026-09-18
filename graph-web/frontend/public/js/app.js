@@ -397,6 +397,9 @@
         ['135 的出账（一跳）', "g.V('135','Account').outE('Payment').limit(10)"],
         ['135 双向两跳', "g.V('135','Account').both('Payment').both('Payment').dedup().limit(50)"],
         ['账户的手机号', "g.V('1000','Account').out('AccountToPhone')"],
+        ['模糊关联①：同邮箱域名+国家+/16+名字词根', "g.V().fuzzyLink(0, '{\"email\":\"19880101@mail.ru\",\"phone\":\"+8613800138001\",\"ip\":\"10.20.31.7\",\"username\":\"zhang1988\"}')"],
+        ['模糊关联①→账户→出款→收款方', "g.V().fuzzyLink(0, '{\"email\":\"19880101@mail.ru\",\"phone\":\"+8613800138001\",\"ip\":\"10.20.31.7\",\"username\":\"zhang1988\"}').out('FuzzyLinkedTo').outE('Payment').otherV()"],
+        ['模糊关联②：同/24+卡BIN+邮箱前四位', "g.V().fuzzyLink(1, '{\"email\":\"44100101@qq.com\",\"ip\":\"10.30.40.11\",\"cardNumber\":\"6217000090009001\"}').out('FuzzyLinkedTo')"],
       ],
       'kg-entity-graph': [
         ['概念书的全部关系', "g.V('concept_book_new_9','Entity').bothE().limit(20)"],

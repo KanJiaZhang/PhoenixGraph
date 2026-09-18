@@ -1,0 +1,15 @@
+{
+  "payment-graph" : [ {
+    "id" : 0,
+    "name" : "email domain + country + ip/16 + name word",
+    "expression" : "emailDomain(email)+'_'+countryCode(phone)+'_'+ip2(ip)+'_'+alphaPrefix(username)",
+    "description" : "Accounts that share an email provider, a country, a /16 network and a name prefix.",
+    "enabled" : true
+  }, {
+    "id" : 1,
+    "name" : "ip/24 + email digits + card BIN",
+    "expression" : "ip3(ip)+'_'+cardBin(cardNumber)+'_'+regex(emailName(email), '^([0-9]{4})')",
+    "description" : "Accounts whose email local part is digits only, on the same /24 network and with the same card BIN.",
+    "enabled" : true
+  } ]
+}

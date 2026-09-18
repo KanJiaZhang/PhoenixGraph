@@ -1955,3 +1955,104 @@ headless Edge 实测：`body bg rgb(238,241,248) / color rgb(15,23,42)`（可见
 修复：`GremlinSteps.countEdges` 在 `edgeName == null` 时**退回读边**（子图采集时同样退回）；
 新增 `GremlinGraphQueryTest.aCountWithoutAnEdgeClassStillReadsTheEdges` 断言这一点。
 带边类的 `<hop>E('x').count()` 仍然走快路径 ✓。
+
+---
+
+## 35. 模糊关联（Fuzzy Linking）
+
+### 35.1 要解决的问题
+
+金融风控里，知道系统会做关联的欺诈分子会刻意打散**显眼**的特征（姓名、手机号、卡号各不相同），
+但很难不打散**细碎**的习惯：同一家邮箱服务商、同一段 IP、`zhang`+数字的用户名、同一张卡的 BIN。
+模糊关联就是把这些片段变成一个**节点**：片段一致的账户算出的 key 相同，于是落在同一个
+`FuzzyLink` 点上，查询可以从模式直接走到团伙。
+
+### 35.2 新模块 `graph-fuzzy`
+
+| 类 | 作用 |
+|---|---|
+| `FuzzyContext` / `FuzzyContexts` | context 的读取：字段名**大小写/下划线无关** + 一组别名（`ip`↔`ipAddress`、`phone`↔`phoneNumber`、`cardNumber`↔`card`…），值按文本读（`13800138000.0` 这种 JSON 数字读回 `13800138000`）；`fromJson` 读客户端传来的对象，`fromJsonAndProperties` 用点自身的属性补全 |
+| `FuzzyFunctions` | 函数库（`signatures()` 供编辑器展示）：`raw/lower/upper/trim`、`digits/first/last`、`alphaPrefix/digitSuffix`、`regex`（有捕获组取第一组，否则取整个匹配）、`emailDomain/emailName`、`ip2/ip3/ip4`（去端口与 CIDR 后缀）、`countryCode`（**只认 `+`/`00` 开头的 E.164**，按一张常见国家码表最长匹配，表里没有就不生效——猜出来的国家码会把仅长得像的号码连在一起）、`phonePrefix`、`cardBin`、`hash`（SHA-256 前 n 位十六进制，key 不必携带原值）、`opt`（可缺片段 → `*`）；函数可**嵌套**（`lower(emailDomain(email))`） |
+| `FuzzyExpression` | 递归下降解析 `part ('+' part)*`，part 是调用或引号字面量，参数是字段名/字面量/数字/嵌套调用；求值返回每段的片段；**任何一段取不到值 → 整个模式不生效**（返回 `null`）；`explain(context)` 返回逐段结果 + key，供编辑器预览 |
+| `FuzzyKey` | key 归一化：小写、非字母数字/`._-` 压缩成 `_`、超过 120 字符换成 `前24字符~sha256前32位`（仍确定） |
+| `FuzzyPattern` / `FuzzyPatterns` / `FileFuzzyPatterns` | 模式的记录与 JSON 读写（`{ "<graph>": [ … ] }`）；`FileFuzzyPatterns` 是**按图一个文件一份**的注册表：写入后立刻生效、磁盘改动按时间戳探测、每秒最多读一次、坏模式报错时带上模式号 |
+| `FuzzyLinks` / `FuzzyLink` | 计划的**唯一**出口：`plan(pattern, context)` → `FuzzyLink(patternId, patternText, key, fragments, linkVertexId)`，读写两侧都用它，所以 id 天然一致 |
+| `FuzzySchema` | 约定名（`FuzzyPattern` / `FuzzyLink` / `FuzzyLinkedTo`）、`pattern_<id>`、`fl_<pattern>_<key>`、`<link>|<member>` 边 id、`isSupported(schema)` |
+
+模式是**配置**（像 schema 一样），放在工作目录的 `fuzzy-patterns.json` 里，管理页改完即生效——
+图里只存**链接**（`FuzzyLink` 点与边），不存模式定义本身 ✗（单一事实来源）。
+
+### 35.3 查询步 `fuzzyLink`
+
+- 注册在 `GremlinGraphQuery`，参数 `fuzzyLink(patternId[, contextJson])`；模式 id **允许 0**（新增
+  `nonNegativeInt` ✗）；未知模式、非法 context 都包装成 `QueryException`（UI 得到 400 + 消息 ✓）；
+- context = JSON ∪ 上游点的属性（JSON 优先）；**空种子也行**（`g.V().fuzzyLink(...)`）→
+  为此放宽了 `GremlinQuery.parse`：`g.V()` 允许没有 id/name（原来是直接报错 ✗）；
+- 找不到 link 点（没人算过这个 key）或模式不适用 → **空结果**（不是错误：节点是被成员创建出来的 ✓）；
+- 投影计划新增一条：`fuzzyLink` 会产生点，且**不带 context 参数时要读上游点的全部属性**（否则
+  `g.V('a1','Account').fuzzyLink(0)` 拿不到 email/ip ✓）。
+
+### 35.4 Schema 与数据
+
+`payment-graph.json` 追加（既有 id 全不动 ✓ 只 +51 行）：
+
+- `Account` 增加 `username`/`email`/`phoneNumber`/`cardNumber`/`ipAddress`（模式读的原始属性）；
+  `username` 是 display 属性（`email` 不是 ✗，`QueryApiIntegrationTest` 的期望同步更新为
+  `[firstName, lastName, username]`）；
+- 点 `FuzzyPattern`(4)、点 `FuzzyLink`(5)、边 `FuzzyLinkedTo`(6)（`FuzzyLink` → `Account`，DIRECTED，
+  **出度/入度都是 1000** ✓，idSchema 用字符串 `<link>|<account>`）。
+
+`FuzzyLinkDemoLoader`（graph-integration-test）造两圈数据：**A 圈 6 个**（都 `mail.ru`、`+86`、
+`10.20.x.x`、`zhangNNNN`，其余全不同）、**B 圈 4 个**（`10.30.40.x`、卡 BIN `621700`、
+邮箱本地部分 `4410xxxx`）、**对照组 6 个**（什么都不共享）+ 收款方 `fz_receiver`；每人给收款方
+打两笔款。种子模式 0/1 也写进图（`pattern_0`/`pattern_1`）。
+
+实测（真实 Aerospike，`http_demo_v1`）：`17 accounts, 15 link nodes ({0=6, 1=4}), 26 link edges, 32 payments` ✓
+——即两圈各自归并成一个节点（6/4 个成员 ✓），对照组各自单点 ✓。
+
+### 35.5 HTTP 与 UI
+
+`/api/v1/fuzzy/*`（`FuzzyController` + `FuzzyPatternStore` + `FuzzyLinkingService`）：
+
+| 接口 | 作用 |
+|---|---|
+| `GET /patterns?graph=` | 模式列表（含每个模式读的字段、文件路径；停用的也列出 ✓） |
+| `GET /functions` | 函数库签名 + 说明（编辑器帮助） |
+| `POST /validate` | 校验表达式并按 context 预览：`valid/errors/partCount/fields/key/linkVertexId/steps[]`；**解析失败是 `valid:false` 而不是 400** ✓ |
+| `POST /patterns` / `DELETE /patterns/{graph}/{id}` | 新建/覆盖、删除 |
+| `POST /graphs/{graph}/plan` | 只算不写（预览会生成哪些 key） |
+| `POST /graphs/{graph}/links` | 真正写：用 `GraphService` 的普通写路径写 link 点 + 边，幂等 ✓ |
+
+`ApiExceptionHandler` 现在也把 `FuzzyPatternException` 当 400 ✓；`QueryService` 通过
+`@Autowired(required=false)` 的 setter 注入 `FuzzyPatternStore`，给每张图的 Gremlin 引擎挂上注册表
+（`engine.fuzzyPatterns(...)`）；`ProxyController` 转发 `/api/fuzzy/**`。
+
+前端：主页示例下拉新增 3 条模糊关联示例 ✓；建模页新增卡片「6 · 模糊关联模式」——列出模式、
+填表达式 + 样例 context 校验并预览（逐段值 + key + link 点）、保存/删除、查看可用函数、
+「关联该图上某点」。headless Edge 实测：6 张卡片 ✓、打开 payment-graph 列出 2 个模式 ✓、
+预览得到 `key：mail.ru_86_10.20` + 每段值 ✓、保存后 2→3 ✓、删除后回到 2 ✓。
+
+### 35.6 测试
+
+- `graph-fuzzy`：`FuzzyExpressionTest`(13) + `FuzzyLinksTest`(14)——片段/不生效/opt/嵌套/regex 分组/
+  IP 端口与 CIDR/国家码表与裸号码/hash/长 key/计划/停用/别名/JSON 往返/坏文档/文件读写/签名；
+- `graph-query-gremlin`：`GremlinFuzzyLinkTest`(11)——同片段两账户同节点 ✓、从账户自身属性查 ✓、
+  `values('key')` 投影 ✓、完整链路（link → 账户 → 付款 → 收款方 + 子图 4 条边 ✓）、第二个模式 ✓、
+  模式不适用/无人算过 → 空 ✓、未知模式/缺参/非对象 context 的错误消息 ✓；
+- `graph-http`：`FuzzyControllerTest`(12)——模式 CRUD、校验预览、坏表达式 `valid:false`、
+  context 来自点、点不存在报错、未知图 400、函数库、停用模式仍可见；
+- `graph-integration-test`：`FuzzyLinkIntegrationTest`(10，真实 Aerospike)——schema 的 1000/1000 与
+  端点、两圈大小、模式找到的正是那一圈（不含另一圈与对照组）、第二个模式找 B 圈、账户自省、
+  link 点与成员双向一致、完整链路 12 笔付款 + 子图边数、`limit(3).values('amount')`、
+  无关 context 为空、key 稳定。
+
+### 35.7 已知限制 / 下一步
+
+1. 关联只在**写入时**发生（loader / `POST /links`）；把 `Account` 的写路径自动挂钩（写点即建链）还没做 ——
+   需要 `VertexController` 在写成功后按图的模式补一次 link 写入；
+2. 模式匹配是**逐条**的：没有为高频片段建反向索引（`key → 成员`），所以「反向找节点」靠确定性 id ✓
+   已经够快，但「按 key 前缀找所有节点」需要扫描 ✗；
+3. `opt(...)` 生成的 `*` 片段会被算进 key（有意为之：它表示「这个片段缺失」），多个不同缺失组合可能撞在一起，
+   需要更严格的语义时可以给 `opt` 加标记位；
+4. `countryCode` 依赖内置国家码表（约 45 个常见码），表外号码的模式不生效 —— 可以改成可配置；
+5. UI 还没有「一键把某点关联」的入口（只有建模页的表单），示例里也没有 pattern→accounts→payments 的图形化解释。

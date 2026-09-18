@@ -29,6 +29,10 @@
         </dependency>
         <dependency>
             <groupId>com.pengcheng.phoenixgraph</groupId>
+            <artifactId>graph-fuzzy</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.pengcheng.phoenixgraph</groupId>
             <artifactId>graph-query-gremlin</artifactId>
         </dependency>
         <dependency>

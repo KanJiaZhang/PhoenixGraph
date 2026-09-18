@@ -1,5 +1,6 @@
 package com.pengcheng.phoenixgraph.query.gremlin;
 
+import com.pengcheng.phoenixgraph.fuzzy.FuzzyPatternRegistry;
 import com.pengcheng.phoenixgraph.hnsw.HnswFilter;
 import com.pengcheng.phoenixgraph.hnsw.HnswIndex;
 import com.pengcheng.phoenixgraph.query.QueryException;
@@ -54,6 +55,7 @@ public class GremlinGraphQuery {
     private final Map<String, String> logics = new LinkedHashMap<>();
     private final Map<String, HnswIndex> hnswIndexes = new LinkedHashMap<>();
     private Map<String, String> geoProperties = Map.of();
+    private FuzzyPatternRegistry fuzzyPatterns = FuzzyPatternRegistry.empty();
     private Supplier<Map<String, HnswIndex>> hnswIndexSource;
     private final Map<String, CompiledQuery> compiledCache = new ConcurrentHashMap<>();
     private boolean cacheEnabled = true;
@@ -84,6 +86,17 @@ public class GremlinGraphQuery {
             int ef = args.size() > 1 ? positiveInt(args.get(1), "nearest") : 0;
             return GremlinSteps.nearest(vertexType -> resolvedHnswIndexes().get(vertexType), k, ef);
         });
+        // the fuzzyLink step turns a context into the key of a link node: patterns are data, so the
+        // registry is consulted per execution (a pattern added in the builder page is used at once)
+        registry.register("fuzzyLink", args -> {
+            if (args.isEmpty() || args.size() > 2) {
+                throw new QueryException("fuzzyLink expects fuzzyLink(patternId) or"
+                        + " fuzzyLink(patternId, contextJson), got " + args.size() + " arguments");
+            }
+            int patternId = nonNegativeInt(args.get(0), "fuzzyLink");
+            String context = args.size() > 1 ? args.get(1) : null;
+            return GremlinSteps.fuzzyLink(fuzzyPatternsSource(), patternId, context);
+        });
         // the circle step resolves the geo property of the traverser's vertex type; its third
         // argument is the query's limit, which the compile step pushes in (see #pushLimits)
         registry.register("circle", args -> {
@@ -113,6 +126,25 @@ public class GremlinGraphQuery {
         this.geoProperties = geoPropertyByVertexType == null ? Map.of() : Map.copyOf(geoPropertyByVertexType);
         compiledCache.clear();
         return this;
+    }
+
+    /**
+     * The patterns fuzzy linking uses. The registry is read per execution, so a pattern an analyst
+     * adds is used by the next query without rebuilding the engine or clearing a plan.
+     */
+    public GremlinGraphQuery fuzzyPatterns(FuzzyPatternRegistry patterns) {
+        this.fuzzyPatterns = patterns == null ? FuzzyPatternRegistry.empty() : patterns;
+        compiledCache.clear();
+        return this;
+    }
+
+    /** The patterns currently registered (empty when the graph has none). */
+    public FuzzyPatternRegistry fuzzyPatterns() {
+        return fuzzyPatterns;
+    }
+
+    private FuzzyPatternRegistry fuzzyPatternsSource() {
+        return fuzzyPatterns == null ? FuzzyPatternRegistry.empty() : fuzzyPatterns;
     }
 
     /**
@@ -156,6 +188,19 @@ public class GremlinGraphQuery {
     /** The HNSW indexes registered for vector search, keyed by vertex type. */
     public Map<String, HnswIndex> hnswIndexes() {
         return Map.copyOf(resolvedHnswIndexes());
+    }
+
+    /** A pattern id: zero is a pattern like any other. */
+    private static int nonNegativeInt(String value, String stepName) {
+        try {
+            int n = Integer.parseInt(value.trim());
+            if (n < 0) {
+                throw new QueryException(stepName + " expects a pattern id, got: " + value);
+            }
+            return n;
+        } catch (NumberFormatException e) {
+            throw new QueryException(stepName + " expects a pattern id, got: " + value);
+        }
     }
 
     private static int positiveInt(String value, String stepName) {
@@ -701,11 +746,16 @@ public class GremlinGraphQuery {
     private static List<String>[] planProperties(List<GremlinQuery.Step> steps) {
         List<String>[] properties = new List[steps.size()];
         for (int i = 0; i < steps.size(); i++) {
-            if (isHop(steps.get(i).name())) {
+            if (isHop(steps.get(i).name()) || producesVertices(steps.get(i).name())) {
                 properties[i] = neededProperties(steps, i + 1);
             }
         }
         return properties;
+    }
+
+    /** Steps that read vertices of their own and hand them on (not hops over the traversers). */
+    private static boolean producesVertices(String name) {
+        return name.equals("fuzzyLink");
     }
 
     private static List<String> startProperties(List<GremlinQuery.Step> steps) {
@@ -731,6 +781,15 @@ public class GremlinGraphQuery {
                 continue;
             }
             sawConsumer = true;
+            if (name.equals("fuzzyLink")) {
+                // the step produces the link node and replaces its input: a context that is meant to
+                // come from the traverser needs everything the vertex has, otherwise nothing after
+                // the step reads the vertex that was there before
+                if (steps.get(j).args().size() < 2) {
+                    all = true;
+                }
+                break;
+            }
             if (name.equals("elementMap") || name.equals("dedup")) {
                 all = true;
                 break;

@@ -382,7 +382,106 @@
     }
     state.draft = res.body;
     render();
+    el('fuzzyGraph').value = name;
+    loadFuzzyPatterns().catch((err) => toast('读不到模糊模式: ' + err.message));
     toast(`已打开 ${name}`);
+  }
+
+  // ------------------------------------------------------------------ fuzzy linking
+
+  /**
+   * The fuzzy patterns of a graph, and what they produce for a context.
+   *
+   * A pattern is data an analyst edits while the graph runs, so the page reads the graph's patterns
+   * from the service, validates an expression against a sample context before saving it, and shows
+   * what each part of the pattern contributed - the key is only as good as the fragments it is made of.
+   */
+  async function loadFuzzyPatterns() {
+    const graph = fuzzyGraph();
+    if (!graph) return;
+    const res = await api('/api/fuzzy/patterns?graph=' + encodeURIComponent(graph), undefined, 'GET');
+    const patterns = res.body?.patterns ?? [];
+    el('fuzzyList').innerHTML = patterns.length === 0
+      ? '<p class="hint">这张图还没有模式。</p>'
+      : patterns.map((pattern) => `<div class="type-card">
+          <div class="type-card-head"><strong>#${pattern.id}</strong><span>${escapeHtml(pattern.name)}</span>
+            <span class="hint">${pattern.enabled ? '启用' : '停用'}</span>
+            <button class="btn ghost small" type="button" data-fuzzy-edit="${pattern.id}">编辑</button></div>
+          <div class="json-preview">${escapeHtml(pattern.expression)}</div>
+        </div>`).join('');
+    el('fuzzyList').querySelectorAll('[data-fuzzy-edit]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const pattern = patterns.find((p) => String(p.id) === button.dataset.fuzzyEdit);
+        el('fuzzyId').value = pattern.id;
+        el('fuzzyName').value = pattern.name ?? '';
+        el('fuzzyExpression').value = pattern.expression ?? '';
+        el('fuzzyDescription').value = pattern.description ?? '';
+      });
+    });
+    showResult(el('fuzzyResult'), true, `${graph}：${patterns.length} 个模式`,
+      [res.body?.file ? '文件：' + res.body.file : '']);
+  }
+
+  function fuzzyGraph() {
+    return (el('fuzzyGraph').value || state.draft?.name || '').trim();
+  }
+
+  function escapeHtml(text) {
+    return String(text ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  }
+
+  async function previewFuzzy() {
+    const expression = el('fuzzyExpression').value.trim();
+    const context = el('fuzzyContext').value.trim();
+    const res = await api('/api/fuzzy/validate', {
+      patternId: el('fuzzyId').value === '' ? null : Number(el('fuzzyId').value),
+      expression, context: context || '{}', name: el('fuzzyName').value,
+      description: el('fuzzyDescription').value,
+    });
+    const body = res.body ?? {};
+    if (body.valid === false) {
+      showResult(el('fuzzyResult'), false, '表达式有问题', body.errors ?? []);
+      return;
+    }
+    const steps = (body.steps ?? []).map((step) => `${step.index}. ${step.part} → ${step.value ?? '（缺失）'}`);
+    showResult(el('fuzzyResult'), true, body.key ? 'key：' + body.key : '这个 context 下模式不生效',
+      [`链接节点：${body.linkVertexId ?? '（不生成）'}`, ...steps]);
+  }
+
+  async function saveFuzzy() {
+    const res = await api('/api/fuzzy/patterns', {
+      graph: fuzzyGraph(), id: Number(el('fuzzyId').value), name: el('fuzzyName').value,
+      expression: el('fuzzyExpression').value.trim(), description: el('fuzzyDescription').value,
+      enabled: true,
+    });
+    showResult(el('fuzzyResult'), res.ok, res.ok ? '已保存模式' : '保存失败',
+      [res.body?.error ?? JSON.stringify(res.body).slice(0, 200)]);
+    if (res.ok) await loadFuzzyPatterns();
+  }
+
+  async function removeFuzzy() {
+    const res = await api(`/api/fuzzy/patterns/${encodeURIComponent(fuzzyGraph())}/${el('fuzzyId').value}`,
+      undefined, 'DELETE');
+    showResult(el('fuzzyResult'), res.ok, res.ok ? '已删除' : '删除失败',
+      [res.body?.error ?? JSON.stringify(res.body).slice(0, 200)]);
+    if (res.ok) await loadFuzzyPatterns();
+  }
+
+  async function showFuzzyFunctions() {
+    const res = await api('/api/fuzzy/functions', undefined, 'GET');
+    const lines = (res.body ?? []).map((f) => `${f.usage} — ${f.description}`);
+    showResult(el('fuzzyResult'), true, `可用函数（${lines.length}）`, lines);
+  }
+
+  async function linkFuzzyVertex() {
+    const res = await api(`/api/fuzzy/graphs/${encodeURIComponent(fuzzyGraph())}/links`, {
+      vertexName: el('fuzzyVertexType').value.trim(),
+      vertexId: el('fuzzyVertexId').value.trim(),
+    });
+    const links = res.body?.links ?? [];
+    showResult(el('fuzzyResult'), res.ok, res.ok ? `已关联 ${links.length} 个节点` : '关联失败',
+      res.ok ? links.map((link) => `#${link.patternId} ${link.key} → ${link.linkVertexId}`)
+        : [res.body?.error ?? JSON.stringify(res.body).slice(0, 200)]);
   }
 
   async function init() {
@@ -393,6 +492,7 @@
     render();
 
     el('graphPicker').addEventListener('change', (e) => openGraph(e.target.value));
+    el('fuzzyGraph').value = state.draft?.name ?? '';
     el('newGraph').addEventListener('click', () => { state.draft = blankDraft(); el('graphPicker').value = ''; render(); });
     el('backToGraph').addEventListener('click', () => { window.location.href = '/'; });
     el('addVertex').addEventListener('click', () => {
@@ -412,6 +512,12 @@
     el('dataEdgeType').addEventListener('change', renderPropertyInputs);
     el('addVertexData').addEventListener('click', writeVertex);
     el('addEdgeData').addEventListener('click', writeEdge);
+    el('fuzzyValidate').addEventListener('click', previewFuzzy);
+    el('fuzzySave').addEventListener('click', saveFuzzy);
+    el('fuzzyRemove').addEventListener('click', removeFuzzy);
+    el('fuzzyFunctions').addEventListener('click', showFuzzyFunctions);
+    el('fuzzyLink').addEventListener('click', linkFuzzyVertex);
+    el('fuzzyGraph').addEventListener('change', () => { loadFuzzyPatterns().catch(() => {}); });
   }
 
   init().catch((err) => toast('初始化失败: ' + err.message));

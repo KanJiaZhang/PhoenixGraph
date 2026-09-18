@@ -214,7 +214,7 @@ class QueryApiIntegrationTest {
             seedStarGraph(vertexStore, edgeStore, schema);
 
             // the schema flags the properties the UI uses to label vertices
-            assertEquals(List.of("firstName", "lastName"),
+            assertEquals(List.of("firstName", "lastName", "username"),
                     schema.vertexSchema("Account").displayPropertyNames());
             assertEquals(List.of("ipAddress"), schema.vertexSchema("IP").displayPropertyNames());
             assertEquals(List.of("cnCode", "phoneNumber"),

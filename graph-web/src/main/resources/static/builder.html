@@ -96,6 +96,35 @@
       <button id="addEdgeData" class="btn ghost small" type="button">写入边</button>
       <div id="dataResult" class="result" hidden></div>
     </div>
+
+    <div class="card">
+      <h2>6 · 模糊关联模式</h2>
+      <p class="hint">模式把 context 的片段拼成一个 key（邮箱域名、IP 前缀、卡 BIN、正则截取……），
+        片段相同的账户就会落在同一个 FuzzyLink 节点上。模式属于图，存在工作目录的 fuzzy-patterns.json 里，
+        保存后下一次查询立刻生效。</p>
+      <label>图实例<input id="fuzzyGraph" placeholder="payment-graph"></label>
+      <div id="fuzzyList" class="type-list"></div>
+      <hr>
+      <div class="grid-2">
+        <label>模式 id<input id="fuzzyId" type="number" min="0" placeholder="2"></label>
+        <label>名称<input id="fuzzyName" placeholder="同域名 + 同 /24"></label>
+      </div>
+      <label>表达式<input id="fuzzyExpression" placeholder="emailDomain(email)+'_'+ip2(ip)"></label>
+      <label>说明<input id="fuzzyDescription" placeholder="这个模式在找什么"></label>
+      <div class="builder-actions">
+        <button id="fuzzyValidate" class="btn ghost small" type="button">校验并预览</button>
+        <button id="fuzzySave" class="btn small" type="button">保存模式</button>
+        <button id="fuzzyRemove" class="btn ghost small" type="button">删除该 id</button>
+        <button id="fuzzyFunctions" class="btn ghost small" type="button">可用函数</button>
+        <button id="fuzzyLink" class="btn ghost small" type="button">关联该图上某点</button>
+      </div>
+      <label>样例 context（JSON）<textarea id="fuzzyContext" rows="3" placeholder=' {"email":"a@mail.ru","phone":"+8613800138000","ip":"10.20.31.7","username":"zhang1988"}'></textarea></label>
+      <div class="grid-2">
+        <label>关联的点类型<input id="fuzzyVertexType" placeholder="Account"></label>
+        <label>关联的点 id<input id="fuzzyVertexId" placeholder="fz_a1"></label>
+      </div>
+      <div id="fuzzyResult" class="result" hidden></div>
+    </div>
   </section>
 </main>
 

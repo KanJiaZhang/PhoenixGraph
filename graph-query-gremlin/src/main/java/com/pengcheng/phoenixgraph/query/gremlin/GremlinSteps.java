@@ -4,6 +4,13 @@ import com.pengcheng.phoenixgraph.hnsw.HnswFilter;
 import com.pengcheng.phoenixgraph.hnsw.HnswIndex;
 import com.pengcheng.phoenixgraph.hnsw.HnswLevels;
 import com.pengcheng.phoenixgraph.hnsw.HnswSearchResult;
+import com.pengcheng.phoenixgraph.fuzzy.FuzzyContext;
+import com.pengcheng.phoenixgraph.fuzzy.FuzzyContexts;
+import com.pengcheng.phoenixgraph.fuzzy.FuzzyLinks;
+import com.pengcheng.phoenixgraph.fuzzy.FuzzyPattern;
+import com.pengcheng.phoenixgraph.fuzzy.FuzzyPatternException;
+import com.pengcheng.phoenixgraph.fuzzy.FuzzyPatternRegistry;
+import com.pengcheng.phoenixgraph.fuzzy.FuzzySchema;
 import com.pengcheng.phoenixgraph.query.QueryException;
 import com.pengcheng.phoenixgraph.query.result.Subgraph;
 import com.pengcheng.phoenixgraph.query.storage.EdgePropertyFilter;
@@ -100,6 +107,83 @@ final class GremlinSteps {
             }
             return List.of(ctx.countEdges(vertexIds, edgeName, side, conditions));
         };
+    }
+
+    // --- fuzzy linking ---
+
+    /**
+     * Finds the fuzzy link node a context produces ({@code fuzzyLink(0, '{...}')}).
+     *
+     * <p>A pattern reads fragments of a context - an email domain, the first octets of an IP, a
+     * card BIN, a user name through a regular expression - and the fragments make the key of a link
+     * node. Accounts whose details are hidden but whose fragments agree produce the same key, so
+     * this step is how a traversal starts from "these details" and lands on the node that groups
+     * them; {@code out('FuzzyLinkedTo')} then walks to the accounts.
+     *
+     * <p>The context is the JSON object the step was given, filled in with the properties of the
+     * traversers it received - so {@code g.V('a1','Account').fuzzyLink(0)} asks "which ring does this
+     * account belong to". An empty traverser list is fine: the step works as a source too.
+     *
+     * <p>The answer is empty when the pattern does not apply to the context (a part of it has no
+     * value) or when no account has produced that key yet. Neither is an error: a link node is
+     * created by the accounts that belong to it.
+     */
+    static GremlinStep fuzzyLink(FuzzyPatternRegistry patterns, int patternId, String contextJson) {
+        return (ctx, in) -> {
+            try {
+                return fuzzyLinkStep(ctx, in, patterns, patternId, contextJson);
+            } catch (FuzzyPatternException e) {
+                // a pattern error is a query error: the UI answers with the message, not with a 500
+                throw new QueryException(e.getMessage(), e);
+            }
+        };
+    }
+
+    /** The body of {@link #fuzzyLink}: a context becomes the link node that groups it. */
+    private static List<Object> fuzzyLinkStep(GremlinContext ctx, List<Object> in,
+                                              FuzzyPatternRegistry patterns, int patternId,
+                                              String contextJson) {
+        {
+            FuzzyPattern pattern = patterns.require(patternId);
+            List<Object> linkIds = new ArrayList<>();
+            Map<String, FuzzyContext> contextsByLink = new LinkedHashMap<>();
+            List<FuzzyContext> contexts = new ArrayList<>();
+            if (in.isEmpty()) {
+                contexts.add(FuzzyContexts.fromJson(contextJson));
+            } else {
+                for (Object element : in) {
+                    Map<String, Object> properties = element instanceof GremlinElement gremlin
+                            ? gremlin.properties() : Map.of();
+                    contexts.add(FuzzyContexts.fromJsonAndProperties(contextJson, properties));
+                }
+            }
+            for (FuzzyContext context : contexts) {
+                String linkId = FuzzyLinks.linkVertexId(pattern, context);
+                if (linkId == null) {
+                    continue; // the pattern does not apply to this context
+                }
+                if (contextsByLink.putIfAbsent(linkId, context) == null) {
+                    linkIds.add(linkId);
+                }
+            }
+            if (linkIds.isEmpty()) {
+                return List.of();
+            }
+            // the link nodes that exist are the answer; a key no account has produced yet has no node
+            List<String> plan = ctx.readProperties();
+            List<VertexQueryResult> found = ctx.readVerticesCached(FuzzySchema.LINK_VERTEX, linkIds,
+                    plan == null ? List.of() : plan);
+            List<Object> out = new ArrayList<>(linkIds.size());
+            for (VertexQueryResult link : found) {
+                if (link == null) {
+                    continue;
+                }
+                ctx.recordVertex(link.vertexName(), link.vertexId());
+                out.add(new GremlinVertex(link.vertexName(), link.vertexId(), link.properties(),
+                        link.createdTime(), link.lastUpdatedTime()));
+            }
+            return out;
+        }
     }
 
     // --- vertex hops (out / in / both): vertices -> vertices ---

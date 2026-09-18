@@ -6,6 +6,7 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -102,6 +103,53 @@ public class ProxyController {
     @PostMapping("/graphs/{graph}/edges")
     public ResponseEntity<String> upsertEdge(@PathVariable("graph") String graph, @RequestBody String body) {
         return forward(HttpMethod.POST, "/api/v1/graphs/" + graph + "/edges",
+                new HttpEntity<>(body, jsonHeaders()));
+    }
+
+    // --- fuzzy linking (patterns are edited in the builder page) ---
+
+    /** The fuzzy patterns of a graph. */
+    @GetMapping("/fuzzy/patterns")
+    public ResponseEntity<String> fuzzyPatterns(@RequestParam("graph") String graph) {
+        return forward(HttpMethod.GET, "/api/v1/fuzzy/patterns?graph=" + graph, null);
+    }
+
+    /** The functions a fuzzy pattern is built from. */
+    @GetMapping("/fuzzy/functions")
+    public ResponseEntity<String> fuzzyFunctions() {
+        return forward(HttpMethod.GET, "/api/v1/fuzzy/functions", null);
+    }
+
+    /** Validates a fuzzy expression and shows what it produced for a context. */
+    @PostMapping("/fuzzy/validate")
+    public ResponseEntity<String> fuzzyValidate(@RequestBody String body) {
+        return forward(HttpMethod.POST, "/api/v1/fuzzy/validate", new HttpEntity<>(body, jsonHeaders()));
+    }
+
+    /** Adds or replaces a fuzzy pattern. */
+    @PostMapping("/fuzzy/patterns")
+    public ResponseEntity<String> fuzzySavePattern(@RequestBody String body) {
+        return forward(HttpMethod.POST, "/api/v1/fuzzy/patterns", new HttpEntity<>(body, jsonHeaders()));
+    }
+
+    /** Removes a fuzzy pattern. */
+    @DeleteMapping("/fuzzy/patterns/{graph}/{id}")
+    public ResponseEntity<String> fuzzyRemovePattern(@PathVariable("graph") String graph,
+                                                     @PathVariable("id") int id) {
+        return forward(HttpMethod.DELETE, "/api/v1/fuzzy/patterns/" + graph + "/" + id, null);
+    }
+
+    /** What a graph's patterns would produce for a context. */
+    @PostMapping("/fuzzy/graphs/{graph}/plan")
+    public ResponseEntity<String> fuzzyPlan(@PathVariable("graph") String graph, @RequestBody String body) {
+        return forward(HttpMethod.POST, "/api/v1/fuzzy/graphs/" + graph + "/plan",
+                new HttpEntity<>(body, jsonHeaders()));
+    }
+
+    /** Links a vertex: writes the link nodes its context produces and the edges to them. */
+    @PostMapping("/fuzzy/graphs/{graph}/links")
+    public ResponseEntity<String> fuzzyLink(@PathVariable("graph") String graph, @RequestBody String body) {
+        return forward(HttpMethod.POST, "/api/v1/fuzzy/graphs/" + graph + "/links",
                 new HttpEntity<>(body, jsonHeaders()));
     }
 

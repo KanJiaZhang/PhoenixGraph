@@ -1,5 +1,6 @@
 package com.pengcheng.phoenixgraph.http.controller;
 
+import com.pengcheng.phoenixgraph.fuzzy.FuzzyPatternException;
 import com.pengcheng.phoenixgraph.query.QueryException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -53,7 +54,7 @@ public class ApiExceptionHandler {
     }
 
     /** Malformed query, unknown step, bad parameter, unknown graph, ... -> 400. */
-    @ExceptionHandler({QueryException.class, IllegalArgumentException.class})
+    @ExceptionHandler({QueryException.class, FuzzyPatternException.class, IllegalArgumentException.class})
     public ResponseEntity<ApiError> badRequest(RuntimeException exception) {
         LOGGER.debug("Rejected request", exception);
         return ResponseEntity.status(HttpStatus.BAD_REQUEST)

@@ -173,6 +173,63 @@ design, the dataset and the measured recall, and
 `tools/download-siftsmall-dataset.sh` + `HnswGraphIntegrationTest` to build the
 demo index.
 
+### Fuzzy linking: finding the accounts that hide together
+
+A fraudster who knows the system links accounts will keep the obvious details apart -
+different names, different phones, different cards - and still reuse the small ones:
+the same email provider, the same first octets of an address, a user name that is a word
+plus digits, the same card BIN. Fuzzy linking turns those fragments into a **node**:
+every account whose fragments agree produces the same key, so they end up on one
+`FuzzyLink` vertex and a query can walk from the pattern to the ring.
+
+A pattern is data, written by an analyst:
+
+```
+emailDomain(email)+'_'+countryCode(phone)+'_'+ip2(ip)+'_'+alphaPrefix(username)
+```
+
+It is evaluated against a **context** (a JSON object, or the properties of a vertex) and each
+part produces a fragment; the fragments joined are the key. A part with no value makes the
+whole pattern not apply - an account without an email is not linked by a pattern that needs
+the email domain - and `opt(...)` marks a part as optional.
+
+```groovy
+g.V().fuzzyLink(0, '{"email":"19880101@mail.ru","phone":"+8613800138001",
+                   "ip":"10.20.31.7","username":"zhang1988"}')
+    .out('FuzzyLinkedTo')                 // the accounts that share those fragments
+    .outE('Payment').otherV()             // where their money went
+
+g.V('fz_a1','Account').fuzzyLink(0)       // which ring does this account belong to
+```
+
+What it is made of:
+
+- **`graph-fuzzy`** (a module of its own): the pattern language
+  (`emailDomain`, `emailName`, `ip2`/`ip3`, `countryCode`, `phonePrefix`, `cardBin`,
+  `alphaPrefix`, `digitSuffix`, `regex`, `digits`, `first`/`last`, `hash`, `opt`, …),
+  the key normalisation, the deterministic ids (`pattern_<id>`, `fl_<pattern>_<key>`) and
+  the link plan - a pure function of a pattern and a context, which is why the reader and
+  the writer agree by construction;
+- **patterns as a file** (`fuzzy-patterns.json`, per graph), edited in the builder page and
+  re-read when it changes, so a new pattern is used by the next query without a restart;
+- **the `fuzzyLink` step**: it computes the key from the context, reads the link vertex with
+  that id and continues the traversal from it. It works from a context alone
+  (`g.V().fuzzyLink(0, '{...}')`) or from an account (`g.V('a1','Account').fuzzyLink(0)`,
+  whose own properties are the context);
+- **the schema**: a `FuzzyLink` vertex, a `FuzzyPattern` vertex and one `FuzzyLinkedTo`
+  edge from a link to an account, with out- and in-degree limits of 1000 - a pattern like
+  "same /16" can group a lot of accounts, and the edge has to allow it;
+- **the writes**: `POST /api/v1/graphs/{graph}/fuzzy-links` links one vertex (and the demo
+  loader seeds two rings), through the ordinary write path, so links are validated and
+  indexed like any other vertex - and linking twice leaves one node and one edge, because
+  the ids are the key.
+
+`FuzzyLinkIntegrationTest` seeds two rings (six accounts sharing an email provider, a
+country, a `/16` and a name word; four hiding behind machine-made addresses on one `/24`
+with one card BIN) plus honest accounts that share nothing, and then asserts that the
+pattern finds exactly the ring, that the link node and its members agree both ways, and
+that the query above walks to twelve payments at the collection account.
+
 ## Requirements
 
 - JDK 21+ (the project compiles with `--release 21`)

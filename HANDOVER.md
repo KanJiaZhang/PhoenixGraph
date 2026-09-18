@@ -3,8 +3,17 @@
 > 本文件是**断点续做手记**：今天做了什么（结论）、现场怎么恢复、明天从哪继续。
 > 详细设计与实测数据在 `CONTEXT.md`（今天新增 **第 21–26 节**）。
 
-**最后一次会话：2026-09-18（周四）· 在 2026-09-17 的 8 个提交之后继续 · 工作树干净 · `./mvnw test` **20 个模块**全绿。**
+**最后一次会话：2026-09-18（周四）· 在 2026-09-17 的 8 个提交之后继续 · 工作树干净 · `./mvnw test` **21 个模块**全绿。**
 
+> 2026-09-18 新增（下半天）：**模糊关联 Fuzzy Linking**（第 35 节）—— 新模块 `graph-fuzzy`
+> （模式语言 `emailDomain/ip2/ip3/countryCode/cardBin/alphaPrefix/regex/hash/opt` …、
+> key 归一化、确定性 id、`FuzzyLinks.plan` 读写共用一份计划）、Gremlin 新步 `fuzzyLink(patternId[, context])`、
+> schema 新增 `FuzzyPattern`/`FuzzyLink`/`FuzzyLinkedTo`（出/入度 1000）、两圈演示数据与完整链路查询、
+> `/api/v1/fuzzy/*` 接口 + 建模页「模糊关联模式」卡片。
+> 2026-09-18 新增：**条件与上限下沉进 store**（第 34 节）—— `has`/`filter` 在解码时判定、`limit` 只取最新 k 条、
+> `count` 一条不构造；benchmark 新增 `decoded` 列（50 → 0/10/20）；
+> 并修掉 `limit` 不清理子图、pushdown 列表错位、批读无限递归三个真 bug。
+>
 > 2026-09-18 新增：**smart payment 数据**（第 31 节）—— `payment-graph-smart`（Aerospike，向量/HNSW）+
 > `payment-graph-smart-rocksdb`（真 S2 geo 索引），三个流都实测；顺带修掉同名向量属性的 HNSW 层边类冲突；
 > 以及**按 benchmark 结论做的优化**（第 32 节：Cypher 聚合 N+1 53.2ms→3.9ms、count 走 store 的 bin size、
@@ -81,6 +90,9 @@ curl -s localhost:8081/api/v1/graphs | head -c 200
 ./mvnw -q -pl graph-integration-test -am test -Dtest='RocksDbLiveLoadTest' \
        -Drocksdb.live.dir=D:/workspace/eclipse/PhoenixGraph/.rocksdb -Dsurefire.failIfNoSpecifiedTests=false
 
+# 模糊关联的两圈演示数据（幂等，可反复跑；payment-graph / set http_demo_v1）
+./mvnw -q -pl graph-integration-test -am test -Dtest='FuzzyLinkIntegrationTest' -Dsurefire.failIfNoSpecifiedTests=false
+
 # Aerospike-Edge 的 30 万笔 demo（约 4 秒；写入前会 truncate 边表与 hub 表）
 ./mvnw -q -pl graph-integration-test -am test -Dtest='AerospikeEdgeLiveLoadTest' \
        -Daerospike.asEdge.set=payment_as_edge_v1 -Dsurefire.failIfNoSpecifiedTests=false
@@ -101,6 +113,15 @@ g.V('4242','Vector').nearest(20)
 g.V('135','Account').out('Payment').count()      // 50
 // 6) 有向边 + nullable target demo
 g.V('1','Merchant').outE('Opens')                // 3 条 otherVertexId=null 的"未定对手方"边
+// 7) 模糊关联：context -> 链接节点（payment-graph，模式在 fuzzy-patterns.json）
+g.V().fuzzyLink(0, '{"email":"19880101@mail.ru","phone":"+8613800138001","ip":"10.20.31.7","username":"zhang1988"}')
+// 8) 模糊关联完整链路：模式 -> 团伙账户 -> 出款 -> 收款方（8 点 / 6+12 边）
+g.V().fuzzyLink(0, '{"email":"19880101@mail.ru","phone":"+8613800138001","ip":"10.20.31.7","username":"zhang1988"}')
+     .out('FuzzyLinkedTo').outE('Payment').otherV()
+// 9) 从账户自省它属于哪个团伙（context 取自点自身属性）
+g.V('fz_a1','Account').fuzzyLink(0)
+// 10) 第二个模式（同 /24 + 同卡 BIN + 邮箱前四位）
+g.V().fuzzyLink(1, '{"email":"44100101@qq.com","ip":"10.30.40.11","cardNumber":"6217000090009001"}').out('FuzzyLinkedTo')
 ```
 
 ---

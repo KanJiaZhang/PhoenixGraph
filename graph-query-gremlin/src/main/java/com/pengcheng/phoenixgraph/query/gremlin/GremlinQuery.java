@@ -76,6 +76,18 @@ public final class GremlinQuery {
         int close = matchingParen(s, open);
         String args = s.substring(open + 1, close);
         List<String> parts = splitArgs(args).stream().map(GremlinQuery::unquote).toList();
+        if (parts.isEmpty()) {
+            // 'g.V()' starts from nothing: a step that produces its own vertices (fuzzyLink) then
+            // decides what the traversal walks, so the prefix carries neither an id nor a name
+            String emptyRest = s.substring(close + 1).trim();
+            String emptyLogic = null;
+            int emptyBrace = indexOfOutsideQuotes(emptyRest, '{');
+            if (emptyBrace >= 0) {
+                emptyLogic = emptyRest.substring(emptyBrace + 1, matchingBrace(emptyRest, emptyBrace)).trim();
+                emptyRest = emptyRest.substring(0, emptyBrace).trim();
+            }
+            return new GremlinQuery(List.of(), null, parseSteps(emptyRest), emptyLogic);
+        }
         if (parts.size() < 2) {
             throw new QueryException("Expected 'g.V(vertexId..., vertexName)' with at least an id and a name, got: "
                     + args);

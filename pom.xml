@@ -21,6 +21,7 @@
         <module>graph-storage-rocksdb</module>
         <module>graph-storage-rocksdb-inline</module>
         <module>graph-storage-rocksdb-edge</module>
+        <module>graph-fuzzy</module>
         <module>graph-query</module>
         <module>graph-query-aerospike</module>
         <module>graph-query-gremlin</module>
@@ -93,6 +94,11 @@
             <dependency>
                 <groupId>com.pengcheng.phoenixgraph</groupId>
                 <artifactId>graph-storage-rocksdb-edge</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.pengcheng.phoenixgraph</groupId>
+                <artifactId>graph-fuzzy</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>

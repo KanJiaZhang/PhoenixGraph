@@ -22,7 +22,12 @@
         { "id": 4, "name": "accountUsage", "description": "Account usage types", "type": { "list": "STRING" } },
         { "id": 5, "name": "accountLimited", "description": "Account limits / flags", "type": { "map": "STRING" } },
         { "id": 6, "name": "firstName", "description": "Account holder first name", "type": "STRING", "display": true },
-        { "id": 7, "name": "lastName", "description": "Account holder last name", "type": "STRING", "display": true }
+        { "id": 7, "name": "lastName", "description": "Account holder last name", "type": "STRING", "display": true },
+        { "id": 8, "name": "username", "description": "Login name, e.g. zhang1988", "type": "STRING", "display": true },
+        { "id": 9, "name": "email", "description": "Email address", "type": "STRING" },
+        { "id": 10, "name": "phoneNumber", "description": "Phone number in E.164 form, e.g. +8613800138000", "type": "STRING" },
+        { "id": 11, "name": "cardNumber", "description": "Card number; its first digits are the BIN", "type": "STRING" },
+        { "id": 12, "name": "ipAddress", "description": "The address the account was last seen from", "type": "STRING" }
       ]
     },
     {
@@ -46,6 +51,34 @@
       "properties": [
         { "id": 1, "name": "cnCode", "description": "Country calling code, e.g. +86", "type": "STRING", "display": true },
         { "id": 2, "name": "phoneNumber", "description": "Phone number", "type": "STRING", "minLength": 3, "maxLength": 20, "display": true }
+      ]
+    },
+    {
+      "id": 4,
+      "name": "FuzzyPattern",
+      "description": "A fuzzy linking pattern: what a context is reduced to before it becomes a key",
+      "idSchema": { "id": 0, "name": "id", "description": "Pattern vertex id, pattern_<id>", "type": "STRING" },
+      "createdTime": { "id": -2, "name": "createdTime", "description": "Creation time", "type": "LONG" },
+      "lastUpdatedTime": { "id": -1, "name": "lastUpdatedTime", "description": "Last update time", "type": "LONG" },
+      "properties": [
+        { "id": 1, "name": "patternId", "description": "Pattern number", "type": "INT" },
+        { "id": 2, "name": "expression", "description": "The expression the pattern is", "type": "STRING", "display": true },
+        { "id": 3, "name": "name", "description": "Human readable name", "type": "STRING", "display": true },
+        { "id": 4, "name": "description", "description": "What the pattern looks for", "type": "STRING" },
+        { "id": 5, "name": "enabled", "description": "Whether queries use it", "type": "BOOLEAN" }
+      ]
+    },
+    {
+      "id": 5,
+      "name": "FuzzyLink",
+      "description": "A link node: every account whose context produces the same key points here",
+      "idSchema": { "id": 0, "name": "id", "description": "Link vertex id, fl_<pattern>_<key>", "type": "STRING" },
+      "createdTime": { "id": -2, "name": "createdTime", "description": "Creation time", "type": "LONG" },
+      "lastUpdatedTime": { "id": -1, "name": "lastUpdatedTime", "description": "Last update time", "type": "LONG" },
+      "properties": [
+        { "id": 1, "name": "patternId", "description": "The pattern that produced the key", "type": "INT" },
+        { "id": 2, "name": "key", "description": "The link key: the fragments joined", "type": "STRING", "display": true },
+        { "id": 3, "name": "pattern", "description": "The expression that produced it", "type": "STRING", "display": true }
       ]
     }
   ],
@@ -131,6 +164,23 @@
       "maxIncomingEdges": 1000,
       "properties": [
         { "id": 3, "name": "linkedAt", "description": "Link time", "type": "LONG" }
+      ]
+    },
+    {
+      "id": 6,
+      "name": "FuzzyLinkedTo",
+      "description": "An account belongs to a fuzzy link node",
+      "idSchema": { "id": 0, "name": "id", "description": "Edge id, <link>|<account>", "type": "STRING" },
+      "source": { "id": 1, "name": "source", "description": "Link vertex id", "type": "STRING", "vertex": "FuzzyLink" },
+      "target": { "id": 2, "name": "target", "description": "Account vertex id", "type": "LONG", "vertex": "Account" },
+      "createdTime": { "id": -2, "name": "createdTime", "description": "Creation time", "type": "LONG" },
+      "lastUpdatedTime": { "id": -1, "name": "lastUpdatedTime", "description": "Last update time", "type": "LONG" },
+      "direction": "DIRECTED",
+      "maxOutgoingEdges": 1000,
+      "maxIncomingEdges": 1000,
+      "properties": [
+        { "id": 3, "name": "patternId", "description": "The pattern that produced the link", "type": "INT" },
+        { "id": 4, "name": "key", "description": "The link key", "type": "STRING" }
       ]
     }
   ]

@@ -9,6 +9,7 @@ import com.pengcheng.phoenixgraph.query.aerospike.AerospikeHnswIndexFactory;
 import com.pengcheng.phoenixgraph.query.cypher.CypherGraphQuery;
 import com.pengcheng.phoenixgraph.query.cypher.CypherResult;
 import com.pengcheng.phoenixgraph.http.dto.QueryResponse;
+import com.pengcheng.phoenixgraph.fuzzy.FuzzyPatternRegistry;
 import com.pengcheng.phoenixgraph.query.gremlin.GremlinGraphQuery;
 import com.pengcheng.phoenixgraph.query.result.Subgraph;
 import com.pengcheng.phoenixgraph.query.traversal.NeighborVertexResolver;
@@ -56,6 +57,21 @@ public class QueryService {
     private final VectorIndexManager vectorIndexes;
     private final MetricsRegistry metrics;
     private final Map<String, GremlinGraphQuery> engines = new ConcurrentHashMap<>();
+
+    /**
+     * The fuzzy patterns of every graph. A pattern is data an analyst edits while the graph runs,
+     * so the engine asks the registry on each execution instead of holding a snapshot - which is
+     * why this is a field that can be wired after construction (a service built without one simply
+     * has no patterns, and a fuzzy query says so).
+     */
+    private FuzzyPatternStore fuzzyPatterns;
+
+    /** Wires the patterns fuzzy linking reads ({@code fuzzyLink(patternId, context)}). */
+    @Autowired(required = false)
+    public void fuzzyPatterns(FuzzyPatternStore fuzzyPatterns) {
+        this.fuzzyPatterns = fuzzyPatterns;
+        engines.clear(); // a new registry is a new plan
+    }
     private final Map<String, CypherGraphQuery> cypherEngines = new ConcurrentHashMap<>();
 
     public QueryService(GraphResolver graphs, @Nullable VectorIndexManager vectorIndexes) {
@@ -253,6 +269,9 @@ public class QueryService {
             GremlinGraphQuery engine = new GremlinGraphQuery(binding.graphQuery(),
                     NeighborVertexResolver.from(binding.schema()))
                     .geoProperties(geoPropertyByVertexType(binding.schema()));
+            if (fuzzyPatterns != null) {
+                engine.fuzzyPatterns(fuzzyPatterns.registryOf(name));
+            }
             // vector search: every property the schema flags isVector gets a nearest(k)
             // step (the index is shared with the write path, so freshly written
             // vertices are searchable immediately)
