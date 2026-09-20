@@ -1,9 +1,14 @@
 # Handover — resume here
 
 > 本文件是**断点续做手记**：今天做了什么（结论）、现场怎么恢复、明天从哪继续。
-> 详细设计与实测数据在 `CONTEXT.md`：**2026-09-18 新增 §32–37**（两轮 store 下沉优化 / 模糊关联 / regex 形状语义 / UI / 分布式算法 / **类起点与扫描端口**）；2026-09-17 是 §21–31。
+> 详细设计与实测数据在 `CONTEXT.md`：**2026-09-20 新增 §38**（Aerospike 准确性与时延）；**2026-09-18 新增 §32–37**（两轮 store 下沉优化 / 模糊关联 / regex 形状语义 / UI / 分布式算法 / **类起点与扫描端口**）；2026-09-17 是 §21–31。
 
-**最后一次会话：2026-09-18（周四，约 17 个提交）· 工作树干净 · 全项目编译通过 · 受影响的模块测试全绿**
+**最后一次会话：2026-09-20（周六）· 工作树干净 · 相关模块测试全绿（storage-aerospike 38 / query-aerospike 23 / query-gremlin 129 / http 68 / integration-test 86）**
+**本轮：Aerospike 版本的 10 个一跳 + 10 个两跳查询准确性（20/20，期望值由存储记录独立算出）与时延/流量测量（23 次测量两张表），
+并把时间窗口下沉进 bin 解码（§0.0 / CONTEXT §38 / DAILY-2026-09-20.md）。**
+**下一次从 §2 第 1 条开始：顶点跳不要构造边对象（decoded 50→0、150→50/100），以及 limit/条件的有序表示与摘要 bin。**
+
+**上一次会话：2026-09-18（周四，约 17 个提交）· 工作树干净 · 全项目编译通过 · 受影响的模块测试全绿**
 **（`graph-gemini` 26 + `graph-query-gremlin` 115 + `graph-http` 68 + `graph-fuzzy` 37；服务在跑，见 §1.1）**
 **下一次从 §2「明天第一件事」第 1 条开始：把类起点接到计数改写（`g.V('Account').count()` 不构对象），以及 `g.V().hasLabel(...)` /`bothE()` 全类扫描。**
 **（扫描端口已完成：`g.E('Payment').pagerank(DIST)`、`g.V('Account').filter(...).bothE('Payment').cc(DIST)` 在 RocksDB-Edge 上实测可用，见 §0.2。）**
@@ -55,6 +60,18 @@
 ---
 
 ## 0. 今日结论（按提交顺序）
+
+### 0.0 2026-09-20：Aerospike 查询路径的准确性与时延
+
+| 事项 | 结论 |
+|---|---|
+| 准确性测试 | 新增 `AerospikeHopSuite`（**参考读数器**：只读 bin + schema，手工组合跳/条件/上限/投影/去重，期望值不从引擎来）+ `AerospikeHopQueryAccuracyTest`：**10 个一跳 + 10 个两跳（5 到点 / 5 到边）全部与存储记录一致**（4 项，约 0.7 s） |
+| 时延测量 | 新增 `AerospikeHopQueryLatencyTest`：23 次测量（20 条 + `batch(1)` + `parallelism(8)` + 一条「条件不匹配」对照），各 5 预热 + 20 计时，打印**时延表 + 存储流量表**。安静机器：一跳 p50 0.54–3.57 ms（中位 0.9）、两跳 1.22–5.16 ms（中位 2.3）；流量列确定性 |
+| 关键读数 | 每跳的读是**批量**的（1.1 四次调用拿 51 条；2.4 九次拿 151 条）；计数**零构造**（1.6/1.7 decoded=0）；条件下沉（1.5c decoded=0 / filtered=50）；上限压构造量（1.8 decoded=5 / filtered=45）；**顶点跳为拿对端 id 把边全构造**（1.4/2.4/2.8 decoded=50/150/150）⇒ 最值得优化的点 |
+| 本轮实现 | **时间窗口下沉**：`EdgeRead.window` + 解码循环先按窗口过滤（读 raw entry 的 createdTime，不反序列化）+ 计数路径同样先过滤；`AerospikeGraphQuery.readEdgesWithin/readEdgesBatchWithin` 窗口进 store；新增 `AerospikeEdgeWindowPushdownTest`（3 条相隔一天的边，窗口解 2 走 1） |
+| 语义提醒 | `createdBetween` 放在**跳之前**才能收窄读；demo 数据所有边同一时间戳 ⇒ 时延上看不出窗口收益（用自造数据验证） |
+| 未做（§2 第 0 条） | 顶点跳不构造边；`limit(k)`/条件的有序表示与摘要 bin；跨查询 bin 缓存；一跳邻居读按 display 属性投影 |
+
 
 ### 0.1 2026-09-18（17 个提交，分三段）
 
@@ -184,7 +201,15 @@ g.V().fuzzyLink(1, '{"email":"44100101@qq.com","ip":"10.30.40.11","cardNumber":"
 
 ## 2. 明天第一件事（按优先级）
 
-0. **类起点的下一步**（今天做完了「能查」，下面是「查得省」）：
+0. **Aerospike 读路径的三个优化（今天用 20 条查询的时延/流量测量排出来的顺序）**：
+   1. **顶点跳不构造边**：给 `GraphQuery` 加「只读对端」的读（或让 `EdgeRead` 支持），顶点跳只需 (边类, 方向, 对端 id)
+      ⇒ 1.4 的 decoded 50 → 0、2.4/2.8 的 150 → 50/100（与计数改写同源）；
+   2. **`limit(k)` / 条件的有序或摘要表示**：现在都是有界选择/线性扫描（1.8 走完 50 条只留 5 条）；
+      写时维护时间有序副表示或「(边类, 属性) → 取值计数」摘要 bin，可把 cap 变 O(k)、把 `has(p,v).count()` 变 O(1)；
+   3. **跨查询 bin 缓存**（按 顶点/边类/方向 + `lastUpdatedTime` 失效）：仪表盘反复查询可从 N 次往返降到接近 0。
+   （第 6 条：一跳最终答案是点、且调用方不需要全部属性时按 display 属性投影 —— 会改 API 返回的属性集合，需与前端先约定。）
+
+0b. **类起点的下一步**（今天做完了「能查」，下面是「查得省」）：
    `g.V('Account').count()` / `g.E('Payment').count()` 走 store 的 `countScanVertices/countScanEdges`（**不构对象**，
    接口已实现 ✓）；`g.V().hasLabel('Account')`（无参 V + 类型过滤）与 `bothE()` 全类扫描；
    扫描的时间窗口下推（createdTime 不在键前缀，只能过滤）。
@@ -284,6 +309,11 @@ curl -s -X POST localhost:8081/api/v1/vector-index/rebuild \
 
 ## 5. 已知问题 / 限制
 
+* **demo 数据的时间戳是单一的**（`http_demo_v1` 里所有边同一 createdTime）⇒ 时间窗口的收益在 demo 上看不出来，
+  窗口下沉用自造数据（`AerospikeEdgeWindowPushdownTest` 的 3 条相隔一天的边）验证；
+* **Aerospike 时延测量对机器负载敏感**（繁忙时同一批查询到 1.5 倍），流量列是确定性的，做回归时看流量列；
+* **一跳「最终答案是点」时会读全部属性**（1.1/1.4 v-items=50）—— 优化方向见 §2 第 0 条第 6 项。
+
 * **类起点只在 RocksDB-Edge 上可用** ✓（`supportsScan()`）：Aerospike（OLTP，按 id 读）与 RocksDB-Inline 会**明确报错**
   并指出该用哪种 store —— 这是定位而不是缺陷；扫描上限用 `GremlinGraphQuery.scanLimit(n)`（0 = 不限）。
 * 扫描把 id 还原成存储类型（数字仍是数字），查询文本是字符串：引擎在建图/取根/邻接处按文本兜底匹配 ✓，
@@ -309,6 +339,12 @@ curl -s -X POST localhost:8081/api/v1/vector-index/rebuild \
 ---
 
 ## 6. 代码地图（今天新增/改动）
+
+**Aerospike 准确性与时延（2026-09-20）**：`graph-integration-test` 的
+`AerospikeHopSuite`（参考读数器 + 20 条查询目录 + 答案比较）、`AerospikeHopQueryAccuracyTest`（4 项）、
+`AerospikeHopQueryLatencyTest`（23 次测量 + 两张表 + 分析）、`AerospikeEdgeWindowPushdownTest`（2 项，scratch set `payment_window_probe`）；
+产品代码：`AerospikeEdgeStore.EdgeRead`（+window / hasWindow / inWindow / withWindow）、`decodeEdges` 与 `countEdges` 的窗口过滤、
+`AerospikeGraphQuery.readEdgesWithin/readEdgesBatchWithin` 的窗口下沉。
 
 **类起点（扫描）**：`graph-query` 的 `ScannedEdge` + `GraphQuery.supportsScan/scanVertices/scanEdges/countScan*`；
 `graph-storage-rocksdb` 的 `RocksDbKeys.vertexIdOf/directionOfKey/edgeKeyParts`（owner 从键里被验证地切出来）、
@@ -356,6 +392,8 @@ PageRank 修正：`GeminiAlgorithms.pagerank`（全局出度除法 + `(1-d)/|V|`
 |---|---|
 | `README.md` | 模块表、四种存储对比、Geo search、时间窗大点读法、两种查询语言、向量检索、模糊关联 |
 | `CONTEXT.md` | **第 36 节**（2026-09-18：分布式图算法 Gemini —— 论文映射/适配/bug/实测/限制）；**第 32–35 节**（2026-09-18：两轮 store 下沉优化 / 模糊关联 / regex 形状语义 / UI 三处）；**第 27–31 节**（同日：系统 metrics、指标面板、建模 UI、benchmark、smart 数据）；**第 21–26 节**（2026-09-17：RocksDB 两实现、GEO、四项修正、UI 三处、Aerospike-Edge、居中与有界扩展）；更早：第 15–20 节（HNSW/向量索引/UI） |
+| `DAILY-2026-09-20.md` | **按天笔记（今天）**：要求与做法、20 条查询清单与 20/20 结论、时延表与流量表、**8 条优化点**（逐条对着测量列）、本轮实现的窗口下沉、运行命令与测量注意 |
+| `CONTEXT.md` | **第 38 节**（参考读数器的设计、指标语义 decoded/filtered、结论与优化清单、窗口下沉实现）；37 节是类起点扫描 |
 | `DAILY-2026-09-18.md` | **按天笔记**：今天 17 个提交的思考与结果（§6 = 分布式算法那一段：9 个 bug 的根因、实测、限制）、复现命令、遗留事项（与昨天的 `CONTEXT.md` §21–31 互不覆盖） |
 | `HANDOVER.md` | 本文件（结论 / 现场 / 明天第一件事 / 命令 / 设计要点 / 限制 / 代码地图） |
 

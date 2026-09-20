@@ -15,6 +15,7 @@ import com.pengcheng.phoenixgraph.schema.VertexSchema;
 import com.pengcheng.phoenixgraph.schema.geo.GeoHit;
 import com.pengcheng.phoenixgraph.schema.geo.GeoSearch;
 import com.pengcheng.phoenixgraph.storage.BusinessLogEntry;
+import com.pengcheng.phoenixgraph.storage.TimeRange;
 import com.pengcheng.phoenixgraph.storage.aerospike.AerospikeEdgeStore;
 import com.pengcheng.phoenixgraph.storage.aerospike.AerospikeGeoIndex;
 import com.pengcheng.phoenixgraph.storage.aerospike.AerospikeVertexStore;
@@ -236,6 +237,98 @@ public class AerospikeGraphQuery implements GraphQuery {
     public List<List<EdgeQueryResult>> readEdgesBatch(String edgeName, EdgeSide direction,
                                                       List<Object> vertexIds, List<String> propertyNames) {
         return readEdgesBatch(edgeName, direction, vertexIds, propertyNames, List.of(), 0);
+    }
+
+    /**
+     * Windowed read: the window travels to the store, which drops an edge outside it while it walks
+     * the bin - so a query for an hour of a hub's history does not build the rest of it.
+     */
+    @Override
+    public List<EdgeQueryResult> readEdgesWithin(Object vertexId, String vertexName, String edgeName,
+                                                 EdgeSide direction, TimeRange range,
+                                                 List<String> propertyNames) {
+        if (range == null || range.isUnbounded()) {
+            return readEdges(vertexId, vertexName, edgeName, direction, propertyNames);
+        }
+        Objects.requireNonNull(vertexId, "vertexId");
+        Objects.requireNonNull(direction, "direction");
+        if (vertexName != null) {
+            resolveVertexSchema(vertexName);
+        }
+        EdgeSchema edgeSchema = resolveEdgeSchema(edgeName);
+        Map<Integer, String> requested = requestedEdgeProperties(edgeSchema, propertyNames);
+        AerospikeEdgeStore.EdgeRead read = edgeRead(edgeSchema, propertyNames, List.of(), 0).withWindow(range);
+        List<EdgeQueryResult> results = new ArrayList<>();
+        if (edgeSchema.direction() == EdgeDirection.DIRECTED) {
+            if (direction == EdgeSide.OUT || direction == EdgeSide.BOTH) {
+                readInto(results, vertexId, edgeName, edgeSchema, AerospikeEdgeStore.EDGE_DIR_OUT,
+                        EdgeSide.OUT, requested, read);
+            }
+            if (direction == EdgeSide.IN || direction == EdgeSide.BOTH) {
+                readInto(results, vertexId, edgeName, edgeSchema, AerospikeEdgeStore.EDGE_DIR_IN,
+                        EdgeSide.IN, requested, read);
+            }
+        } else {
+            readInto(results, vertexId, edgeName, edgeSchema, AerospikeEdgeStore.EDGE_DIR_BOTH,
+                    EdgeSide.BOTH, requested, read);
+        }
+        results.sort(Comparator.comparingLong(EdgeQueryResult::lastUpdatedTime).reversed()
+                .thenComparing(EdgeQueryResult::edgeId));
+        return results;
+    }
+
+    /** Batched windowed read: one native batch get, the window applied while each bin is decoded. */
+    @Override
+    public List<List<EdgeQueryResult>> readEdgesBatchWithin(String edgeName, EdgeSide direction,
+                                                            TimeRange range, List<Object> vertexIds,
+                                                            List<String> propertyNames,
+                                                            int maxResults) {
+        Objects.requireNonNull(vertexIds, "vertexIds");
+        if (vertexIds.isEmpty()) {
+            return List.of();
+        }
+        if (range == null || range.isUnbounded()) {
+            return readEdgesBatch(edgeName, direction, vertexIds, propertyNames, List.of(), maxResults);
+        }
+        Objects.requireNonNull(direction, "direction");
+        EdgeSchema edgeSchema = resolveEdgeSchema(edgeName);
+        Map<Integer, String> requested = requestedEdgeProperties(edgeSchema, propertyNames);
+        AerospikeEdgeStore.EdgeRead read = edgeRead(edgeSchema, propertyNames, List.of(), maxResults)
+                .withWindow(range);
+        List<List<EdgeQueryResult>> perVertex = new ArrayList<>(vertexIds.size());
+        for (int i = 0; i < vertexIds.size(); i++) {
+            perVertex.add(new ArrayList<>());
+        }
+        for (int directionCode : directionCodes(edgeSchema, direction)) {
+            EdgeSide side = sideOf(directionCode);
+            List<List<StoredEdgeValue>> batches = edgeStore.getEdgesBatchFiltered(vertexIds, edgeSchema.id(),
+                    directionCode, read);
+            for (int i = 0; i < vertexIds.size(); i++) {
+                for (StoredEdgeValue edge : batches.get(i)) {
+                    perVertex.get(i).add(toEdgeResult(edgeName, edge, side, requested));
+                }
+            }
+        }
+        for (List<EdgeQueryResult> list : perVertex) {
+            list.sort(Comparator.comparingLong(EdgeQueryResult::lastUpdatedTime).reversed()
+                    .thenComparing(EdgeQueryResult::edgeId));
+        }
+        return perVertex;
+    }
+
+    /** The direction codes a read walks (one for an undirected class, one or two for a directed one). */
+    private static List<Integer> directionCodes(EdgeSchema edgeSchema, EdgeSide direction) {
+        if (edgeSchema.direction() != EdgeDirection.DIRECTED) {
+            return List.of(AerospikeEdgeStore.EDGE_DIR_BOTH);
+        }
+        List<Integer> codes = new ArrayList<>(2);
+        if (direction == EdgeSide.OUT || direction == EdgeSide.BOTH) {
+            codes.add(AerospikeEdgeStore.EDGE_DIR_OUT);
+        }
+        if (direction == EdgeSide.IN || direction == EdgeSide.BOTH) {
+            codes.add(AerospikeEdgeStore.EDGE_DIR_IN);
+        }
+        return codes;
     }
 
     /** Batched filtered read: one native batch get, with the conditions applied per vertex. */

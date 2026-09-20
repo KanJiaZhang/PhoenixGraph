@@ -2336,3 +2336,81 @@ g.V('Account').filter(accountStatus.equals('ACTIVE')).bothE('payment').cc(DIST)
 - 还没做：`g.V().hasLabel(...)` / 全类 `bothE()` 扫描、`g.V('Account').count()` 的
   「不构造对象计数」改写（store 侧 `countScanVertices/countScanEdges` 已经就绪）、扫描的时间窗口下推
   （createdTime 不是前缀 ⇒ 只能过滤）、Aerospike 侧永远不做扫描（定位就是 OLTP）。
+
+---
+
+## 38. Aerospike 查询路径的准确性与时延：参考读数器、20 条查询、窗口下沉
+
+用户的要求（09-20）：在 **Aerospike 版本**上生成 **10 个一跳**与 **10 个两跳**（一半到点、一半到边）查询，
+结合 property/filter 验证**准确性**，然后做**性能测试**展示每条查询的时延，并**总结后面的优化点**。
+
+### 38.1 准确性怎么保证：从存储记录算出来的期望值
+
+新增测试辅助 `AerospikeHopSuite` 里有一个**参考读数器**：它只依赖存储层
+（`AerospikeEdgeStore.getEdges` / `AerospikeVertexStore.readVertex`）与 schema（属性 id → 名字），
+**不使用查询引擎的任何代码**，在 Java 里手工组合跳、条件、上限、投影与去重，算出「应该是什么」。
+20 条查询的期望值都是这么来的，所以：
+
+* 数据变了测试仍然有效（不是写死的数字）；
+* 引擎漏边 / 错判条件 / 取错投影 / 截断错一端 ⇒ 报「哪条查询、差在哪里」（多重集比较：忽略顺序、保留重复）；
+* 上限类查询额外断言「大小 = k 且都在全集内」。
+
+一跳 10 条覆盖：正向、反向、边、点、投影（边属性 / 顶点属性）、条件下沉、条件 + 计数、计数改写、上限、时间窗口；
+两跳 10 条覆盖：Payment 两跳、共用 IP / 共用手机号、两跳 + 投影、双向 + 去重；到边的五条里有中间条件 + `otherV()`、
+两跳计数、两跳上限。**20 条全部与存储记录一致**（4 项测试，约 0.7 s）。
+
+参考读数器自己踩的两个坑（写进注释）：判定型边的 `both` 在存储层是两行 ⇒ 参考必须像引擎一样把 OUT+IN 拼起来
+（「单个 both 读」只适合无向布局）；`both(...)` 的第二跳也必须按 `both` 展开（一开始只按 out 展开，2.5 偏小）。
+
+### 38.2 时延与流量：指标语义先说清
+
+`AerospikeHopQueryLatencyTest` 对 23 次测量（20 条查询 + `batch(1)` + `parallelism(8)` + 一条
+「条件不匹配」对照）各做 5 次预热 + 20 次计时，打印**时延表**与**存储流量表**：
+
+* `decoded` = **真正构造出来的边**（条件/上限/窗口/计数之后剩下的）；
+* `filtered` = **走过 bin 但没有构造**的边；
+* `kv-calls` = 存储往返次数；`v-items`/`e-items` = 顶点/边记录条数。
+
+安静机器上：一跳 p50 0.54–3.57 ms（中位 0.9），两跳 1.22–5.16 ms（中位 2.3）；同一批查询在机器繁忙时会到 1.5 倍，
+**流量列是确定性的**，适合当回归基准。
+
+关键读数与结论：
+
+| 读数 | 说明 |
+|---|---|
+| 1.1: 4 次调用 / 51 items；2.4: 9 次调用 / 151 items | **每跳的读是批量的**（50 个邻居点 1 次批量 get），扇出没有退化成「每顶点一次往返」 |
+| 1.6 / 1.7 的 `decoded=0` | 计数**不构造对象**（`out(...).count()` 连顶点读都省了：v-items=0） |
+| 1.5c 的 `decoded=0 / filtered=50` | 条件**在解码循环里判**（这条对照是专门造的：demo 里没有 invoice） |
+| 1.8 的 `decoded=5 / filtered=45` | 上限把构造量压到 k，但**仍走完整个 bin** |
+| 1.4 / 2.4 / 2.8 的 `decoded=50/150/150` | 顶点跳为了拿「对端 id」把每条边都构造了 ⇒ **最值得做的优化** |
+| 2.6 `batch(1)` 4 次 vs 默认 2 次调用 | 批量有效；在 50 源规模上时延无差 ⇒ 默认值即可 |
+
+注意一个容易读错的地方：1.5 的 `decoded=50 / filtered=0` **不是**没下沉，而是 demo 里 hub 的 50 笔付款**全是 SUCCESS**
+（独立查询确认 `has('status','SUCCESS').count()=50`、`has('type','invoice').count()=0`）。
+
+### 38.3 优化点（按性价比，逐条对着上表的一列）
+
+1. **顶点跳不要构造边**：加 `readNeighbours(...)`（或让 `EdgeRead` 支持「只读对端」），顶点跳只需
+   `(边类, 方向, 对端 id)`。预期 1.4 的 decoded 50 → 0，2.4/2.8 的 150 → 50/100（与计数改写的思路同源）。
+2. **时间窗口的可寻址表示**：本轮已把窗口下沉进解码（§38.4），但仍是「走整 bin 再筛」；按时间有序的副表示可把窗口变成前缀读。
+3. **`limit(k)` 的有序索引**：现在是有界选择 O(n log k)（1.8 的 filtered=45），有序索引可退化成 O(k)。
+4. **条件的选择性**：超大 bin 上 `has(p,v).count()` 可写时维护**摘要 bin**（取值计数）变成 O(1)，或走二级索引/倒排键。
+5. **跨查询 bin 缓存**：现在只有执行内缓存（20 次相同查询 = 20 份流量）；按 (顶点, 边类, 方向) 缓存 + `lastUpdatedTime` 失效，
+   代价是容量与失效正确性。度量：`kv-calls` 应降到接近 0。
+6. **一跳最贵的是邻居顶点批量读**（1.1 3.7 ms vs 1.2 0.85 ms）：最终答案是点且调用方不需要全部属性时，按 **display 属性**
+   或由调用方给投影读取（现在是「无后续消费者 ⇒ 读全部」，1.1/1.4 的 v-items=50 对宽顶点是浪费）。会改变 API 返回的属性集合，需与前端约定。
+7. **batch/parallelism**：50 源规模上无差别（measured），保持默认；扇出到数百上千时再验证。
+8. **度量成本可忽略**：零构造查询的 p50 已 0.55–0.64 ms ⇒ 计数器不在关键路径上；支配时延的是往返次数与条数。
+
+### 38.4 本轮实现的窗口下沉
+
+* `AerospikeEdgeStore.EdgeRead` 增加 `TimeRange window`：`hasWindow()/inWindow(t)/withWindow(...)`，
+  `isPlain()` 把「有窗口」也算成不 plain；工厂方法默认 `TimeRange.ALL`（行为不变）。
+* `decodeEdges` **先按窗口过滤**（读 raw entry 的第 2 个字段 = createdTime，**不反序列化**），再做条件、
+  再做「最新 k 条」的有界选择 ⇒ 窗口外的边根本不构造；`countEdges(..., EdgeRead)` 同样先过滤窗口（计数仍零构造）。
+* `AerospikeGraphQuery` 覆盖 `readEdgesWithin(...)` 与 `readEdgesBatchWithin(..., maxResults)`：
+  窗口进 `EdgeRead`；批量路径用 `getEdgesBatchFiltered`（一次原生批读 + 每个 bin 内联窗口）；无窗口时与原路径一致。
+* **语义**：`createdBetween` 放在**跳之前**才能收窄读（窗口在 bin 读取时已知）；放在跳之后只能是对已读内容的报告。
+* 测试 `AerospikeEdgeWindowPushdownTest`（自带 scratch set `payment_window_probe`）：3 条相隔一天的边，
+  窗口 [T0, T0+day] 解出 2 条、走过 1 条（`EDGE_DECODED`+2、`EDGE_FILTERED`+1），`TimeRange.ALL` 仍 3 条；
+  查询层断言「1 ms 窗口只剩第一条」。demo 数据所有边同一时间戳 ⇒ 时延上看不出差别，所以这条验证放在自造数据上。

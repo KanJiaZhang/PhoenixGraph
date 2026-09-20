@@ -29,6 +29,7 @@ import com.pengcheng.phoenixgraph.storage.BusinessLogEntry;
 import com.pengcheng.phoenixgraph.storage.ErrorLog;
 import com.pengcheng.phoenixgraph.storage.RetryingWriter;
 import com.pengcheng.phoenixgraph.storage.StoredEdge;
+import com.pengcheng.phoenixgraph.storage.TimeRange;
 import com.pengcheng.phoenixgraph.storage.WriteOutcome;
 import com.pengcheng.phoenixgraph.storage.log.JulBusinessLog;
 import com.pengcheng.phoenixgraph.storage.log.JulErrorLog;
@@ -160,45 +161,62 @@ public class AerospikeEdgeStore implements AdjacentEdgeStore {
     @SuppressWarnings("unchecked")
     /**
      * One edge read as the store sees it: which properties to build, which ones the conditions
-     * read, the conditions themselves and how many edges are wanted ({@code 0} = all).
+     * read, the conditions themselves, the creation-time window and how many edges are wanted
+     * ({@code 0} = all).
      *
      * <p>Property numbers are the schema ids of the edge class. {@code projection} and
      * {@code filterProperties} are unioned for decoding: an edge that fails a condition is
      * discarded before the projection is applied, so a condition never costs more than the
      * properties it actually reads. A {@code null} projection means "every property".
+     *
+     * <p>The window is part of the read for the same reason the conditions are: an edge outside it is
+     * dropped from the raw entry, before anything is built - a query that asks for one hour of a hub's
+     * history never pays for the rest of it.
      */
     public record EdgeRead(Set<Integer> projection, Set<Integer> filterProperties,
-                           java.util.function.Predicate<Map<Integer, Object>> filter, int maxResults) {
+                           java.util.function.Predicate<Map<Integer, Object>> filter, TimeRange window,
+                           int maxResults) {
 
         public EdgeRead {
             projection = projection == null ? null : Set.copyOf(projection);
             filterProperties = filterProperties == null ? Set.of() : Set.copyOf(filterProperties);
+            window = window == null ? TimeRange.ALL : window;
         }
 
         /** Everything, uncapped - what a plain read asks for. */
         public static EdgeRead all() {
-            return new EdgeRead(null, Set.of(), null, 0);
+            return new EdgeRead(null, Set.of(), null, TimeRange.ALL, 0);
         }
 
         /** Only these properties (a query projection), uncapped. */
         public static EdgeRead of(Set<Integer> projection) {
-            return new EdgeRead(projection, Set.of(), null, 0);
+            return new EdgeRead(projection, Set.of(), null, TimeRange.ALL, 0);
         }
 
         /** A read with conditions and/or a cap. */
         public static EdgeRead filtered(Set<Integer> projection, Set<Integer> filterProperties,
                                         java.util.function.Predicate<Map<Integer, Object>> filter,
                                         int maxResults) {
-            return new EdgeRead(projection, filterProperties, filter, maxResults);
+            return new EdgeRead(projection, filterProperties, filter, TimeRange.ALL, maxResults);
         }
 
         public boolean hasFilter() {
             return filter != null;
         }
 
-        /** Whether the read is a plain one (no condition, no cap, no projection). */
+        /** Whether the read is bounded in time. */
+        public boolean hasWindow() {
+            return !window.isUnbounded();
+        }
+
+        /** Whether a creation time is inside the window. */
+        public boolean inWindow(long createdTime) {
+            return window.contains(createdTime);
+        }
+
+        /** Whether the read is a plain one (no condition, no window, no cap, no projection). */
         public boolean isPlain() {
-            return filter == null && maxResults <= 0 && projection == null;
+            return filter == null && maxResults <= 0 && projection == null && !hasWindow();
         }
 
         /** The property ids to decode for the condition test + the result ({@code null} = all). */
@@ -216,7 +234,12 @@ public class AerospikeEdgeStore implements AdjacentEdgeStore {
 
         /** The read that keeps only the parameters of this one but decodes nothing extra. */
         public EdgeRead withMaxResults(int max) {
-            return new EdgeRead(projection, filterProperties, filter, max);
+            return new EdgeRead(projection, filterProperties, filter, window, max);
+        }
+
+        /** The same read, narrowed to a creation-time window. */
+        public EdgeRead withWindow(TimeRange window) {
+            return new EdgeRead(projection, filterProperties, filter, window, maxResults);
         }
     }
 
@@ -847,18 +870,31 @@ public class AerospikeEdgeStore implements AdjacentEdgeStore {
         if (!(bin instanceof java.util.Map<?, ?> map)) {
             return bin == null ? 0 : decodeEdges(record, edgeSchemaId, directionCode, read).size();
         }
-        if (!read.hasFilter()) {
+        if (!read.hasFilter() && !read.hasWindow()) {
             return map.size();
         }
         long matches = 0;
         for (Map.Entry<?, ?> entry : map.entrySet()) {
-            if (read.filter().test(rawPropertyValues(entry.getValue(), read.filterProperties()))) {
-                matches++;
+            if (read.hasWindow() && !read.inWindow(rawCreatedTime(entry.getValue()))) {
+                continue;
             }
+            if (read.hasFilter()
+                    && !read.filter().test(rawPropertyValues(entry.getValue(), read.filterProperties()))) {
+                continue;
+            }
+            matches++;
         }
-        // a count with a condition builds no edge at all: the whole bin is only walked
+        // a count with a condition or a window builds no edge at all: the bin is only walked
         metrics.increment(Metrics.EDGE_FILTERED, map.size() - matches);
         return matches;
+    }
+
+    /** The creation time of a raw bin entry (the second field of the stored form). */
+    private static long rawCreatedTime(Object raw) {
+        if (raw instanceof List<?> list && list.size() >= 2 && list.get(1) instanceof Number created) {
+            return created.longValue();
+        }
+        throw new IllegalArgumentException("Malformed edge value: " + raw);
     }
 
     /**
@@ -906,6 +942,17 @@ public class AerospikeEdgeStore implements AdjacentEdgeStore {
             return List.of();
         }
         List<Map.Entry<String, Object>> kept = new ArrayList<>(raw.entrySet());
+        if (read.hasWindow()) {
+            // the window is checked on the raw entry (the creation time is its second field), so an
+            // edge outside it is dropped before any condition runs and before anything is built
+            List<Map.Entry<String, Object>> inWindow = new ArrayList<>(kept.size());
+            for (Map.Entry<String, Object> entry : kept) {
+                if (read.inWindow(rawCreatedTime(entry.getValue()))) {
+                    inWindow.add(entry);
+                }
+            }
+            kept = inWindow;
+        }
         if (read.hasFilter()) {
             List<Map.Entry<String, Object>> matched = new ArrayList<>(kept.size());
             for (Map.Entry<String, Object> entry : kept) {
