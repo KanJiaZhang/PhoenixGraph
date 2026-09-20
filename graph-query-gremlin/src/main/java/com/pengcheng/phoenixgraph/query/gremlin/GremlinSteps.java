@@ -79,6 +79,21 @@ final class GremlinSteps {
         return (ctx, in) -> hopEdges(ctx, in, edgeName, EdgeSide.BOTH, filters, maxResults);
     }
 
+    /** The same edge hop over several named classes, concatenated in argument order. */
+    static GremlinStep outE(List<String> edgeNames) {
+        return (ctx, in) -> hopEdges(ctx, in, edgeNames, EdgeSide.OUT, List.of(), 0);
+    }
+
+    /** @see #outE(List) */
+    static GremlinStep inE(List<String> edgeNames) {
+        return (ctx, in) -> hopEdges(ctx, in, edgeNames, EdgeSide.IN, List.of(), 0);
+    }
+
+    /** @see #outE(List) */
+    static GremlinStep bothE(List<String> edgeNames) {
+        return (ctx, in) -> hopEdges(ctx, in, edgeNames, EdgeSide.BOTH, List.of(), 0);
+    }
+
     /**
      * {@code outE('x').count()} in one step: the store counts the edges instead of handing them
      * over - and with conditions it counts only the edges that satisfy them, without building any
@@ -189,15 +204,45 @@ final class GremlinSteps {
     // --- vertex hops (out / in / both): vertices -> vertices ---
 
     static GremlinStep out(String edgeName) {
-        return (ctx, in) -> hopVertices(ctx, in, edgeName, EdgeSide.OUT);
+        return out(edgeName, 0);
+    }
+
+    /** A vertex hop that stops once it has {@code maxResults} neighbours ({@code 0} = no cap). */
+    static GremlinStep out(String edgeName, int maxResults) {
+        return (ctx, in) -> hopVertices(ctx, in, edgeName, EdgeSide.OUT, maxResults);
     }
 
     static GremlinStep in(String edgeName) {
-        return (ctx, in) -> hopVertices(ctx, in, edgeName, EdgeSide.IN);
+        return in(edgeName, 0);
+    }
+
+    /** @see #out(String, int) */
+    static GremlinStep in(String edgeName, int maxResults) {
+        return (ctx, in) -> hopVertices(ctx, in, edgeName, EdgeSide.IN, maxResults);
     }
 
     static GremlinStep both(String edgeName) {
-        return (ctx, in) -> hopVertices(ctx, in, edgeName, EdgeSide.BOTH);
+        return both(edgeName, 0);
+    }
+
+    /** @see #out(String, int) */
+    static GremlinStep both(String edgeName, int maxResults) {
+        return (ctx, in) -> hopVertices(ctx, in, edgeName, EdgeSide.BOTH, maxResults);
+    }
+
+    /** The same vertex hop over several named classes, concatenated in argument order. */
+    static GremlinStep out(List<String> edgeNames) {
+        return (ctx, in) -> hopVertices(ctx, in, edgeNames, EdgeSide.OUT);
+    }
+
+    /** @see #out(List) */
+    static GremlinStep in(List<String> edgeNames) {
+        return (ctx, in) -> hopVertices(ctx, in, edgeNames, EdgeSide.IN);
+    }
+
+    /** @see #out(List) */
+    static GremlinStep both(List<String> edgeNames) {
+        return (ctx, in) -> hopVertices(ctx, in, edgeNames, EdgeSide.BOTH);
     }
 
     // --- edge -> vertex ---
@@ -652,6 +697,19 @@ final class GremlinSteps {
         return hopEdges(ctx, in, edgeName, dir, List.of(), 0);
     }
 
+    /** An edge hop over several named classes: one hop per class, concatenated in argument order. */
+    private static List<Object> hopEdges(GremlinContext ctx, List<Object> in, List<String> edgeNames, EdgeSide dir,
+                                         List<EdgePropertyFilter> filters, int maxResults) {
+        if (edgeNames == null || edgeNames.size() == 1) {
+            return hopEdges(ctx, in, edgeNames == null ? null : edgeNames.get(0), dir, filters, maxResults);
+        }
+        List<Object> out = new ArrayList<>();
+        for (String edgeName : edgeNames) {
+            out.addAll(hopEdges(ctx, in, edgeName, dir, filters, maxResults));
+        }
+        return out;
+    }
+
     /**
      * The edge traversers of an edge hop. Each one remembers the vertex it was read for
      * ({@link GremlinEdge#sourceVertexId()}), which is what makes "the vertices this traversal went
@@ -724,6 +782,11 @@ final class GremlinSteps {
     }
 
     private static List<Object> hopVertices(GremlinContext ctx, List<Object> in, String edgeName, EdgeSide dir) {
+        return hopVertices(ctx, in, edgeName, dir, 0);
+    }
+
+    private static List<Object> hopVertices(GremlinContext ctx, List<Object> in, String edgeName, EdgeSide dir,
+                                            int maxResults) {
         List<GremlinVertex> vertices = toVertices(in);
         if (vertices.isEmpty()) {
             return List.of();
@@ -733,33 +796,64 @@ final class GremlinSteps {
             // instead of the edges, so a store whose edges live in a record answers from their header and
             // builds none of them (the properties would be decoded and thrown away). When a subgraph is
             // collected the edges are read as before, because the UI shows their properties.
-            return new ArrayList<>(readNeighbourVertices(ctx, neighbourEdges(ctx, vertices, edgeName, dir)));
+            return new ArrayList<>(readNeighbourVertices(ctx,
+                    neighbourEdges(ctx, vertices, edgeName, dir, maxResults)));
         }
         // The intermediate edges of a vertex hop are internal: only their otherVertexId
         // is consumed, so no edge property projection is applied here.
         List<EdgeQueryResult> allEdges = new ArrayList<>();
         for (List<EdgeQueryResult> edges : readEdgesByVertex(ctx, vertices, edgeName, dir, List.of(),
-                List.of(), 0)) {
+                List.of(), maxResults)) {
             allEdges.addAll(edges);
         }
         return new ArrayList<>(readNeighbourVertices(ctx, allEdges));
     }
 
+    /** A vertex hop over several named classes: one hop per class, concatenated in argument order. */
+    private static List<Object> hopVertices(GremlinContext ctx, List<Object> in, List<String> edgeNames,
+                                            EdgeSide dir) {
+        if (edgeNames == null || edgeNames.size() == 1) {
+            return hopVertices(ctx, in, edgeNames == null ? null : edgeNames.get(0), dir);
+        }
+        List<Object> out = new ArrayList<>();
+        for (String edgeName : edgeNames) {
+            out.addAll(hopVertices(ctx, in, edgeName, dir));
+        }
+        return out;
+    }
+
     /**
      * The neighbours of every input vertex as edges without properties, so the vertex hop's own logic (the
      * neighbour type comes from the edge class and the side, the vertex from the far endpoint) is unchanged.
+     * A positive {@code maxResults} stops reading once that many neighbours are collected.
      */
     private static List<EdgeQueryResult> neighbourEdges(GremlinContext ctx, List<GremlinVertex> vertices,
-                                                        String edgeName, EdgeSide dir) {
+                                                        String edgeName, EdgeSide dir, int maxResults) {
         List<Object> ids = new ArrayList<>(vertices.size());
         for (GremlinVertex vertex : vertices) {
             ids.add(vertex.id());
         }
         List<EdgeQueryResult> out = new ArrayList<>();
-        for (List<com.pengcheng.phoenixgraph.query.storage.NeighbourRef> neighbours
-                : ctx.readNeighboursBatch(edgeName, dir, ids)) {
-            for (com.pengcheng.phoenixgraph.query.storage.NeighbourRef neighbour : neighbours) {
-                out.add(neighbour.toEdgeResult());
+        if (maxResults <= 0) {
+            // uncapped: one batched read of every source
+            for (List<com.pengcheng.phoenixgraph.query.storage.NeighbourRef> neighbours
+                    : ctx.readNeighboursBatch(edgeName, dir, ids)) {
+                for (com.pengcheng.phoenixgraph.query.storage.NeighbourRef neighbour : neighbours) {
+                    out.add(neighbour.toEdgeResult());
+                }
+            }
+            return out;
+        }
+        // capped: read source batch by source batch and stop as soon as the cap is reached
+        for (List<Object> batch : ctx.batches(ids)) {
+            for (List<com.pengcheng.phoenixgraph.query.storage.NeighbourRef> neighbours
+                    : ctx.readNeighboursBatch(edgeName, dir, batch)) {
+                for (com.pengcheng.phoenixgraph.query.storage.NeighbourRef neighbour : neighbours) {
+                    if (out.size() >= maxResults) {
+                        return out;
+                    }
+                    out.add(neighbour.toEdgeResult());
+                }
             }
         }
         return out;

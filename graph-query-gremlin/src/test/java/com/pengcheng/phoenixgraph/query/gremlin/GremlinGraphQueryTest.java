@@ -221,6 +221,42 @@ class GremlinGraphQueryTest {
     }
 
     @Test
+    void hopOverSeveralNamedClassesConcatenatesThem() {
+        EdgeQueryResult e1 = edge("e1", EdgeSide.OUT, "n1", Map.of());
+        EdgeQueryResult e2 = edge("e2", EdgeSide.OUT, "s1", Map.of());
+        when(graphQuery.readEdges("v1", "person", "knows", EdgeSide.OUT, List.of()))
+                .thenReturn(List.of(e1));
+        when(graphQuery.readEdges("v1", "person", "created", EdgeSide.OUT, List.of()))
+                .thenReturn(List.of(e2));
+        when(graphQuery.readVertex("n1", "person", List.of()))
+                .thenReturn(new VertexQueryResult("person", "n1", Map.of(), 5L, 6L));
+        when(graphQuery.readVertex("s1", "software", List.of()))
+                .thenReturn(new VertexQueryResult("software", "s1", Map.of(), 7L, 8L));
+
+        List<Object> result = gremlin.execute("g.V('v1', 'person').out('knows', 'created')");
+
+        assertEquals(2, result.size());
+        assertEquals(List.of("n1", "s1"),
+                result.stream().map(o -> ((GremlinVertex) o).id()).toList());
+    }
+
+    @Test
+    void multiClassHopCountIsNotRewrittenToASingleBinCount() {
+        EdgeQueryResult e1 = edge("e1", EdgeSide.OUT, "n1", Map.of());
+        EdgeQueryResult e2 = edge("e2", EdgeSide.OUT, "s1", Map.of());
+        when(graphQuery.readEdges("v1", "person", "knows", EdgeSide.OUT, List.of()))
+                .thenReturn(List.of(e1));
+        when(graphQuery.readEdges("v1", "person", "created", EdgeSide.OUT, List.of()))
+                .thenReturn(List.of(e2));
+        when(graphQuery.readVertex("n1", "person", List.of()))
+                .thenReturn(new VertexQueryResult("person", "n1", Map.of(), 5L, 6L));
+        when(graphQuery.readVertex("s1", "software", List.of()))
+                .thenReturn(new VertexQueryResult("software", "s1", Map.of(), 7L, 8L));
+
+        assertEquals(List.of(2L), gremlin.execute("g.V('v1', 'person').out('knows', 'created').count()"));
+    }
+
+    @Test
     void unknownStepThrows() {
         assertThrows(QueryException.class,
                 () -> gremlin.execute("g.V('v1', 'person').jump('knows')"));
@@ -310,6 +346,9 @@ class GremlinGraphQueryTest {
     @Test
     void limitKeepsThePropertiesProjectedForTheFollowingSteps() {
         when(graphQuery.readEdges("v1", "person", "knows", EdgeSide.OUT, List.of()))
+                .thenReturn(List.of(edge("e1", EdgeSide.OUT, "n1", Map.of())));
+        // a limit now folds into the hop itself, so the read is the capped form (empty filters, cap 1)
+        when(graphQuery.readEdges("v1", "person", "knows", EdgeSide.OUT, List.of(), List.of(), 1))
                 .thenReturn(List.of(edge("e1", EdgeSide.OUT, "n1", Map.of())));
         when(graphQuery.readVertex("n1", "person", List.of("name")))
                 .thenReturn(new VertexQueryResult("person", "n1", Map.of("name", "bob"), 5L, 6L));
@@ -541,12 +580,13 @@ class GremlinGraphQueryTest {
 
     @Test
     void aCappedVertexHopDrawsOnlyTheEdgesOfTheVerticesItKept() {
-        // the hub reaches two neighbours, the limit keeps one: the edge to the dropped neighbour was read
-        // (that is how the hop works) but it is not part of the answer, so it is not part of the graph the
-        // UI draws either
+        // the limit folds into the hop: the hop stops reading once it has one neighbour, so the edge to
+        // the second neighbour is never read - the answer and the drawn graph are exactly what was kept
         when(graphQuery.readEdges("v1", "person", "knows", EdgeSide.OUT, List.of()))
                 .thenReturn(List.of(edge("e1", EdgeSide.OUT, "n1", Map.of()),
                         edge("e2", EdgeSide.OUT, "n2", Map.of())));
+        when(graphQuery.readEdges("v1", "person", "knows", EdgeSide.OUT, List.of(), List.of(), 1))
+                .thenReturn(List.of(edge("e1", EdgeSide.OUT, "n1", Map.of())));
         when(graphQuery.readVertex("n1", "person", List.of()))
                 .thenReturn(new VertexQueryResult("person", "n1", Map.of(), 5L, 6L));
         when(graphQuery.readVertex("n2", "person", List.of()))

@@ -53,16 +53,16 @@ public class GremlinStepRegistry {
     }
 
     private void registerBuiltIns() {
-        register("out", args -> GremlinSteps.out(optionalSingle(args, "out")));
-        register("in", args -> GremlinSteps.in(optionalSingle(args, "in")));
-        register("both", args -> GremlinSteps.both(optionalSingle(args, "both")));
-        register("outE", args -> GremlinSteps.outE(optionalSingle(args, "outE")));
+        register("out", args -> GremlinSteps.out(edgeNames(args)));
+        register("in", args -> GremlinSteps.in(edgeNames(args)));
+        register("both", args -> GremlinSteps.both(edgeNames(args)));
+        register("outE", args -> GremlinSteps.outE(edgeNames(args)));
         // the shapes the compiler rewrites <hop>E(...).count() into
         register("countOutE", args -> GremlinSteps.countEdges(optionalSingle(args, "countOutE"), EdgeSide.OUT));
         register("countInE", args -> GremlinSteps.countEdges(optionalSingle(args, "countInE"), EdgeSide.IN));
         register("countBothE", args -> GremlinSteps.countEdges(optionalSingle(args, "countBothE"), EdgeSide.BOTH));
-        register("inE", args -> GremlinSteps.inE(optionalSingle(args, "inE")));
-        register("bothE", args -> GremlinSteps.bothE(optionalSingle(args, "bothE")));
+        register("inE", args -> GremlinSteps.inE(edgeNames(args)));
+        register("bothE", args -> GremlinSteps.bothE(edgeNames(args)));
         register("otherV", args -> {
             if (!args.isEmpty()) {
                 throw new QueryException("otherV expects no arguments, got " + args.size());
@@ -114,6 +114,11 @@ public class GremlinStepRegistry {
         register("pagerank", args -> GremlinAlgorithms.pagerank());
         register("louvain", args -> GremlinAlgorithms.louvain());
         register("cc", args -> GremlinAlgorithms.cc());
+    }
+
+    /** Hop steps accept zero args (all edge classes) or one or several (a list of classes). */
+    private static List<String> edgeNames(List<String> args) {
+        return args.isEmpty() ? null : List.copyOf(args);
     }
 
     private static String single(List<String> args, String stepName) {

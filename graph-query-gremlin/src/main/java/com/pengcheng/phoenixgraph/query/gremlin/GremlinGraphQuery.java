@@ -446,6 +446,10 @@ public class GremlinGraphQuery {
         // a limit after the first hop of a windowed traversal becomes the window's cap, so the
         // aggregated tables stop reading once they have that many edges
         parsedSteps = pushLimitsIntoWindow(parsedSteps);
+        // a limit directly after a vertex hop becomes the hop's own cap, so the hop stops reading once
+        // it has that many neighbours instead of materialising every one and then truncating
+        List<Integer> vertexCaps = new ArrayList<>();
+        parsedSteps = pushVertexHopLimits(parsedSteps, vertexCaps);
         // the conditions and the cap of an edge hop are decided here, so the resolution loop below
         // can hand them to the step (the steps that were folded away are gone from the plan). Only
         // a store that evaluates them while it decodes gets them: for every other backend the
@@ -464,12 +468,14 @@ public class GremlinGraphQuery {
         List<GremlinQuery.Step> plannedSteps = new ArrayList<>(parsedSteps.size());
         List<HnswFilter> pushedFilters = new ArrayList<>(parsedSteps.size());
         List<EdgePushdown> plannedPushdowns = new ArrayList<>(parsedSteps.size());
+        List<Integer> plannedVertexCaps = new ArrayList<>(parsedSteps.size());
         for (int i = 0; i < parsedSteps.size(); i++) {
             GremlinQuery.Step step = parsedSteps.get(i);
             if (!step.name().equals("nearest")) {
                 plannedSteps.add(step);
                 pushedFilters.add(null);
                 plannedPushdowns.add(edgePushdowns.get(i));
+                plannedVertexCaps.add(vertexCaps.get(i));
                 continue;
             }
             List<GremlinQuery.Step> conditions = new ArrayList<>();
@@ -481,6 +487,7 @@ public class GremlinGraphQuery {
             plannedSteps.add(step);
             pushedFilters.add(conditions.isEmpty() ? null : GremlinSteps.hnswFilter(conditions));
             plannedPushdowns.add(null);
+            plannedVertexCaps.add(null);
             i = next - 1; // the conditions became part of the nearest step
         }
         List<String>[] properties = planProperties(plannedSteps);
@@ -491,10 +498,13 @@ public class GremlinGraphQuery {
             GremlinQuery.Step step = plannedSteps.get(i);
             HnswFilter pushed = pushedFilters.get(i);
             EdgePushdown edgePushed = plannedPushdowns.get(i);
+            Integer vertexCap = plannedVertexCaps.get(i);
             if (pushed != null) {
                 steps.add(nearestStep(step, pushed));
             } else if (edgePushed != null) {
                 steps.add(edgeStep(step, edgePushed));
+            } else if (vertexCap != null) {
+                steps.add(vertexStep(step, vertexCap));
             } else {
                 steps.add(registry.resolve(step.name(), step.args()));
             }
@@ -608,6 +618,46 @@ public class GremlinGraphQuery {
         };
     }
 
+    /**
+     * Folds a limit directly after a vertex hop into the hop's own cap. A vertex hop that is capped
+     * stops reading once it has enough neighbours, so {@code out('Payment').limit(3)} on a hub reads
+     * three edges instead of the whole bin and then throwing the rest away.
+     *
+     * <p>Only a limit with nothing in between folds: a vertex {@code has}/{@code filter} cannot be
+     * pushed into the store, so it must run before the limit and keeps it in place.
+     *
+     * @param caps receives one entry per input step ({@code null} = no cap), so the caller can resolve
+     *             the capped hop with {@link #vertexStep}
+     */
+    private static List<GremlinQuery.Step> pushVertexHopLimits(List<GremlinQuery.Step> steps, List<Integer> caps) {
+        List<GremlinQuery.Step> out = new ArrayList<>(steps.size());
+        for (int i = 0; i < steps.size(); i++) {
+            GremlinQuery.Step step = steps.get(i);
+            if (isVertexHop(step.name()) && i + 1 < steps.size()
+                    && steps.get(i + 1).name().equals("limit")) {
+                int cap = (int) Math.min(Integer.MAX_VALUE,
+                        positiveLong(steps.get(i + 1).args().get(0), "limit"));
+                out.add(step);
+                caps.add(cap);
+                i++; // the limit became the hop's cap
+            } else {
+                out.add(step);
+                caps.add(null);
+            }
+        }
+        return out;
+    }
+
+    /** Resolves a vertex hop whose cap came from a folded {@code limit}. */
+    private GremlinStep vertexStep(GremlinQuery.Step step, int cap) {
+        String edgeName = optionalSingle(step.args(), step.name());
+        return switch (step.name()) {
+            case "out" -> GremlinSteps.out(edgeName, cap);
+            case "in" -> GremlinSteps.in(edgeName, cap);
+            default -> GremlinSteps.both(edgeName, cap);
+        };
+    }
+
     /** The {@code countOutE} name an edge hop takes when it is only counted. */
     private static String countStepName(String edgeHop) {
         return "count" + Character.toUpperCase(edgeHop.charAt(0)) + edgeHop.substring(1);
@@ -625,6 +675,10 @@ public class GremlinGraphQuery {
 
     private static boolean isEdgeHop(String name) {
         return name.equals("outE") || name.equals("inE") || name.equals("bothE");
+    }
+
+    private static boolean isVertexHop(String name) {
+        return name.equals("out") || name.equals("in") || name.equals("both");
     }
 
     private static boolean isEdgeCount(String name) {
@@ -646,15 +700,15 @@ public class GremlinGraphQuery {
     /**
      * An optional step argument: at most one token, blank means "not given".
      *
-     * <p>Rejects extra arguments itself so a folded step cannot silently ignore them (a folded
-     * step never reaches the registry, which is where that check would otherwise happen).
+     * <p>Rejects nothing extra: a folded step that carries several class names cannot be pushed
+     * into a single bin read, so it returns {@code null} (the hop keeps its own resolution).
      */
     private static String optionalSingle(List<String> args, String stepName) {
         if (args.isEmpty()) {
             return null;
         }
         if (args.size() > 1) {
-            throw new QueryException(stepName + " expects at most one argument, got " + args.size());
+            return null;
         }
         String value = args.get(0);
         return value == null || value.isBlank() ? null : value;
@@ -696,7 +750,7 @@ public class GremlinGraphQuery {
                 // an edge hop that is only counted can be counted by the store: no decoding, and
                 // no vertex reads (executed by GremlinSteps.countEdges, which falls back to the
                 // edge hop when a subgraph is being collected)
-                boolean countable = true;
+                boolean countable = result.get(i).args().size() <= 1;
                 for (int j = i + 1; j < next; j++) {
                     countable = countable && !isFilter(result.get(j).name());
                 }
