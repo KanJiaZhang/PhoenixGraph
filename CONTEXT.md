@@ -2582,3 +2582,55 @@ graph-query-gremlin      GremlinContext.countEdges(...)  无时间窗时按 batc
 * 边的**读**（非计数）仍按引擎自带的批处理（X3 的 41 次往返），可以让它显式按 batch(n) 分组；
 * 再往下就是服务端聚合（UDF）：目前已经是「一次多键读 + 本地计数」的形态；
 * 第 38 节其余优化点（limit 的有序表示、摘要 bin、跨查询 bin 缓存、display 属性投影）仍在。
+
+---
+
+## 42. 两跳 Payment 到点的近线基准：22 条 Gremlin 写法 + 混合负载
+
+§41 是一次「多起点、多 batch」的广度测量；这一节沿深度做一次**同一条两跳语义的多种 Gremlin 写法**的对照，
+全部以点结尾（Payment > Payment，最后一跳产点），并加上一轮混合负载当作近线基线。
+
+### 42.1 设计
+
+```text
+AerospikeTwoHopPaymentBenchmarkTest
+  22 条遍历，全部两跳 Payment、结尾是点（out/in/both 或 otherV 产点；末尾可跟 count/dedup/limit/values/elementMap）
+  step 组合：方向、边跳+otherV、has(status) 在边上、filter(accountStatus) 在中间点上、dedup、limit(20)、
+           count、dedup.count、跳之间的 batch(10)/barrier(10)、values/elementMap 取点属性
+  近线特征：起点覆盖 hub 135 与环上 1000/1014/1025/1049；每条 3 预热 + 12 计时，报分布；
+           最后 22 条 × 4 轮 = 88 次混合执行（背靠背）作为工作负载基线
+  准确性：每条与参考读数器核对（同样的两跳、条件、去重、截断）
+  报告：先打印每条 Gremlin 原文，再给答案大小、mean/p50/p95/p99/max 与 v-items/e-items/kv-calls
+```
+
+### 42.2 读数（ms，`http_demo_v2`）
+
+| 计划 | 答案 | p50 | kv-calls | 说明 |
+|---|---|---|---|---|
+| hub `out>out` | 150 | 6.82 | 5 | 50 个源 ⇒ 5 次往返 |
+| 环账户 `out>out` | 9 | 2.75 | 3 | 3 个源 ⇒ 3 次 |
+| hub `outE>otherV>out` | 150 | 6.82 | 5 | 同义写法同价（边对象按需构造） |
+| hub `outE has(status)>otherV>out` | 150 | 5.42 | 5 | 条件命中全部 ⇒ 不省 |
+| 1014 `out>filter(accountStatus=FROZEN)>out` | 0 | 1.93 | 2 | 条件命中 0 ⇒ 只对命中的源展开 |
+| 1000 `both>both` | 92 | 4.98 | 7 | 双向翻倍源与边 |
+| hub `out>out>count` | 150 | 2.88 | 4 | 计数最省（v-items=0） |
+| hub `out>out>limit(20)` | 20 | 3.67 | 2 | 截断在读点之前（v-items=0） |
+| hub `out>out>dedup` | 50 | 5.77 | 5 | 去重是内存操作，读不变 |
+| hub `out>out>values(firstName)` | 150 | 4.59 | 5 | 取属性要读点 |
+| hub `out>batch(10)>out` | 150 | 5.37 | 7 | 显式分批多一次往返（5 批 + 种子 + 一跳） |
+| 混合负载（22 条 × 4 轮） | — | — | — | 88 次 369 ms，平均 4.19 ms/次 |
+
+### 42.3 结论
+
+1. **成本模型就是「一跳 = 若干次往返」**：源越多往返越多（50 源 5 次、3 源 3 次），
+   同义写法（`out>out` 与 `outE>otherV>out`）成本一致 —— 因为顶点跳不再构造边（§40）。
+2. **条件的收益等于它的选择率**：命中 0 ⇒ 第二跳没有源（2 次往返 / 1.9 ms）；命中全部 ⇒ 与无条件同价。
+3. **结尾 step 决定最后一步的读**：`count()` 不读点、`limit(k)` 在读点之前截断，
+   而 `dedup()/values()/elementMap()` 需要点本身 ⇒ 回到 5 次往返。
+4. **批量参数在两跳里收益有限**（7 次 vs 5 次往返，时延持平）—— 它的价值在计数路径（§41）。
+5. **近线基线**：这套 22 条计划的混合吞吐是 4.19 ms/次（同一台机器、同一份 demo 数据）。
+
+### 42.4 未做
+
+* 一跳 + 两跳混跑（更接近真实仪表盘：点开看一跳、再展开两跳）还没有；
+* `where()` / `order().by()` / `group().by()` 等 step 尚未实现，实现后应补进这套基准。
