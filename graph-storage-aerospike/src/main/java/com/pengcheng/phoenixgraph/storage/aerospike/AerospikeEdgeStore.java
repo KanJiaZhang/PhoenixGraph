@@ -24,6 +24,7 @@ import com.pengcheng.phoenixgraph.schema.EdgeSchema;
 import com.pengcheng.phoenixgraph.schema.GraphSchema;
 import com.pengcheng.phoenixgraph.schema.PropertyType;
 import com.pengcheng.phoenixgraph.storage.AdjacentEdgeStore;
+import com.pengcheng.phoenixgraph.storage.EdgeHeader;
 import com.pengcheng.phoenixgraph.storage.BusinessLog;
 import com.pengcheng.phoenixgraph.storage.BusinessLogEntry;
 import com.pengcheng.phoenixgraph.storage.ErrorLog;
@@ -854,6 +855,75 @@ public class AerospikeEdgeStore implements AdjacentEdgeStore {
     public long countEdges(Object vertexId, int edgeSchemaId, int directionCode) {
         return countEdges(vertexId, edgeSchemaId, directionCode, EdgeRead.all());
     }
+
+    /**
+     * The headers of a vertex over one edge class: each edge's id, its far endpoint and its timestamps,
+     * and none of its properties.
+     *
+     * <p>A vertex hop walks an edge to reach the vertex at its far end and never looks at the edge itself, so
+     * a read that decodes the properties is work thrown away. This is the read for that: the stored value
+     * starts with the timestamps and the peer, so the header is all it takes - and no edge is built, which
+     * is what {@code storage.edge.decoded} counts.
+     */
+    public List<EdgeHeader> getEdgeHeaders(Object vertexId, int edgeSchemaId, int directionCode) {
+        Record record = db.get(null, key(vertexId), edgeBin(edgeSchemaId, directionCode));
+        if (isMissing(record)) {
+            return List.of();
+        }
+        Map<String, Object> raw = readEdgeMap(record, edgeBin(edgeSchemaId, directionCode));
+        if (raw.isEmpty()) {
+            return List.of();
+        }
+        List<EdgeHeader> headers = new ArrayList<>(raw.size());
+        for (Map.Entry<String, Object> entry : raw.entrySet()) {
+            headers.add(headerOf(entry.getKey(), entry.getValue()));
+        }
+        headers.sort(NEWEST_FIRST_HEADERS);
+        return headers;
+    }
+
+    /** Batched form of {@link #getEdgeHeaders}: one native batch get, one list per vertex. */
+    public List<List<EdgeHeader>> getEdgeHeadersBatch(List<Object> vertexIds, int edgeSchemaId,
+                                                           int directionCode) {
+        Objects.requireNonNull(vertexIds, "vertexIds");
+        if (vertexIds.isEmpty()) {
+            return List.of();
+        }
+        Key[] keys = vertexIds.stream().map(this::key).toArray(Key[]::new);
+        String bin = edgeBin(edgeSchemaId, directionCode);
+        Record[] records = db.get(new BatchPolicy(), keys, bin);
+        List<List<EdgeHeader>> out = new ArrayList<>(vertexIds.size());
+        for (Record record : records) {
+            if (isMissing(record)) {
+                out.add(List.of());
+                continue;
+            }
+            Map<String, Object> raw = readEdgeMap(record, bin);
+            List<EdgeHeader> headers = new ArrayList<>(raw.size());
+            for (Map.Entry<String, Object> entry : raw.entrySet()) {
+                headers.add(headerOf(entry.getKey(), entry.getValue()));
+            }
+            headers.sort(NEWEST_FIRST_HEADERS);
+            out.add(headers);
+        }
+        return out;
+    }
+
+    /** One neighbour from a raw bin entry ({@code [lastUpdatedTime, createdTime, peer, properties]}). */
+    private static EdgeHeader headerOf(String edgeId, Object raw) {
+        if (!(raw instanceof List<?> value) || value.size() < 3) {
+            throw new IllegalArgumentException("Malformed edge value for " + edgeId);
+        }
+        // the stored value is [lastUpdatedTime, createdTime, peer, properties]: the header is the head of
+        // it, so nothing has to be deserialised to reach the vertex at the far end
+        return new EdgeHeader(edgeId, value.get(2), ((Number) value.get(1)).longValue(),
+                ((Number) value.get(0)).longValue());
+    }
+
+    /** Neighbours come back newest first, with the edge id as a tie break so the order is stable. */
+    private static final Comparator<EdgeHeader> NEWEST_FIRST_HEADERS =
+            Comparator.comparingLong(EdgeHeader::lastUpdatedTime).reversed()
+                    .thenComparing(EdgeHeader::edgeId);
 
     /**
      * Counts the edges of one class that satisfy the read's conditions. Without a condition the

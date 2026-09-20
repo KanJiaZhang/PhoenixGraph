@@ -4,6 +4,7 @@ import com.pengcheng.phoenixgraph.query.QueryException;
 import com.pengcheng.phoenixgraph.query.storage.EdgePropertyFilter;
 import com.pengcheng.phoenixgraph.query.storage.EdgeQueryResult;
 import com.pengcheng.phoenixgraph.query.storage.EdgeSide;
+import com.pengcheng.phoenixgraph.query.storage.NeighbourRef;
 import com.pengcheng.phoenixgraph.query.storage.GraphQuery;
 import com.pengcheng.phoenixgraph.query.storage.VertexQueryResult;
 import com.pengcheng.phoenixgraph.schema.EdgeDirection;
@@ -15,6 +16,7 @@ import com.pengcheng.phoenixgraph.schema.VertexSchema;
 import com.pengcheng.phoenixgraph.schema.geo.GeoHit;
 import com.pengcheng.phoenixgraph.schema.geo.GeoSearch;
 import com.pengcheng.phoenixgraph.storage.BusinessLogEntry;
+import com.pengcheng.phoenixgraph.storage.EdgeHeader;
 import com.pengcheng.phoenixgraph.storage.TimeRange;
 import com.pengcheng.phoenixgraph.storage.aerospike.AerospikeEdgeStore;
 import com.pengcheng.phoenixgraph.storage.aerospike.AerospikeGeoIndex;
@@ -237,6 +239,74 @@ public class AerospikeGraphQuery implements GraphQuery {
     public List<List<EdgeQueryResult>> readEdgesBatch(String edgeName, EdgeSide direction,
                                                       List<Object> vertexIds, List<String> propertyNames) {
         return readEdgesBatch(edgeName, direction, vertexIds, propertyNames, List.of(), 0);
+    }
+
+    /** This scheme keeps each edge as a value whose head is its peer and timestamps, so it can answer a
+     * neighbour read without decoding anything. */
+    @Override
+    public boolean supportsNeighbourRead() {
+        return true;
+    }
+
+    /**
+     * The neighbours of a vertex over one edge class, read from the header of each stored edge: a vertex
+     * hop walks an edge to arrive somewhere and never looks at the edge itself, so no edge is built.
+     */
+    @Override
+    public List<NeighbourRef> readNeighbours(Object vertexId, String vertexName, String edgeName,
+                                             EdgeSide direction) {
+        Objects.requireNonNull(vertexId, "vertexId");
+        Objects.requireNonNull(direction, "direction");
+        if (vertexName != null) {
+            resolveVertexSchema(vertexName);
+        }
+        EdgeSchema edgeSchema = resolveEdgeSchema(edgeName);
+        List<NeighbourRef> out = new ArrayList<>();
+        for (int directionCode : directionCodes(edgeSchema, direction)) {
+            EdgeSide side = sideOf(directionCode);
+            for (EdgeHeader header : edgeStore.getEdgeHeaders(vertexId, edgeSchema.id(), directionCode)) {
+                out.add(toNeighbour(edgeName, header, side));
+            }
+        }
+        out.sort(Comparator.comparingLong(NeighbourRef::lastUpdatedTime).reversed()
+                .thenComparing(ref -> String.valueOf(ref.edgeId())));
+        return out;
+    }
+
+    /** Batched neighbour read: one native batch get per direction, no edge decoded. */
+    @Override
+    public List<List<NeighbourRef>> readNeighboursBatch(String edgeName, EdgeSide direction,
+                                                        List<Object> vertexIds) {
+        Objects.requireNonNull(vertexIds, "vertexIds");
+        if (vertexIds.isEmpty()) {
+            return List.of();
+        }
+        Objects.requireNonNull(direction, "direction");
+        EdgeSchema edgeSchema = resolveEdgeSchema(edgeName);
+        List<List<NeighbourRef>> perVertex = new ArrayList<>(vertexIds.size());
+        for (int i = 0; i < vertexIds.size(); i++) {
+            perVertex.add(new ArrayList<>());
+        }
+        for (int directionCode : directionCodes(edgeSchema, direction)) {
+            EdgeSide side = sideOf(directionCode);
+            List<List<EdgeHeader>> batches =
+                    edgeStore.getEdgeHeadersBatch(vertexIds, edgeSchema.id(), directionCode);
+            for (int i = 0; i < vertexIds.size(); i++) {
+                for (EdgeHeader header : batches.get(i)) {
+                    perVertex.get(i).add(toNeighbour(edgeName, header, side));
+                }
+            }
+        }
+        for (List<NeighbourRef> list : perVertex) {
+            list.sort(Comparator.comparingLong(NeighbourRef::lastUpdatedTime).reversed()
+                    .thenComparing(ref -> String.valueOf(ref.edgeId())));
+        }
+        return perVertex;
+    }
+
+    private static NeighbourRef toNeighbour(String edgeName, EdgeHeader header, EdgeSide side) {
+        return new NeighbourRef(edgeName, header.edgeId(), side, header.peerVertexId(),
+                header.createdTime(), header.lastUpdatedTime());
     }
 
     /**

@@ -207,7 +207,7 @@ class GremlinMultiHopBenchmark {
         for (String acc : hopAccounts) {
             int phoneCount = degree(rnd, 1, 5, 3);
             for (int k = 0; k < phoneCount; k++) {
-                String ph = String.valueOf(7000 + phoneSeq++);
+                String ph = phoneNumber(phoneSeq++);
                 vertices.add(new VertexUpsert(ph, phone, phoneProps(ph, t), t, t));
                 edges.add(new EdgeUpsert("atp" + edgeSeq++, accountToPhone, acc, ph,
                         Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
@@ -217,7 +217,7 @@ class GremlinMultiHopBenchmark {
             }
             int ipCount = degree(rnd, 5, 80, 30);
             for (int k = 0; k < ipCount; k++) {
-                String ipId = String.valueOf(9000 + ipSeq++);
+                String ipId = ipAddress(ipSeq++);
                 vertices.add(new VertexUpsert(ipId, ip, ipProps(ipId, t), t, t));
                 edges.add(new EdgeUpsert("ati" + edgeSeq++, accountToIp, acc, ipId,
                         Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
@@ -259,6 +259,16 @@ class GremlinMultiHopBenchmark {
         map.put("174", hash % 2 == 0 ? "open" : "closed");
         map.put("175", "kyc");
         return map;
+    }
+
+    /** The phone number a Phone vertex is identified by (the id is the value itself). */
+    private static String phoneNumber(int index) {
+        return "+86-138-7" + String.format("%03d", index);
+    }
+
+    /** The IP address an IP vertex is identified by (the id is the value itself). */
+    private static String ipAddress(int index) {
+        return "10.40." + (index / 256) + "." + (index % 256);
     }
 
     private static Map<Integer, VertexPropertyValue> phoneProps(String id, long t) {

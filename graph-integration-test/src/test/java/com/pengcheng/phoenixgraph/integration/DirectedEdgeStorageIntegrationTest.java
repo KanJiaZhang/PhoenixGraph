@@ -37,7 +37,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  *
  * <p>The data is the deterministic payment graph of {@link QueryDataSeeder}: the
  * accounts {@code 100..199} form a directed ring ({@code p_i: 100+i -> 100+(i+1)%100})
- * plus chords ({@code p_i: 100+i -> 100+(i+3)%100}), and every phone {@code 300+i}
+ * plus chords ({@code p_i: 100+i -> 100+(i+3)%100}), and every phone (its number is its id)
  * points at the account {@code 100+i} ({@code pa_i}). Concretely:
  *
  * <pre>
@@ -132,10 +132,12 @@ class DirectedEdgeStorageIntegrationTest {
                 "the target does not keep p0 as an out-edge");
 
         // cross-schema: PhoneToAccount goes Phone -> Account only
-        assertEquals(2, edgeStore.getEdges("300", phoneToAccount.id(), AerospikeEdgeStore.EDGE_DIR_OUT).size(),
-                "two pa edges leave phone 300");
-        assertTrue(edgeStore.getEdges("300", phoneToAccount.id(), AerospikeEdgeStore.EDGE_DIR_IN).isEmpty(),
-                "phone 300 has no incoming PhoneToAccount edge");
+        assertEquals(2, edgeStore.getEdges(QueryDataSeeder.phoneNumber(0), phoneToAccount.id(),
+                        AerospikeEdgeStore.EDGE_DIR_OUT).size(),
+                "two pa edges leave the first phone");
+        assertTrue(edgeStore.getEdges(QueryDataSeeder.phoneNumber(0), phoneToAccount.id(),
+                        AerospikeEdgeStore.EDGE_DIR_IN).isEmpty(),
+                "the phone has no incoming PhoneToAccount edge");
         assertTrue(edgeStore.getEdges("100", phoneToAccount.id(), AerospikeEdgeStore.EDGE_DIR_OUT).isEmpty(),
                 "account 100 has no outgoing PhoneToAccount edge");
         assertEquals(2, edgeStore.getEdges("100", phoneToAccount.id(), AerospikeEdgeStore.EDGE_DIR_IN).size(),
@@ -153,7 +155,8 @@ class DirectedEdgeStorageIntegrationTest {
                 graphQuery.readEdges("100", "Account", "Payment", EdgeSide.BOTH, List.of())));
         // reading the wrong direction through the query layer gives nothing
         assertTrue(graphQuery.readEdges("100", "Account", "PhoneToAccount", EdgeSide.OUT, List.of()).isEmpty());
-        assertTrue(graphQuery.readEdges("300", "Phone", "PhoneToAccount", EdgeSide.IN, List.of()).isEmpty());
+        assertTrue(graphQuery.readEdges(QueryDataSeeder.phoneNumber(0), "Phone", "PhoneToAccount", EdgeSide.IN,
+                List.of()).isEmpty());
     }
 
     // --- traversal language -----------------------------------------------------------------
@@ -213,15 +216,18 @@ class DirectedEdgeStorageIntegrationTest {
 
     private void assertCrossSchemaDirectedness(GremlinGraphQuery gremlin) {
         // Phone -> Account only
-        assertEquals(List.of("100", "100"), sortedIds(gremlin.execute("g.V('300','Phone').out('PhoneToAccount')")));
-        assertEquals(List.of("300", "300"), sortedIds(gremlin.execute("g.V('100','Account').in('PhoneToAccount')")));
+        String phone = QueryDataSeeder.phoneNumber(0);
+        assertEquals(List.of("100", "100"),
+                sortedIds(gremlin.execute("g.V('" + phone + "','Phone').out('PhoneToAccount')")));
+        assertEquals(List.of(phone, phone),
+                sortedIds(gremlin.execute("g.V('100','Account').in('PhoneToAccount')")));
         assertEquals(List.of(), gremlin.execute("g.V('100','Account').out('PhoneToAccount')"));
-        assertEquals(List.of(), gremlin.execute("g.V('300','Phone').in('PhoneToAccount')"));
+        assertEquals(List.of(), gremlin.execute("g.V('" + phone + "','Phone').in('PhoneToAccount')"));
         // and the two-hop walks across the schema follow the direction:
-        // phone 300 -> account 100 (twice) -> accounts 101 and 103
+        // the first phone -> account 100 (twice) -> accounts 101 and 103
         assertEquals(List.of("101", "103"), sortedIds(gremlin.execute(
-                "g.V('300','Phone').out('PhoneToAccount').out('Payment').dedup()")));
-        assertEquals(List.of(), gremlin.execute("g.V('300','Phone').in('PhoneToAccount')"));
+                "g.V('" + phone + "','Phone').out('PhoneToAccount').out('Payment').dedup()")));
+        assertEquals(List.of(), gremlin.execute("g.V('" + phone + "','Phone').in('PhoneToAccount')"));
     }
 
     // --- helpers ----------------------------------------------------------------------------

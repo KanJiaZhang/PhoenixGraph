@@ -54,7 +54,7 @@ class GremlinCompiledLogicBenchmark {
                     .dedup()
                     .has('accountType', 'savings')
                     .out('AccountToPhone')
-                    .has('phoneNumber', '138-8000')
+                    .has('phoneNumber', '+86-138-8000')
                     .out('PhoneToAccount')
                     .has('accountStatus', 'ACTIVE')
                     .dedup()
@@ -160,8 +160,8 @@ class GremlinCompiledLogicBenchmark {
             vertices.add(new VertexUpsert(String.valueOf(900 + i), account, accountProps(String.valueOf(900 + i)), t, t));
         }
         for (int i = 0; i < 5; i++) {
-            vertices.add(new VertexUpsert(String.valueOf(8000 + i), phone, phoneProps(), t, t));
-            vertices.add(new VertexUpsert(String.valueOf(9000 + i), ip, ipProps(), t, t));
+            vertices.add(new VertexUpsert(phoneNumber(i), phone, phoneProps(), t, t));
+            vertices.add(new VertexUpsert(ipAddress(i), ip, ipProps(), t, t));
         }
         assertNoFailures(vertexStore.upsertVertices(vertices), "vertices");
 
@@ -172,12 +172,12 @@ class GremlinCompiledLogicBenchmark {
                     Map.of(3, new EdgePropertyValue("SUCCESS", t, t)), t, t));
         }
         for (int i = 0; i < 5; i++) {
-            String ph = String.valueOf(8000 + i);
+            String ph = phoneNumber(i);
             edges.add(new EdgeUpsert("atp" + seq++, accountToPhone, "888", ph,
                     Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
             edges.add(new EdgeUpsert("pta" + seq++, phoneToAccount, ph, "888",
                     Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
-            edges.add(new EdgeUpsert("ati" + seq++, accountToIp, "888", String.valueOf(9000 + i),
+            edges.add(new EdgeUpsert("ati" + seq++, accountToIp, "888", ipAddress(i),
                     Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
         }
         assertNoFailures(edgeStore.upsertEdges(edges), "edges");
@@ -191,14 +191,24 @@ class GremlinCompiledLogicBenchmark {
         return props;
     }
 
+    /** The phone number a Phone vertex is identified by (the id is the value itself). */
+    private static String phoneNumber(int index) {
+        return "+86-138-8" + String.format("%03d", index);
+    }
+
+    /** The IP address an IP vertex is identified by (the id is the value itself). */
+    private static String ipAddress(int index) {
+        return "10.50." + (index / 256) + "." + (index % 256);
+    }
+
     private static Map<Integer, VertexPropertyValue> phoneProps() {
         long t = System.currentTimeMillis();
-        return Map.of(1, new VertexPropertyValue("138-8000", t));
+        return Map.of(1, new VertexPropertyValue(phoneNumber(0), t));
     }
 
     private static Map<Integer, VertexPropertyValue> ipProps() {
         long t = System.currentTimeMillis();
-        return Map.of(1, new VertexPropertyValue("10.20.0.1", t));
+        return Map.of(1, new VertexPropertyValue(ipAddress(0), t));
     }
 
     private static void assertNoFailures(List<WriteOutcome> outcomes, String kind) {

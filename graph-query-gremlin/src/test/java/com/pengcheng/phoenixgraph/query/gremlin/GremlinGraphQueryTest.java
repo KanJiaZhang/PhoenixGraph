@@ -495,6 +495,21 @@ class GremlinGraphQueryTest {
     }
 
     @Test
+    void aSeedThatDoesNotExistIsNotCounted() {
+        // the fast path skips the seed's record, so a plan that only passes it on (or counts it) has to
+        // check: otherwise an id that is not there answers one
+        when(graphQuery.readVertex("missing", "person", List.of())).thenReturn(null);
+
+        assertEquals(List.of(0L), gremlin.execute("g.V('missing','person').count()"));
+        assertEquals(List.of(), gremlin.execute("g.V('missing','person')"));
+
+        when(graphQuery.readVertex("v1", "person", List.of()))
+                .thenReturn(new VertexQueryResult("person", "v1", Map.of(), 1L, 2L));
+
+        assertEquals(List.of(1L), gremlin.execute("g.V('v1','person').count()"));
+    }
+
+    @Test
     void aCappedVertexHopDrawsOnlyTheEdgesOfTheVerticesItKept() {
         // the hub reaches two neighbours, the limit keeps one: the edge to the dropped neighbour was read
         // (that is how the hop works) but it is not part of the answer, so it is not part of the graph the

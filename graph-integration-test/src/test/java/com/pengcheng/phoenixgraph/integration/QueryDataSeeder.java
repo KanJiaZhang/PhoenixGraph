@@ -60,8 +60,8 @@ final class QueryDataSeeder {
         for (int i = 0; i < 100; i++) {
             long t = now(i);
             upserts.add(new VertexUpsert(id(100 + i), accountSchema, accountProperties(i), t, t));
-            upserts.add(new VertexUpsert(id(200 + i), ipSchema, ipProperties(i), t, t));
-            upserts.add(new VertexUpsert(id(300 + i), phoneSchema, phoneProperties(i), t, t));
+            upserts.add(new VertexUpsert(ipAddress(i), ipSchema, ipProperties(i), t, t));
+            upserts.add(new VertexUpsert(phoneNumber(i), phoneSchema, phoneProperties(i), t, t));
         }
         assertNoFailures(vertexStore.upsertVertices(upserts), "vertices");
     }
@@ -86,9 +86,19 @@ final class QueryDataSeeder {
             long t = now(i);
             int a = i % 100;
             outcomes.add(edgeStore.upsertEdge(new EdgeUpsert("pa" + i, phoneToAccountSchema,
-                    id(300 + a), id(100 + a), phoneToAccountProperties(i), t, t)));
+                    phoneNumber(a), id(100 + a), phoneToAccountProperties(i), t, t)));
         }
         assertNoFailures(outcomes, "edges");
+    }
+
+    /** The IP address an IP vertex is identified by (the id is the value itself). */
+    static String ipAddress(int i) {
+        return "10.20." + (i / 256) + "." + (i % 256);
+    }
+
+    /** The phone number a Phone vertex is identified by (the id is the value itself). */
+    static String phoneNumber(int i) {
+        return "+86-138-" + (1000 + i);
     }
 
     private static Map<Integer, VertexPropertyValue> accountProperties(int i) {
@@ -129,13 +139,13 @@ final class QueryDataSeeder {
     }
 
     private static Map<Integer, VertexPropertyValue> ipProperties(int i) {
-        return Map.of(1, new VertexPropertyValue("10.20." + (i / 256) + "." + (i % 256), now(i)));
+        return Map.of(1, new VertexPropertyValue(ipAddress(i), now(i)));
     }
 
     private static Map<Integer, VertexPropertyValue> phoneProperties(int i) {
         Map<Integer, VertexPropertyValue> props = new LinkedHashMap<>();
         props.put(1, new VertexPropertyValue(i % 2 == 0 ? "+86" : "+1", now(i))); // display property: cnCode
-        props.put(2, new VertexPropertyValue("138-" + (1000 + i), now(i)));       // display property
+        props.put(2, new VertexPropertyValue(phoneNumber(i), now(i)));             // display property
         return props;
     }
 

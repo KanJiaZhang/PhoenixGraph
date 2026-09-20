@@ -7,6 +7,7 @@ import com.pengcheng.phoenixgraph.query.storage.EdgeQueryResult;
 import com.pengcheng.phoenixgraph.storage.TimeRange;
 import com.pengcheng.phoenixgraph.query.storage.EdgeSide;
 import com.pengcheng.phoenixgraph.query.storage.GraphQuery;
+import com.pengcheng.phoenixgraph.query.storage.NeighbourRef;
 import com.pengcheng.phoenixgraph.query.storage.VertexQueryResult;
 
 import java.util.ArrayList;
@@ -58,6 +59,12 @@ public final class GremlinContext {
     private final NeighborVertexResolver vertexResolver;
     private final Map<Object, VertexQueryResult> vertexCache = new LinkedHashMap<>();
     private final Map<EdgeCacheKey, List<EdgeQueryResult>> edgeCache = new LinkedHashMap<>();
+    /** Neighbours read for a vertex hop: identity only, so it is cached apart from the edges. */
+    private final Map<NeighbourCacheKey, List<NeighbourRef>> neighbourCache = new LinkedHashMap<>();
+
+    /** The cache key of a neighbour list (the same dimensions the edge cache uses). */
+    private record NeighbourCacheKey(Object vertexId, String edgeName, EdgeSide direction) {
+    }
     private int batchSize = DEFAULT_BATCH_SIZE;
     private int maxBatchSize = DEFAULT_MAX_BATCH_SIZE;
     private int parallelism = DEFAULT_PARALLELISM;
@@ -494,6 +501,63 @@ public final class GremlinContext {
             edgeEndpointVertices.putIfAbsent(key(endpointLabel, endpointId),
                     new VertexRef(endpointLabel, endpointId));
         }
+    }
+
+    /**
+     * The neighbours of many vertices, in the request order, through the port's neighbour read.
+     *
+     * <p>Used by a vertex hop when nothing will draw the edges it walks: the read returns identity only,
+     * so a store can answer it from the header of each stored edge instead of decoding properties the
+     * traversal throws away. Ids are deduplicated for the read (a repeated vertex is read once) and the
+     * result keeps the request order, duplicates included.
+     */
+    public List<List<NeighbourRef>> readNeighboursBatch(String edgeName, EdgeSide direction,
+                                                        List<Object> vertexIds) {
+        if (vertexIds.isEmpty()) {
+            return List.of();
+        }
+        if (cacheEnabled) {
+            List<Object> unique = new ArrayList<>();
+            Set<Object> seen = new HashSet<>();
+            for (Object id : vertexIds) {
+                if (seen.add(id)) {
+                    unique.add(id);
+                }
+            }
+            Map<Object, List<NeighbourRef>> byId = new LinkedHashMap<>();
+            List<Object> missing = new ArrayList<>();
+            for (Object id : unique) {
+                NeighbourCacheKey key = new NeighbourCacheKey(id, edgeName, direction);
+                List<NeighbourRef> cached = neighbourCache.get(key);
+                if (cached != null) {
+                    byId.put(id, cached);
+                } else {
+                    missing.add(id);
+                }
+            }
+            if (!missing.isEmpty()) {
+                List<List<NeighbourRef>> fetched =
+                        graphQuery.readNeighboursBatch(edgeName, direction, missing);
+                for (int i = 0; i < missing.size(); i++) {
+                    Object id = missing.get(i);
+                    List<NeighbourRef> neighbours = fetched.get(i);
+                    neighbourCache.put(new NeighbourCacheKey(id, edgeName, direction), neighbours);
+                    byId.put(id, neighbours);
+                }
+            }
+            List<List<NeighbourRef>> out = new ArrayList<>(vertexIds.size());
+            for (Object id : vertexIds) {
+                List<NeighbourRef> neighbours = byId.get(id);
+                out.add(neighbours == null ? List.of() : neighbours);
+            }
+            return out;
+        }
+        return graphQuery.readNeighboursBatch(edgeName, direction, vertexIds);
+    }
+
+    /** Whether the caller asked for the subgraph a UI draws (it needs the edges and their properties). */
+    public boolean collectsSubgraph() {
+        return collectSubgraph;
     }
 
     /**

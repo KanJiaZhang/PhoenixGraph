@@ -2483,3 +2483,54 @@ g.V(6029,IP) / g.V(6029,Phone) 的 elementMap()          ->  []
 * `g.V(不存在的 id, Type).count()` 仍返回 1（起点的快路径不读记录，见 38 的性能设计）——要修得让纯计数也读种子；
 * `payment-graph-as-edge` 的 demo loader 仍写数字 IP/Phone id（schema 已声明 STRING）：不影响功能，但约定不一致；
 * 旧 set http_demo_v1 的历史记录可清理。
+
+---
+
+## 40. 顶点跳只读对端；不存在的种子不再计数；seeder 的 id 全部改成值
+
+第 38 节的测量指出三件事：顶点跳为拿一个「对端 id」把每条边都构造出来（1.4 的 decoded=50、2.4 的 150），
+纯计数的种子从不读记录（所以不存在的 id 也返回 1），以及只有两个生成器改成了「id 就是值」。这一节是这三项的落地。
+
+### 40.1 邻居读：又一个能力开关
+
+```text
+graph-query          NeighbourRef（边类/边 id/方向/对端 id/时间戳）
+                     readNeighbours / readNeighboursBatch（默认＝读边再取身份）
+                     supportsNeighbourRead()（默认 false）
+graph-storage        EdgeHeader（edgeId/peer/createdTime/lastUpdatedTime）
+graph-storage-aerospike  getEdgeHeaders / getEdgeHeadersBatch（只读存储值头部，不反序列化属性，不构造边）
+graph-query-aerospike    supportsNeighbourRead()=true + 两个方法（方向拆分、最新在前，与读边同序）
+graph-query-gremlin      hopVertices 在「边类有名 + 不收集子图 + store 声明能力」时走邻居读；
+                         GremlinContext.readNeighboursBatch：去重 + 并行批量 + 独立的邻居缓存
+```
+
+**为什么是能力开关**：与本项目既有的 `supportsEdgeReadPushdown()`、`supportsScan()` 一致 ——
+默认实现保证任何后端（以及测试替身）仍然正确，愿意优化的 store 才声明；traversal 先问再走。
+
+**为什么 `EdgeHeader` 在 `graph-storage`**：`graph-storage-aerospike` 看不到 `graph-query`（分层同 `StoredEdgeValue`→`EdgeQueryResult`）。
+
+**为什么 UI 画图仍读边**：子图里的边要带属性（边浮窗），所以收集子图时保持原路径，画布内容一字未变；
+省下的是纯查询路径（`execute`）—— 也正是第 38 节基准测的那条路径。
+
+**指标语义**：邻居读刻意不增加 `EDGE_DECODED`（它的含义是「构造出来的边数」，不是「读到的边数」）。
+
+效果（确定性流量列）：1.1/1.4 的 decoded 50→0，2.1 12→0，2.4 150→0（kv-calls 9→7），2.5 99→0，2.6 12→9，2.9 3→0；
+以边结尾的跳（2.8、1.2/1.3/1.5/1.8/1.10）不变 —— 那些边的对象本身就是答案。20 条准确性用例全过。
+
+### 40.2 种子的存在性：只在「计划根本不读它」时校验
+
+起点默认不读记录（一跳只需要 id，这是性能设计），所以 `g.V(不存在的id).count()` 曾返回 1。
+编译期新增 `verifySeeds`：当且仅当计划里的步骤**全是** `count/limit/dedup/batch/barrier`（或没有步骤）时，
+起点做一次存在性校验。跳（包括被改写成 `countOutE` 的计数）、投影、算法步骤都会读种子或它的邻域，
+缺失的种子自然给出空结果，所以它们保持快路径。
+
+### 40.3 seeder 的 id 收尾
+
+把还会写 IP/Phone 的地方全部对齐到「id 就是值」：`QueryDataSeeder`（含其边端点）与三个 Gremlin 基准，
+以及写死数字 id 的 `DirectedEdgeStorageIntegrationTest`（改用 `QueryDataSeeder.phoneNumber(0)` 构造查询与断言）。
+
+### 40.4 未做
+
+* RocksDB 的两个 store 仍用默认实现（读边再取身份）：正确，但没省属性解码 —— 给 `RocksDbEdgeRowCodec` 加一个 header 解码即可；
+* UI 画图路径仍构造边（为边浮窗的属性）；
+* 第 38 节其余优化点（`limit` 的有序表示、摘要 bin、跨查询 bin 缓存、display 属性投影）仍在。

@@ -94,7 +94,7 @@ class GremlinFanoutBatchBenchmark {
         vertices.add(new VertexUpsert("888", accountSchema, accountProps("888"), t, t));
         for (int i = 0; i < FANOUT; i++) {
             String accountId = String.valueOf(600 + i);
-            String phoneId = String.valueOf(700 + i);
+            String phoneId = phoneNumber(i);
             vertices.add(new VertexUpsert(accountId, accountSchema, accountProps(accountId), t + i, t + i));
             vertices.add(new VertexUpsert(phoneId, phoneSchema, phoneProps(phoneId), t + i, t + i));
         }
@@ -108,7 +108,7 @@ class GremlinFanoutBatchBenchmark {
         for (int i = 0; i < FANOUT; i++) {
             long ts = t + i;
             String targetAccount = String.valueOf(600 + i);
-            String phone = String.valueOf(700 + i);
+            String phone = phoneNumber(i);
             edgeOutcomes.add(edgeStore.upsertEdge(new EdgeUpsert("fan_p" + i, paymentSchema,
                     "888", targetAccount, paymentProps(i, ts), ts, ts)));
             edgeOutcomes.add(edgeStore.upsertEdge(new EdgeUpsert("fan_pa" + i, phoneToAccountSchema,
@@ -127,6 +127,11 @@ class GremlinFanoutBatchBenchmark {
         props.put(2, new VertexPropertyValue("savings", t));
         props.put(3, new VertexPropertyValue("addr-" + id, t));
         return props;
+    }
+
+    /** The phone number a Phone vertex is identified by (the id is the value itself). */
+    private static String phoneNumber(int index) {
+        return "+86-138-7" + String.format("%03d", index);
     }
 
     private static Map<Integer, VertexPropertyValue> phoneProps(String id) {

@@ -1,13 +1,16 @@
 # Handover — resume here
 
 > 本文件是**断点续做手记**：今天做了什么（结论）、现场怎么恢复、明天从哪继续。
-> 详细设计与实测数据在 `CONTEXT.md`：**2026-09-20 新增 §38（Aerospike 准确性与时延）与 §39（子图裁剪 + IP/Phone id 改成值）**；**2026-09-18 新增 §32–37**（两轮 store 下沉优化 / 模糊关联 / regex 形状语义 / UI / 分布式算法 / **类起点与扫描端口**）；2026-09-17 是 §21–31。
+> 详细设计与实测数据在 `CONTEXT.md`：**2026-09-20 新增 §38（Aerospike 准确性与时延）、§39（子图裁剪 + IP/Phone id 改成值）与 §40（顶点跳只读对端 / 种子存在性 / seeder id 收尾）**；**2026-09-18 新增 §32–37**（两轮 store 下沉优化 / 模糊关联 / regex 形状语义 / UI / 分布式算法 / **类起点与扫描端口**）；2026-09-17 是 §21–31。
 
-**最后一次会话：2026-09-20（周六）· 工作树干净 · 相关模块测试全绿（query-gremlin 131 / http 68 / integration-test 86）**
-**本轮两段：(1) Aerospike 20 条查询的准确性与时延（DAILY-2026-09-20.md §1–7、CONTEXT §38）；
-  (2) 修 UI 报的六个问题：子图不再画被 limit/has 丢掉的点的边（CONTEXT §39.1）、IP/Phone 一对关联写两个方向（§39.2）、
-  IP/Phone 的 id 改成值本身（§39.3）、demo set 换到干净的新 set http_demo_v2（§39.4）。**
-**下一次从 §2 第 1 条开始：顶点跳不要构造边对象（decoded 50→0、150→50/100），以及 limit/条件的有序表示与摘要 bin。**
+**最后一次会话：2026-09-20（周六）· 工作树干净 · 相关模块测试全绿（query-gremlin 132 / storage-aerospike 38 / query-aerospike 23 / http 68 / integration-test 86）**
+**本轮三段：(1) Aerospike 20 条查询的准确性与时延（DAILY-2026-09-20.md §1–7、CONTEXT §38）；
+  (2) 修 UI 报的六个问题：子图不再画被 limit/has 丢掉的点的边（§39.1）、IP/Phone 一对关联写两个方向（§39.2）、
+  IP/Phone 的 id 改成值本身（§39.3）、demo set 换到干净的新 set http_demo_v2（§39.4）；
+  (3) 三件后续：顶点跳只读对端不构造边（§40.1，decoded 50/150 -> 0，答案不变）、不存在种子不再计数（§40.2）、
+  其余 seeder 的 IP/Phone id 也改成值（§40.3）。**
+**下一次从 §2 第 0 条继续：`limit` 的有序表示 / 摘要 bin / 跨查询 bin 缓存 / display 属性投影；
+RocksDB 侧的邻居读（RocksDbEdgeRowCodec 加 header 解码）也很快能做。**
 
 **上一次会话：2026-09-18（周四，约 17 个提交）· 工作树干净 · 全项目编译通过 · 受影响的模块测试全绿**
 **（`graph-gemini` 26 + `graph-query-gremlin` 115 + `graph-http` 68 + `graph-fuzzy` 37；服务在跑，见 §1.1）**

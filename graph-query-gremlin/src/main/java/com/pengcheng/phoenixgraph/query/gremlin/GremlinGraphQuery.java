@@ -500,7 +500,26 @@ public class GremlinGraphQuery {
             }
             stepNames.add(step.name());
         }
-        return new CompiledQuery(query.source(), properties, startProperties, stepNames, steps);
+        // A seed is normally not read: the first hop only needs its id, and reading a hub's record for nothing
+        // is the cost the fast path avoids. That is also why a count of a seed that does not exist used to
+        // answer one - nothing ever looked. When the plan does nothing but pass the seed along or count it,
+        // the seeds are verified instead, so a missing id is absent from the answer rather than counted.
+        // A hop (or a count written as a hop) reads the seed's edges, and an algorithm step reads the graph
+        // around it, so neither needs the check - they answer nothing for a vertex that is not there.
+        boolean verifySeeds = startProperties == null && plannedSteps.stream()
+                .allMatch(step -> isSeedPassThrough(step.name()));
+        return new CompiledQuery(query.source(), properties, startProperties, verifySeeds, stepNames, steps);
+    }
+
+    /**
+     * A step that hands the seed on unchanged, or counts it, without reading anything about it.
+     *
+     * <p>Only these leave a seed that does not exist in the answer: a hop reads its edges (none for a
+     * missing vertex), a projection reads its record (absent), and an algorithm step builds the graph
+     * around it (empty).
+     */
+    private static boolean isSeedPassThrough(String name) {
+        return isMeta(name) || name.equals("count") || name.equals("limit") || name.equals("dedup");
     }
 
     /** What an edge hop pushes into its read: the conditions and the cap of the following steps. */
@@ -749,7 +768,7 @@ public class GremlinGraphQuery {
     }
 
     private List<Object> runCompiled(GremlinContext context, CompiledQuery compiled) {
-        List<Object> current = start(context, compiled.source, compiled.startProperties);
+        List<Object> current = start(context, compiled.source, compiled.startProperties, compiled.verifySeeds);
         int hopsDone = 0;
         int hopFanOut = 0;
         boolean filterSinceHop = false;
@@ -782,14 +801,17 @@ public class GremlinGraphQuery {
         final GremlinQuery.Source source;
         final List<String>[] properties;
         final List<String> startProperties;
+        final boolean verifySeeds;
         final List<String> stepNames;
         final List<GremlinStep> steps;
 
         CompiledQuery(GremlinQuery.Source source, List<String>[] properties,
-                      List<String> startProperties, List<String> stepNames, List<GremlinStep> steps) {
+                      List<String> startProperties, boolean verifySeeds, List<String> stepNames,
+                      List<GremlinStep> steps) {
             this.source = source;
             this.properties = properties;
             this.startProperties = startProperties;
+            this.verifySeeds = verifySeeds;
             this.stepNames = stepNames;
             this.steps = steps;
         }
@@ -919,10 +941,10 @@ public class GremlinGraphQuery {
     }
 
     private static List<Object> start(GremlinContext context, GremlinQuery.Source source,
-                                      List<String> properties) {
+                                      List<String> properties, boolean verifySeeds) {
         return switch (source.kind()) {
             case NONE -> List.of();
-            case VERTICES -> startVertices(context, source.ids(), source.name(), properties);
+            case VERTICES -> startVertices(context, source.ids(), source.name(), properties, verifySeeds);
             case VERTEX_TYPE -> startVertexScan(context, source.name(), properties);
             case EDGE_TYPE -> startEdgeScan(context, source.name(), properties);
         };
@@ -978,11 +1000,12 @@ public class GremlinGraphQuery {
     }
 
     private static List<Object> startVertices(GremlinContext context, List<Object> vertexIds,
-                                              String vertexName, List<String> properties) {
+                                              String vertexName, List<String> properties,
+                                              boolean verifySeeds) {
         if (vertexIds.isEmpty()) {
             return List.of();
         }
-        if (properties == null) {
+        if (properties == null && !verifySeeds) {
             // Only the id/label are needed for the first hop — skip reading the record.
             List<Object> out = new ArrayList<>(vertexIds.size());
             for (Object vertexId : vertexIds) {
@@ -991,8 +1014,10 @@ public class GremlinGraphQuery {
             }
             return out;
         }
+        // an empty projection means every property: a verified seed needs its record, not a projection
+        List<String> projection = properties == null ? List.of() : properties;
         // the seed ids are read in parallel batches (one request per id for a handful of seeds)
-        List<VertexQueryResult> vertices = context.readSeedVertices(vertexName, vertexIds, properties);
+        List<VertexQueryResult> vertices = context.readSeedVertices(vertexName, vertexIds, projection);
         List<Object> out = new ArrayList<>(vertices.size());
         for (VertexQueryResult vertex : vertices) {
             if (vertex == null) {

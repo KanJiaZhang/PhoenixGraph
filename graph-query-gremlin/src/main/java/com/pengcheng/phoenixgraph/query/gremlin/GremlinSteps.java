@@ -705,15 +705,45 @@ final class GremlinSteps {
     }
 
     private static List<Object> hopVertices(GremlinContext ctx, List<Object> in, String edgeName, EdgeSide dir) {
+        List<GremlinVertex> vertices = toVertices(in);
+        if (vertices.isEmpty()) {
+            return List.of();
+        }
+        if (edgeName != null && !ctx.collectsSubgraph() && ctx.graphQuery().supportsNeighbourRead()) {
+            // Nothing will draw these edges, and a vertex hop only wants the far end: read the neighbours
+            // instead of the edges, so a store whose edges live in a record answers from their header and
+            // builds none of them (the properties would be decoded and thrown away). When a subgraph is
+            // collected the edges are read as before, because the UI shows their properties.
+            return new ArrayList<>(readNeighbourVertices(ctx, neighbourEdges(ctx, vertices, edgeName, dir)));
+        }
         // The intermediate edges of a vertex hop are internal: only their otherVertexId
         // is consumed, so no edge property projection is applied here.
-        List<GremlinVertex> vertices = toVertices(in);
         List<EdgeQueryResult> allEdges = new ArrayList<>();
         for (List<EdgeQueryResult> edges : readEdgesByVertex(ctx, vertices, edgeName, dir, List.of(),
                 List.of(), 0)) {
             allEdges.addAll(edges);
         }
         return new ArrayList<>(readNeighbourVertices(ctx, allEdges));
+    }
+
+    /**
+     * The neighbours of every input vertex as edges without properties, so the vertex hop's own logic (the
+     * neighbour type comes from the edge class and the side, the vertex from the far endpoint) is unchanged.
+     */
+    private static List<EdgeQueryResult> neighbourEdges(GremlinContext ctx, List<GremlinVertex> vertices,
+                                                        String edgeName, EdgeSide dir) {
+        List<Object> ids = new ArrayList<>(vertices.size());
+        for (GremlinVertex vertex : vertices) {
+            ids.add(vertex.id());
+        }
+        List<EdgeQueryResult> out = new ArrayList<>();
+        for (List<com.pengcheng.phoenixgraph.query.storage.NeighbourRef> neighbours
+                : ctx.readNeighboursBatch(edgeName, dir, ids)) {
+            for (com.pengcheng.phoenixgraph.query.storage.NeighbourRef neighbour : neighbours) {
+                out.add(neighbour.toEdgeResult());
+            }
+        }
+        return out;
     }
 
     /** Reads the edges of every edge class (the {@code both()}/{@code bothE()} no-argument form). */

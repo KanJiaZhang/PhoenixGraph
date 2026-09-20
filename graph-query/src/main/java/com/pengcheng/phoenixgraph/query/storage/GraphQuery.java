@@ -244,6 +244,54 @@ public interface GraphQuery {
     }
 
     /**
+     * Reads only the neighbours of a vertex: the edges of a class that reach another vertex, without the
+     * edges themselves being built.
+     *
+     * <p>A vertex hop ({@code both('Payment')}) needs the id at the far end of each edge and nothing else -
+     * the properties of the edges it walked matter to a UI that draws them, not to the traversal. A store
+     * whose edges are fields inside a record can therefore answer this from the edge's header (id, peer,
+     * timestamps) instead of decoding a value it will throw away, which is what
+     * {@code storage.edge.decoded} counts.
+     *
+     * <p>The default reads the edges and keeps their identity, which every backend supports, so a store
+     * that can do better overrides it.
+     */
+    default List<NeighbourRef> readNeighbours(Object vertexId, String vertexName, String edgeName,
+                                              EdgeSide direction) {
+        List<EdgeQueryResult> edges = readEdges(vertexId, vertexName, edgeName, direction, List.of());
+        List<NeighbourRef> neighbours = new ArrayList<>(edges.size());
+        for (EdgeQueryResult edge : edges) {
+            neighbours.add(new NeighbourRef(edge.edgeName(), edge.edgeId(), edge.side(),
+                    edge.otherVertexId(), edge.createdTime(), edge.lastUpdatedTime()));
+        }
+        return neighbours;
+    }
+
+    /**
+     * Whether {@link #readNeighbours} is cheaper than reading the edges ({@code true} where the store can
+     * answer it from the header of each stored edge instead of decoding a value).
+     *
+     * <p>Like {@link #supportsEdgeReadPushdown()}, this is opt-in: a traversal asks before it takes that
+     * path, so a store (or a test double) that does not declare it keeps the plain edge read.
+     */
+    default boolean supportsNeighbourRead() {
+        return false;
+    }
+
+    /**
+     * Batched form of {@link #readNeighbours}: one neighbour list per vertex id, in the request order.
+     * The default reads them one by one.
+     */
+    default List<List<NeighbourRef>> readNeighboursBatch(String edgeName, EdgeSide direction,
+                                                         List<Object> vertexIds) {
+        List<List<NeighbourRef>> out = new ArrayList<>(vertexIds.size());
+        for (Object vertexId : vertexIds) {
+            out.add(readNeighbours(vertexId, null, edgeName, direction));
+        }
+        return out;
+    }
+
+    /**
      * Whether {@link #readEdgesWithin} narrows the read (a big vertex may need a window).
      */
     default boolean supportsEdgeTimeRange() {
