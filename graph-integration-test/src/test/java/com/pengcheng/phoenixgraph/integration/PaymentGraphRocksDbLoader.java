@@ -57,9 +57,6 @@ public final class PaymentGraphRocksDbLoader {
     public static final int ACCOUNT_COUNT = 50;
 
     /** The first IP id (account {@code 1000 + i} owns {@code 5000 + i}). */
-    public static final long FIRST_IP = 5_000L;
-
-    /** The first phone id. */
     public static final long FIRST_PHONE = 6_000L;
 
     /** How many accounts one traversal visits from the hub. */
@@ -152,15 +149,26 @@ public final class PaymentGraphRocksDbLoader {
         upserts.add(account(account, HUB_ACCOUNT, 0, time));
         for (int i = 0; i < ACCOUNT_COUNT; i++) {
             upserts.add(account(account, FIRST_ACCOUNT + i, i + 1, time + i + 1));
-            upserts.add(vertex(ip, FIRST_IP + i, Map.of("ipAddress",
-                    new RocksDbPropertyValue("10.0." + (i / 256) + "." + (i % 256), time + i)),
-                    time + i));
-            upserts.add(vertex(phone, FIRST_PHONE + i, Map.of(
+            // the IP and the phone are identified by their value: an address, a number
+            String address = ipAddressOf(i);
+            String number = phoneNumberOf(i);
+            upserts.add(vertex(ip, address, Map.of("ipAddress",
+                    new RocksDbPropertyValue(address, time + i)), time + i));
+            upserts.add(vertex(phone, number, Map.of(
                     "cnCode", new RocksDbPropertyValue("+86", time + i),
-                    "phoneNumber", new RocksDbPropertyValue("138-6" + String.format("%03d", i), time + i)),
-                    time + i));
+                    "phoneNumber", new RocksDbPropertyValue(number, time + i)), time + i));
         }
         return upserts;
+    }
+
+    /** The IP address a demo IP vertex is identified by (the id is the value itself). */
+    public static String ipAddressOf(int index) {
+        return "10.0." + (index / 256) + "." + (index % 256);
+    }
+
+    /** The phone number a demo Phone vertex is identified by (the id is the value itself). */
+    public static String phoneNumberOf(int index) {
+        return "+86-138-6" + String.format("%03d", index);
     }
 
     private static RocksDbVertexUpsert account(VertexSchema account, long id, int seed, long time) {
@@ -177,7 +185,7 @@ public final class PaymentGraphRocksDbLoader {
         return vertex(account, id, values, time);
     }
 
-    private static RocksDbVertexUpsert vertex(VertexSchema vertexSchema, long id,
+    private static RocksDbVertexUpsert vertex(VertexSchema vertexSchema, Object id,
                                               Map<String, RocksDbPropertyValue> values, long time) {
         return new RocksDbVertexUpsert(id, vertexSchema, byName(vertexSchema, values), time, time);
     }
@@ -230,8 +238,8 @@ public final class PaymentGraphRocksDbLoader {
         // every account owns an IP and a phone, and both link back
         for (int i = 0; i < ACCOUNT_COUNT; i++) {
             long accountId = FIRST_ACCOUNT + i;
-            long ipId = FIRST_IP + i;
-            long phoneId = FIRST_PHONE + i;
+            String ipId = ipAddressOf(i);
+            String phoneId = phoneNumberOf(i);
             edges.add(edge(accountToIp, "a2ip_" + i, accountId, ipId,
                     edgeValues(accountToIp, Map.of("loginTime", time + i), time), time + i));
             edges.add(edge(ipToAccount, "ip2a_" + i, ipId, accountId,
@@ -255,7 +263,7 @@ public final class PaymentGraphRocksDbLoader {
         return indexed;
     }
 
-    private static RocksDbEdgeUpsert edge(EdgeSchema edgeSchema, String edgeId, long source, long target,
+    private static RocksDbEdgeUpsert edge(EdgeSchema edgeSchema, String edgeId, Object source, Object target,
                                           Map<Integer, RocksDbEdgeProperty> properties, long time) {
         return new RocksDbEdgeUpsert(edgeId, edgeSchema, source, target, properties, time, time);
     }

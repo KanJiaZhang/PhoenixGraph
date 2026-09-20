@@ -12,6 +12,7 @@ import com.pengcheng.phoenixgraph.query.storage.VertexQueryResult;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -326,9 +327,14 @@ public final class GremlinContext {
     }
 
     /**
-     * Drops an element from the collected subgraph because a filter step discarded
-     * it, so {@code bothE().filter(...)} renders the filtered edges instead of every
-     * edge it had to read to evaluate the filter.
+     * Drops an element from the collected subgraph because a step discarded it, so
+     * {@code bothE().filter(...)} renders the filtered edges instead of every edge it had to read to
+     * evaluate the filter, and {@code both('X').limit(3)} renders the three edges of the answer
+     * instead of every edge the hub has.
+     *
+     * <p>A dropped vertex also leaves the far-endpoint registry: it is not part of the traversal any
+     * more, so it must not come back as the endpoint of an edge that is still recorded - it was
+     * dropped together with the edges that were read because of it.
      */
     public void dropElement(GremlinElement element) {
         if (!collectSubgraph || element == null) {
@@ -339,6 +345,7 @@ public final class GremlinContext {
             subgraphEdges.remove(key);
         } else {
             subgraphVertices.remove(key);
+            edgeEndpointVertices.remove(key);
         }
     }
 
@@ -358,22 +365,34 @@ public final class GremlinContext {
         if (!collectSubgraph) {
             return Subgraph.EMPTY;
         }
-        // vertices reached only as an edge's far endpoint stay in the subgraph while
-        // a surviving edge still references them (a dropped edge must not leave a
-        // dangling node behind)
+        // An edge is part of the subgraph while both of its endpoints are part of the traversal: a
+        // vertex the traversal kept, or the far endpoint a kept edge reaches. A step that dropped a
+        // vertex removed it from both sets, so the edges that were read because of it go with it -
+        // which is what keeps the drawn graph the answer (a capped or filtered hop draws what it
+        // kept, not everything it walked past).
+        Set<String> liveIds = endpointIds(subgraphVertices.values());
+        Set<String> pendingIds = endpointIds(edgeEndpointVertices.values());
+        List<Subgraph.Edge> edges = new ArrayList<>(subgraphEdges.size());
+        for (Subgraph.Edge edge : subgraphEdges.values()) {
+            if (belongsToTraversal(edge, liveIds, pendingIds)) {
+                edges.add(edge);
+            }
+        }
+        // vertices reached only as an edge's far endpoint stay in the subgraph while a surviving edge
+        // still references them (a dropped edge must not leave a dangling node behind)
         Map<Object, List<VertexRef>> endpointsById = new LinkedHashMap<>();
         for (VertexRef ref : edgeEndpointVertices.values()) {
-            endpointsById.computeIfAbsent(ref.id(), k -> new ArrayList<>()).add(ref);
+            endpointsById.computeIfAbsent(text(ref.id()), k -> new ArrayList<>()).add(ref);
         }
         Map<String, VertexRef> verticesToRead = new LinkedHashMap<>(subgraphVertices);
-        for (Subgraph.Edge edge : subgraphEdges.values()) {
+        for (Subgraph.Edge edge : edges) {
             // an edge with a nullable target has no far endpoint: only the endpoint it has is
             // resolved (List.of would reject the null it carries)
             for (Object endpoint : endpointsOf(edge)) {
                 if (endpoint == null) {
                     continue;
                 }
-                for (VertexRef ref : endpointsById.getOrDefault(endpoint, List.of())) {
+                for (VertexRef ref : endpointsById.getOrDefault(text(endpoint), List.of())) {
                     verticesToRead.putIfAbsent(key(ref.label(), ref.id()), ref);
                 }
             }
@@ -400,7 +419,37 @@ public final class GremlinContext {
                 }
             }
         }
-        return new Subgraph(List.copyOf(vertices), List.copyOf(subgraphEdges.values()));
+        return new Subgraph(List.copyOf(vertices), List.copyOf(edges));
+    }
+
+    /** Whether both endpoints of an edge are still part of the traversal (live or reached by it). */
+    private static boolean belongsToTraversal(Subgraph.Edge edge, Set<String> liveIds,
+                                              Set<String> pendingIds) {
+        for (Object endpoint : endpointsOf(edge)) {
+            if (endpoint == null) {
+                continue; // a nullable target has no far side
+            }
+            String id = text(endpoint);
+            if (!liveIds.contains(id) && !pendingIds.contains(id)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static Set<String> endpointIds(Iterable<VertexRef> refs) {
+        Set<String> ids = new LinkedHashSet<>();
+        for (VertexRef ref : refs) {
+            if (ref != null && ref.id() != null) {
+                ids.add(text(ref.id()));
+            }
+        }
+        return ids;
+    }
+
+    /** Ids are compared as text: a query names them as text, a scan reports them typed. */
+    private static String text(Object id) {
+        return String.valueOf(id);
     }
 
     /** The endpoints of an edge, tolerating a null one (a nullable target). */

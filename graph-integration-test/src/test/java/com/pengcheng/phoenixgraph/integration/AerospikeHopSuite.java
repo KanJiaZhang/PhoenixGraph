@@ -117,7 +117,7 @@ final class AerospikeHopSuite implements AutoCloseable {
         AerospikeClient client = config.connectOrNull();
         assumeTrue(client != null, "Aerospike not available at " + config.host() + ":" + config.port());
         String vertexSet = System.getProperty("payment.vertexSet",
-                System.getenv().getOrDefault("PAYMENT_VERTEX_SET", "http_demo_v1"));
+                System.getenv().getOrDefault("PAYMENT_VERTEX_SET", "http_demo_v2"));
         GraphSchema schema = loadSchema();
         GraphMetrics metrics = new GraphMetrics(metricsName);
         AerospikeVertexStore vertexStore =

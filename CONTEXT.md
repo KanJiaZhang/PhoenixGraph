@@ -2414,3 +2414,72 @@ g.V('Account').filter(accountStatus.equals('ACTIVE')).bothE('payment').cc(DIST)
 * 测试 `AerospikeEdgeWindowPushdownTest`（自带 scratch set `payment_window_probe`）：3 条相隔一天的边，
   窗口 [T0, T0+day] 解出 2 条、走过 1 条（`EDGE_DECODED`+2、`EDGE_FILTERED`+1），`TimeRange.ALL` 仍 3 条；
   查询层断言「1 ms 窗口只剩第一条」。demo 数据所有边同一时间戳 ⇒ 时延上看不出差别，所以这条验证放在自造数据上。
+
+---
+
+## 39. 子图必须与回答一致：被丢弃的点要连边一起丢；IP/Phone 的 id 改成值
+
+UI 报的六个问题归到三个根因：一个引擎 bug（子图画多了边）与两个数据模型问题（关联只写一半方向、IP/Phone 用数字 id）。
+
+### 39.1 引擎：子图 = 被保留的元素，而不是被读过的元素
+
+复现：`g.V(1014,Account).both(Payment).limit(3).count()` 回答 3，但子图 8 点 / 7 边。
+
+原因：顶点跳读的是**起点那一个 bin**（1014 的 7 条边全部读出来，这是存储模型决定的），`limit(3)` 只丢掉多出来的**点**
+（`dropElement` 只从 `subgraphVertices` 删），而 `recordEdges` 记下的 7 条边一条没删；构建子图时又会把
+「只有边才知道的对端」补回成点 ⇒ 画出来的图比回答大。
+
+修法（都在 `GremlinContext`）：
+
+1. `dropElement(vertex)` 同时从 `edgeEndpointVertices` 删除该点 —— 它已不是遍历的一部分，
+   不能再作为某条存活边的对端被补回来；
+2. `buildSubgraph()` 裁剪：一条边只有在**两个端点都还在**（活着的点，或某条存活边的对端）时才进入子图；
+   随后只物化**存活边**引用到的对端（避免被 filter 掉的边留下悬挂对端）；
+3. 端点比较统一按**文本**（查询里的 id 是文本，扫描返回的是存储类型），与 37.7 的 id 处理一致。
+
+不变式：**子图是被保留的元素（点 + 与它们相连的边）**，不是「被读过的元素」。没有 cap 的同一查询仍是 7 边（回答也是 7），
+所以这个规则不会削减正常查询的画布；它同时修好了「has/filter 丢掉一个点后，它的边还画在图上」。
+回归用例：`GremlinGraphQueryTest.aCappedVertexHopDrawsOnlyTheEdgesOfTheVerticesItKept` 与 `aFilterThatDropsAVertexDropsItsEdgesToo`。
+
+### 39.2 数据：一对关联写两个方向
+
+schema 为 IP/Phone 各准备了**两个类**（`AccountToIP` + `IPToAccount`、`AccountToPhone` + `PhoneToAccount`），
+目的是两端都能直接遍历；但 Aerospike 的 demo seeder 只给每对关联的**一个方向**写了反向边
+（`ipa_i` 只对应 ip0、`pta_i` 只对应 ph0）⇒ 按类遍历看到 1 条，UI 的展开 `both()`（所有类）看到 2 条，
+用户看到的就是「查询和 UI 不一致」。修法：两个方向都写（两个 IP、两个 Phone 全写；大扇出 hub 150 同理）。
+取舍：写入量翻倍，换来 `both()` 与按类查询结果一致（一致性优先）。
+
+### 39.3 数据：IP/Phone 的 id 就是值
+
+IP/Phone 原来自增数字 id（5000+/6000+），真正的值放在属性里 ⇒ 需要维护 id→值 映射，而且**两个类型的 id 空间会撞车**
+（6029 既是 Phone 又是 IP），于是「用 6029 当 IP 查不到关联」看起来像 bug。改法：
+
+* schema：4 个 payment 变体里 `IP.idSchema`/`Phone.idSchema` → `STRING`，并同步四个端点字段
+  （`AccountToIP.target`、`IPToAccount.source`、`AccountToPhone.target`、`PhoneToAccount.source`；Account 一侧仍是 LONG）；
+* demo 数据：IP id = 地址（`10.20.31.15`），Phone id = 号码（`+86-138-10014`），属性值与 id 同值
+  （仍是 display 属性），`cnCode` 从号码前缀取；
+* 两个生成器一起改：`QueryApiIntegrationTest`（Aerospike demo）与 `PaymentGraphRocksDbLoader`（RocksDB 实例 + 一致性测试的同一份 demo）。
+
+### 39.4 demo set 换名：http_demo_v1 → http_demo_v2
+
+这台机器上 Aerospike 的 truncate 不可用（代码里已写「truncate 可能被禁用」），旧 set 里留着数字 id 的老记录，
+会让「用 6029 当 IP 查询」这类问题继续出现。因此把 demo 播到**干净的新 set** http_demo_v2（application.yml 与测试默认值一起改），
+并重新播种 demo + 模糊关联数据。旧 set 不再被引用。
+
+### 39.5 复验
+
+```text
+limit(3).count()                    ->  answer=[3]   子图 4 点 / 3 边
+both(PhoneToAccount).count()        ->  [2]  = UI 双击 both() 看到的 phone 数
+both(AccountToIP).count()           ->  [2]  = both(IPToAccount).count()
+g.V(10.20.31.15,IP).out(IPToAccount).values(firstName)  ->  [Radia]
+g.V(6029,IP) / g.V(6029,Phone) 的 elementMap()          ->  []
+```
+
+三个图实例（Aerospike demo、RocksDB-Inline、RocksDB-Edge）都用同一套 schema + 数据复验，RocksDB 两个实例已重灌（151 点 / 400 边）。
+
+### 39.6 遗留
+
+* `g.V(不存在的 id, Type).count()` 仍返回 1（起点的快路径不读记录，见 38 的性能设计）——要修得让纯计数也读种子；
+* `payment-graph-as-edge` 的 demo loader 仍写数字 IP/Phone id（schema 已声明 STRING）：不影响功能，但约定不一致；
+* 旧 set http_demo_v1 的历史记录可清理。

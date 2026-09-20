@@ -195,7 +195,7 @@ class QueryApiIntegrationTest {
     }
 
     /**
-     * A richer demo graph for the visualizer, seeded into {@code http_demo_v1}:
+     * A richer demo graph for the visualizer, seeded into {@code http_demo_v2}:
      * account 135 pays 50 accounts, those 50 trade among themselves, and each of
      * them has 2 IP and 2 Phone associations (plus reverse IPToAccount /
      * PhoneToAccount links for full edge-type coverage).
@@ -206,7 +206,7 @@ class QueryApiIntegrationTest {
         assumeTrue(client != null, "Aerospike not available, skipping integration test");
         try (client) {
             String namespace = env("AEROSPIKE_NAMESPACE", "test");
-            String set = "http_demo_v1";
+            String set = "http_demo_v2";
             GraphSchema schema = ensureSchemaRegistered();
             AerospikeVertexStore vertexStore = new AerospikeVertexStore(client, namespace, set);
             AerospikeEdgeStore edgeStore = new AerospikeEdgeStore(client, namespace, set, schema);
@@ -262,12 +262,13 @@ class QueryApiIntegrationTest {
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.vertices.length()").value(0));
 
-            // hub 150 fans out to ~5000 vertices within two hops
+            // hub 150 fans out to ~10k vertices within two hops (every link is stored in both
+            // directions, so a walk over all classes sees the neighbourhood twice per hop)
             api.perform(post("/api/v1/query")
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(query("g.V('150','Account').both().both().count()")))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$[0]").value(5000));
+                    .andExpect(jsonPath("$[0]").value(9900));
 
             api.perform(post("/api/v1/query")
                             .contentType(MediaType.APPLICATION_JSON)
@@ -300,8 +301,8 @@ class QueryApiIntegrationTest {
             String acc = String.valueOf(1000 + i);
             vertices.add(new VertexUpsert(acc, account, accountProps(acc, t), t, t));
             for (int k = 0; k < 2; k++) {
-                String ipId = String.valueOf(5000 + 2 * i + k);
-                String phoneId = String.valueOf(6000 + 2 * i + k);
+                String ipId = ipAddress(i, k);
+                String phoneId = phoneNumber(i, k);
                 vertices.add(new VertexUpsert(ipId, ip, ipProps(ipId, t), t, t));
                 vertices.add(new VertexUpsert(phoneId, phone, phoneProps(phoneId, t), t, t));
             }
@@ -325,22 +326,24 @@ class QueryApiIntegrationTest {
         }
         for (int i = 0; i < 50; i++) {
             String acc = String.valueOf(1000 + i);
-            String ip0 = String.valueOf(5000 + 2 * i);
-            String ip1 = String.valueOf(5000 + 2 * i + 1);
-            String ph0 = String.valueOf(6000 + 2 * i);
-            String ph1 = String.valueOf(6000 + 2 * i + 1);
-            edges.add(new EdgeUpsert("ati_" + i + "_0", accountToIp, acc, ip0,
-                    Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
-            edges.add(new EdgeUpsert("ati_" + i + "_1", accountToIp, acc, ip1,
-                    Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
-            edges.add(new EdgeUpsert("atp_" + i + "_0", accountToPhone, acc, ph0,
-                    Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
-            edges.add(new EdgeUpsert("atp_" + i + "_1", accountToPhone, acc, ph1,
-                    Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
-            edges.add(new EdgeUpsert("ipa_" + i, ipToAccount, ip0, acc,
-                    Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
-            edges.add(new EdgeUpsert("pta_" + i, phoneToAccount, ph0, acc,
-                    Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
+            String ip0 = ipAddress(i, 0);
+            String ip1 = ipAddress(i, 1);
+            String ph0 = phoneNumber(i, 0);
+            String ph1 = phoneNumber(i, 1);
+            // both directions of every link, so a traversal that names one of the two classes sees the
+            // same neighbourhood as one that walks every class (the UI expands with both())
+            for (int k = 0; k < 2; k++) {
+                String ipId = k == 0 ? ip0 : ip1;
+                String phoneId = k == 0 ? ph0 : ph1;
+                edges.add(new EdgeUpsert("ati_" + i + "_" + k, accountToIp, acc, ipId,
+                        Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
+                edges.add(new EdgeUpsert("ipa_" + i + "_" + k, ipToAccount, ipId, acc,
+                        Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
+                edges.add(new EdgeUpsert("atp_" + i + "_" + k, accountToPhone, acc, phoneId,
+                        Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
+                edges.add(new EdgeUpsert("pta_" + i + "_" + k, phoneToAccount, phoneId, acc,
+                        Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
+            }
         }
         assertNoFailures(upsertEdgesChunked(edgeStore, edges));
 
@@ -352,11 +355,11 @@ class QueryApiIntegrationTest {
             String acc = String.valueOf(2000 + i);
             big.add(new VertexUpsert(acc, account, accountProps(acc, t), t, t));
             for (int k = 0; k < 39; k++) {
-                String ipId = String.valueOf(20000 + i * 39 + k);
+                String ipId = bigIpAddress(i, k);
                 big.add(new VertexUpsert(ipId, ip, ipProps(ipId, t), t, t));
             }
             for (int k = 0; k < 10; k++) { // AccountToPhone caps out-degree at 10
-                String phoneId = String.valueOf(30000 + i * 10 + k);
+                String phoneId = bigPhoneNumber(i, k);
                 big.add(new VertexUpsert(phoneId, phone, phoneProps(phoneId, t), t, t));
             }
         }
@@ -368,12 +371,18 @@ class QueryApiIntegrationTest {
             bigEdges.add(new EdgeUpsert("big_c" + i, payment, "150", acc,
                     Map.of(3, new EdgePropertyValue("SUCCESS", t, t)), t, t));
             for (int k = 0; k < 39; k++) {
-                bigEdges.add(new EdgeUpsert("big_i" + i + "_" + k, accountToIp, acc,
-                        String.valueOf(20000 + i * 39 + k), Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
+                String ipId = bigIpAddress(i, k);
+                bigEdges.add(new EdgeUpsert("big_i" + i + "_" + k, accountToIp, acc, ipId,
+                        Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
+                bigEdges.add(new EdgeUpsert("big_ip" + i + "_" + k, ipToAccount, ipId, acc,
+                        Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
             }
             for (int k = 0; k < 10; k++) {
-                bigEdges.add(new EdgeUpsert("big_p" + i + "_" + k, accountToPhone, acc,
-                        String.valueOf(30000 + i * 10 + k), Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
+                String phoneId = bigPhoneNumber(i, k);
+                bigEdges.add(new EdgeUpsert("big_p" + i + "_" + k, accountToPhone, acc, phoneId,
+                        Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
+                bigEdges.add(new EdgeUpsert("big_ph" + i + "_" + k, phoneToAccount, phoneId, acc,
+                        Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
             }
         }
         assertNoFailures(upsertEdgesChunked(edgeStore, bigEdges));
@@ -497,16 +506,38 @@ class QueryApiIntegrationTest {
         return LAST_NAMES[Math.floorMod(id.hashCode() / FIRST_NAMES.length, LAST_NAMES.length)];
     }
 
-    private static Map<Integer, VertexPropertyValue> ipProps(String id, long t) {
+    /**
+     * The IP address an IP vertex is identified by: the value itself, so nothing has to map an id to
+     * the address it stands for (and an IP id can never be mistaken for a phone number).
+     */
+    private static String ipAddress(int accountIndex, int index) {
+        return "10.20." + (31 + index) + "." + (accountIndex + 1);
+    }
+
+    /** The phone number a Phone vertex is identified by (also the value itself). */
+    private static String phoneNumber(int accountIndex, int index) {
+        return "+86-138-" + (index == 0 ? 10000 + accountIndex : 20000 + accountIndex);
+    }
+
+    private static String bigIpAddress(int accountIndex, int index) {
+        return "10.30." + (accountIndex % 250) + "." + (index + 1);
+    }
+
+    private static String bigPhoneNumber(int accountIndex, int index) {
+        return "+86-139-" + (100000 + accountIndex * 10 + index);
+    }
+
+    private static Map<Integer, VertexPropertyValue> ipProps(String address, long t) {
         Map<Integer, VertexPropertyValue> props = new LinkedHashMap<>();
-        props.put(1, new VertexPropertyValue("10.0." + id + ".1", t));
+        props.put(1, new VertexPropertyValue(address, t));   // display property: the address, which is the id
         return props;
     }
 
-    private static Map<Integer, VertexPropertyValue> phoneProps(String id, long t) {
+    private static Map<Integer, VertexPropertyValue> phoneProps(String number, long t) {
         Map<Integer, VertexPropertyValue> props = new LinkedHashMap<>();
-        props.put(1, new VertexPropertyValue("+86", t));             // display property: cnCode
-        props.put(2, new VertexPropertyValue("138-" + id, t));      // display property
+        int dash = number.indexOf('-');
+        props.put(1, new VertexPropertyValue(dash > 0 ? number.substring(0, dash) : "", t)); // cnCode
+        props.put(2, new VertexPropertyValue(number, t));    // display property: the number, which is the id
         return props;
     }
 

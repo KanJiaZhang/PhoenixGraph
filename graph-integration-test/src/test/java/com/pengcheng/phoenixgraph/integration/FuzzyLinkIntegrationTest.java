@@ -63,7 +63,7 @@ class FuzzyLinkIntegrationTest {
         assumeTrue(client != null, "Aerospike not available at " + config.host() + ":" + config.port());
         schema = loadSchema();
         String vertexSet = System.getProperty("payment.vertexSet", System.getenv().getOrDefault(
-                "PAYMENT_VERTEX_SET", "http_demo_v1"));
+                "PAYMENT_VERTEX_SET", "http_demo_v2"));
         vertexStore = new AerospikeVertexStore(client, config.namespace(), vertexSet);
         edgeStore = new AerospikeEdgeStore(client, config.namespace(), vertexSet, schema);
         patterns = FuzzyDemo.demoRegistry();

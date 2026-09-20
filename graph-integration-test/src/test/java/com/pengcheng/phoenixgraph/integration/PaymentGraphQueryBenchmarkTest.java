@@ -65,7 +65,7 @@ class PaymentGraphQueryBenchmarkTest {
         client = config.connectOrNull();
         assumeTrue(client != null, "Aerospike not available at " + config.host() + ":" + config.port());
         String vertexSet = System.getProperty("payment.vertexSet", System.getenv().getOrDefault("PAYMENT_VERTEX_SET",
-                "http_demo_v1"));
+                "http_demo_v2"));
         schema = loadSchema();
         metrics = new GraphMetrics("payment-graph");
         AerospikeVertexStore vertexStore = new AerospikeVertexStore(client, config.namespace(), vertexSet)

@@ -15,7 +15,7 @@ phoenixgraph:
     port: 3000
     namespace: test
     # primary graph: used by the write endpoints
-    vertex-set: http_demo_v1
+    vertex-set: http_demo_v2
     schema: payment-graph
     # RocksDB graphs resolve their (relative) schema paths against this directory
     rocksdb-root: .rocksdb
@@ -25,15 +25,15 @@ phoenixgraph:
       # the same payment graph served by the two RocksDB storage schemes (see
       # PaymentGraphRocksDbLoader for loading the demo data into them)
       - schema: payment-graph-rocksdb-inline
-        vertex-set: http_demo_v1
+        vertex-set: http_demo_v2
       - schema: payment-graph-rocksdb-edge
-        vertex-set: http_demo_v1
+        vertex-set: http_demo_v2
       # shops around People's Square with an S2 geo index, in both RocksDB schemes:
       # g.V('1','Merchant').geoNear('{"lat":31.2304,"lon":121.4737,"radiusKm":1}')
       - schema: geo-merchants-rocksdb-inline
-        vertex-set: http_demo_v1
+        vertex-set: http_demo_v2
       - schema: geo-merchants-rocksdb-edge
-        vertex-set: http_demo_v1
+        vertex-set: http_demo_v2
       # the payment graph with its big vertices in the aggregated Edge_Out / Edge_In tables
       # (loaded by AerospikeEdgeDemoLoader); a query on a hub needs a time window:
       # g.V('9000001','Account').createdBetween('2025-06-01','2025-06-02').inE('Payment').limit(500)

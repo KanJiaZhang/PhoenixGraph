@@ -65,7 +65,8 @@ class RocksDbStorageIntegrationTest {
             "g.V('135','Account').both('Payment').both('Payment').limit(3).values('accountStatus')",
             "g.V('135','Account').outE('Payment').limit(2).elementMap()",
             "g.V('135','Account').both().count()",
-            "g.V('5000','IP').out('IPToAccount').out('AccountToPhone').values('phoneNumber')");
+            "g.V('" + PaymentGraphRocksDbLoader.ipAddressOf(0)
+                    + "','IP').out('IPToAccount').out('AccountToPhone').values('phoneNumber')");
 
     private static final List<String> CYPHER_QUERIES = List.of(
             "MATCH (a:Account {id:'135'})-[p:Payment]->(b:Account) RETURN count(*) AS n",
@@ -160,7 +161,7 @@ class RocksDbStorageIntegrationTest {
         assertEquals(50, inlineGremlin.execute("g.V('135','Account').out('Payment').out('AccountToIP')").size());
         assertEquals(List.of("+86"), edgeGremlin.execute(
                 "g.V('1000','Account').out('AccountToPhone').values('cnCode')"));
-        assertEquals(List.of("138-6000"), edgeGremlin.execute(
+        assertEquals(List.of(PaymentGraphRocksDbLoader.phoneNumberOf(0)), edgeGremlin.execute(
                 "g.V('1000','Account').out('AccountToPhone').values('phoneNumber')"));
 
         // two hops out and back: the status values of the accounts reached from the hub

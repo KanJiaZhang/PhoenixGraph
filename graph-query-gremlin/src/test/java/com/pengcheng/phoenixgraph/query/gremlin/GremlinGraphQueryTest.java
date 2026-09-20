@@ -495,6 +495,52 @@ class GremlinGraphQueryTest {
     }
 
     @Test
+    void aCappedVertexHopDrawsOnlyTheEdgesOfTheVerticesItKept() {
+        // the hub reaches two neighbours, the limit keeps one: the edge to the dropped neighbour was read
+        // (that is how the hop works) but it is not part of the answer, so it is not part of the graph the
+        // UI draws either
+        when(graphQuery.readEdges("v1", "person", "knows", EdgeSide.OUT, List.of()))
+                .thenReturn(List.of(edge("e1", EdgeSide.OUT, "n1", Map.of()),
+                        edge("e2", EdgeSide.OUT, "n2", Map.of())));
+        when(graphQuery.readVertex("n1", "person", List.of()))
+                .thenReturn(new VertexQueryResult("person", "n1", Map.of(), 5L, 6L));
+        when(graphQuery.readVertex("n2", "person", List.of()))
+                .thenReturn(new VertexQueryResult("person", "n2", Map.of(), 5L, 6L));
+
+        GremlinGraphQuery.Result limited = gremlin.executeWithSubgraph(
+                "g.V('v1','person').out('knows').limit(1)");
+
+        assertEquals(1, limited.values().size(), "the limit keeps one neighbour");
+        assertEquals(1, limited.subgraph().edges().size(),
+                "and one edge: " + limited.subgraph().edges());
+        assertEquals("e1", limited.subgraph().edges().get(0).id());
+        assertEquals(2, limited.subgraph().vertices().size(), "the seed and the neighbour it kept");
+
+        // without the cap both edges are part of the answer, so both are drawn
+        assertEquals(2, gremlin.executeSubgraph("g.V('v1','person').out('knows')").edges().size());
+    }
+
+    @Test
+    void aFilterThatDropsAVertexDropsItsEdgesToo() {
+        when(graphQuery.readEdges("v1", "person", "knows", EdgeSide.OUT, List.of()))
+                .thenReturn(List.of(edge("e1", EdgeSide.OUT, "n1", Map.of()),
+                        edge("e2", EdgeSide.OUT, "n2", Map.of())));
+        when(graphQuery.readVertex("n2", "person", List.of("name")))
+                .thenReturn(new VertexQueryResult("person", "n2", Map.of("name", "bob"), 5L, 6L));
+        when(graphQuery.readVertex("n2", "person", List.of()))
+                .thenReturn(new VertexQueryResult("person", "n2", Map.of("name", "bob"), 5L, 6L));
+
+        GremlinGraphQuery.Result filtered = gremlin.executeWithSubgraph(
+                "g.V('v1','person').out('knows').has('name','bob')");
+
+        assertEquals(1, filtered.values().size());
+        assertEquals("n2", ((com.pengcheng.phoenixgraph.query.gremlin.GremlinVertex) filtered.values().get(0)).id());
+        assertEquals(1, filtered.subgraph().edges().size(),
+                "the edge of the vertex the filter dropped is gone: " + filtered.subgraph().edges());
+        assertEquals("e2", filtered.subgraph().edges().get(0).id());
+    }
+
+    @Test
     void nearestStepReturnsTheIndexesNearestVertices() {
         HeapHnswVectorSource source = new HeapHnswVectorSource();
         source.put("v1", new float[] {0f, 0f});
