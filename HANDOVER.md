@@ -1,16 +1,14 @@
 # Handover — resume here
 
 > 本文件是**断点续做手记**：今天做了什么（结论）、现场怎么恢复、明天从哪继续。
-> 详细设计与实测数据在 `CONTEXT.md`：**2026-09-20 新增 §38–45**（Aerospike 准确性与时延 / 子图裁剪与 IP-Phone id / 顶点跳只读对端 / 两跳 benchmark 与批量计数 / 两跳 Payment 到点近线基准 / 每一跳 both 的方向对照 / 换成 150 星型 hub 再测一遍 / 落地三条建议）；**2026-09-18 新增 §32–37**（两轮 store 下沉优化 / 模糊关联 / regex 形状语义 / UI / 分布式算法 / **类起点与扫描端口**）；2026-09-17 是 §21–31。
+> 详细设计与实测数据在 `CONTEXT.md`：**2026-09-20 新增 §38–46**（Aerospike 准确性与时延 / 子图裁剪与 IP-Phone id / 顶点跳只读对端 / 两跳 benchmark 与批量计数 / 两跳 Payment 到点近线基准 / 每一跳 both 的方向对照 / 换成 150 星型 hub 再测一遍 / 落地三条建议 / 仪表盘十问修复）；**2026-09-18 新增 §32–37**（两轮 store 下沉优化 / 模糊关联 / regex 形状语义 / UI / 分布式算法 / **类起点与扫描端口**）；2026-09-17 是 §21–31。
 
-**最后一次会话：2026-09-20（周六）· 工作树干净 · 相关模块测试全绿（query-gremlin 134 / storage-aerospike 38 / query-aerospike 23 / http 68 / integration-test 88）**
-**本轮八段：(1) Aerospike 20 条一跳/两跳的准确性与时延（DAILY §1–7、CONTEXT §38）；(2) 修 UI 报的六个问题（§39）；
-  (3) 顶点跳只读对端 + 种子存在性 + seeder id 收尾（§40）；(4) 两跳 benchmark（24 条 × 3 batch）+ 批量计数（§41）；
-  (5) 两跳 Payment 到点的近线基准（§42，22 条 Gremlin 写法 + 混合负载 4.19 ms/次）；
-  (6) 每一跳都用 both 再测一遍并做方向对照（§43，环上账户 3 → 7 个源、到达 9 → 92）；
-  (7) 换成 150 星型 hub 再测一遍（§44：limit/count 最省、batch(10) 帮倒忙、barrier(100) 最优）；
-  (8) **落地三条建议**（§45：dedup 只按 id 去重 → 星型 dedup 3900→0 顶点读、38→6.3 ms；自适应合批 20→50/DIVISOR 5→2 → 星型全读 197→80 次往返、48→25 ms；一跳+两跳混合负载 2493 us/次）。**
-**下一次从 §2 第 0 条继续：顶点物化独立于边读的更大批；both/星型也交替进混跑；limit 有序表示 / 摘要 bin / 跨查询 bin 缓存 / display 属性投影。**
+**最后一次会话：2026-09-20（周六）· 工作树干净 · 相关模块测试全绿（query-gremlin 136 / storage-aerospike 38 / query-aerospike 23 / http 69 / integration-test 88）**
+**本轮九段：(1) Aerospike 20 条一跳/两跳准确性与时延（§38）；(2) 修 UI 六个问题（§39）；(3) 顶点跳只读对端 + 种子存在性（§40）；
+  (4) 两跳 benchmark + 批量计数（§41）；(5) 两跳 Payment 近线基准（§42）；(6) 每跳 both 方向对照（§43）；(7) 150 星型 hub（§44）；
+  (8) 落地三条建议：dedup 只按 id / 自适应合批 / 一跳两跳混跑（§45）；
+  (9) **仪表盘十问修复**（§46：limit 早停、多类 hop、IP/Phone 单向 + 共享、both() 计数一致、Phone 显示名去重复 +86、输入框一跳；demo set 换 http_demo_v3）。**
+**下一次入口：display 属性 $id（schema + UI）；重新构建服务并把 payment-graph 指到 http_demo_v3；既有一跳+两跳混跑、边读合批、limit 有序表示、摘要 bin、跨查询缓存。**
 
 **上一次会话：2026-09-18（周四，约 17 个提交）· 工作树干净 · 全项目编译通过 · 受影响的模块测试全绿**
 **（`graph-gemini` 26 + `graph-query-gremlin` 115 + `graph-http` 68 + `graph-fuzzy` 37；服务在跑，见 §1.1）**

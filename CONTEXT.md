@@ -2773,3 +2773,40 @@ MIXED PASS (one-hop + two-hop dashboard): 124 次（31 条 x 4 轮）309 ms，�
 * 星型默认 80 次 vs barrier(100) 41 次还有 ~4 ms：可考虑同一跳内顶点物化用更大的批（与边读分开）；
 * 混跑还可把 both/星型两组也交替进去；
 * 既有遗留：`limit` 有序表示、摘要 bin、跨查询 bin 缓存、display 属性投影。
+
+---
+
+## 46. 仪表盘十问：UI/数据/引擎的一致性修复
+
+### 46.1 引擎
+
+* **limit 早停**：`limit` 直接跟在顶点跳后折进跳的 cap（邻居读按源分批、够了就停；边读把 cap 传进 store），
+  不再「全量迭代完再截断」。顶点 `has/filter` 仍把 limit 留在后面（条件先跑）。
+* **多类 hop**：`out/in/both/outE/inE/bothE('A','B',...)` 按参数顺序走多个类；多类跳不重写为单类计数、不接下推条件。
+
+### 46.2 数据模型（单向 + 共享，demo set `http_demo_v3`）
+
+* 不再写 AccountToIP/AccountToPhone 镜像，只写 **IPToAccount（IP→Account）** 与 **PhoneToAccount（Phone→Account）** →
+  修复「UI 双向箭头」「`both()` 与三类之和不等」（#14：99 vs 50）。
+* **共享 IP/Phone**：60 个 IP 各连 3–80 个账户、24 个 Phone 各连 2–10 个账户（确定性）；另有 10.99.255.2→3 个账户等显式多账户示例。
+* **Phone 显示名**：`phoneNumber` 存国内号段，display = "+86 138-69999"，不再重复 +86。
+* 参考读数器/精度套件（20/20）/基准/一致性测试全切到 v3，方向从 `out(AccountToIP)` 改为 `in(IPToAccount)`。
+
+### 46.3 UI
+
+* id 输入框从 `both().both()`（两跳）改为 `both()`（一跳），展示的边与 `both(Payment)` 等直连查询一致；
+  `showQueryResult` 每次 `resetGraph()`，新 id 替换旧图。
+
+### 46.4 结果与未做
+
+```text
+gremlin 136 / integration 88 / http 69 全绿（293）
+新测试 demoSharedGraphViaApi（both()=三类之和、多类 hop 一致、多账户 IP、phone 显示名）
+提交 5d85ce0（多类 hop + limit 早停）、0cd295d（单向 + 共享 + 输入框一跳）
+```
+
+**未做（改进项）**：display 属性 `$id`（当 display == id 时不存重复 displayName）：
+schema JSON 顶点加 `"displayName": "$id"` → `displayPropertyNames()` 返回 `["$id"]`；UI `displayLabel` 直接渲染 id；
+IP/Phone 的 schema 改 `$id`（`ipAddress`/国内号属性保留给 `values()`）。
+
+**运维**：服务要看到新数据需重新 `clean package -am` 构建并把 payment-graph 的 set 指到 `http_demo_v3`。
