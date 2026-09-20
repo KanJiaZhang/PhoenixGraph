@@ -87,6 +87,8 @@ class AerospikeTwoHopPaymentBenchmarkTest {
         all.addAll(bothQueries);
         List<Query> star = starQueries();
         all.addAll(star);
+        List<Query> oneHop = oneHopQueries();
+        all.addAll(oneHop);
         for (Query query : all) {
             assertTrue(query.gremlin().contains("Payment"), query.id() + " walks payment edges");
             results.add(measure(query));
@@ -95,6 +97,10 @@ class AerospikeTwoHopPaymentBenchmarkTest {
         mixedPass(queries, "out/in/both first hop");
         mixedPass(bothQueries, "both on every hop");
         mixedPass(star, "star hub 150, IP/phone second hop");
+        // one-hop and two-hop interleaved, which is what a dashboard actually issues
+        List<Query> dashboard = new ArrayList<>(oneHop);
+        dashboard.addAll(queries);
+        mixedPass(dashboard, "one-hop + two-hop dashboard");
 
         assertTrue(wrong.isEmpty(), "every measured traversal answers what the records say: " + wrong);
         assertEquals(all.size(), results.size(), "one measurement per traversal");
@@ -412,6 +418,36 @@ class AerospikeTwoHopPaymentBenchmarkTest {
     private List<AerospikeHopSuite.RawEdge> hop2Into(List<AerospikeHopSuite.RawEdge> first, String edgeName,
                                                     EdgeSide side) {
         return suite.hop2(first, edgeName, side);
+    }
+
+    /**
+     * One-hop traversals over the payment class, the half of a dashboard's workload the two-hop sets do
+     * not cover on their own. The same seeds, the same reference check.
+     */
+    private List<Query> oneHopQueries() {
+        List<Query> queries = new ArrayList<>();
+        queries.add(oneHop(HUB, "out", "g.V('" + HUB + "','Account').out('Payment')", peers(out(HUB))));
+        queries.add(oneHop(HUB, "both", "g.V('" + HUB + "','Account').both('Payment')",
+                peers(suite.both(HUB, "Payment"))));
+        queries.add(oneHop("150", "out", "g.V('150','Account').out('Payment')", peers(out("150"))));
+        queries.add(oneHop("1014", "out", "g.V('1014','Account').out('Payment')", peers(out("1014"))));
+        queries.add(new Query("H-" + HUB + " out>count", HUB, "out > count",
+                "g.V('" + HUB + "','Account').out('Payment').count()", Check.COUNT, List.of(),
+                (long) out(HUB).size()));
+        queries.add(new Query("H-" + HUB + " out>dedup>count", HUB, "out > dedup > count",
+                "g.V('" + HUB + "','Account').out('Payment').dedup().count()", Check.COUNT, List.of(),
+                (long) distinct(out(HUB)).size()));
+        queries.add(new Query("H-" + HUB + " out>filter(FROZEN)>count", HUB, "out > filter(FROZEN) > count",
+                "g.V('" + HUB + "','Account').out('Payment').filter(accountStatus.equals('FROZEN')).count()",
+                Check.COUNT, List.of(), (long) byAccountProperty(out(HUB), "accountStatus", "FROZEN").size()));
+        queries.add(new Query("H-150 out>count", "150", "out > count",
+                "g.V('150','Account').out('Payment').count()", Check.COUNT, List.of(),
+                (long) out("150").size()));
+        return queries;
+    }
+
+    private Query oneHop(String seed, String shape, String gremlin, List<Object> ids) {
+        return new Query("H-" + seed + " " + shape, seed, shape, gremlin, Check.IDS, ids, null);
     }
 
     /** A small builder so the same traversal can be written with one hop or with both. */

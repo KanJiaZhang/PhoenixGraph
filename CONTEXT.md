@@ -2719,3 +2719,57 @@ MIXED PASS (星型 150 第二跳 IP/电话 12 条 x 4 轮): 48 次 1724 ms，平
 * **`dedup` 的投影**：让去重只需要 id（当前会触发 3900 次顶点读）；
 * **批量方向自适应**：默认值在「源多、点读多」的星型查询上不如显式 `barrier(100)`；
 * 既有遗留：一跳 + 两跳混跑、边读按 batch 合批、`limit` 有序表示、摘要 bin、跨查询 bin 缓存、display 属性投影。
+
+---
+
+## 45. 落地三条建议：dedup 不再读属性、自适应合批、一跳+两跳混合负载
+
+§44 末尾列了三条下一步，这一节做完。
+
+### 45.1 dedup 只按 id 去重，不再要求全属性投影
+
+**根因**：`neededProperties()` 把 `dedup` 与 `elementMap` 一起归进「需要全部属性」→ 结果顶点被全部读出（星型查询 3900 次顶点读），
+而 dedup 只需要 id。顺带修掉隐患：原来 `dedup` 用 record 相等性（含属性 map），同一个点以不同投影出现会被当成两个。
+
+**改动**：`GremlinSteps.dedup()` 用 `ElementKey(label, id)` 去重（标量按值、保留首见顺序）；
+`neededProperties()` 里 `dedup` 改为「穿过继续找后面的消费者」（不再 all=true）。
+
+**效果**（S-150，p50 ms / kv-calls / v-items）：
+```text
+out > out(AccountToIP) > dedup       36.35 / 197 / 3900  ->  7.73 / 2 / 0
+out > out(AccountToIP) > dedup > count  38.27 / 197 / 3900 -> 6.29 / 2 / 0
+星型混合负载                          35.9 ms/次 -> 17.7 ms/次
+```
+回归：新增 2 个单测（身份去重 + 跳过属性读 / 后面的 values 仍只投影那一个键），query-gremlin 132 → 134 全绿。
+
+### 45.2 自适应批量：默认更少的、更大的往返
+
+§44 发现 `batch(10)` 帮倒忙（392 次）、`barrier(100)` 最优（41 次），而默认停在 20（197 次）：
+自适应公式 `fanOut / ADAPTIVE_DIVISOR` 在 DIVISOR=5 时对 fanOut=100 只能得到 20，等于没上提。
+
+**改动**：`DEFAULT_BATCH_SIZE` 20 → 50、`ADAPTIVE_DIVISOR` 5 → 2。因为 `Math.max(batchSize, scaled)` 只增不减，
+这个改动只影响 fanOut > 40 的跳；小查询（源少）仍一个批量拿全。
+
+**效果**（S-150，p50 ms / kv-calls）：
+```text
+out > out(AccountToIP)            48.23 / 197 -> 24.64 / 80   （约 2 倍）
+both > both(AccountToIP)          42.64 / 199 -> 26.74 / 82
+out > filter(accountStatus) > out 38.45 / 202 -> 27.26 / 82
+out > out(AccountToIP) > values   41.24 / 197 -> 23.59 / 80
+barrier(100)（对照）              20.45 /  41 （默认已追到很近）
+星型混合负载                      35.9 ms/次 -> 17.7–18.8 ms/次
+```
+回归：一跳时延、两跳 benchmark、两跳 Payment、准确性 20/20 全绿；两个硬编码旧常量的单测已按新值更新。
+
+### 45.3 一跳 + 两跳混合负载
+
+新增 `oneHopQueries()`（8 条一跳，同样与参考核对）并与单方向两跳交替跑混合 pass：
+```text
+MIXED PASS (one-hop + two-hop dashboard): 124 次（31 条 x 4 轮）309 ms，平均 2493 us/次
+```
+
+### 45.4 未做
+
+* 星型默认 80 次 vs barrier(100) 41 次还有 ~4 ms：可考虑同一跳内顶点物化用更大的批（与边读分开）；
+* 混跑还可把 both/星型两组也交替进去；
+* 既有遗留：`limit` 有序表示、摘要 bin、跨查询 bin 缓存、display 属性投影。

@@ -44,7 +44,7 @@ import java.util.function.Function;
 public final class GremlinContext {
 
     /** Default fan-out batch size ({@code batch(n)} overrides it; parallel lookups are on by default). */
-    public static final int DEFAULT_BATCH_SIZE = 20;
+    public static final int DEFAULT_BATCH_SIZE = 50;
 
     /** Upper bound for the adaptive batch size. */
     public static final int DEFAULT_MAX_BATCH_SIZE = 100;
@@ -52,8 +52,12 @@ public final class GremlinContext {
     /** Default number of storage reads issued concurrently. */
     public static final int DEFAULT_PARALLELISM = Math.max(1, Math.min(8, Runtime.getRuntime().availableProcessors()));
 
-    /** Fan-out divisor: the adaptive batch size is {@code fanOut / DIVISOR}, clamped. */
-    static final int ADAPTIVE_DIVISOR = 5;
+    /**
+     * Fan-out divisor: the adaptive batch size is {@code fanOut / DIVISOR}, clamped. Aerospike's
+     * batch reads are cheap at these sizes, so the divisor favours fewer, larger round trips over
+     * many small ones (a hundred sources become two requests of fifty rather than five of twenty).
+     */
+    static final int ADAPTIVE_DIVISOR = 2;
 
     private final GraphQuery graphQuery;
     private final NeighborVertexResolver vertexResolver;

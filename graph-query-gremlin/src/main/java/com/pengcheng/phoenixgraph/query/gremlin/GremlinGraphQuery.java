@@ -878,7 +878,7 @@ public class GremlinGraphQuery {
                 }
                 break;
             }
-            if (name.equals("elementMap") || name.equals("dedup")) {
+            if (name.equals("elementMap")) {
                 all = true;
                 break;
             }

@@ -591,7 +591,26 @@ final class GremlinSteps {
     }
 
     static GremlinStep dedup() {
-        return (ctx, in) -> in.stream().distinct().toList();
+        return (ctx, in) -> {
+            // Deduplicate by element identity (label + id): the same vertex reached twice is the same
+            // traverser however its properties were projected. Scalars (e.g. after values()) dedupe by
+            // value. First-seen order is preserved.
+            Set<Object> seen = new HashSet<>();
+            List<Object> result = new ArrayList<>();
+            for (Object element : in) {
+                Object key = element instanceof GremlinElement ge
+                        ? new ElementKey(ge.label(), ge.id())
+                        : element;
+                if (seen.add(key)) {
+                    result.add(element);
+                }
+            }
+            return result;
+        };
+    }
+
+    /** Element identity for {@code dedup()}: the label and the id, independent of the property projection. */
+    private record ElementKey(String label, Object id) {
     }
 
     // --- internals ---

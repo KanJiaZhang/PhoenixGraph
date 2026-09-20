@@ -27,6 +27,7 @@ import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -176,6 +177,35 @@ class GremlinGraphQueryTest {
 
         assertEquals(1, gremlin.execute("g.V('v1', 'person').outE('knows').limit(1)").size());
         assertEquals(1, gremlin.execute("g.V('v1', 'person').outE('knows').dedup()").size());
+    }
+
+    @Test
+    void dedupUsesElementIdentityAndSkipsThePropertyRead() {
+        EdgeQueryResult e1 = edge("e1", EdgeSide.OUT, "n1", Map.of());
+        when(graphQuery.readEdges("v1", "person", "knows", EdgeSide.OUT, List.of()))
+                .thenReturn(List.of(e1, e1));
+
+        List<Object> result = gremlin.execute("g.V('v1', 'person').out('knows').dedup()");
+
+        // one traverser per distinct vertex id, and the vertex read is skipped entirely (only ids are needed)
+        assertEquals(1, result.size());
+        assertEquals("n1", ((GremlinVertex) result.get(0)).id());
+        verify(graphQuery, never()).readVertex(eq("n1"), eq("person"), anyList());
+    }
+
+    @Test
+    void dedupThenValuesProjectsOnlyThatProperty() {
+        EdgeQueryResult e1 = edge("e1", EdgeSide.OUT, "n1", Map.of());
+        when(graphQuery.readEdges("v1", "person", "knows", EdgeSide.OUT, List.of()))
+                .thenReturn(List.of(e1, e1));
+        when(graphQuery.readVertex("n1", "person", List.of("name")))
+                .thenReturn(new VertexQueryResult("person", "n1", Map.of("name", "alice"), 5L, 6L));
+
+        List<Object> result = gremlin.execute("g.V('v1', 'person').out('knows').dedup().values('name')");
+
+        // dedup only needs the id; the read that follows projects exactly the property it names
+        assertEquals(List.of("alice"), result);
+        verify(graphQuery).readVertex("n1", "person", List.of("name"));
     }
 
     @Test
@@ -780,8 +810,8 @@ class GremlinGraphQueryTest {
         List<Object> result = query.execute("g.V('v1', 'p').out('knows').outE('created')");
 
         assertEquals(0, result.size());
-        // 100 first-hop neighbours -> adaptive batch = 100/5 = 20 (up from default 10)
-        assertEquals(List.of(20, 20, 20, 20, 20), edgeBatches.stream().map(List::size).toList());
+        // 100 first-hop neighbours -> adaptive batch = 100/2 = 50 (the default), two requests of fifty
+        assertEquals(List.of(50, 50), edgeBatches.stream().map(List::size).toList());
     }
 
     @Test
@@ -844,8 +874,8 @@ class GremlinGraphQueryTest {
 
         query.execute("g.V('v1', 'p').out('knows').has('kind', 'keep').outE('created')");
 
-        // has() filter reduced 100 -> 30, so the second hop keeps the default batch size (20)
-        assertEquals(List.of(10, 20), edgeBatches.stream().map(List::size).sorted().toList());
+        // has() filter reduced 100 -> 30, so the second hop keeps the default batch size (50)
+        assertEquals(List.of(30), edgeBatches.stream().map(List::size).sorted().toList());
     }
 
     @Test
