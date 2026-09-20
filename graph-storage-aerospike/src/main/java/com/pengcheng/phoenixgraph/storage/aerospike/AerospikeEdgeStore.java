@@ -933,9 +933,37 @@ public class AerospikeEdgeStore implements AdjacentEdgeStore {
     public long countEdges(Object vertexId, int edgeSchemaId, int directionCode, EdgeRead read) {
         Objects.requireNonNull(read, "read");
         Record record = db.get(null, key(vertexId), edgeBin(edgeSchemaId, directionCode));
-        if (isMissing(record)) {
+        return isMissing(record) ? 0 : countInRecord(record, edgeSchemaId, directionCode, read);
+    }
+
+    /**
+     * Counts the edges of one class over many vertices with one native batch get.
+     *
+     * <p>A traversal that counts over a set of vertices has many sources and few edges per source, so
+     * counting them one by one is one round trip per vertex - the dominant cost of a two-hop count.
+     * The batch reads every record at once and counts each bin from its shape, so the trips become one per
+     * batch and the edges are never built either way.
+     */
+    public long countEdgesBatch(List<Object> vertexIds, int edgeSchemaId, int directionCode, EdgeRead read) {
+        Objects.requireNonNull(vertexIds, "vertexIds");
+        Objects.requireNonNull(read, "read");
+        if (vertexIds.isEmpty()) {
             return 0;
         }
+        Key[] keys = vertexIds.stream().map(this::key).toArray(Key[]::new);
+        String bin = edgeBin(edgeSchemaId, directionCode);
+        Record[] records = db.get(new BatchPolicy(), keys, bin);
+        long total = 0;
+        for (Record record : records) {
+            if (!isMissing(record)) {
+                total += countInRecord(record, edgeSchemaId, directionCode, read);
+            }
+        }
+        return total;
+    }
+
+    /** The count of one record's bin: its shape, or only the entries a condition or window keeps. */
+    private long countInRecord(Record record, int edgeSchemaId, int directionCode, EdgeRead read) {
         Object bin = record.bins.get(edgeBin(edgeSchemaId, directionCode));
         if (!(bin instanceof java.util.Map<?, ?> map)) {
             return bin == null ? 0 : decodeEdges(record, edgeSchemaId, directionCode, read).size();

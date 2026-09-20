@@ -230,6 +230,28 @@ public interface GraphQuery {
     }
 
     /**
+     * Counts the edges of a class at many vertices, without materialising them.
+     *
+     * <p>A traversal that counts over a set of vertices reaches far more sources than edges per source -
+     * a hub's hundred accounts, each with a handful of links - so counting them one by one costs one round
+     * trip per vertex however cheap each count is. A store that can read many records at once (a native
+     * batch get) answers the whole set with one trip per batch, counting from the shape of each bin.
+     *
+     * <p>The default adds up {@link #countEdges(Object, String, String, EdgeSide, List)}, which every
+     * backend supports.
+     */
+    default long countEdgesBatch(String edgeName, EdgeSide direction, List<Object> vertexIds,
+                                 List<EdgePropertyFilter> filters) {
+        long total = 0;
+        for (Object vertexId : vertexIds) {
+            total += filters == null || filters.isEmpty()
+                    ? countEdges(vertexId, null, edgeName, direction)
+                    : countEdges(vertexId, null, edgeName, direction, filters);
+        }
+        return total;
+    }
+
+    /**
      * Whether the store evaluates the conditions and the cap of an edge read while it decodes.
      *
      * <p>{@code true} lets a traversal hand

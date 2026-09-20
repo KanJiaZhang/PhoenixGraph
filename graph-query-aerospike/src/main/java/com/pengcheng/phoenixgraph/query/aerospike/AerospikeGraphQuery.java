@@ -249,6 +249,27 @@ public class AerospikeGraphQuery implements GraphQuery {
     }
 
     /**
+     * Counts the edges of one class at many vertices with one native batch get per direction: a count over
+     * a set of sources is many records with few edges each, so the trips dominate the work.
+     */
+    @Override
+    public long countEdgesBatch(String edgeName, EdgeSide direction, List<Object> vertexIds,
+                               List<EdgePropertyFilter> filters) {
+        Objects.requireNonNull(vertexIds, "vertexIds");
+        Objects.requireNonNull(direction, "direction");
+        if (vertexIds.isEmpty()) {
+            return 0;
+        }
+        EdgeSchema edgeSchema = resolveEdgeSchema(edgeName);
+        AerospikeEdgeStore.EdgeRead read = edgeRead(edgeSchema, List.of(), filters, 0);
+        long total = 0;
+        for (int directionCode : directionCodes(edgeSchema, direction)) {
+            total += edgeStore.countEdgesBatch(vertexIds, edgeSchema.id(), directionCode, read);
+        }
+        return total;
+    }
+
+    /**
      * The neighbours of a vertex over one edge class, read from the header of each stored edge: a vertex
      * hop walks an edge to arrive somewhere and never looks at the edge itself, so no edge is built.
      */

@@ -695,17 +695,29 @@ public final class GremlinContext {
     public long countEdges(List<Object> vertexIds, String edgeName, EdgeSide direction,
                            List<EdgePropertyFilter> filters) {
         List<EdgePropertyFilter> conditions = filters == null ? List.of() : filters;
+        if (vertexIds.isEmpty()) {
+            return 0;
+        }
+        if (!hasEdgeTimeRange()) {
+            // one batch get per read batch instead of one round trip per source: a count over many
+            // vertices has far more sources than edges per source, so the trips are the cost
+            List<Long> perBatch = readBatches(batches(vertexIds),
+                    batch -> graphQuery.countEdgesBatch(edgeName, direction, batch, conditions));
+            long total = 0;
+            for (Long count : perBatch) {
+                total += count == null ? 0 : count;
+            }
+            return total;
+        }
         long total = 0;
         for (Object vertexId : vertexIds) {
             if (conditions.isEmpty()) {
                 total += graphQuery.countEdges(vertexId, null, edgeName, direction);
-            } else if (hasEdgeTimeRange()) {
+            } else {
                 // the window already reduces the read: the conditions are applied here
                 List<EdgeQueryResult> edges = graphQuery.readEdgesWithin(vertexId, null, edgeName, direction,
                         edgeTimeRange, List.of(), edgeReadLimit);
                 total += GraphQuery.applyFilters(edges, conditions, 0).size();
-            } else {
-                total += graphQuery.countEdges(vertexId, null, edgeName, direction, conditions);
             }
         }
         return total;

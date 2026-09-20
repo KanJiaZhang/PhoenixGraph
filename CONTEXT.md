@@ -2534,3 +2534,51 @@ graph-query-gremlin      hopVertices 在「边类有名 + 不收集子图 + stor
 * RocksDB 的两个 store 仍用默认实现（读边再取身份）：正确，但没省属性解码 —— 给 `RocksDbEdgeRowCodec` 加一个 header 解码即可；
 * UI 画图路径仍构造边（为边浮窗的属性）；
 * 第 38 节其余优化点（`limit` 的有序表示、摘要 bin、跨查询 bin 缓存、display 属性投影）仍在。
+
+---
+
+## 41. 两跳 benchmark：时延跟着源的数量走，「按源计数」改成批量计数
+
+第 38 节测的是一跳与少量两跳；这一节是一次更大规模的两跳测量（多种起点、每跳换边类、条件、截断、比率、3 个 batch 值），
+它把「计数」这条路径的瓶颈量化了出来，并因此做了一次优化。
+
+### 41.1 设计：24 条遍历 × 3 个 batch
+
+```text
+AerospikeTwoHopBenchmarkTest
+  24 条 = 20 条计数（10 条第二跳到边 / 10 条到点）+ 4 条返回元素（让 batch 的差异可见）
+  每条 3 个 batch：batch(1) / batch(25) / batch(100)，插在第一跳之后的 %BATCH% 位置
+  起点：135（50 笔付款）、150（100 账户 × 39 IP + 10 电话）、1014/1025（环上）、一个 IP、一个电话
+  形状：每跳各自边类；条件放在第一跳顶点（accountStatus）或第二跳边（status=SUCCESS）；
+        otherV() 中转、dedup()、第一跳 limit(5) 截断
+  比率：每条配一个分母（通常是第一跳计数），报告 answer/base
+  subgraph 大小：计时之外单独收集一次（与 batch 无关），报告顶点/边数
+  答案：全部与 AerospikeHopSuite 的参考读数器核对（第 38 节那套）
+```
+
+### 41.2 测出来的三条
+
+1. **时延跟着源的数量走**：kv-calls 与 p50 几乎线性相关 —— 小 subgraph（<100 元素）2 次往返 / 2.4 ms，
+   中（100–1000）4 次 / 6.3 ms，大（>1000）5 次 / 11.2 ms；未优化时同样的大查询是 **101 次往返 / 18–58 ms**。
+2. **batch(n) 之前只影响读、不影响计数**（计数是逐源一次往返 ⇒ 三个 batch 值毫无差别）；
+   优化后 batch(1) 41 次、batch(25) 3 次、batch(100) 2 次，p50 10.8 → 4.1 → 4.7 ms。
+3. **decoded 语义清晰**：顶点跳恒为 0（邻居读只取头部，第 40 节），边跳等于 limit（如 120、500）。
+
+### 41.3 批量计数（本轮实现）
+
+```text
+graph-query        countEdgesBatch(edgeName, direction, vertexIds, filters)   默认＝逐源求和
+graph-storage-aerospike  countEdgesBatch(vertexIds, schemaId, dirCode, EdgeRead)  一次原生 batch get + countInRecord
+graph-query-aerospike    countEdgesBatch(...)  每个方向一次批读
+graph-query-gremlin      GremlinContext.countEdges(...)  无时间窗时按 batch(n) 分组（batches + 并行）
+```
+
+`countInRecord` 从 bin 的形状计数（不构边），条件/窗口在 raw entry 上判 —— 与逐源版本语义完全一致，只是把往返合并。
+效果：E3（100 个源）101 → 5/2 次往返、p50 18.9 → 5.0 ms；E4 101 → 5/2、12.6 → 3.9 ms；E1（51 个源）51 → 3/2、10.2 → 3.7 ms；
+**答案不变**（20 条准确性用例、一致性用例、benchmark 的参考答案全过）。
+
+### 41.4 未做
+
+* 边的**读**（非计数）仍按引擎自带的批处理（X3 的 41 次往返），可以让它显式按 batch(n) 分组；
+* 再往下就是服务端聚合（UDF）：目前已经是「一次多键读 + 本地计数」的形态；
+* 第 38 节其余优化点（limit 的有序表示、摘要 bin、跨查询 bin 缓存、display 属性投影）仍在。
