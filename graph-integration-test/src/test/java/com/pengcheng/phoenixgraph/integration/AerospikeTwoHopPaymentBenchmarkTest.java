@@ -85,6 +85,8 @@ class AerospikeTwoHopPaymentBenchmarkTest {
 
         List<Query> all = new ArrayList<>(queries);
         all.addAll(bothQueries);
+        List<Query> star = starQueries();
+        all.addAll(star);
         for (Query query : all) {
             assertTrue(query.gremlin().contains("Payment"), query.id() + " walks payment edges");
             results.add(measure(query));
@@ -92,6 +94,7 @@ class AerospikeTwoHopPaymentBenchmarkTest {
         // a mixed pass per spelling: every query once per round, back to back, as a dashboard asks them
         mixedPass(queries, "out/in/both first hop");
         mixedPass(bothQueries, "both on every hop");
+        mixedPass(star, "star hub 150, IP/phone second hop");
 
         assertTrue(wrong.isEmpty(), "every measured traversal answers what the records say: " + wrong);
         assertEquals(all.size(), results.size(), "one measurement per traversal");
@@ -211,8 +214,10 @@ class AerospikeTwoHopPaymentBenchmarkTest {
     private List<Query> queries() {
         List<Query> queries = new ArrayList<>();
 
-        // the plain two-hop walk from seeds of different sizes (one vertex hop each)
-        for (String seed : List.of(HUB, "1000", "1014", "1025", "1049")) {
+        // the plain two-hop walk from seeds of different sizes (one vertex hop each).
+        // 150 is the star hub (a hundred payments out); its accounts do not pay, so a payment second hop from
+        // it is empty and the star group at the end is where that hub has data.
+        for (String seed : List.of(HUB, "150", "1000", "1014", "1025", "1049")) {
             List<Object> reached = peers(hop2(out(seed)));
             queries.add(new Query("P-" + seed + " out>out", seed, "out > out",
                     "g.V('" + seed + "','Account').out('Payment').out('Payment')",
@@ -292,7 +297,7 @@ class AerospikeTwoHopPaymentBenchmarkTest {
     private List<Query> bothQueries() {
         List<Query> queries = new ArrayList<>();
 
-        for (String seed : List.of(HUB, "1000", "1014", "1025", "1049")) {
+        for (String seed : List.of(HUB, "150", "1000", "1014", "1025", "1049")) {
             queries.add(bothIds(seed, "both > both", g(seed).both().both(), hop2Both(suite.both(seed, "Payment"))));
         }
         queries.add(bothIds(HUB, "bothE > otherV > both",
@@ -335,6 +340,78 @@ class AerospikeTwoHopPaymentBenchmarkTest {
         queries.add(size(HUB, "both > both > elementMap",
                 g(HUB).both().both() + ".elementMap()", hop2Both(suite.both(HUB, "Payment")).size()));
         return queries;
+    }
+
+    /**
+     * The star hub 150 with its second hop on the classes it actually has: a hundred payments out to accounts
+     * that each hold thirty-nine IP links and ten phone links, so this is the biggest second hop in the demo
+     * (three thousand nine hundred edges).
+     *
+     * <p>The star accounts do not pay anyone, so the interesting measurements for 150 are these: the same step
+     * shapes as above, over the IP and phone classes.
+     */
+    private List<Query> starQueries() {
+        String seed = "150";
+        List<AerospikeHopSuite.RawEdge> hop1 = suite.out(seed, "Payment");
+        List<AerospikeHopSuite.RawEdge> ips = hop2Into(hop1, "AccountToIP");
+        List<AerospikeHopSuite.RawEdge> phones = hop2Into(hop1, "AccountToPhone");
+        List<Query> queries = new ArrayList<>();
+
+        queries.add(star("out > out(AccountToIP)",
+                "g.V('150','Account').out('Payment').out('AccountToIP')",
+                Check.IDS, peers(ips), null));
+        queries.add(star("both > both(AccountToIP)",
+                "g.V('150','Account').both('Payment').both('AccountToIP')",
+                Check.IDS, peers(hop2Into(suite.both(seed, "Payment"), "AccountToIP", EdgeSide.BOTH)), null));
+        queries.add(star("outE has(status) > otherV > out(AccountToIP)",
+                "g.V('150','Account').outE('Payment').has('status','SUCCESS').otherV().out('AccountToIP')",
+                Check.IDS, peers(hop2Into(AerospikeHopSuite.matching(hop1, "status", "SUCCESS"),
+                        "AccountToIP")), null));
+        queries.add(star("out > filter(accountStatus) > out(AccountToIP)",
+                "g.V('150','Account').out('Payment').filter(accountStatus.equals('ACTIVE'))"
+                        + ".out('AccountToIP')",
+                Check.IDS, peers(hop2Into(byAccountProperty(hop1, "accountStatus", "ACTIVE"),
+                        "AccountToIP")), null));
+        queries.add(star("out > out(AccountToIP) > dedup",
+                "g.V('150','Account').out('Payment').out('AccountToIP').dedup()",
+                Check.IDS, distinct(ips), null));
+        queries.add(star("out > out(AccountToIP) > limit(500)",
+                "g.V('150','Account').out('Payment').out('AccountToIP').limit(500)",
+                Check.SIZE, peers(ips), 500L));
+        queries.add(star("out > out(AccountToIP) > count",
+                "g.V('150','Account').out('Payment').out('AccountToIP').count()",
+                Check.COUNT, List.of(), (long) ips.size()));
+        queries.add(star("out > out(AccountToIP) > dedup > count",
+                "g.V('150','Account').out('Payment').out('AccountToIP').dedup().count()",
+                Check.COUNT, List.of(), (long) distinct(ips).size()));
+        queries.add(star("out > batch(10) > out(AccountToIP)",
+                "g.V('150','Account').out('Payment').batch(10).out('AccountToIP')",
+                Check.IDS, peers(ips), null));
+        queries.add(star("out > barrier(100) > out(AccountToIP)",
+                "g.V('150','Account').out('Payment').barrier(100).out('AccountToIP')",
+                Check.IDS, peers(ips), null));
+        queries.add(star("out > out(AccountToPhone) > count",
+                "g.V('150','Account').out('Payment').out('AccountToPhone').count()",
+                Check.COUNT, List.of(), (long) phones.size()));
+        queries.add(star("out > out(AccountToIP) > values(ipAddress)",
+                "g.V('150','Account').out('Payment').out('AccountToIP').values('ipAddress')",
+                Check.SIZE, List.of(), (long) ips.size()));
+        return queries;
+    }
+
+    /** One 150 traversal with the query text, its check and its expectation. */
+    private static Query star(String shape, String gremlin, Check check, List<Object> ids, Long expected) {
+        return new Query("S-150 " + shape, "150", shape, gremlin, check, ids, expected);
+    }
+
+    /** The second hop of a star query, over the edge class the query names. */
+    private List<AerospikeHopSuite.RawEdge> hop2Into(List<AerospikeHopSuite.RawEdge> first, String edgeName) {
+        return suite.hop2(first, edgeName, EdgeSide.OUT);
+    }
+
+    private List<AerospikeHopSuite.RawEdge> hop2Into(List<AerospikeHopSuite.RawEdge> first, String edgeName,
+                                                    EdgeSide side) {
+        return suite.hop2(first, edgeName, side);
     }
 
     /** A small builder so the same traversal can be written with one hop or with both. */
