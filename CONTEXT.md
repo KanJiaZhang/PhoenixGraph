@@ -2233,3 +2233,106 @@ graph-http/
   StorageConfig          geminiCluster bean（workers/first-port/mode）
   QueryService           engine.geminiCluster(...)
 ```
+
+---
+
+## 37. 从「一个类」开始查：扫描端口，OLTP 与 OLAP 分开
+
+用户的要求：**基于 rocksdb-edge 版本**实现
+
+```groovy
+g.E('payment').pagerank(DIST)
+g.V('Account').filter(accountStatus.equals('ACTIVE')).bothE('payment').cc(DIST)
+```
+
+即「从边开始遍历」与「从点开始遍历 + filter」，并明确：**Aerospike 定位 OLTP，RocksDB-Edge 定位 OLAP**。
+
+### 37.1 缺口在哪：查询引擎只会「按键读」
+
+`g.V('135','Account')` 之所以能跑，是因为引擎手上有一串 id，`GraphQuery` 的每个方法都以「一个键」为参数；
+`g.E('payment')` 没有任何键可以传（一条边的身份是「两个端点 + 创建时间」），
+所以第二种写法此前一律被解析器拒绝（`g.E('...')` 连头都不认）。这与第 30 节「按类型计数需要扫描计划」是**同一个缺口**。
+
+### 37.2 解法：能力方法（capability），而不是契约（contract）
+
+- `GraphQuery` 新增 **`supportsScan()`**（默认 `false`）+ 三个可选方法：
+  `scanVertices(type, props, max)` / `scanEdges(class, props, max)` / `countScanEdges(class)` / `countScanVertices(type)`
+  （默认抛 `QueryException`，说明「本 store 不能扫」）。
+- 与第 34 节的 `supportsEdgeReadPushdown()` 同一套路：**默认 false ⇒ 既有后端零改动**，谁有能力谁 override。
+  本次只有 **RocksDB-Edge** override（`true`）；Aerospike 与 RocksDB-Inline 仍是「只按 id 读」。
+- 遍历在**开始之前**就问能力：不能扫 → 报「`g.V('Account') starts from a whole type, which
+  AerospikeGraphQuery cannot read: a keyed store answers by id. Scan a type on a store whose tables are
+  ordered ranges (the RocksDB-Edge scheme is the analytical one), or name the ids instead.`」
+  （把「该用哪个 store」写进错误信息里，因为这才是用户真正需要知道的事）。
+
+### 37.3 RocksDB-Edge：一次迭代器 = 一个类
+
+- 点表本来就是 `hash(id):id` ⇒ `scanVertices` 遍历一个 column family，id 从**键**里来（不读值），
+  属性按投影解码（`RocksDbVertexTable.scan/count`）。
+- 边表每个类一个 CF，键是 `hash(owner):direction:owner:createdTime:edgeId`，
+  一份边**存两行**（源侧 OUT、目的侧 IN；无向边两端各一行 direction=0）。扫描只保留：
+  - **有向类**：`direction == OUT` 那一行（一条边一行，不用读值就能判定）；
+  - **无向类**：`direction == 0` 且 `owner <= peer`（两行互为镜像，谁也不知道谁是源，
+    于是约定 id 小的那端持有——自环只有一行，恒保留）。
+- **owner 怎么从键里读出来**：键里 id 与 edgeId 都是变长，中间切不开；但行的**值**里有 createdTime，
+  它的 8 个字节在键里唯一出现一次 ⇒ owner = 方向字节与这 8 字节之间、edgeId = 之后的部分；
+  再用 `hash(owner)` 与键前缀核对 ⇒ 这个切分是**被验证过的**唯一可能（`RocksDbKeys.edgeKeyParts`）。
+  这比在值里再存一份 owner 好：不动磁盘格式、不需要重导数据。
+- owner 读回来是文本，而 store 的其它读都返回调用方的原始类型 ⇒ 扫描按**端点声明的类型**还原
+  （`LONG → Long` 等；无向类若两端类型不同，用「peer 不是哪一端」来判断）。
+
+### 37.4 Gremlin：两种新起点
+
+- 解析器：头从 `g.V(` 放宽为 `g.[VE](`；
+  `g.V('Account')`（**一个参数 = 点类型**，不是 id）→ 类型扫描；`g.E('Payment')`（一个参数 = 边类）→ 类扫描；
+  `g.V()` 仍是「无起点」（fuzzyLink 那类自己产点的步骤用）。
+  `g.V(1, )` 依然报错（结尾逗号说明名字漏了，不能被当成「类型 1」）。
+- 起点扫描在 `GremlinGraphQuery.start(...)` 里执行，投影沿用同一套「后继步骤需要什么」的计划：
+  `g.V('Account').filter(accountStatus.equals('ACTIVE'))` 只读 `accountStatus`；
+  纯 `count()` 时不需要属性，但扫描没有 id 可退回，所以仍走一遍记录（投影为空 = 全属性）。
+- **`g.E('class')` 的边带着两端**：`GremlinEdge` 增加 `sourceVertexId`（仅扫描来时有值），
+  `otherVertexId` 仍是「远端」，于是 `otherV()/values()` 与边跳之后完全一致，
+  而算法步骤能拿到整条边（之前只有远端 ⇒ `bothE(...).cc(DIST)` 会漏掉起点那批点）。
+- 顺手补上的一处**真 bug**：点跳产生的边此前把「这是谁的边」丢在扁平化里 ⇒ 算法步骤只能看到邻居。
+  现在 `readEdgesByVertex` 保留「哪个点读出来的」并写进 `GremlinEdge.sourceVertexId`，
+  于是 `g.V('Account').filter(...).bothE('Payment').cc(DIST)` 的答案里**包含那些活跃账户本身** ✓。
+
+### 37.5 分布式步骤的两个修（都是跑真数据才暴露的）
+
+1. **PageRank 没有归一化**（第 36 轮遗留）：`sparseSignal` 推的是「整个值」而不是「份额」，
+   `result` 用的是 `1-d+d*sum` 而不是 `(1-d)/|V|+d*sum`，且**没有任何出度除法** ⇒
+   真数据上 4 worker × 10 轮 = 3.7e6（内存版 sum=1.0）。修法：
+   - 推/拉都除以**全局出度**（`WorkerState.outDegree` 取自 layout，因为一个分片只持有该点「目的地在自己这边」的那部分出边）；
+   - 累加型算法（`accumulative()`，PageRank 为 true）在 commit 前**清空本分片的值**：
+     「本轮没有任何贡献」= 0，而不是保留上一轮/初值（这正是 hub 一直等于初值 1.0 的原因）；
+   - `result` 需要 |V| ⇒ `GeminiCluster.run` 把 `vertices/edges` 注入 params（launcher 唯一知道全局的地方），
+     `GeminiComputation.result(vertex, value, state)` 随之带上 state。
+   - 修后：真数据上分布式与内存版 **1e-18** 一致（sum 都是 1.0）；测试里加了 sum≈1 的断言，`GeminiClusterTest` 的
+     单进程参考实现也改写成同一公式。
+2. **一个「改了代码但行为不变」的坑**：`package`（非 clean）时 Spring Boot 的 fat jar 里嵌的
+   `graph-gemini` jar 是**旧的**（fat jar 的 BOOT-INF 残留 + 增量 repackage）⇒ 服务一直跑旧算法。
+   判定方法：`unzip -p graph-http/target/...jar BOOT-INF/lib/graph-gemini-*.jar | md5sum` 与
+   `graph-gemini/target/*.jar` 对比；修法：**`clean package`**（并先 taskkill 占 jar 的进程）。
+
+### 37.6 实测（真实 RocksDB-Edge 实例，4 个 worker 在 19100–19103）
+
+| 查询 | 结果 | 耗时 |
+|---|---|---|
+| `g.E('Payment').pagerank(DIST, 10)` | 51 点（全部端点），sum=1.0，与内存版 1e-18 一致 | 372 ms |
+| `g.V('Account').filter(accountStatus.equals('ACTIVE')).bothE('Payment').cc(DIST)` | 51 点，**1** 个连通分量，17 个活跃账户都在答案里 | 154 ms |
+| `g.E('Payment').sssp(DIST, '135')` | 51 点，hub=0、50 个账户=1 | 69 ms |
+| `g.V('Account').count()` / `g.E('Payment').count()` | 51 / 200（走表，不构造对象） | 12–18 ms |
+| `g.V('Account').filter(...).count()` | 17 | 12 ms |
+| Aerospike 上的 `g.E('Payment').pagerank(DIST)` | 报「starts from a whole type … RocksDB-Edge is the analytical one」 | 24 ms |
+| RocksDB-Inline 上的 `g.V('Account').count()` | 同上（只按 id 读） | 6 ms |
+
+### 37.7 语义与限制（写进 README 的那几句）
+
+- **类起点 = 诱导子图**：算法步骤算的还是「遍历到达的点 + 经过的边类」的诱导子图（与内存版同一套），
+  所以 `g.E('Payment').pagerank(DIST)` 与「把这些端点 id 全列出来的写法」结果一致 ✓（测试断言到 1e-6）。
+- 扫描把 id 还原成**存储类型**（Long），查询文本是字符串 ⇒ 引擎在**建图与算法取根**时按文本兜底匹配
+  （`GeminiGraph.of` 的 byText、`GremlinAlgorithms` 的 canonicalIds、`sssp(DIST,'135')` 的 root 查找），
+  否则「用查询里的 id 做种子」会看到 0 条边。
+- 还没做：`g.V().hasLabel(...)` / 全类 `bothE()` 扫描、`g.V('Account').count()` 的
+  「不构造对象计数」改写（store 侧 `countScanVertices/countScanEdges` 已经就绪）、扫描的时间窗口下推
+  （createdTime 不是前缀 ⇒ 只能过滤）、Aerospike 侧永远不做扫描（定位就是 OLTP）。

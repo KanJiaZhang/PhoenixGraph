@@ -180,6 +180,10 @@ public final class GeminiCluster implements AutoCloseable {
 
         long totalEdges = graph.edges().size();
         Map<String, Object> effective = new LinkedHashMap<>(params == null ? Map.of() : params);
+        // the totals only the launcher knows: how many vertices the graph has (a PageRank score is
+        // relative to it) and how heavy it is (Louvain's gain is relative to that)
+        effective.putIfAbsent("vertices", graph.vertexCount());
+        effective.putIfAbsent("edges", graph.edges().size());
         if (GeminiAlgorithms.LOUVAIN.equalsIgnoreCase(algorithm) && !effective.containsKey("totalWeight")) {
             // Louvain's modularity gain is relative to the graph's total edge weight, which only the
             // launcher can know (the adjacency is symmetric, so the weight sum counts every edge twice)

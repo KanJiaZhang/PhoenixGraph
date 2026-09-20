@@ -251,6 +251,82 @@ public interface GraphQuery {
     }
 
     /**
+     * Whether the store can walk a whole <b>type</b> instead of one record at a time: every vertex
+     * of a vertex type ({@link #scanVertices}) and every edge of an edge class ({@link #scanEdges}).
+     *
+     * <p>A question that starts from a class rather than from an id - {@code g.V('Account')},
+     * {@code g.E('payment').pagerank(DIST)} - has no key to ask a keyed store for. This is therefore
+     * the port an analytical engine wants and a record store does not have: Aerospike answers
+     * "the record with this key", RocksDB-Edge holds one ordered table per type and answers a class
+     * with one iterator per table.
+     *
+     * <p>Like {@link #supportsEdgeReadPushdown()}, asking is the caller's job: a traversal checks
+     * this and reports what is missing, rather than getting an exception from the middle of a scan.
+     */
+    default boolean supportsScan() {
+        return false;
+    }
+
+    /**
+     * Reads every vertex of one type, in storage order, at most {@code maxResults} of them
+     * ({@code 0} = all).
+     *
+     * <p>An empty property list means every declared property, exactly as in a single read - a scan
+     * has no id to fall back on, so it always touches the records it walks past.
+     *
+     * @param vertexName    the vertex type to walk
+     * @param propertyNames the properties to project; empty means all
+     * @param maxResults    how many vertices to stop after ({@code 0} = no cap)
+     */
+    default List<VertexQueryResult> scanVertices(String vertexName, List<String> propertyNames,
+                                                 int maxResults) {
+        throw new QueryException("Scanning a vertex type is not supported by "
+                + getClass().getSimpleName());
+    }
+
+    /** Reads every vertex of one type. */
+    default List<VertexQueryResult> scanVertices(String vertexName, List<String> propertyNames) {
+        return scanVertices(vertexName, propertyNames, 0);
+    }
+
+    /**
+     * Reads every edge of one class, in storage order, at most {@code maxResults} of them
+     * ({@code 0} = all).
+     *
+     * <p>Each edge is read once and reported with both endpoints ({@link ScannedEdge}), because a
+     * scan has no vertex to name the far side against; an edge class stored on both endpoints is
+     * read on one of them (the outgoing row of a directed class) so a scan does not see it twice.
+     *
+     * @param edgeName      the edge class to walk
+     * @param propertyNames the properties to project; empty means all
+     * @param maxResults    how many edges to stop after ({@code 0} = no cap)
+     */
+    default List<ScannedEdge> scanEdges(String edgeName, List<String> propertyNames, int maxResults) {
+        throw new QueryException("Scanning an edge class is not supported by "
+                + getClass().getSimpleName());
+    }
+
+    /** Reads every edge of one class. */
+    default List<ScannedEdge> scanEdges(String edgeName, List<String> propertyNames) {
+        return scanEdges(edgeName, propertyNames, 0);
+    }
+
+    /**
+     * Counts every edge of one class without materialising it.
+     *
+     * <p>The default counts what {@link #scanEdges} returns; a store whose edge table is the edge
+     * list itself can count the rows instead of decoding them.
+     */
+    default long countScanEdges(String edgeName) {
+        return scanEdges(edgeName, List.of()).size();
+    }
+
+    /** Counts every vertex of one type without materialising it. */
+    default long countScanVertices(String vertexName) {
+        return scanVertices(vertexName, List.of()).size();
+    }
+
+    /**
      * Windowed read that keeps at most {@code maxResults} edges ({@code 0} = all of them).
      *
      * <p>The cap is what makes "expand this hub in the UI" cheap: the aggregated tables are

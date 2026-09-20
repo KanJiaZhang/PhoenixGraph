@@ -633,29 +633,38 @@ final class GremlinSteps {
         return hopEdges(ctx, in, edgeName, dir, List.of(), 0);
     }
 
+    /**
+     * The edge traversers of an edge hop. Each one remembers the vertex it was read for
+     * ({@link GremlinEdge#sourceVertexId()}), which is what makes "the vertices this traversal went
+     * through" a fact rather than a guess: a later step can then ask for an algorithm over the
+     * reached graph without the query having to spell the endpoints out with {@code otherV()}.
+     */
     private static List<Object> hopEdges(GremlinContext ctx, List<Object> in, String edgeName, EdgeSide dir,
                                          List<EdgePropertyFilter> filters, int maxResults) {
-        List<EdgeQueryResult> allEdges = readAllEdges(ctx, toVertices(in), edgeName, dir, edgeReadProperties(ctx),
-                filters, maxResults);
-        List<Object> out = new ArrayList<>(allEdges.size());
-        for (EdgeQueryResult edge : allEdges) {
-            out.add(new GremlinEdge(edge.edgeName(), edge.edgeId(), edge.side(), edge.otherVertexId(),
-                    edge.properties(), edge.createdTime(), edge.lastUpdatedTime()));
+        List<GremlinVertex> vertices = toVertices(in);
+        List<List<EdgeQueryResult>> perVertex = readEdgesByVertex(ctx, vertices, edgeName, dir,
+                edgeReadProperties(ctx), filters, maxResults);
+        List<Object> out = new ArrayList<>();
+        for (int i = 0; i < vertices.size(); i++) {
+            Object owner = vertices.get(i).id();
+            for (EdgeQueryResult edge : perVertex.get(i)) {
+                out.add(new GremlinEdge(edge.edgeName(), edge.edgeId(), edge.side(), edge.otherVertexId(),
+                        edge.properties(), edge.createdTime(), edge.lastUpdatedTime(), owner));
+            }
         }
         return out;
     }
 
-    private static List<Object> hopVertices(GremlinContext ctx, List<Object> in, String edgeName, EdgeSide dir) {
-        // The intermediate edges of a vertex hop are internal: only their otherVertexId
-        // is consumed, so no edge property projection is applied here.
-        List<EdgeQueryResult> allEdges = readAllEdges(ctx, toVertices(in), edgeName, dir, List.of(), List.of(), 0);
-        return new ArrayList<>(readNeighbourVertices(ctx, allEdges));
-    }
-
-    /** Reads the edges of the given edge class for all input vertices, with per-query dedup + cache. */
-    private static List<EdgeQueryResult> readAllEdges(GremlinContext ctx, List<GremlinVertex> vertices,
-                                                      String edgeName, EdgeSide dir, List<String> edgeProperties,
-                                                      List<EdgePropertyFilter> filters, int maxResults) {
+    /**
+     * Reads the edges of a hop for each input vertex, keeping them apart (`null` edge name = every
+     * class). The batched and cached reads of the context stay batched; only the grouping survives.
+     */
+    private static List<List<EdgeQueryResult>> readEdgesByVertex(GremlinContext ctx,
+                                                                 List<GremlinVertex> vertices,
+                                                                 String edgeName, EdgeSide dir,
+                                                                 List<String> edgeProperties,
+                                                                 List<EdgePropertyFilter> filters,
+                                                                 int maxResults) {
         List<EdgePropertyFilter> conditions = filters == null ? List.of() : filters;
         if (vertices.isEmpty()) {
             return List.of();
@@ -663,13 +672,26 @@ final class GremlinSteps {
         if (edgeName == null) {
             // every edge class: there is no single bin to push a condition into, so the conditions
             // are applied to whatever was read
-            List<EdgeQueryResult> all = readAllEdgeClasses(ctx, vertices, dir, edgeProperties);
-            return GraphQuery.applyFilters(all, conditions, maxResults);
+            List<Object> ids = new ArrayList<>(vertices.size());
+            for (GremlinVertex v : vertices) {
+                ids.add(v.id());
+            }
+            List<List<EdgeQueryResult>> perVertex =
+                    ctx.readAllEdgeClassesBatched(ids, dir, edgeProperties);
+            List<List<EdgeQueryResult>> out = new ArrayList<>(perVertex.size());
+            for (int i = 0; i < perVertex.size(); i++) {
+                List<EdgeQueryResult> edges = perVertex.get(i);
+                // the subgraph a UI draws needs every edge that was read, including these: an
+                // unnamed hop is the one path where the read does not record them itself
+                ctx.recordEdges(ids.get(i), edges);
+                out.add(GraphQuery.applyFilters(edges, conditions, maxResults));
+            }
+            return out;
         }
         if (conditions.isEmpty() && maxResults <= 0) {
             if (vertices.size() == 1) {
                 GremlinVertex v = vertices.get(0);
-                return ctx.readEdgesCached(v.id(), v.label(), edgeName, dir, edgeProperties);
+                return List.of(ctx.readEdgesCached(v.id(), v.label(), edgeName, dir, edgeProperties));
             }
             List<Object> ids = new ArrayList<>(vertices.size());
             for (GremlinVertex v : vertices) {
@@ -678,7 +700,20 @@ final class GremlinSteps {
             return ctx.readAllEdgesBatchCached(edgeName, dir, ids, edgeProperties);
         }
         // a filtered or capped read: the store does the work, one vertex at a time with a budget
-        return ctx.readEdgesFiltered(vertices, edgeName, dir, edgeProperties, conditions, maxResults);
+        return ctx.readEdgesFilteredByVertex(vertices, edgeName, dir, edgeProperties, conditions,
+                maxResults);
+    }
+
+    private static List<Object> hopVertices(GremlinContext ctx, List<Object> in, String edgeName, EdgeSide dir) {
+        // The intermediate edges of a vertex hop are internal: only their otherVertexId
+        // is consumed, so no edge property projection is applied here.
+        List<GremlinVertex> vertices = toVertices(in);
+        List<EdgeQueryResult> allEdges = new ArrayList<>();
+        for (List<EdgeQueryResult> edges : readEdgesByVertex(ctx, vertices, edgeName, dir, List.of(),
+                List.of(), 0)) {
+            allEdges.addAll(edges);
+        }
+        return new ArrayList<>(readNeighbourVertices(ctx, allEdges));
     }
 
     /** Reads the edges of every edge class (the {@code both()}/{@code bothE()} no-argument form). */

@@ -58,6 +58,85 @@ class GremlinDistStepsTest {
     private static final Map<String, List<String>> TARGETS = Map.of(
             "a1", List.of("a2"), "a2", List.of("a3"), "a3", List.of("a4"), "a4", List.of("a1", "a5"));
 
+    @Test
+    void aTraversalSeededWithTextStillMatchesTheIdsTheStoreReports() {
+        // A query is text, so the ids it names arrive as text; a store answers with the type it stored
+        // the id under (numbers as numbers). Both name the same vertex, so the run must still see the
+        // edges between them - otherwise a seeded run would find no edges at all.
+        List<Object> answer = engine(numericGraph()).execute("g.V('1,2,3,4,5','Account').cc(DIST)");
+
+        Map<?, ?> values = assertInstanceOf(Map.class, answer.get(0));
+        assertEquals(5, values.size(), "every seeded account is in the answer: " + values);
+        assertEquals(1L, values.values().stream().distinct().count(),
+                "the numeric-typed accounts are one component: " + values);
+    }
+
+    @Test
+    void aShortestPathRootIsFoundWhetherTheQueryOrTheStoreSpellsTheId() {
+        // '2' in the query against the id 2L in the store: the same vertex. The answer names the
+        // vertices the traversal was seeded with (the query's text), so it is read that way here.
+        Map<?, ?> values = assertInstanceOf(Map.class,
+                engine(numericGraph()).execute("g.V('1,2,3,4,5','Account').sssp(DIST, '2')").get(0));
+        assertEquals(0.0, ((Number) values.get("2")).doubleValue(), "the root is at zero: " + values);
+        assertEquals(1.0, ((Number) values.get("3")).doubleValue(), "one payment away");
+    }
+
+    /** The same graph, reported with numeric ids the way a store that types its ids does. */
+    private static GraphQuery numericGraph() {
+        GraphQuery strings = graph();
+        return new GraphQuery() {
+            private Object numeric(Object id) {
+                return Long.valueOf(String.valueOf(id).substring(1)); // a1 -> 1
+            }
+
+            @Override
+            public VertexQueryResult readVertex(Object vertexId, String vertexName,
+                                                List<String> propertyNames) {
+                return strings.readVertex("a" + vertexId, vertexName, propertyNames);
+            }
+
+            @Override
+            public List<VertexQueryResult> readVertices(String vertexName, List<Object> vertexIds,
+                                                        List<String> propertyNames) {
+                List<VertexQueryResult> out = new ArrayList<>();
+                for (Object id : vertexIds) {
+                    out.add(strings.readVertex("a" + id, vertexName, propertyNames));
+                }
+                return out;
+            }
+
+            @Override
+            public List<EdgeQueryResult> readEdges(Object vertexId, String vertexName, String edgeName,
+                                                   EdgeSide direction, List<String> propertyNames) {
+                List<EdgeQueryResult> out = new ArrayList<>();
+                for (EdgeQueryResult edge : strings.readEdges("a" + vertexId, vertexName, edgeName,
+                        direction, propertyNames)) {
+                    out.add(new EdgeQueryResult(edge.edgeName(), edge.edgeId(), edge.side(),
+                            numeric(edge.otherVertexId()), edge.properties(), edge.createdTime(),
+                            edge.lastUpdatedTime()));
+                }
+                return out;
+            }
+
+            @Override
+            public List<List<EdgeQueryResult>> readEdgesBatch(String edgeName, EdgeSide direction,
+                                                              List<Object> vertexIds,
+                                                              List<String> propertyNames) {
+                List<List<EdgeQueryResult>> out = new ArrayList<>();
+                for (Object id : vertexIds) {
+                    out.add(readEdges(id, null, edgeName, direction, propertyNames));
+                }
+                return out;
+            }
+
+            @Override
+            public List<List<EdgeQueryResult>> readAllEdgesBatch(List<Object> vertexIds, EdgeSide direction,
+                                                                 List<String> propertyNames) {
+                return readEdgesBatch("payment", direction, vertexIds, propertyNames);
+            }
+        };
+    }
+
     /** A reader over five accounts wired as the payment edges above (both directions). */
     private static GraphQuery graph() {
         return new GraphQuery() {
@@ -119,7 +198,11 @@ class GremlinDistStepsTest {
     }
 
     private GremlinGraphQuery engine() {
-        return new GremlinGraphQuery(graph(),
+        return engine(graph());
+    }
+
+    private GremlinGraphQuery engine(GraphQuery graph) {
+        return new GremlinGraphQuery(graph,
                 NeighborVertexResolver.of(Map.of("payment", "Account"), Map.of()))
                 .geminiCluster(cluster);
     }

@@ -25,31 +25,88 @@ import java.util.regex.Pattern;
  */
 public final class GremlinQuery {
 
-    private static final Pattern HEADER = Pattern.compile("^g\\s*\\.\\s*V\\s*\\(", Pattern.CASE_INSENSITIVE);
+    private static final Pattern HEADER = Pattern.compile("^g\\s*\\.\\s*([VE])\\s*\\(", Pattern.CASE_INSENSITIVE);
 
     /** One parsed step: its name and argument tokens. */
     public record Step(String name, List<String> args) {
     }
 
-    private final List<Object> vertexIds;
-    private final String vertexName;
+    /**
+     * Where a traversal starts.
+     *
+     * <p>A traversal either names ids ({@code g.V('135','Account')}), names a whole type
+     * ({@code g.V('Account')}, {@code g.E('Payment')} - the form a scan answers) or names nothing at
+     * all ({@code g.V()}), which is what a step that produces its own elements starts from.
+     */
+    public record Source(Kind kind, List<Object> ids, String name) {
+
+        /** How a traversal starts. */
+        public enum Kind {
+            /** Named vertex ids of one type. */
+            VERTICES,
+            /** Every vertex of one type. */
+            VERTEX_TYPE,
+            /** Every edge of one class. */
+            EDGE_TYPE,
+            /** No starting point (a step produces them). */
+            NONE
+        }
+
+        public Source {
+            ids = ids == null ? List.of() : List.copyOf(ids);
+        }
+
+        static Source vertices(List<Object> ids, String name) {
+            return new Source(Kind.VERTICES, ids, name);
+        }
+
+        static Source vertexType(String name) {
+            return new Source(Kind.VERTEX_TYPE, List.of(), name);
+        }
+
+        static Source edgeType(String name) {
+            return new Source(Kind.EDGE_TYPE, List.of(), name);
+        }
+
+        static Source none() {
+            return new Source(Kind.NONE, List.of(), null);
+        }
+
+        /** Whether this source walks a whole type (and therefore needs a store that can scan). */
+        public boolean scans() {
+            return kind == Kind.VERTEX_TYPE || kind == Kind.EDGE_TYPE;
+        }
+    }
+
+    private final Source source;
     private final List<Step> steps;
     private final String logic;
 
-    private GremlinQuery(List<Object> vertexIds, String vertexName, List<Step> steps, String logic) {
-        this.vertexIds = vertexIds;
-        this.vertexName = vertexName;
+    private GremlinQuery(Source source, List<Step> steps, String logic) {
+        this.source = source;
         this.steps = steps;
         this.logic = logic;
     }
 
-    /** The starting vertex ids. */
-    public List<Object> vertexIds() {
-        return vertexIds;
+    /** Where the traversal starts. */
+    public Source source() {
+        return source;
     }
 
+    /** The starting vertex ids (empty for a scan or for {@code g.V()}). */
+    public List<Object> vertexIds() {
+        return source.ids();
+    }
+
+    /** The vertex type of a {@code g.V(...)} start, or {@code null}. */
     public String vertexName() {
-        return vertexName;
+        return source.kind() == Source.Kind.EDGE_TYPE || source.kind() == Source.Kind.NONE
+                ? null : source.name();
+    }
+
+    /** The edge class of a {@code g.E('class')} start, or {@code null}. */
+    public String edgeName() {
+        return source.kind() == Source.Kind.EDGE_TYPE ? source.name() : null;
     }
 
     public List<Step> steps() {
@@ -70,42 +127,12 @@ public final class GremlinQuery {
 
         Matcher head = HEADER.matcher(s);
         if (!head.find()) {
-            throw new QueryException("Expected 'g.V(vertexId..., vertexName)' prefix, got: " + s);
+            throw new QueryException("Expected 'g.V(...)' or 'g.E(edgeName)' prefix, got: " + s);
         }
-        int open = head.end() - 1; // index of the '(' after g.V
+        int open = head.end() - 1; // index of the '(' after g.V / g.E
         int close = matchingParen(s, open);
         String args = s.substring(open + 1, close);
         List<String> parts = splitArgs(args).stream().map(GremlinQuery::unquote).toList();
-        if (parts.isEmpty()) {
-            // 'g.V()' starts from nothing: a step that produces its own vertices (fuzzyLink) then
-            // decides what the traversal walks, so the prefix carries neither an id nor a name
-            String emptyRest = s.substring(close + 1).trim();
-            String emptyLogic = null;
-            int emptyBrace = indexOfOutsideQuotes(emptyRest, '{');
-            if (emptyBrace >= 0) {
-                emptyLogic = emptyRest.substring(emptyBrace + 1, matchingBrace(emptyRest, emptyBrace)).trim();
-                emptyRest = emptyRest.substring(0, emptyBrace).trim();
-            }
-            return new GremlinQuery(List.of(), null, parseSteps(emptyRest), emptyLogic);
-        }
-        if (parts.size() < 2) {
-            throw new QueryException("Expected 'g.V(vertexId..., vertexName)' with at least an id and a name, got: "
-                    + args);
-        }
-        String vertexName = parts.get(parts.size() - 1);
-        if (vertexName.isBlank()) {
-            throw new QueryException("vertexName must not be blank in: " + s);
-        }
-        List<Object> vertexIds = new ArrayList<>();
-        for (int i = 0; i < parts.size() - 1; i++) {
-            for (String id : splitIds(parts.get(i))) {
-                vertexIds.add(id);
-            }
-        }
-        if (vertexIds.isEmpty()) {
-            throw new QueryException("vertexId must not be blank in: " + s);
-        }
-
         String rest = s.substring(close + 1).trim();
         String logic = null;
         int brace = indexOfOutsideQuotes(rest, '{');
@@ -115,7 +142,72 @@ public final class GremlinQuery {
             rest = rest.substring(0, brace).trim();
         }
         List<Step> steps = parseSteps(rest);
-        return new GremlinQuery(vertexIds, vertexName, steps, logic);
+        if (head.group(1).equalsIgnoreCase("E")) {
+            return new GremlinQuery(edgeSource(parts, args), steps, logic);
+        }
+        return new GremlinQuery(vertexSource(parts, args), steps, logic);
+    }
+
+    /**
+     * The start of a {@code g.V(...)} traversal: ids plus a type, a type on its own (every vertex of
+     * it), or nothing at all.
+     */
+    private static Source vertexSource(List<String> parts, String args) {
+        if (parts.isEmpty()) {
+            // 'g.V()' starts from nothing: a step that produces its own vertices (fuzzyLink) then
+            // decides what the traversal walks, so the prefix carries neither an id nor a name
+            return Source.none();
+        }
+        if (parts.size() == 1) {
+            // one argument is a vertex type, not an id: without a name there is nothing to read the id
+            // against, and 'every vertex of this type' is the question a scan answers
+            String vertexName = parts.get(0);
+            if (vertexName.isBlank()) {
+                throw new QueryException("vertexName must not be blank in: g.V(" + args + ")");
+            }
+            if (args.trim().endsWith(",")) {
+                // 'g.V(1, )': the comma says a name was meant, and one argument is not a name and an id
+                throw new QueryException("Expected 'g.V(vertexId..., vertexName)' or 'g.V(vertexName)' -"
+                        + " a trailing comma means the vertex name is missing in: g.V(" + args + ")");
+            }
+            return Source.vertexType(vertexName);
+        }
+        String vertexName = parts.get(parts.size() - 1);
+        if (vertexName.isBlank()) {
+            throw new QueryException("vertexName must not be blank in: g.V(" + args + ")");
+        }
+        List<Object> vertexIds = new ArrayList<>();
+        for (int i = 0; i < parts.size() - 1; i++) {
+            for (String id : splitIds(parts.get(i))) {
+                vertexIds.add(id);
+            }
+        }
+        if (vertexIds.isEmpty()) {
+            throw new QueryException("vertexId must not be blank in: g.V(" + args + ")");
+        }
+        return Source.vertices(vertexIds, vertexName);
+    }
+
+    /**
+     * The start of a {@code g.E(...)} traversal: one edge class, which stands for every edge of it.
+     *
+     * <p>An edge class is a scan for the same reason a vertex type is one: an edge is identified by
+     * its endpoints and its creation time, so there is no id a caller could list to mean "all of
+     * them". The direction is the one the class stores its edges under.
+     */
+    private static Source edgeSource(List<String> parts, String args) {
+        if (parts.isEmpty()) {
+            throw new QueryException("g.E(...) needs an edge class name, e.g. g.E('payment')");
+        }
+        if (parts.size() > 1) {
+            throw new QueryException("g.E(...) takes one edge class name (all of its edges), got "
+                    + parts.size() + " arguments in: g.E(" + args + ")");
+        }
+        String edgeName = parts.get(0);
+        if (edgeName.isBlank()) {
+            throw new QueryException("edgeName must not be blank in: g.E(" + args + ")");
+        }
+        return Source.edgeType(edgeName);
     }
 
     /** Parses a step chain such as {@code .has(key, value).count()} into steps. */

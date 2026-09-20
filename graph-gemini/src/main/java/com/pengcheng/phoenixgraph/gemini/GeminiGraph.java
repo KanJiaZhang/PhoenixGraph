@@ -92,8 +92,10 @@ public final class GeminiGraph {
     public static GeminiGraph of(GraphQuery query, Scope scope, boolean directed) {
         List<Object> ids = new ArrayList<>();
         Map<Object, Integer> byId = new LinkedHashMap<>();
+        Map<String, Integer> byText = new LinkedHashMap<>();
         for (Object id : scope.vertexIds()) {
             if (id != null && byId.putIfAbsent(id, ids.size()) == null) {
+                byText.put(String.valueOf(id), ids.size());
                 ids.add(id);
             }
         }
@@ -105,7 +107,7 @@ public final class GeminiGraph {
             for (int i = 0; i < ids.size(); i++) {
                 int source = i;
                 for (EdgeQueryResult edge : byVertex.get(i)) {
-                    Integer target = byId.get(edge.otherVertexId());
+                    Integer target = denseId(byId, byText, edge.otherVertexId());
                     if (target == null) {
                         continue; // an endpoint outside the reached set is not part of the subgraph
                     }
@@ -117,6 +119,23 @@ public final class GeminiGraph {
             }
         }
         return new GeminiGraph(ids, byId, edges);
+    }
+
+    /**
+     * The dense id of an endpoint read back from storage.
+     *
+     * <p>A vertex id reaches this class in two forms: the one a caller wrote in the query (text, since
+     * a query is text) and the one the store reports (the type it stored the id under, numbers as
+     * numbers). Both name the same vertex, so an endpoint is matched by identity first and by its text
+     * form second - otherwise a run seeded by ids from the query would see no edges at all, because
+     * every endpoint it reads back would look like a different vertex.
+     */
+    private static Integer denseId(Map<Object, Integer> byId, Map<String, Integer> byText, Object id) {
+        if (id == null) {
+            return null;
+        }
+        Integer dense = byId.get(id);
+        return dense != null ? dense : byText.get(String.valueOf(id));
     }
 
     /** An explicit graph, for a test or a caller that already has the edges (no storage involved). */

@@ -95,12 +95,13 @@ final class GremlinDistAlgorithms {
             if (element instanceof GremlinVertex vertex) {
                 vertexIds.add(vertex.id());
             } else if (element instanceof GremlinEdge edge) {
-                if (edge.label() != null) {
+                if (edge.label() != null && !edge.label().isBlank()) {
                     edgeNames.add(edge.label());
                 }
-                Object other = edge.otherVertexId();
-                if (other != null) {
-                    vertexIds.add(other);
+                for (Object endpoint : edge.endpoints()) {
+                    if (endpoint != null) {
+                        vertexIds.add(endpoint);
+                    }
                 }
             } else {
                 throw new QueryException("A distributed algorithm step expects vertices or edges, got: " + element);
@@ -155,14 +156,23 @@ final class GremlinDistAlgorithms {
      * The root of a shortest path run: a vertex id from the traversal, translated to the dense id the
      * cluster works with, so the step can be written as {@code sssp(DIST)} (the traversal's first
      * vertex) or {@code sssp(DIST, 'a1')}.
+     *
+     * <p>A query is text, so the id it names arrives as one: a graph whose ids are numbers
+     * ({@code 135}) is looked up by their text form, which is the same id spelled the way a caller can
+     * spell it.
      */
     private static int rootOf(String text, GeminiGraph graph) {
         int dense = graph.denseId(text);
-        if (dense < 0) {
-            throw new QueryException("'" + text + "' is not among the vertices this step was given, so it"
-                    + " cannot be the root of a shortest path run");
+        if (dense >= 0) {
+            return dense;
         }
-        return dense;
+        for (int v = 0; v < graph.vertexCount(); v++) {
+            if (text.equals(String.valueOf(graph.id(v)))) {
+                return v;
+            }
+        }
+        throw new QueryException("'" + text + "' is not among the vertices this step was given, so it"
+                + " cannot be the root of a shortest path run");
     }
 
     /** The edge side a distributed traversal reads. */

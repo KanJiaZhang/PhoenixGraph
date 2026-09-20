@@ -36,7 +36,7 @@ public final class GeminiAlgorithms {
         Map<String, Object> settings = params == null ? Map.of() : params;
         return switch (name == null ? "" : name.toLowerCase()) {
             case PAGERANK -> pagerank(intParam(settings, "iterations", 20),
-                    doubleParam(settings, "damping", 0.85));
+                    doubleParam(settings, "damping", 0.85), intParam(settings, "vertices", 1));
             case LOUVAIN -> new LouvainComputation(intParam(settings, "iterations", 20),
                     doubleParam(settings, "resolution", 1.0),
                     doubleParam(settings, "totalWeight", 1.0));
@@ -51,11 +51,20 @@ public final class GeminiAlgorithms {
     // ------------------------------------------------------------------ PageRank
 
     /**
-     * PageRank in the reference formulation: {@code next[v] = sum over in-edges of curr[u]}, then
-     * {@code pr[v] = 1 - d + d * next[v]}, with the dangling mass spread back so the scores keep
-     * adding up to one.
+     * PageRank in the reference formulation: {@code next[v]} is the sum of the incoming scores, each
+     * divided by the out-degree of the vertex it came from - the shares, not the scores, are what
+     * travels - and the answer is {@code (1 - d) / |V| + d * next[v]}.
+     *
+     * <p>Both halves of the division matter. The signal carries {@code value / outDegree}, because a
+     * partition holds only the out-edges of a vertex whose destinations are its own, so it cannot count
+     * the degree itself; and the value of a vertex is what arrived in the current superstep alone
+     * ({@link GeminiComputation#accumulative()}), because a vertex nothing points at receives nothing.
+     *
+     * <p>A vertex with no out-edges contributes nothing back, so its mass is not redistributed (the
+     * in-memory step spreads it, and on a graph where every vertex has an out-edge the two agree).
      */
-    public static GeminiComputation pagerank(int iterations, double damping) {
+    public static GeminiComputation pagerank(int iterations, double damping, int vertexCount) {
+        int total = Math.max(1, vertexCount);
         return new GeminiComputation() {
 
             @Override
@@ -64,13 +73,20 @@ public final class GeminiAlgorithms {
             }
 
             @Override
-            public Object initialValue(int vertex, int outDegree, int inDegree) {
-                return 1.0; // the reference toolkit starts every vertex at one and normalises after
+            public boolean accumulative() {
+                return true;
             }
 
             @Override
-            public Object sparseSignal(int vertex, Object value) {
-                return asDouble(value);
+            public Object initialValue(int vertex, int outDegree, int inDegree) {
+                return 1.0 / total; // every vertex starts with an equal share of the mass
+            }
+
+            @Override
+            public Object sparseSignal(int vertex, Object value, WorkerState state) {
+                double share = asDouble(value);
+                int degree = state.outDegree(vertex);
+                return degree <= 0 ? null : share / degree;
             }
 
             @Override
@@ -95,8 +111,12 @@ public final class GeminiAlgorithms {
                 double sum = 0;
                 for (GeminiGraph.Edge edge : inEdges) {
                     Object source = state.value(edge.source());
-                    if (source != null) {
-                        sum += asDouble(source) * edge.weight();
+                    if (source == null) {
+                        continue; // a source in another chunk: its owner pushes that share instead
+                    }
+                    int degree = state.outDegree(edge.source());
+                    if (degree > 0) {
+                        sum += asDouble(source) / degree * edge.weight();
                     }
                 }
                 return sum;
@@ -131,9 +151,9 @@ public final class GeminiAlgorithms {
             }
 
             @Override
-            public Object result(int vertex, Object value) {
+            public Object result(int vertex, Object value, WorkerState state) {
                 double sum = value == null ? 0.0 : asDouble(value);
-                return 1 - damping + damping * sum;
+                return (1 - damping) / total + damping * sum;
             }
         };
     }
@@ -159,7 +179,7 @@ public final class GeminiAlgorithms {
             }
 
             @Override
-            public Object sparseSignal(int vertex, Object value) {
+            public Object sparseSignal(int vertex, Object value, WorkerState state) {
                 return value;
             }
 
@@ -235,7 +255,7 @@ public final class GeminiAlgorithms {
             }
 
             @Override
-            public Object sparseSignal(int vertex, Object value) {
+            public Object sparseSignal(int vertex, Object value, WorkerState state) {
                 double distance = asDouble(value);
                 return distance == Double.MAX_VALUE ? null : distance;
             }
@@ -284,7 +304,7 @@ public final class GeminiAlgorithms {
             }
 
             @Override
-            public Object result(int vertex, Object value) {
+            public Object result(int vertex, Object value, WorkerState state) {
                 return asDouble(value) == Double.MAX_VALUE ? -1.0 : value;
             }
         };
@@ -317,7 +337,7 @@ public final class GeminiAlgorithms {
             }
 
             @Override
-            public Object sparseSignal(int vertex, Object value) {
+            public Object sparseSignal(int vertex, Object value, WorkerState state) {
                 return value;
             }
 
@@ -423,7 +443,7 @@ public final class GeminiAlgorithms {
         }
 
         @Override
-        public Object sparseSignal(int vertex, Object value) {
+        public Object sparseSignal(int vertex, Object value, WorkerState state) {
             // the community is what a neighbour needs, so it is what the push mode sends
             return (long) communityOf(vertex);
         }
@@ -544,7 +564,7 @@ public final class GeminiAlgorithms {
         }
 
         @Override
-        public Object result(int vertex, Object value) {
+        public Object result(int vertex, Object value, WorkerState state) {
             return (long) communityOf(vertex);
         }
 

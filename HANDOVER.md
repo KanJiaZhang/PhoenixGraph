@@ -1,13 +1,19 @@
 # Handover — resume here
 
 > 本文件是**断点续做手记**：今天做了什么（结论）、现场怎么恢复、明天从哪继续。
-> 详细设计与实测数据在 `CONTEXT.md`：**2026-09-18 新增 §32–36**（两轮 store 下沉优化 / 模糊关联 / regex 形状语义 / UI / **分布式算法**）；2026-09-17 是 §21–31。
+> 详细设计与实测数据在 `CONTEXT.md`：**2026-09-18 新增 §32–37**（两轮 store 下沉优化 / 模糊关联 / regex 形状语义 / UI / 分布式算法 / **类起点与扫描端口**）；2026-09-17 是 §21–31。
 
 **最后一次会话：2026-09-18（周四，约 17 个提交）· 工作树干净 · 全项目编译通过 · 受影响的模块测试全绿**
 **（`graph-gemini` 26 + `graph-query-gremlin` 115 + `graph-http` 68 + `graph-fuzzy` 37；服务在跑，见 §1.1）**
-**下一次从 §2「明天第一件事」第 1 条开始：给 `graph-query` 加扫描端口，让 `g.E('class').algo(DIST)` 这类无 id 种子可用。**
+**下一次从 §2「明天第一件事」第 1 条开始：把类起点接到计数改写（`g.V('Account').count()` 不构对象），以及 `g.V().hasLabel(...)` /`bothE()` 全类扫描。**
+**（扫描端口已完成：`g.E('Payment').pagerank(DIST)`、`g.V('Account').filter(...).bothE('Payment').cc(DIST)` 在 RocksDB-Edge 上实测可用，见 §0.2。）**
 
-> 2026-09-18 新增（**最新**）：**分布式图算法（Gemini 复刻）** —— 新模块 `graph-gemini`（chunk 分区 +
+> 2026-09-18 新增（**最新**）：**从「一个类」开始查** —— `GraphQuery.supportsScan()` + `scanVertices/scanEdges`
+> （**RocksDB-Edge 实现了它**：一个类 = 一个 column family = 一次迭代器；Aerospike / RocksDB-Inline 保持「只按 id 读」并**明确报错说该用哪个 store**）；
+> Gremlin 支持 `g.V('Account')` 与 `g.E('Payment')` 两种起点；顺手修掉 **PageRank 未归一化**（真数据 sum 3.7e6 → 1.0，
+> 与内存版 1e-18 一致）与「fat jar 嵌了旧模块 jar」的坑。详见 `CONTEXT.md` **§37** 与 `DAILY-2026-09-18.md` **§8**。
+
+> 2026-09-18 新增（**上一段**）：**分布式图算法（Gemini 复刻）** —— 新模块 `graph-gemini`（chunk 分区 +
 > 双份边表示 + 稀疏/稠密自适应 + signal/slot + HTTP worker + LOCAL/PROCESS 两种启动 + 五个算法）、
 > Gremlin 的 `DIST` 形式五个步、`graph-http` 默认起 **4 个 worker（19100–19103）**。
 > 详见 `CONTEXT.md` **§36** 与 `DAILY-2026-09-18.md` **§6**（含 9 个真 bug 的根因与修法、实测数字、已知限制）。
@@ -87,6 +93,9 @@
 
 * `-Dspring-boot.repackage.skip=true` 会把 **thin jar 覆盖到同一个路径** ✗ —— 之后再 `java -jar` 就报
   `ClassNotFoundException: ch.qos.logback...sprit.ThrowableProxy`。**跑之前重新 `./mvnw -pl graph-http -DskipTests package`（不带该 flag）** ✓。
+* **非 clean 的 `package` 会在 fat jar 里留下旧的嵌套模块 jar**（本次 `graph-gemini` 就是这样，症状：改了算法但服务行为不变）✗ →
+  判定：`unzip -p graph-http/target/graph-http-0.1.0-SNAPSHOT.jar BOOT-INF/lib/graph-gemini-0.1.0-SNAPSHOT.jar | md5sum` 与
+  `graph-gemini/target/graph-gemini-0.1.0-SNAPSHOT.jar` 对比；修法：`clean package`（并先 taskkill 占 jar 的进程）✓。
 * 被占用的 jar 无法删除（`clean` 失败）→ 先 `taskkill /F /PID` 再 `clean package` ✓；
   测试若要起 worker，用 `GeminiCluster.Config.local(n)`（端口 0 = 系统分配 ✓），别用 19100 硬编码 ✗。
 
@@ -175,7 +184,11 @@ g.V().fuzzyLink(1, '{"email":"44100101@qq.com","ip":"10.30.40.11","cardNumber":"
 
 ## 2. 明天第一件事（按优先级）
 
-0. **分布式算法的「无 id 种子」**（今天留给明天的第一条）：给 `graph-query` 加可选扫描端口
+0. **类起点的下一步**（今天做完了「能查」，下面是「查得省」）：
+   `g.V('Account').count()` / `g.E('Payment').count()` 走 store 的 `countScanVertices/countScanEdges`（**不构对象**，
+   接口已实现 ✓）；`g.V().hasLabel('Account')`（无参 V + 类型过滤）与 `bothE()` 全类扫描；
+   扫描的时间窗口下推（createdTime 不在键前缀，只能过滤）。
+1. ~~分布式算法的「无 id 种子」~~（今天留给明天的第一条）：给 `graph-query` 加可选扫描端口
    （`scanVertices(vertexName)` / `scanEdges(edgeName)`，Aerospike 走 `scanAll`、RocksDB 走迭代器），
    于是 `g.E('payment').pagerank(DIST)`、`g.V().filter(...).bothE('payment').cc(DIST)` 这类写法可用
    （与 §5 的「按类型计数需要扫描计划」是同一个缺口）；随后把 `DIST` 加进 UI 示例下拉、
@@ -271,6 +284,11 @@ curl -s -X POST localhost:8081/api/v1/vector-index/rebuild \
 
 ## 5. 已知问题 / 限制
 
+* **类起点只在 RocksDB-Edge 上可用** ✓（`supportsScan()`）：Aerospike（OLTP，按 id 读）与 RocksDB-Inline 会**明确报错**
+  并指出该用哪种 store —— 这是定位而不是缺陷；扫描上限用 `GremlinGraphQuery.scanLimit(n)`（0 = 不限）。
+* 扫描把 id 还原成存储类型（数字仍是数字），查询文本是字符串：引擎在建图/取根/邻接处按文本兜底匹配 ✓，
+  但**答案里 key 的写法**沿用种子来源（扫描来的 key 是数字、查询里写的 key 是文本）。
+
 * **分布式算法**：`g.E('class').algo(DIST)`（空种子只给边类 = 全图某类边）**不支持** ✗（需要扫描端口，见 §2 第 0 条）；
   BC 未实现；不做 NUMA/socket 子分区与计算/通信重叠（论文单机多核那半）；一个集群同时只跑一次计算（launcher 串行驱动）。
 * **算法步要吃「点」**：`outE(...)` 之后 traverser 是边、起点会丢 ✗，所以写法是
@@ -291,6 +309,16 @@ curl -s -X POST localhost:8081/api/v1/vector-index/rebuild \
 ---
 
 ## 6. 代码地图（今天新增/改动）
+
+**类起点（扫描）**：`graph-query` 的 `ScannedEdge` + `GraphQuery.supportsScan/scanVertices/scanEdges/countScan*`；
+`graph-storage-rocksdb` 的 `RocksDbKeys.vertexIdOf/directionOfKey/edgeKeyParts`（owner 从键里被验证地切出来）、
+`RocksDbVertexTable.scan/count`；`graph-storage-rocksdb-edge` 的 `RocksDbEdgeStore.scanEdges/countScannedEdges/ScannedEdgeRow`、
+`RocksDbEdgeGraphQuery` 的扫描实现；`graph-query-gremlin` 的 `GremlinQuery.Source`（VERTICES/VERTEX_TYPE/EDGE_TYPE/NONE）、
+`GremlinGraphQuery.start/startVertexScan/startEdgeScan/requireScan/scanLimit`、`GremlinEdge.sourceVertexId`、
+`readEdgesByVertex`（保留「边是谁读出来的」）、`GeminiGraph.of` 的文本兜底匹配、`GremlinAlgorithms.canonicalIds`。
+PageRank 修正：`GeminiAlgorithms.pagerank`（全局出度除法 + `(1-d)/|V|`）、`GeminiComputation.accumulative/result(...,state)`、
+`WorkerState.outDegree/totalVertexCount/clearOwnedValues`、`GeminiCluster.run` 注入 `vertices/edges`。
+测试：`RocksDbEdgeScanTest`(8)、`GremlinScanStepsTest`(11)、`RocksDbEdgeScanQueryIntegrationTest`(8)。
 
 **`graph-gemini`（新模块，12 类）**：`GeminiGraph`（输入图+scope）、`GeminiPartitioner`（chunk + 双份边）、
 `GeminiLauncherLayout`（每 worker payload：拥有/出度/镜像 owner/push 目标）、`WorkerLayout`（CSR bitmap + 压缩 CSC）、

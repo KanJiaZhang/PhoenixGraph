@@ -44,8 +44,27 @@ public interface GeminiComputation {
         return List.of();
     }
 
-    /** Sparse mode: the message an active vertex pushes to the partitions holding its out-edges. */
-    Object sparseSignal(int vertex, Object value);
+    /**
+     * Whether a vertex's value is the contributions of the current superstep alone.
+     *
+     * <p>PageRank sums the incoming scores into the next value and normalises them at the end, so a
+     * vertex that received nothing has nothing: the worker clears its owned values before it moves the
+     * pending ones in. An algorithm that sets its values outright (components, distances, labels) says
+     * no here, and its values stay as they were set.
+     */
+    default boolean accumulative() {
+        return false;
+    }
+
+    /**
+     * Sparse mode: the message an active vertex pushes to the partitions holding its out-edges.
+     *
+     * <p>The message is what the receiver applies along the edges it holds, so it usually carries the
+     * vertex's share rather than its value ({@code value / outDegree} is what a PageRank push sends).
+     * The out-degree comes from the state, because a partition only holds a vertex's out-edges whose
+     * destinations are in its own chunk - the divisor has to be the degree in the whole graph.
+     */
+    Object sparseSignal(int vertex, Object value, WorkerState state);
 
     /**
      * Sparse mode: applies a pushed message along the out-edges this partition holds for
@@ -99,7 +118,13 @@ public interface GeminiComputation {
     }
 
     /** Reads the value of a vertex the way the result should be reported. */
-    default Object result(int vertex, Object value) {
+    /**
+     * The value a vertex contributes to the answer (PageRank normalises here, SSSP marks unreached).
+     *
+     * <p>The state is there for the totals only the workers know: the vertex count a PageRank score is
+     * relative to is the whole graph's, not this worker's chunk.
+     */
+    default Object result(int vertex, Object value, WorkerState state) {
         return value;
     }
 }

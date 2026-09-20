@@ -43,13 +43,25 @@ final class GremlinAlgorithms {
 
     // --- internals ---
 
-    private static List<Object> vertexIds(List<Object> in) {
+    /**
+     * The vertices a run is about: the traversers themselves, and for edge traversers both of their
+     * endpoints - a traversal that starts from an edge class ({@code g.E('payment').cc()}) names its
+     * vertices through the edges it walked.
+     */
+    static List<Object> vertexIds(List<Object> in) {
         Set<Object> ids = new LinkedHashSet<>();
         for (Object o : in) {
-            if (!(o instanceof GremlinVertex vertex)) {
-                throw new QueryException("Algorithm step expects vertices but got: " + o);
+            if (o instanceof GremlinVertex vertex) {
+                ids.add(vertex.id());
+            } else if (o instanceof GremlinEdge edge) {
+                for (Object endpoint : edge.endpoints()) {
+                    if (endpoint != null) {
+                        ids.add(endpoint);
+                    }
+                }
+            } else {
+                throw new QueryException("Algorithm step expects vertices or edges but got: " + o);
             }
-            ids.add(vertex.id());
         }
         return new ArrayList<>(ids);
     }
@@ -63,17 +75,34 @@ final class GremlinAlgorithms {
         if (ids.isEmpty()) {
             return adj;
         }
-        Set<Object> idSet = new LinkedHashSet<>(ids);
+        Map<Object, Object> canonical = canonicalIds(ids);
         List<List<EdgeQueryResult>> edgesByVertex = ctx.graphQuery().readAllEdgesBatch(ids, direction, List.of());
         for (int i = 0; i < ids.size(); i++) {
             for (EdgeQueryResult edge : edgesByVertex.get(i)) {
-                Object other = edge.otherVertexId();
-                if (idSet.contains(other)) {
+                Object other = canonical.get(edge.otherVertexId());
+                if (other != null) {
                     adj.get(ids.get(i)).add(other);
                 }
             }
         }
         return adj;
+    }
+
+    /**
+     * The ids of this run, looked up by identity and by text.
+     *
+     * <p>A vertex id arrives in the form the query wrote it (text: a query is text) and the store
+     * hands endpoints back in the form it stored them (numbers as numbers). Both name the same vertex,
+     * so an endpoint is matched by identity first and by its text form second - and it is rewritten to
+     * the form this run uses, so the answer names every vertex exactly once.
+     */
+    private static Map<Object, Object> canonicalIds(List<Object> ids) {
+        Map<Object, Object> canonical = new LinkedHashMap<>();
+        for (Object id : ids) {
+            canonical.putIfAbsent(id, id);
+            canonical.putIfAbsent(String.valueOf(id), id);
+        }
+        return canonical;
     }
 
     /** Iterative PageRank over a directed adjacency map. */

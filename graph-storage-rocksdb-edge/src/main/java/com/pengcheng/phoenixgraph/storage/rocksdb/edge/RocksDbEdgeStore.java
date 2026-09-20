@@ -1,6 +1,9 @@
 package com.pengcheng.phoenixgraph.storage.rocksdb.edge;
 
+import com.pengcheng.phoenixgraph.query.storage.EdgeQueryResult;
+import com.pengcheng.phoenixgraph.query.storage.EdgeSide;
 import com.pengcheng.phoenixgraph.schema.EdgeDirection;
+import com.pengcheng.phoenixgraph.schema.PropertyType;
 import com.pengcheng.phoenixgraph.schema.EdgeSchema;
 import com.pengcheng.phoenixgraph.schema.GraphSchema;
 import com.pengcheng.phoenixgraph.schema.VertexSchema;
@@ -16,6 +19,7 @@ import com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbMetricsStore;
 import com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbKeys;
 import com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbLruCache;
 import com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbEdgeProperty;
+import com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbIdCodec;
 import com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbStoreConfig;
 import com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbStoredEdge;
 import com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbStoredVertex;
@@ -437,6 +441,155 @@ public final class RocksDbEdgeStore implements AutoCloseable {
         try (RocksDbHandle.RocksDbRange range = handle.iterator(familyOf(edgeSchema), null, null)) {
             while (range.isValid()) {
                 count++;
+                range.next();
+            }
+        }
+        return count;
+    }
+
+    /**
+     * Reads a whole edge class: one iterator over the class's table, one entry per edge.
+     *
+     * <p>This is the read that makes the scheme analytical. An edge is stored once per endpoint, so
+     * the scan keeps the <b>outgoing</b> row of a directed class (the row whose direction byte is
+     * {@code 1}) and the single row of an undirected one ({@code 0}) - each edge therefore comes back
+     * exactly once, with both of its endpoints: the owner comes from the key (the row's creation time
+     * locates it, see {@link RocksDbKeys#edgeOwnerOf}) and the peer from the value.
+     *
+     * <p>Keyed reads ask for one vertex's edges, which is what a transactional query does; this asks
+     * for a class, which is what an algorithm needs ({@code g.E('payment').pagerank(DIST)}). The
+     * properties are decoded with the projection, and the scan stops at {@code maxResults} instead of
+     * walking the rest of the table.
+     */
+    public List<ScannedEdgeRow> scanEdges(String edgeName, List<Integer> propertyIds, int maxResults) {
+        EdgeSchema edgeSchema = requireEdge(edgeName);
+        Set<Integer> requested = propertyIds == null || propertyIds.isEmpty()
+                ? Set.of() : Set.copyOf(propertyIds);
+        boolean directed = edgeSchema.direction() == EdgeDirection.DIRECTED;
+        // a directed class stores each edge twice (outgoing at its source, incoming at its
+        // destination) and an undirected one has a row on each endpoint under the same direction, so
+        // a scan has to pick one row per edge - otherwise every edge would be read twice
+        byte scannedDirection = directed ? RocksDbKeys.DIRECTION_OUT : RocksDbKeys.DIRECTION_UNDIRECTED;
+        List<ScannedEdgeRow> out = new ArrayList<>();
+        try (RocksDbHandle.RocksDbRange range = handle.iterator(familyOf(edgeSchema), null, null)) {
+            while (range.isValid()) {
+                byte[] key = range.key();
+                if (RocksDbKeys.directionOfKey(key) == scannedDirection) {
+                    RocksDbStoredEdge row = RocksDbEdgeRowCodec.decode("", range.value(), requested);
+                    RocksDbKeys.EdgeKeyParts parts = RocksDbKeys.edgeKeyParts(key, row.createdTime());
+                    if (directed || isTheNearEndpoint(parts.ownerVertexId(), row.otherVertexId())) {
+                        RocksDbStoredEdge edge = new RocksDbStoredEdge(parts.edgeId(), row.otherVertexId(),
+                                row.createdTime(), row.lastUpdatedTime(), row.properties());
+                        out.add(new ScannedEdgeRow(ownerId(edgeSchema, parts.ownerVertexId(), row.otherVertexId()),
+                                edge));
+                    }
+                }
+                if (maxResults > 0 && out.size() >= maxResults) {
+                    break;
+                }
+                range.next();
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Whether an undirected row belongs to the endpoint a scan keeps: the two rows of an undirected
+     * edge are mirror images of each other and say nothing about which is the source, so the lowest
+     * id keeps the edge (and a self-loop, stored once, is always kept).
+     */
+    private static boolean isTheNearEndpoint(String ownerText, Object peer) {
+        return ownerText.compareTo(String.valueOf(peer)) <= 0;
+    }
+
+    /**
+     * The owner of a scanned row, read back in the type the endpoint declares: a key holds the id as
+     * text, while every other read of this store returns the id the caller used, so a scan has to put
+     * the type back (a payment from {@code 100} to {@code 200} is about the accounts 100 and 200, not
+     * about the strings "100" and "200").
+     */
+    private static Object ownerId(EdgeSchema edgeSchema, String ownerText, Object peer) {
+        PropertyType type = ownerType(edgeSchema, peer);
+        Object id = RocksDbIdCodec.decode(RocksDbIdCodec.typeOf(exampleOf(type)), ownerText);
+        return id == null ? ownerText : id;
+    }
+
+    /** The declared type of the endpoint a scanned row's owner is, given what the row says about the peer. */
+    private static PropertyType ownerType(EdgeSchema edgeSchema, Object peer) {
+        if (edgeSchema.direction() == EdgeDirection.DIRECTED) {
+            return edgeSchema.source().type(); // the outgoing row belongs to the source
+        }
+        PropertyType source = edgeSchema.source().type();
+        PropertyType target = edgeSchema.target().type();
+        if (source.equals(target) || peer == null) {
+            return source;
+        }
+        // undirected: the owner is the endpoint the peer is not, which the peer's own type tells
+        return matches(peer, source) ? target : source;
+    }
+
+    /** A value whose type tag matches a declared scalar type (the tag is what {@code decode} needs). */
+    private static Object exampleOf(PropertyType type) {
+        if (type instanceof PropertyType.ScalarType scalar) {
+            return switch (scalar) {
+                case LONG -> Long.valueOf(0);
+                case INT -> Integer.valueOf(0);
+                default -> "";
+            };
+        }
+        return "";
+    }
+
+    /** Whether a stored peer id has the Java type a declared scalar type stands for. */
+    private static boolean matches(Object peer, PropertyType type) {
+        if (!(type instanceof PropertyType.ScalarType scalar)) {
+            return peer instanceof String;
+        }
+        return switch (scalar) {
+            case LONG -> peer instanceof Long;
+            case INT -> peer instanceof Integer;
+            default -> peer instanceof String;
+        };
+    }
+
+    /** One row of an edge-class scan: the vertex the row belongs to, and the stored edge. */
+    public record ScannedEdgeRow(Object ownerVertexId, RocksDbStoredEdge edge) {
+
+        /** The far endpoint of the edge (the owner is the near one). */
+        public Object peerVertexId() {
+            return edge.otherVertexId();
+        }
+    }
+
+    /**
+     * Every edge of a class, counted without decoding a row.
+     *
+     * <p>A directed class is counted by its outgoing rows, which is one row per edge - the count never
+     * touches a value. An undirected class stores a row on each endpoint, so it has to read the peer
+     * to tell which of the two rows is the one a scan keeps.
+     */
+    public long countScannedEdges(String edgeName, long maxResults) {
+        EdgeSchema edgeSchema = requireEdge(edgeName);
+        boolean directed = edgeSchema.direction() == EdgeDirection.DIRECTED;
+        byte scannedDirection = directed ? RocksDbKeys.DIRECTION_OUT : RocksDbKeys.DIRECTION_UNDIRECTED;
+        long count = 0;
+        try (RocksDbHandle.RocksDbRange range = handle.iterator(familyOf(edgeSchema), null, null)) {
+            while (range.isValid()) {
+                if (RocksDbKeys.directionOfKey(range.key()) == scannedDirection) {
+                    boolean counted = true;
+                    if (!directed) {
+                        RocksDbStoredEdge row = RocksDbEdgeRowCodec.decode("", range.value(), Set.of(-1));
+                        RocksDbKeys.EdgeKeyParts parts =
+                                RocksDbKeys.edgeKeyParts(range.key(), row.createdTime());
+                        counted = isTheNearEndpoint(parts.ownerVertexId(), row.otherVertexId());
+                    }
+                    if (counted) {
+                        count++;
+                        if (maxResults > 0 && count >= maxResults) {
+                            break;
+                        }
+                    }
+                }
                 range.next();
             }
         }

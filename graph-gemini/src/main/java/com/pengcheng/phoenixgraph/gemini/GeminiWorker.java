@@ -52,7 +52,7 @@ public final class GeminiWorker {
     GeminiWorker(WorkerLayout layout, GeminiComputation computation, long totalEdges, long totalVertexCount) {
         this.layout = layout;
         this.computation = computation;
-        this.state = new WorkerState(layout.vertexCount(), layout.begin(), layout.end());
+        this.state = new WorkerState(layout, (int) totalVertexCount);
         this.totalEdges = totalEdges;
         this.totalVertexCount = totalVertexCount;
     }
@@ -71,7 +71,7 @@ public final class GeminiWorker {
         for (int v = layout.begin(); v < layout.end(); v++) {
             Object value = state.value(v);
             if (value != null) {
-                out.put(v, computation.result(v, value));
+                out.put(v, computation.result(v, value, state));
             }
         }
         return out;
@@ -148,7 +148,7 @@ public final class GeminiWorker {
                 if (!state.isActive(v)) {
                     continue;
                 }
-                Object message = computation.sparseSignal(v, state.value(v));
+                Object message = computation.sparseSignal(v, state.value(v), state);
                 if (message == null) {
                     continue;
                 }
@@ -230,7 +230,13 @@ public final class GeminiWorker {
                 }
             }
         }
-        // the accumulated contributions become the values the next superstep reads (Gemini's swap)
+        // the accumulated contributions become the values the next superstep reads (Gemini's swap).
+        // An accumulative algorithm (PageRank) computes a vertex's value from this superstep's
+        // contributions alone, so a vertex that received none has none: leaving its previous value in
+        // place would make a vertex nothing points at keep its initial value forever.
+        if (computation.accumulative()) {
+            state.clearOwnedValues();
+        }
         state.commit();
         inbox.remove(round);
         supersteps.incrementAndGet();

@@ -133,4 +133,63 @@ public final class RocksDbKeys {
         }
         return out.toByteArray();
     }
+
+    /**
+     * The id part of a vertex key ({@code hash(vertexId) : vertexId}).
+     *
+     * <p>A vertex key is fully parseable: the hash is fixed width and the id is everything after it,
+     * which is what lets a scan of a vertex table walk the table instead of being handed ids.
+     */
+    public static Object vertexIdOf(byte[] key) {
+        int from = RocksDbHash.HASH_BYTES + 1;
+        if (key.length <= from) {
+            throw new RocksDbException("Malformed vertex key of " + key.length + " bytes");
+        }
+        return RocksDbBytes.text(java.util.Arrays.copyOfRange(key, from, key.length));
+    }
+
+    /** The direction byte of an edge key ({@code hash : direction : vertexId : ...}). */
+    public static byte directionOfKey(byte[] key) {
+        int at = RocksDbHash.HASH_BYTES + 1;
+        if (key.length <= at) {
+            throw new RocksDbException("Malformed edge key of " + key.length + " bytes");
+        }
+        return key[at];
+    }
+
+    /**
+     * The two parts of an edge key that are not fixed width: the vertex the row belongs to, and the
+     * edge id.
+     */
+    public record EdgeKeyParts(String ownerVertexId, String edgeId) {
+    }
+
+    /**
+     * The owner and the edge id of an edge row, given the creation time the row's value holds.
+     *
+     * <p>The key is {@code hash(vertexId) : direction : vertexId : createdTime : edgeId}, and both
+     * the vertex id and the edge id are variable length - so the middle of an edge key cannot be
+     * split by position, and an edge row cannot name its owner the way {@link #vertexIdOf} does. The
+     * creation time sits in the row's value and its eight bytes appear exactly once in the key, so
+     * the fields are what lies on either side of it; the hash is then checked against the owner,
+     * which is what makes the split certain rather than a guess.
+     *
+     * @param key         the edge-table key
+     * @param createdTime the edge's creation time (from the row's value)
+     */
+    public static EdgeKeyParts edgeKeyParts(byte[] key, long createdTime) {
+        for (int at = RocksDbHash.HASH_BYTES + 2; at + 8 <= key.length; at++) {
+            if (RocksDbHash.readLong(key, at) != createdTime) {
+                continue;
+            }
+            byte[] owner = java.util.Arrays.copyOfRange(key, RocksDbHash.HASH_BYTES + 2, at);
+            if (owner.length == 0 || !RocksDbHash.hashEquals(owner, key)) {
+                continue;
+            }
+            return new EdgeKeyParts(RocksDbBytes.text(owner),
+                    RocksDbBytes.text(java.util.Arrays.copyOfRange(key, at + 8, key.length)));
+        }
+        throw new RocksDbException("Edge key of " + key.length + " bytes does not carry creation time "
+                + createdTime);
+    }
 }

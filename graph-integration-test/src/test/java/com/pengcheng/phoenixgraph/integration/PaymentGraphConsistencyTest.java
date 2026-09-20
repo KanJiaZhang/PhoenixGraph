@@ -4,6 +4,7 @@ import com.aerospike.client.AerospikeClient;
 import com.aerospike.client.Key;
 import com.aerospike.client.Record;
 import com.pengcheng.phoenixgraph.query.aerospike.AerospikeGraphQuery;
+import com.pengcheng.phoenixgraph.query.QueryException;
 import com.pengcheng.phoenixgraph.query.cypher.CypherGraphQuery;
 import com.pengcheng.phoenixgraph.query.cypher.CypherResult;
 import com.pengcheng.phoenixgraph.query.gremlin.GremlinEdge;
@@ -41,6 +42,7 @@ import java.util.Set;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
@@ -460,6 +462,27 @@ class PaymentGraphConsistencyTest {
             out.add(String.valueOf(status));
         }
         return out;
+    }
+
+    /**
+     * Aerospike is the transactional store, and a question about a whole type is not one it answers:
+     * a record is read by its key. The traversal says so before touching the store, so the caller is
+     * told what is missing (and which store has it) instead of getting an empty answer.
+     */
+    @Test
+    void aClassQuestionIsRefusedByTheTransactionalStoreAndSaysWhichStoreAnswersIt() {
+        QueryException vertices = assertThrows(QueryException.class,
+                () -> gremlin.execute("g.V('Account').count()"));
+        assertTrue(vertices.getMessage().contains("starts from a whole type"), vertices.getMessage());
+        assertTrue(vertices.getMessage().contains("RocksDB-Edge"), vertices.getMessage());
+
+        QueryException edges = assertThrows(QueryException.class,
+                () -> gremlin.execute("g.E('Payment').count()"));
+        assertTrue(edges.getMessage().contains("starts from a whole type"), edges.getMessage());
+        assertTrue(edges.getMessage().contains("RocksDB-Edge"), edges.getMessage());
+
+        // a query that names its ids is still answered here: only a class is out of reach
+        assertEquals(List.of(50L), gremlin.execute("g.V('" + HUB + "','Account').outE('Payment').count()"));
     }
 
     private int schemaIdOf(String edgeName) {

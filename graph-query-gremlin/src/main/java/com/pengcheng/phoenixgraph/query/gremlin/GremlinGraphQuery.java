@@ -9,8 +9,10 @@ import com.pengcheng.phoenixgraph.query.QueryException;
 import com.pengcheng.phoenixgraph.query.result.Subgraph;
 import com.pengcheng.phoenixgraph.query.traversal.NeighborVertexResolver;
 import com.pengcheng.phoenixgraph.query.storage.EdgePropertyFilter;
+import com.pengcheng.phoenixgraph.query.storage.EdgeQueryResult;
 import com.pengcheng.phoenixgraph.query.storage.EdgeSide;
 import com.pengcheng.phoenixgraph.query.storage.GraphQuery;
+import com.pengcheng.phoenixgraph.query.storage.ScannedEdge;
 import com.pengcheng.phoenixgraph.schema.geo.GeoSearch;
 import com.pengcheng.phoenixgraph.storage.TimeRange;
 import com.pengcheng.phoenixgraph.query.storage.VertexQueryResult;
@@ -62,6 +64,7 @@ public class GremlinGraphQuery {
     private Supplier<Map<String, HnswIndex>> hnswIndexSource;
     private final Map<String, CompiledQuery> compiledCache = new ConcurrentHashMap<>();
     private boolean cacheEnabled = true;
+    private int scanLimit = 0;
     private boolean adaptiveBatchEnabled = true;
     private int maxBatchSize = GremlinContext.DEFAULT_MAX_BATCH_SIZE;
     private int parallelism = GremlinContext.DEFAULT_PARALLELISM;
@@ -284,6 +287,21 @@ public class GremlinGraphQuery {
         return this;
     }
 
+    /**
+     * How many elements a traversal that starts from a whole type may read ({@code 0} = no cap).
+     *
+     * <p>A scan reads as much as the store holds, which is what an analytical query asks for; the cap
+     * is for an embedding that wants every scan to stay bounded, so one policy covers every query a
+     * caller can write.
+     */
+    public GremlinGraphQuery scanLimit(int scanLimit) {
+        if (scanLimit < 0) {
+            throw new IllegalArgumentException("scan limit must be >= 0");
+        }
+        this.scanLimit = scanLimit;
+        return this;
+    }
+
     /** Upper bound for the adaptive batch size; must be {@code >= 1}. */
     public GremlinGraphQuery maxBatchSize(int maxBatchSize) {
         if (maxBatchSize < 1) {
@@ -482,8 +500,7 @@ public class GremlinGraphQuery {
             }
             stepNames.add(step.name());
         }
-        return new CompiledQuery(query.vertexIds(), query.vertexName(), properties, startProperties,
-                stepNames, steps);
+        return new CompiledQuery(query.source(), properties, startProperties, stepNames, steps);
     }
 
     /** What an edge hop pushes into its read: the conditions and the cap of the following steps. */
@@ -726,12 +743,13 @@ public class GremlinGraphQuery {
         context.cacheEnabled(cacheEnabled);
         context.adaptiveBatchEnabled(adaptiveBatchEnabled);
         context.maxBatchSize(maxBatchSize);
+        context.scanLimit(scanLimit);
         context.parallelism(parallelism);
         return context;
     }
 
     private List<Object> runCompiled(GremlinContext context, CompiledQuery compiled) {
-        List<Object> current = start(context, compiled.vertexIds, compiled.vertexName, compiled.startProperties);
+        List<Object> current = start(context, compiled.source, compiled.startProperties);
         int hopsDone = 0;
         int hopFanOut = 0;
         boolean filterSinceHop = false;
@@ -761,17 +779,15 @@ public class GremlinGraphQuery {
 
     /** A compiled query: resolved steps + precomputed property projection plan. */
     private static final class CompiledQuery {
-        final List<Object> vertexIds;
-        final String vertexName;
+        final GremlinQuery.Source source;
         final List<String>[] properties;
         final List<String> startProperties;
         final List<String> stepNames;
         final List<GremlinStep> steps;
 
-        CompiledQuery(List<Object> vertexIds, String vertexName, List<String>[] properties,
+        CompiledQuery(GremlinQuery.Source source, List<String>[] properties,
                       List<String> startProperties, List<String> stepNames, List<GremlinStep> steps) {
-            this.vertexIds = vertexIds;
-            this.vertexName = vertexName;
+            this.source = source;
             this.properties = properties;
             this.startProperties = startProperties;
             this.stepNames = stepNames;
@@ -902,8 +918,67 @@ public class GremlinGraphQuery {
         return name.equals("batch") || name.equals("barrier");
     }
 
-    private static List<Object> start(GremlinContext context, List<Object> vertexIds, String vertexName,
+    private static List<Object> start(GremlinContext context, GremlinQuery.Source source,
                                       List<String> properties) {
+        return switch (source.kind()) {
+            case NONE -> List.of();
+            case VERTICES -> startVertices(context, source.ids(), source.name(), properties);
+            case VERTEX_TYPE -> startVertexScan(context, source.name(), properties);
+            case EDGE_TYPE -> startEdgeScan(context, source.name(), properties);
+        };
+    }
+
+    /**
+     * Starts from a whole vertex type: {@code g.V('Account')}. A keyed store cannot answer this, so
+     * the requirement is stated instead of surfacing as an exception from inside the store.
+     */
+    private static List<Object> startVertexScan(GremlinContext context, String vertexName,
+                                                List<String> properties) {
+        requireScan(context, "g.V('" + vertexName + "')");
+        List<VertexQueryResult> vertices = context.graphQuery()
+                .scanVertices(vertexName, properties == null ? List.of() : properties, context.scanLimit());
+        List<Object> out = new ArrayList<>(vertices.size());
+        for (VertexQueryResult vertex : vertices) {
+            context.recordVertex(vertex.vertexName(), vertex.vertexId());
+            out.add(new GremlinVertex(vertex.vertexName(), vertex.vertexId(), vertex.properties(),
+                    vertex.createdTime(), vertex.lastUpdatedTime()));
+        }
+        return out;
+    }
+
+    /**
+     * Starts from a whole edge class: {@code g.E('payment')}. Each edge becomes a traverser with both
+     * of its endpoints: {@code otherVertexId} is the far one, exactly as after an edge hop, so
+     * {@code values}/{@code otherV} read it the same way, and {@code sourceVertexId} remembers where
+     * the edge was found so an algorithm over the reached graph has the whole edge.
+     */
+    private static List<Object> startEdgeScan(GremlinContext context, String edgeName,
+                                              List<String> properties) {
+        requireScan(context, "g.E('" + edgeName + "')");
+        List<ScannedEdge> edges = context.graphQuery()
+                .scanEdges(edgeName, properties == null ? List.of() : properties, context.scanLimit());
+        List<Object> out = new ArrayList<>(edges.size());
+        for (ScannedEdge scanned : edges) {
+            EdgeQueryResult edge = scanned.edge();
+            out.add(new GremlinEdge(edge.edgeName(), edge.edgeId(), edge.side(), edge.otherVertexId(),
+                    edge.properties(), edge.createdTime(), edge.lastUpdatedTime(), scanned.source()));
+        }
+        return out;
+    }
+
+    /** A starting scan needs a store that walks a type; a keyed store is told so before anything runs. */
+    private static void requireScan(GremlinContext context, String step) {
+        if (!context.graphQuery().supportsScan()) {
+            throw new QueryException(step + " starts from a whole type, which "
+                    + context.graphQuery().getClass().getSimpleName()
+                    + " cannot read: a keyed store answers by id. Scan a type on a store whose tables"
+                    + " are ordered ranges (the RocksDB-Edge scheme is the analytical one), or name"
+                    + " the ids instead.");
+        }
+    }
+
+    private static List<Object> startVertices(GremlinContext context, List<Object> vertexIds,
+                                              String vertexName, List<String> properties) {
         if (vertexIds.isEmpty()) {
             return List.of();
         }

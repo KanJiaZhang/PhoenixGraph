@@ -252,6 +252,37 @@ with one card BIN) plus honest accounts that share nothing, and then asserts tha
 pattern finds exactly the ring, that the link node and its members agree both ways, and
 that the query above walks to twelve payments at the collection account.
 
+### A query starts from a key or from a class
+
+The two storage implementations are not two spellings of one thing: they answer different questions.
+**Aerospike is the transactional side** - a request arrives with a key, one record (or a batch of them)
+answers it, and that is the whole read path of a request. **RocksDB-Edge is the analytical side** - one
+ordered table per vertex type and per edge class, so a question that names a *class* is one iterator
+per table, and the walk can be capped, projected and pushed into the decode.
+
+```groovy
+// by key: both stores answer this, and it is what a request path does
+g.V('135','Account').outE('Payment').limit(10).values('status')
+
+// by class: the analytical store walks the table, the transactional one says so
+g.V('Account').filter(accountStatus.equals('ACTIVE')).bothE('Payment').cc(DIST)
+g.E('Payment').pagerank(DIST, 10)
+g.E('Payment').count()
+```
+
+- A traversal may start from **one type on its own**: `g.V('Account')` is every account, `g.E('Payment')`
+  is every payment of that class. Both need a store that can scan; on one that answers by id the query
+  is refused with a message that says which store does it rather than returning nothing:
+  *`g.V('Account') starts from a whole type, which AerospikeGraphQuery cannot read: a keyed store
+  answers by id. Scan a type on a store whose tables are ordered ranges (the RocksDB-Edge scheme is the
+  analytical one), or name the ids instead.`*
+- `g.E('Payment')` reads each payment **once**, with **both** of its endpoints (`otherV()` is the far
+  one, and an algorithm step gets the whole edge).
+- The capability is one method on the query port (`supportsScan()`), so a new backend opts in without
+  the traversal changing, exactly like the pushed-down conditions.
+- A scan reads as much as the store holds, which is what the analytical side is for: `scanLimit`
+  (`GremlinGraphQuery.scanLimit(n)`, `0` = no cap) bounds every scan of an embedding in one place.
+
 ### Distributed graph algorithms (Gemini)
 
 The algorithm steps also exist in a distributed form, after Gemini (OSDI '16): the graph is cut

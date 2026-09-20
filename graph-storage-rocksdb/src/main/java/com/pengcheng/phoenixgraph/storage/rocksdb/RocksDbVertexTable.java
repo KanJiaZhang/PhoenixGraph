@@ -171,6 +171,32 @@ public final class RocksDbVertexTable {
         return count;
     }
 
+    /**
+     * Reads a whole vertex type, projecting the requested properties, at most {@code maxResults} of
+     * them ({@code 0} = all of them).
+     *
+     * <p>This is the read an analytical query starts from: there is no id to look up, so the table is
+     * walked in key order. The ids come from the keys, so a scan never touches a record it was not
+     * asked for; the values are decoded with the projection, exactly like a single read.
+     */
+    public List<RocksDbStoredVertex> scan(String vertexName, List<Integer> propertyIds, int maxResults) {
+        List<RocksDbStoredVertex> out = new ArrayList<>();
+        try (RocksDbHandle.RocksDbRange range = handle.iterator(familyOf(vertexName), null, null)) {
+            while (range.isValid()) {
+                Record record = decodeRecord(range.value());
+                if (record != null) {
+                    out.add(toVertex(recordId(record, RocksDbKeys.vertexIdOf(range.key())), vertexName,
+                            record, propertyIds));
+                }
+                if (maxResults > 0 && out.size() >= maxResults) {
+                    break;
+                }
+                range.next();
+            }
+        }
+        return out;
+    }
+
     // --- writes ---
 
     /** Applies one vertex upsert (read-merge-write under the vertex's lock). */
@@ -433,10 +459,6 @@ public final class RocksDbVertexTable {
 
     /** The id part of a vertex key ({@code hash : id}). */
     static Object idOfKey(byte[] key) {
-        int from = RocksDbHash.HASH_BYTES + 1;
-        if (key.length <= from) {
-            throw new RocksDbException("Malformed vertex key of " + key.length + " bytes");
-        }
-        return RocksDbBytes.text(Arrays.copyOfRange(key, from, key.length));
+        return RocksDbKeys.vertexIdOf(key);
     }
 }

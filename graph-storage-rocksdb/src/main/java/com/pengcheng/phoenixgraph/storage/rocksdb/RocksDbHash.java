@@ -61,6 +61,26 @@ public final class RocksDbHash {
         return regionOfHash(hash(id), regionCount);
     }
 
+    /**
+     * Whether the first {@link #HASH_BYTES} bytes of {@code key} are the hash of these id bytes.
+     *
+     * <p>This is how a scan reconstructs the owner of an edge row from its key: the id is the part of
+     * the key that hashes to the prefix, so a split that satisfies this is the only possible one.
+     */
+    public static boolean hashEquals(byte[] idBytes, byte[] key) {
+        if (key.length < HASH_BYTES || idBytes.length == 0) {
+            return false;
+        }
+        // hash the id text and compare its prefix bytes with the start of the key
+        byte[] expected = hashBytes(hash(new String(idBytes, StandardCharsets.UTF_8)));
+        for (int i = 0; i < HASH_BYTES; i++) {
+            if (expected[i] != key[i]) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     /** The region a hash belongs to: {@code floorMod(hash, regionCount)}. */
     public static int regionOfHash(long hash, int regionCount) {
         if (regionCount <= 0) {

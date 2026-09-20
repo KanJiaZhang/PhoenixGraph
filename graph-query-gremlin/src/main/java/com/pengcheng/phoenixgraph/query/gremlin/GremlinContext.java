@@ -64,6 +64,7 @@ public final class GremlinContext {
     private boolean explicitBatchSize = false;
     private List<String> readProperties = List.of(); // empty = all, null = skip read
     private boolean cacheEnabled = true;
+    private int scanLimit = 0;
     private boolean collectSubgraph = false;
     private final Map<String, VertexRef> subgraphVertices = new LinkedHashMap<>();
     private final Map<String, VertexRef> edgeEndpointVertices = new LinkedHashMap<>();
@@ -82,6 +83,27 @@ public final class GremlinContext {
 
     public GraphQuery graphQuery() {
         return graphQuery;
+    }
+
+    /**
+     * How many elements a starting scan reads, or {@code 0} for all of them.
+     *
+     * <p>A traversal that starts from a whole type ({@code g.V('Account')}, {@code g.E('Payment')})
+     * reads as much as the store holds, which is what an analytical query wants and what a
+     * mis-typed query must not do by accident. The cap is here rather than in the step so an
+     * embedding (the HTTP service) can set one policy for every scan.
+     */
+    public int scanLimit() {
+        return scanLimit;
+    }
+
+    /** Sets the cap a starting scan reads ({@code 0} = no cap). */
+    public GremlinContext scanLimit(int scanLimit) {
+        if (scanLimit < 0) {
+            throw new IllegalArgumentException("scan limit must be >= 0");
+        }
+        this.scanLimit = scanLimit;
+        return this;
     }
 
     public NeighborVertexResolver vertexResolver() {
@@ -589,8 +611,35 @@ public final class GremlinContext {
                                                    EdgeSide direction, List<String> propertyNames,
                                                    List<EdgePropertyFilter> filters, int maxResults) {
         List<EdgeQueryResult> out = new ArrayList<>();
+        for (List<EdgeQueryResult> edges : readEdgesFilteredByVertex(vertices, edgeName, direction,
+                propertyNames, filters, maxResults)) {
+            out.addAll(edges);
+        }
+        return out;
+    }
+
+    /**
+     * The filtered read, one list per input vertex (same order, empty lists included).
+     *
+     * <p>A caller that builds edge traversers wants this form: an edge hop knows which vertex each of
+     * its edges was read for, and keeping that is what lets a later step say which vertices the
+     * traversal went through ({@code g.V('Account').filter(...).bothE('payment').cc(DIST)} is about the
+     * accounts as well as their payments).
+     */
+    public List<List<EdgeQueryResult>> readEdgesFilteredByVertex(List<GremlinVertex> vertices,
+                                                                 String edgeName, EdgeSide direction,
+                                                                 List<String> propertyNames,
+                                                                 List<EdgePropertyFilter> filters,
+                                                                 int maxResults) {
+        List<List<EdgeQueryResult>> perVertex = new ArrayList<>(vertices.size());
         int budget = Math.max(maxResults, 0);
         for (GremlinVertex vertex : vertices) {
+            if (maxResults > 0 && budget <= 0) {
+                // the cap is spent: the rest of the traversal order cannot matter, but the result still
+                // has one entry per input vertex (callers build one traverser per read)
+                perVertex.add(List.of());
+                continue;
+            }
             List<EdgeQueryResult> edges;
             if (hasEdgeTimeRange()) {
                 edges = graphQuery.readEdgesWithin(vertex.id(), vertex.label(), edgeName, direction,
@@ -601,15 +650,12 @@ public final class GremlinContext {
                         propertyNames, filters, budget);
             }
             recordEdges(vertex.id(), edges);
-            out.addAll(edges);
+            perVertex.add(edges);
             if (budget > 0) {
                 budget -= edges.size();
-                if (budget <= 0) {
-                    break; // the cap is spent: the rest of the traversal order cannot matter
-                }
             }
         }
-        return out;
+        return perVertex;
     }
 
     /** Reads the edges of one vertex for an edge class + direction, with caching. */
@@ -637,16 +683,15 @@ public final class GremlinContext {
      * Reads the edges of many vertices for an edge class + direction, de-duplicating
      * ids and caching per vertex. Returns the edges flattened in the request order.
      */
-    public List<EdgeQueryResult> readAllEdgesBatchCached(String edgeName, EdgeSide direction,
-                                                         List<Object> vertexIds, List<String> propertyNames) {
+    public List<List<EdgeQueryResult>> readAllEdgesBatchCached(String edgeName, EdgeSide direction,
+                                                               List<Object> vertexIds,
+                                                               List<String> propertyNames) {
         if (!cacheEnabled) {
-            List<EdgeQueryResult> all = new ArrayList<>();
             List<List<EdgeQueryResult>> fetched = readEdgesBatched(edgeName, direction, vertexIds, propertyNames);
             for (int i = 0; i < vertexIds.size(); i++) {
                 recordEdges(vertexIds.get(i), fetched.get(i));
-                all.addAll(fetched.get(i));
             }
-            return all;
+            return fetched;
         }
 
         List<Object> uniqueIds = new ArrayList<>();
@@ -679,14 +724,12 @@ public final class GremlinContext {
             recordEdges(id, edges);
         }
 
-        List<EdgeQueryResult> all = new ArrayList<>();
+        List<List<EdgeQueryResult>> out = new ArrayList<>(vertexIds.size());
         for (Object id : vertexIds) {
             EdgeCacheKey key = new EdgeCacheKey(id, edgeName, direction);
             List<EdgeQueryResult> edges = byKey.get(key);
-            if (edges != null) {
-                all.addAll(edges);
-            }
+            out.add(edges == null ? List.of() : edges);
         }
-        return all;
+        return out;
     }
 }

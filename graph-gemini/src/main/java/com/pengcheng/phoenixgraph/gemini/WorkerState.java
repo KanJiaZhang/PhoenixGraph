@@ -20,15 +20,19 @@ public final class WorkerState {
     private final double[] pending;
     private final boolean[] pendingSet;
     private final boolean[] active;
+    private final WorkerLayout layout;
+    private final int totalVertexCount;
     private final int vertexCount;
     private final int begin;
     private final int end;
     private long written;
 
-    WorkerState(int vertexCount, int begin, int end) {
-        this.vertexCount = vertexCount;
-        this.begin = begin;
-        this.end = end;
+    WorkerState(WorkerLayout layout, int totalVertexCount) {
+        this.layout = layout;
+        this.totalVertexCount = totalVertexCount;
+        this.vertexCount = layout.vertexCount();
+        this.begin = layout.begin();
+        this.end = layout.end();
         this.values = new Object[vertexCount];
         this.pending = new double[vertexCount];
         this.pendingSet = new boolean[vertexCount];
@@ -38,6 +42,34 @@ public final class WorkerState {
     /** The value of a vertex ({@code null} when it was never written). */
     public Object value(int vertex) {
         return values[vertex];
+    }
+
+    /**
+     * The out-degree of a vertex in the whole graph.
+     *
+     * <p>A partition holds a vertex's out-edges only where their destinations are, so the degree a
+     * contribution is divided by cannot be counted locally - it is the layout's global figure.
+     */
+    public int outDegree(int vertex) {
+        return layout.outDegree(vertex);
+    }
+
+    /** How many vertices the whole graph has (the denominator of a PageRank score). */
+    public int totalVertexCount() {
+        return totalVertexCount;
+    }
+
+    /**
+     * Clears the values of this worker's chunk before a superstep's contributions are committed.
+     *
+     * <p>This is what makes an accumulative algorithm's value "the contributions of one superstep":
+     * without it, a vertex that received nothing would keep the value it had - and a PageRank vertex
+     * that nothing points at would keep its starting value forever.
+     */
+    public void clearOwnedValues() {
+        for (int v = begin; v < end; v++) {
+            values[v] = 0.0; // no contributions is a zero sum, not a missing value
+        }
     }
 
     /** Writes the value of a vertex (owned by this worker). */

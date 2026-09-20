@@ -6,7 +6,9 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class GremlinQueryTest {
 
@@ -143,11 +145,41 @@ class GremlinQueryTest {
 
     @Test
     void rejectsMissingHeader() {
-        assertThrows(QueryException.class, () -> GremlinQuery.parse("g.E(1)"));
+        assertThrows(QueryException.class, () -> GremlinQuery.parse("g.X(1)"));
+        assertThrows(QueryException.class, () -> GremlinQuery.parse("gV('a','person')"));
     }
 
     @Test
     void rejectsMissingVertexName() {
         assertThrows(QueryException.class, () -> GremlinQuery.parse("g.V(1, )"));
+    }
+
+    @Test
+    void readsOneTypeWhenTheStartNamesATypeOnly() {
+        // g.V('Account'): one argument is a type, and the traversal starts from every vertex of it
+        GremlinQuery query = GremlinQuery.parse("g.V('Account').bothE('Payment').count()");
+        assertEquals(GremlinQuery.Source.Kind.VERTEX_TYPE, query.source().kind());
+        assertEquals("Account", query.vertexName());
+        assertTrue(query.vertexIds().isEmpty());
+        assertTrue(query.source().scans());
+        assertEquals(List.of("bothE", "count"), query.steps().stream().map(GremlinQuery.Step::name).toList());
+    }
+
+    @Test
+    void readsOneEdgeClassWhenTheStartNamesAnEdgeClass() {
+        GremlinQuery query = GremlinQuery.parse("g.E('Payment').has('status','SUCCESS')");
+        assertEquals(GremlinQuery.Source.Kind.EDGE_TYPE, query.source().kind());
+        assertEquals("Payment", query.edgeName());
+        assertNull(query.vertexName());
+        assertEquals(1, query.steps().size());
+
+        // the class name may be bare, and whitespace around the header does not matter
+        assertEquals("payment", GremlinQuery.parse("g . E ( payment )").edgeName());
+    }
+
+    @Test
+    void anEdgeStartNeedsExactlyOneClass() {
+        assertThrows(QueryException.class, () -> GremlinQuery.parse("g.E()"));
+        assertThrows(QueryException.class, () -> GremlinQuery.parse("g.E('a','b')"));
     }
 }

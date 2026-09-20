@@ -99,6 +99,13 @@ class GeminiClusterTest {
             double distributed = result.number("v" + v);
             assertEquals(reference.get("v" + v), distributed, 1e-6, "PageRank of v" + v);
         }
+        // a score is a share of one: the run must not invent mass, which it did while the shares were
+        // pushed as whole values and the normalisation was missing
+        double sum = 0;
+        for (int v = 0; v < VERTICES; v++) {
+            sum += result.number("v" + v);
+        }
+        assertTrue(sum > 0.9 && sum < 1.1, "the scores add up to about one, got " + sum);
         assertEquals(4, result.stats().workers());
         assertTrue(result.stats().supersteps() >= 20, "PageRank runs the iterations it was given");
         assertTrue(result.stats().messagesSent() > 0, "workers exchange messages: " + result.stats().describe());
@@ -259,24 +266,24 @@ class GeminiClusterTest {
             outDegree[edge.source()]++;
         }
         for (int v = 0; v < n; v++) {
-            curr[v] = 1.0;
+            curr[v] = 1.0 / n; // every vertex starts with an equal share of the mass
         }
         for (int i = 0; i < iterations; i++) {
             java.util.Arrays.fill(next, 0.0);
             for (int v = 0; v < n; v++) {
-                if (!out.get(v).isEmpty()) {
-                    for (GeminiGraph.Edge edge : out.get(v)) {
-                        next[edge.target()] += curr[v];
-                    }
+                if (outDegree[v] == 0) {
+                    continue; // a vertex with no out-edges contributes nothing back
+                }
+                for (GeminiGraph.Edge edge : out.get(v)) {
+                    next[edge.target()] += curr[v] / outDegree[v] * edge.weight();
                 }
             }
-            for (int v = 0; v < n; v++) {
-                curr[v] = next[v];
-            }
+            // a vertex's value is the contributions of this superstep alone, so an empty next is zero
+            System.arraycopy(next, 0, curr, 0, n);
         }
         Map<Object, Double> result = new LinkedHashMap<>();
         for (int v = 0; v < n; v++) {
-            result.put(graph.id(v), 1 - damping + damping * curr[v]);
+            result.put(graph.id(v), (1 - damping) / n + damping * curr[v]);
         }
         return result;
     }

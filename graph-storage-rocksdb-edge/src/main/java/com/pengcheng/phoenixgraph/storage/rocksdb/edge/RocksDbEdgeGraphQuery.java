@@ -6,6 +6,7 @@ import com.pengcheng.phoenixgraph.query.storage.EdgeSide;
 import com.pengcheng.phoenixgraph.query.storage.GraphQuery;
 import com.pengcheng.phoenixgraph.storage.TimeRange;
 import com.pengcheng.phoenixgraph.query.storage.SchemaProjections;
+import com.pengcheng.phoenixgraph.query.storage.ScannedEdge;
 import com.pengcheng.phoenixgraph.query.storage.VertexQueryResult;
 import com.pengcheng.phoenixgraph.schema.EdgeDirection;
 import com.pengcheng.phoenixgraph.schema.EdgeSchema;
@@ -74,6 +75,66 @@ public class RocksDbEdgeGraphQuery implements GraphQuery {
             throw new QueryException("Property '" + propertyName + "' of vertex type '" + vertexName
                     + "' is not declared with isGeo, so it has no geo index");
         }
+    }
+
+    /**
+     * The scan port: this scheme keeps one ordered table per type, so a whole class is one iterator.
+     *
+     * <p>That is the difference the two storage implementations stand for. Aerospike is the
+     * transactional one - a question arrives with a key and is answered from one record (or a batch
+     * of records), which is what a request path does. This one is the analytical one: the tables are
+     * ordered ranges, so a question that names a <i>class</i> rather than an id -
+     * {@code g.V('Account')}, {@code g.E('Payment').pagerank(DIST)} - is answered by walking the
+     * table, and the walk can be capped or narrowed to a prefix.
+     */
+    @Override
+    public boolean supportsScan() {
+        return true;
+    }
+
+    /** Walks a whole vertex type, projecting only what the query asked for. */
+    @Override
+    public List<VertexQueryResult> scanVertices(String vertexName, List<String> propertyNames,
+                                                int maxResults) {
+        VertexSchema vertexSchema = SchemaProjections.requireVertex(schema, vertexName);
+        Map<Integer, String> requested = SchemaProjections.vertexProperties(vertexSchema, propertyNames);
+        List<RocksDbStoredVertex> stored =
+                store.vertices().scan(vertexName, List.copyOf(requested.keySet()), maxResults);
+        List<VertexQueryResult> out = new ArrayList<>(stored.size());
+        for (RocksDbStoredVertex vertex : stored) {
+            out.add(toVertexResult(vertexName, vertex, requested));
+        }
+        return out;
+    }
+
+    /** Walks a whole edge class; every edge comes back once, with both of its endpoints. */
+    @Override
+    public List<ScannedEdge> scanEdges(String edgeName, List<String> propertyNames, int maxResults) {
+        EdgeSchema edgeSchema = SchemaProjections.requireEdge(schema, edgeName);
+        Map<Integer, String> requested = SchemaProjections.edgeProperties(edgeSchema, propertyNames);
+        List<RocksDbEdgeStore.ScannedEdgeRow> rows =
+                store.scanEdges(edgeName, List.copyOf(requested.keySet()), maxResults);
+        List<ScannedEdge> out = new ArrayList<>(rows.size());
+        for (RocksDbEdgeStore.ScannedEdgeRow row : rows) {
+            RocksDbStoredEdge edge = row.edge();
+            out.add(new ScannedEdge(row.ownerVertexId(), row.peerVertexId(),
+                    toEdgeResult(edgeName, edge, EdgeSide.BOTH, requested)));
+        }
+        return out;
+    }
+
+    /** Counts a whole edge class from the table, without decoding a row. */
+    @Override
+    public long countScanEdges(String edgeName) {
+        SchemaProjections.requireEdge(schema, edgeName);
+        return store.countScannedEdges(edgeName, 0);
+    }
+
+    /** Counts a whole vertex type from the table, without decoding a record. */
+    @Override
+    public long countScanVertices(String vertexName) {
+        SchemaProjections.requireVertex(schema, vertexName);
+        return store.vertices().count(vertexName);
     }
 
     // --- vertices ---
