@@ -60,7 +60,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  *       compared with the stored values they should select.</li>
  * </ol>
  *
- * <p>The test reads the demo graph ({@code http_demo_v2} by default, override with
+ * <p>The test reads the demo graph ({@code http_demo_v3} by default, override with
  * {@code -Dpayment.vertexSet=}) and the schema the service serves, and skips itself when
  * Aerospike is unreachable or the demo data is not loaded.
  */
@@ -89,7 +89,7 @@ class PaymentGraphConsistencyTest {
         client = config.connectOrNull();
         assumeTrue(client != null, "Aerospike not available at " + config.host() + ":" + config.port());
         vertexSet = System.getProperty("payment.vertexSet", System.getenv().getOrDefault("PAYMENT_VERTEX_SET",
-                "http_demo_v2"));
+                "http_demo_v3"));
         schema = loadSchema();
         vertexStore = new AerospikeVertexStore(client, config.namespace(), vertexSet);
         edgeStore = new AerospikeEdgeStore(client, config.namespace(), vertexSet, schema);

@@ -22,6 +22,7 @@ import com.pengcheng.phoenixgraph.storage.aerospike.VertexUpsert;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 import java.io.InputStream;
@@ -33,6 +34,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -283,6 +285,69 @@ class QueryApiIntegrationTest {
         }
     }
 
+    /**
+     * The single-direction demo ({@code http_demo_v3}): the same payments, but every account-IP/Phone link
+     * is one directed edge and IPs/Phones are shared across several accounts. This is what makes the
+     * {@code both()} edge count equal to the sum of the three named classes, and the UI's IP/Phone edges
+     * single-direction.
+     */
+    @Test
+    void demoSharedGraphViaApi() throws Exception {
+        AerospikeClient client = connectOrNull();
+        assumeTrue(client != null, "Aerospike not available, skipping integration test");
+        try (client) {
+            String namespace = env("AEROSPIKE_NAMESPACE", "test");
+            String set = "http_demo_v3";
+            GraphSchema schema = ensureSchemaRegistered();
+            AerospikeVertexStore vertexStore = new AerospikeVertexStore(client, namespace, set);
+            AerospikeEdgeStore edgeStore = new AerospikeEdgeStore(client, namespace, set, schema);
+            truncateSet(client, namespace, set);
+            seedSharedGraph(vertexStore, edgeStore, schema);
+
+            QueryService queryService = QueryService.ambient(vertexStore, edgeStore);
+            MockMvc api = MockMvcBuilders.standaloneSetup(new QueryController(queryService)).build();
+
+            api.perform(post("/api/v1/query")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(query("g.V('135','Account').out('Payment').count()")))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$[0]").value(50));
+
+            // a multi-account IP links to three accounts (10.99.255.2 -> 2000, 2001, 2002)
+            api.perform(post("/api/v1/query")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(query("g.V('10.99.255.2','IP').out('IPToAccount').count()")))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$[0]").value(3));
+
+            // every edge of 2007 is one of the three named classes: both() equals the sum (and the
+            // multi-class hop gives the same answer)
+            long both = number(api, "g.V('2007','Account').both().count()");
+            long named = number(api, "g.V('2007','Account').both('Payment').count()")
+                    + number(api, "g.V('2007','Account').both('IPToAccount').count()")
+                    + number(api, "g.V('2007','Account').both('PhoneToAccount').count()");
+            assertEquals(both, named, "both() is the sum of the three named classes");
+            assertEquals(both, number(api,
+                    "g.V('2007','Account').both('Payment','IPToAccount','PhoneToAccount').count()"),
+                    "the multi-class hop agrees with both()");
+
+            // the Phone display is the country code plus the national number, never the id twice
+            String phoneId = "+86-138-69999";
+            assertTrue(phoneProps(phoneId, 1L).get(2).value().equals("138-69999"),
+                    "phoneNumber stores the national part, so the label does not repeat +86");
+        }
+    }
+
+    private static long number(MockMvc api, String query) throws Exception {
+        MvcResult result = api.perform(post("/api/v1/query")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(QueryApiIntegrationTest.query(query)))
+                .andExpect(status().isOk())
+                .andReturn();
+        String body = result.getResponse().getContentAsString();
+        return Long.parseLong(body.substring(1, body.length() - 1));
+    }
+
     private static void seedStarGraph(AerospikeVertexStore vertexStore, AerospikeEdgeStore edgeStore,
                                       GraphSchema schema) {
         VertexSchema account = schema.vertexSchema("Account");
@@ -402,6 +467,120 @@ class QueryApiIntegrationTest {
             all.addAll(store.upsertEdges(upserts.subList(i, Math.min(i + 500, upserts.size()))));
         }
         return all;
+    }
+
+    /**
+     * The single-direction demo ({@code http_demo_v3}): every account-IP/Phone link is one directed edge
+     * ({@code IPToAccount}, {@code PhoneToAccount}), so the UI draws IP -> Account and Phone -> Account
+     * instead of two mirrored edges. IPs and Phones are shared across several accounts - an IP links to a
+     * deterministic three to eighty accounts - and a few of them link to exactly two or three accounts, so
+     * the multi-account cases are easy to spot.
+     */
+    private static void seedSharedGraph(AerospikeVertexStore vertexStore, AerospikeEdgeStore edgeStore,
+                                        GraphSchema schema) {
+        VertexSchema account = schema.vertexSchema("Account");
+        VertexSchema ip = schema.vertexSchema("IP");
+        VertexSchema phone = schema.vertexSchema("Phone");
+
+        EdgeSchema payment = schema.edgeSchema("Payment");
+        EdgeSchema ipToAccount = schema.edgeSchema("IPToAccount");
+        EdgeSchema phoneToAccount = schema.edgeSchema("PhoneToAccount");
+        long t = System.currentTimeMillis();
+
+        List<VertexUpsert> vertices = new ArrayList<>();
+        vertices.add(new VertexUpsert("135", account, accountProps("135", t), t, t));
+        vertices.add(new VertexUpsert("150", account, accountProps("150", t), t, t));
+        for (int i = 0; i < 50; i++) {
+            vertices.add(new VertexUpsert(String.valueOf(1000 + i), account,
+                    accountProps(String.valueOf(1000 + i), t), t, t));
+        }
+        for (int i = 0; i < 100; i++) {
+            vertices.add(new VertexUpsert(String.valueOf(2000 + i), account,
+                    accountProps(String.valueOf(2000 + i), t), t, t));
+        }
+        // the 150 accounts an IP or phone can link to (ring accounts first, then the star accounts)
+        List<String> accounts = new ArrayList<>();
+        for (int i = 0; i < 50; i++) accounts.add(String.valueOf(1000 + i));
+        for (int i = 0; i < 100; i++) accounts.add(String.valueOf(2000 + i));
+
+        for (int i = 0; i < 60; i++) {
+            String ipId = "10.99." + (i / 100) + "." + (i % 100);
+            vertices.add(new VertexUpsert(ipId, ip, ipProps(ipId, t), t, t));
+        }
+        for (int i = 0; i < 24; i++) {
+            String phoneId = "+86-138-" + (60000 + i);
+            vertices.add(new VertexUpsert(phoneId, phone, phoneProps(phoneId, t), t, t));
+        }
+        for (String ipId : List.of("10.99.255.1", "10.99.255.2")) {
+            vertices.add(new VertexUpsert(ipId, ip, ipProps(ipId, t), t, t));
+        }
+        for (String phoneId : List.of("+86-138-69999", "+86-138-69998")) {
+            vertices.add(new VertexUpsert(phoneId, phone, phoneProps(phoneId, t), t, t));
+        }
+        assertNoFailures(upsertVerticesChunked(vertexStore, vertices));
+
+        List<EdgeUpsert> edges = new ArrayList<>();
+        for (int i = 0; i < 50; i++) {
+            String acc = String.valueOf(1000 + i);
+            edges.add(new EdgeUpsert("pay_c" + i, payment, "135", acc,
+                    Map.of(3, new EdgePropertyValue("SUCCESS", t, t)), t, t));
+        }
+        for (int i = 0; i < 50; i++) {
+            String acc = String.valueOf(1000 + i);
+            edges.add(new EdgeUpsert("pay_r" + i, payment, acc,
+                    String.valueOf(1000 + (i + 1) % 50), Map.of(3, new EdgePropertyValue("SUCCESS", t, t)), t, t));
+            edges.add(new EdgeUpsert("pay_x" + i, payment, acc,
+                    String.valueOf(1000 + (i + 7) % 50), Map.of(3, new EdgePropertyValue("PENDING", t, t)), t, t));
+            edges.add(new EdgeUpsert("pay_y" + i, payment, acc,
+                    String.valueOf(1000 + (i + 13) % 50), Map.of(3, new EdgePropertyValue("SUCCESS", t, t)), t, t));
+        }
+        for (int i = 0; i < 100; i++) {
+            edges.add(new EdgeUpsert("big_c" + i, payment, "150", String.valueOf(2000 + i),
+                    Map.of(3, new EdgePropertyValue("SUCCESS", t, t)), t, t));
+        }
+        // shared IPs: each links to a deterministic 3-80 accounts (IP -> Account)
+        for (int i = 0; i < 60; i++) {
+            String ipId = "10.99." + (i / 100) + "." + (i % 100);
+            int links = 3 + ((i * 37) % 78);
+            for (int k = 0; k < links; k++) {
+                String acc = accounts.get((i * 29 + k * 41) % accounts.size());
+                edges.add(new EdgeUpsert("sip_" + i + "_" + k, ipToAccount, ipId, acc,
+                        Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
+            }
+        }
+        // shared Phones: each links to a deterministic 2-10 accounts (Phone -> Account)
+        for (int i = 0; i < 24; i++) {
+            String phoneId = "+86-138-" + (60000 + i);
+            int links = 2 + ((i * 23) % 9);
+            for (int k = 0; k < links; k++) {
+                String acc = accounts.get((i * 17 + k * 31) % accounts.size());
+                edges.add(new EdgeUpsert("sph_" + i + "_" + k, phoneToAccount, phoneId, acc,
+                        Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
+            }
+        }
+        // explicit multi-account examples: 10.99.255.1 -> {1000,1001}, 10.99.255.2 -> {2000,2001,2002}
+        edges.add(new EdgeUpsert("mip_0", ipToAccount, "10.99.255.1", "1000",
+                Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
+        edges.add(new EdgeUpsert("mip_1", ipToAccount, "10.99.255.1", "1001",
+                Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
+        edges.add(new EdgeUpsert("mip_2", ipToAccount, "10.99.255.2", "2000",
+                Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
+        edges.add(new EdgeUpsert("mip_3", ipToAccount, "10.99.255.2", "2001",
+                Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
+        edges.add(new EdgeUpsert("mip_4", ipToAccount, "10.99.255.2", "2002",
+                Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
+        // +86-138-69999 -> {1002,1003}, +86-138-69998 -> {2003,2004,2005}
+        edges.add(new EdgeUpsert("mph_0", phoneToAccount, "+86-138-69999", "1002",
+                Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
+        edges.add(new EdgeUpsert("mph_1", phoneToAccount, "+86-138-69999", "1003",
+                Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
+        edges.add(new EdgeUpsert("mph_2", phoneToAccount, "+86-138-69998", "2003",
+                Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
+        edges.add(new EdgeUpsert("mph_3", phoneToAccount, "+86-138-69998", "2004",
+                Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
+        edges.add(new EdgeUpsert("mph_4", phoneToAccount, "+86-138-69998", "2005",
+                Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
+        assertNoFailures(upsertEdgesChunked(edgeStore, edges));
     }
 
     private static void truncateSet(AerospikeClient client, String namespace, String set) {
@@ -536,8 +715,10 @@ class QueryApiIntegrationTest {
     private static Map<Integer, VertexPropertyValue> phoneProps(String number, long t) {
         Map<Integer, VertexPropertyValue> props = new LinkedHashMap<>();
         int dash = number.indexOf('-');
+        // cnCode is the country code before the first dash; phoneNumber is the national part after it, so
+        // the display label joins "+86" and "138-20043" without repeating the country code the id carries
         props.put(1, new VertexPropertyValue(dash > 0 ? number.substring(0, dash) : "", t)); // cnCode
-        props.put(2, new VertexPropertyValue(number, t));    // display property: the number, which is the id
+        props.put(2, new VertexPropertyValue(dash > 0 ? number.substring(dash + 1) : number, t)); // phoneNumber
         return props;
     }
 

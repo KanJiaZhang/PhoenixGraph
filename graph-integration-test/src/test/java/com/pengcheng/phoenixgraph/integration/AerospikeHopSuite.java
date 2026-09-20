@@ -117,7 +117,7 @@ final class AerospikeHopSuite implements AutoCloseable {
         AerospikeClient client = config.connectOrNull();
         assumeTrue(client != null, "Aerospike not available at " + config.host() + ":" + config.port());
         String vertexSet = System.getProperty("payment.vertexSet",
-                System.getenv().getOrDefault("PAYMENT_VERTEX_SET", "http_demo_v2"));
+                System.getenv().getOrDefault("PAYMENT_VERTEX_SET", "http_demo_v3"));
         GraphSchema schema = loadSchema();
         GraphMetrics metrics = new GraphMetrics(metricsName);
         AerospikeVertexStore vertexStore =
@@ -387,16 +387,16 @@ final class AerospikeHopSuite implements AutoCloseable {
         cases.add(new Case("2.1", "V(1000).out(Payment).out(Payment) - two hops of payments",
                 "g.V('" + RING + "','Account').out('Payment').out('Payment')",
                 EndsAt.VERTEX, Shape.IDS, 0, () -> peers(hop2(out(RING, "Payment"), "Payment"))));
-        cases.add(new Case("2.2", "V(1000).out(AccountToIP).out(IPToAccount) - accounts sharing an IP",
-                "g.V('" + RING + "','Account').out('AccountToIP').out('IPToAccount')",
-                EndsAt.VERTEX, Shape.IDS, 0, () -> peers(hop2(out(RING, "AccountToIP"), "IPToAccount"))));
-        cases.add(new Case("2.3", "V(1000).out(AccountToPhone).out(PhoneToAccount) - accounts sharing a phone",
-                "g.V('" + RING + "','Account').out('AccountToPhone').out('PhoneToAccount')",
-                EndsAt.VERTEX, Shape.IDS, 0, () -> peers(hop2(out(RING, "AccountToPhone"), "PhoneToAccount"))));
-        cases.add(new Case("2.4", "V(135).out(Payment).out(AccountToIP).values(ipAddress) - two hops, projected",
-                "g.V('" + HUB + "','Account').out('Payment').out('AccountToIP').values('ipAddress')",
+        cases.add(new Case("2.2", "V(1000).in(IPToAccount).out(IPToAccount) - accounts sharing an IP",
+                "g.V('" + RING + "','Account').in('IPToAccount').out('IPToAccount')",
+                EndsAt.VERTEX, Shape.IDS, 0, () -> peers(hop2(in(RING, "IPToAccount"), "IPToAccount"))));
+        cases.add(new Case("2.3", "V(1000).in(PhoneToAccount).out(PhoneToAccount) - accounts sharing a phone",
+                "g.V('" + RING + "','Account').in('PhoneToAccount').out('PhoneToAccount')",
+                EndsAt.VERTEX, Shape.IDS, 0, () -> peers(hop2(in(RING, "PhoneToAccount"), "PhoneToAccount"))));
+        cases.add(new Case("2.4", "V(135).out(Payment).in(IPToAccount).values(ipAddress) - two hops, projected",
+                "g.V('" + HUB + "','Account').out('Payment').in('IPToAccount').values('ipAddress')",
                 EndsAt.VERTEX, Shape.VALUES, 0,
-                () -> peerProperty(hop2(out(HUB, "Payment"), "AccountToIP"), "ipAddress")));
+                () -> peerProperty(hop2(out(HUB, "Payment"), "IPToAccount", EdgeSide.IN), "ipAddress")));
         cases.add(new Case("2.5", "V(1000).both(Payment).both(Payment).dedup() - a neighbourhood, deduplicated",
                 "g.V('" + RING + "','Account').both('Payment').both('Payment').dedup()",
                 EndsAt.VERTEX, Shape.IDS, 0,
@@ -407,26 +407,26 @@ final class AerospikeHopSuite implements AutoCloseable {
         cases.add(new Case("2.6", "V(1000).out(Payment).outE(Payment) - the payees' payments",
                 "g.V('" + RING + "','Account').out('Payment').outE('Payment')",
                 EndsAt.EDGE, Shape.IDS, 0, () -> edgeIds(hop2(out(RING, "Payment"), "Payment"))));
-        cases.add(new Case("2.7", "V(1000).out(AccountToIP).outE(IPToAccount) - the IP's other accounts",
-                "g.V('" + RING + "','Account').out('AccountToIP').outE('IPToAccount')",
-                EndsAt.EDGE, Shape.IDS, 0, () -> edgeIds(hop2(out(RING, "AccountToIP"), "IPToAccount"))));
-        cases.add(new Case("2.8", "V(135).outE(Payment).has(status,SUCCESS).otherV().outE(AccountToPhone)",
+        cases.add(new Case("2.7", "V(1000).in(IPToAccount).outE(IPToAccount) - the IP's other accounts",
+                "g.V('" + RING + "','Account').in('IPToAccount').outE('IPToAccount')",
+                EndsAt.EDGE, Shape.IDS, 0, () -> edgeIds(hop2(in(RING, "IPToAccount"), "IPToAccount"))));
+        cases.add(new Case("2.8", "V(135).outE(Payment).has(status,SUCCESS).otherV().inE(PhoneToAccount)",
                 "g.V('" + HUB + "','Account').outE('Payment').has('status','SUCCESS')"
-                        + ".otherV().outE('AccountToPhone')",
+                        + ".otherV().inE('PhoneToAccount')",
                 EndsAt.EDGE, Shape.IDS, 0, () -> {
                     List<RawEdge> out = new ArrayList<>();
                     for (RawEdge payment : matching(out(HUB, "Payment"), "status", "SUCCESS")) {
-                        out.addAll(out(payment.peer(), "AccountToPhone"));
+                        out.addAll(in(payment.peer(), "PhoneToAccount"));
                     }
                     return edgeIds(out);
                 }));
-        cases.add(new Case("2.9", "V(1000).out(Payment).outE(AccountToPhone).count() - two hops, counted",
-                "g.V('" + RING + "','Account').out('Payment').outE('AccountToPhone').count()",
-                EndsAt.EDGE, Shape.COUNT, 0, () -> (long) hop2(out(RING, "Payment"), "AccountToPhone").size()));
-        cases.add(new Case("2.10", "V(1000).outE(AccountToIP).otherV().outE(IPToAccount).limit(3) - capped",
-                "g.V('" + RING + "','Account').outE('AccountToIP').otherV().outE('IPToAccount').limit(3)",
+        cases.add(new Case("2.9", "V(1000).out(Payment).inE(PhoneToAccount).count() - two hops, counted",
+                "g.V('" + RING + "','Account').out('Payment').inE('PhoneToAccount').count()",
+                EndsAt.EDGE, Shape.COUNT, 0, () -> (long) hop2(out(RING, "Payment"), "PhoneToAccount", EdgeSide.IN).size()));
+        cases.add(new Case("2.10", "V(1000).inE(IPToAccount).otherV().outE(IPToAccount).limit(3) - capped",
+                "g.V('" + RING + "','Account').inE('IPToAccount').otherV().outE('IPToAccount').limit(3)",
                 EndsAt.EDGE, Shape.LIMITED, 3, () -> new LinkedHashSet<>(
-                        edgeIds(hop2(out(RING, "AccountToIP"), "IPToAccount")))));
+                        edgeIds(hop2(in(RING, "IPToAccount"), "IPToAccount")))));
         return cases;
     }
 

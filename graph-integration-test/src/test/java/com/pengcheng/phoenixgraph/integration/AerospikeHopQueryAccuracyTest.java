@@ -91,10 +91,10 @@ class AerospikeHopQueryAccuracyTest {
                 com.pengcheng.phoenixgraph.query.storage.EdgeSide.OUT).isEmpty(), "the ring account pays");
         assertTrue(!suite.edges(AerospikeHopSuite.RING, "Payment",
                 com.pengcheng.phoenixgraph.query.storage.EdgeSide.IN).isEmpty(), "the ring account is paid");
-        for (String edgeName : List.of("AccountToIP", "AccountToPhone")) {
+        for (String edgeName : List.of("IPToAccount", "PhoneToAccount")) {
             assertTrue(!suite.edges(AerospikeHopSuite.RING, edgeName,
-                    com.pengcheng.phoenixgraph.query.storage.EdgeSide.OUT).isEmpty(),
-                    "the ring account has " + edgeName);
+                    com.pengcheng.phoenixgraph.query.storage.EdgeSide.IN).isEmpty(),
+                    "the ring account is linked to " + edgeName);
         }
         assertTrue(!suite.vertex(AerospikeHopSuite.HUB).isEmpty(), "the hub vertex has properties");
     }

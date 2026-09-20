@@ -350,8 +350,8 @@ class AerospikeTwoHopPaymentBenchmarkTest {
 
     /**
      * The star hub 150 with its second hop on the classes it actually has: a hundred payments out to accounts
-     * that each hold thirty-nine IP links and ten phone links, so this is the biggest second hop in the demo
-     * (three thousand nine hundred edges).
+     * that each hold several shared IPs and phones, so the second hop over the incoming IP/phone links is the
+     * biggest subgraph in the demo.
      *
      * <p>The star accounts do not pay anyone, so the interesting measurements for 150 are these: the same step
      * shapes as above, over the IP and phone classes.
@@ -359,48 +359,48 @@ class AerospikeTwoHopPaymentBenchmarkTest {
     private List<Query> starQueries() {
         String seed = "150";
         List<AerospikeHopSuite.RawEdge> hop1 = suite.out(seed, "Payment");
-        List<AerospikeHopSuite.RawEdge> ips = hop2Into(hop1, "AccountToIP");
-        List<AerospikeHopSuite.RawEdge> phones = hop2Into(hop1, "AccountToPhone");
+        List<AerospikeHopSuite.RawEdge> ips = hop2Into(hop1, "IPToAccount", EdgeSide.IN);
+        List<AerospikeHopSuite.RawEdge> phones = hop2Into(hop1, "PhoneToAccount", EdgeSide.IN);
         List<Query> queries = new ArrayList<>();
 
-        queries.add(star("out > out(AccountToIP)",
-                "g.V('150','Account').out('Payment').out('AccountToIP')",
+        queries.add(star("out > in(IPToAccount)",
+                "g.V('150','Account').out('Payment').in('IPToAccount')",
                 Check.IDS, peers(ips), null));
-        queries.add(star("both > both(AccountToIP)",
-                "g.V('150','Account').both('Payment').both('AccountToIP')",
-                Check.IDS, peers(hop2Into(suite.both(seed, "Payment"), "AccountToIP", EdgeSide.BOTH)), null));
-        queries.add(star("outE has(status) > otherV > out(AccountToIP)",
-                "g.V('150','Account').outE('Payment').has('status','SUCCESS').otherV().out('AccountToIP')",
+        queries.add(star("both > in(IPToAccount)",
+                "g.V('150','Account').both('Payment').in('IPToAccount')",
+                Check.IDS, peers(hop2Into(suite.both(seed, "Payment"), "IPToAccount", EdgeSide.IN)), null));
+        queries.add(star("outE has(status) > otherV > in(IPToAccount)",
+                "g.V('150','Account').outE('Payment').has('status','SUCCESS').otherV().in('IPToAccount')",
                 Check.IDS, peers(hop2Into(AerospikeHopSuite.matching(hop1, "status", "SUCCESS"),
-                        "AccountToIP")), null));
-        queries.add(star("out > filter(accountStatus) > out(AccountToIP)",
+                        "IPToAccount", EdgeSide.IN)), null));
+        queries.add(star("out > filter(accountStatus) > in(IPToAccount)",
                 "g.V('150','Account').out('Payment').filter(accountStatus.equals('ACTIVE'))"
-                        + ".out('AccountToIP')",
+                        + ".in('IPToAccount')",
                 Check.IDS, peers(hop2Into(byAccountProperty(hop1, "accountStatus", "ACTIVE"),
-                        "AccountToIP")), null));
-        queries.add(star("out > out(AccountToIP) > dedup",
-                "g.V('150','Account').out('Payment').out('AccountToIP').dedup()",
+                        "IPToAccount", EdgeSide.IN)), null));
+        queries.add(star("out > in(IPToAccount) > dedup",
+                "g.V('150','Account').out('Payment').in('IPToAccount').dedup()",
                 Check.IDS, distinct(ips), null));
-        queries.add(star("out > out(AccountToIP) > limit(500)",
-                "g.V('150','Account').out('Payment').out('AccountToIP').limit(500)",
-                Check.SIZE, peers(ips), 500L));
-        queries.add(star("out > out(AccountToIP) > count",
-                "g.V('150','Account').out('Payment').out('AccountToIP').count()",
+        queries.add(star("out > in(IPToAccount) > limit(500)",
+                "g.V('150','Account').out('Payment').in('IPToAccount').limit(500)",
+                Check.SIZE, peers(ips), Math.min(500L, (long) ips.size())));
+        queries.add(star("out > in(IPToAccount) > count",
+                "g.V('150','Account').out('Payment').in('IPToAccount').count()",
                 Check.COUNT, List.of(), (long) ips.size()));
-        queries.add(star("out > out(AccountToIP) > dedup > count",
-                "g.V('150','Account').out('Payment').out('AccountToIP').dedup().count()",
+        queries.add(star("out > in(IPToAccount) > dedup > count",
+                "g.V('150','Account').out('Payment').in('IPToAccount').dedup().count()",
                 Check.COUNT, List.of(), (long) distinct(ips).size()));
-        queries.add(star("out > batch(10) > out(AccountToIP)",
-                "g.V('150','Account').out('Payment').batch(10).out('AccountToIP')",
+        queries.add(star("out > batch(10) > in(IPToAccount)",
+                "g.V('150','Account').out('Payment').batch(10).in('IPToAccount')",
                 Check.IDS, peers(ips), null));
-        queries.add(star("out > barrier(100) > out(AccountToIP)",
-                "g.V('150','Account').out('Payment').barrier(100).out('AccountToIP')",
+        queries.add(star("out > barrier(100) > in(IPToAccount)",
+                "g.V('150','Account').out('Payment').barrier(100).in('IPToAccount')",
                 Check.IDS, peers(ips), null));
-        queries.add(star("out > out(AccountToPhone) > count",
-                "g.V('150','Account').out('Payment').out('AccountToPhone').count()",
+        queries.add(star("out > in(PhoneToAccount) > count",
+                "g.V('150','Account').out('Payment').in('PhoneToAccount').count()",
                 Check.COUNT, List.of(), (long) phones.size()));
-        queries.add(star("out > out(AccountToIP) > values(ipAddress)",
-                "g.V('150','Account').out('Payment').out('AccountToIP').values('ipAddress')",
+        queries.add(star("out > in(IPToAccount) > values(ipAddress)",
+                "g.V('150','Account').out('Payment').in('IPToAccount').values('ipAddress')",
                 Check.SIZE, List.of(), (long) ips.size()));
         return queries;
     }

@@ -1700,7 +1700,9 @@
     if (!vertexType) { setStatus(t('noVertexType')); return; }
     const quoted = ids.map((id) => `'${id}'`).join(',');
     setStatus(`${ids.length} seed id(s): ${quoted}`);
-    queryCurrentBounded(`g.V(${quoted},'${vertexType}').both().both()`);
+    // one hop, so the box shows exactly the edges a both() query would: the same payment edges, the
+    // same single-direction IP/Phone links - not a second hop's worth of neighbours on top
+    queryCurrentBounded(`g.V(${quoted},'${vertexType}').both()`);
   }
 
   function onGremlinQuery() {
