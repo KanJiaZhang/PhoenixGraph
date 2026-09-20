@@ -80,12 +80,30 @@ class AerospikeTwoHopPaymentBenchmarkTest {
     void twoHopPaymentTraversalsEndingOnVerticesAreMeasured() {
         List<Query> queries = queries();
         assertTrue(queries.size() >= 20, "a spread of traversals: " + queries.size());
-        for (Query query : queries) {
+        List<Query> bothQueries = bothQueries();
+        assertTrue(bothQueries.size() >= 15, "a spread of both-hop traversals: " + bothQueries.size());
+
+        List<Query> all = new ArrayList<>(queries);
+        all.addAll(bothQueries);
+        for (Query query : all) {
             assertTrue(query.gremlin().contains("Payment"), query.id() + " walks payment edges");
             results.add(measure(query));
         }
+        // a mixed pass per spelling: every query once per round, back to back, as a dashboard asks them
+        mixedPass(queries, "out/in/both first hop");
+        mixedPass(bothQueries, "both on every hop");
 
-        // the mixed pass: every query once per round, back to back, the way a dashboard asks them
+        assertTrue(wrong.isEmpty(), "every measured traversal answers what the records say: " + wrong);
+        assertEquals(all.size(), results.size(), "one measurement per traversal");
+        for (Result result : results) {
+            assertTrue(result.latency().percentileMillis(0.95) < 3_000,
+                    result.query().id() + " stays under three seconds: "
+                            + result.latency().percentileMillis(0.95));
+        }
+    }
+
+    /** Runs a set of traversals back to back for the workload's own latency. */
+    private void mixedPass(List<Query> queries, String label) {
         long started = System.nanoTime();
         int executions = 0;
         for (int round = 0; round < MIXED_ROUNDS; round++) {
@@ -94,17 +112,9 @@ class AerospikeTwoHopPaymentBenchmarkTest {
                 executions++;
             }
         }
-        long mixedNanos = System.nanoTime() - started;
-
-        assertTrue(wrong.isEmpty(), "every measured traversal answers what the records say: " + wrong);
-        assertEquals(queries.size(), results.size(), "one measurement per traversal");
-        for (Result result : results) {
-            assertTrue(result.latency().percentileMillis(0.95) < 3_000,
-                    result.query().id() + " stays under three seconds: "
-                            + result.latency().percentileMillis(0.95));
-        }
-        System.out.printf("%nMIXED PASS: %d executions (%d traversals x %d rounds) in %.0f ms, %.0f us each%n",
-                executions, queries.size(), MIXED_ROUNDS, mixedNanos / 1e6, mixedNanos / 1e3 / executions);
+        System.out.printf("%nMIXED PASS (%s): %d executions (%d traversals x %d rounds) in %.0f ms, %.0f us each%n",
+                label, executions, queries.size(), MIXED_ROUNDS, (System.nanoTime() - started) / 1e6,
+                (System.nanoTime() - started) / 1e3 / executions);
     }
 
     /** Runs one traversal after warm-up, checking its answer once. */
@@ -270,6 +280,122 @@ class AerospikeTwoHopPaymentBenchmarkTest {
         return new Query("P-" + seed + " " + shape, seed, shape, gremlin, Check.IDS, peers(secondHop), null);
     }
 
+    /**
+     * The same traversals with {@code both} on <b>every</b> hop: each step reaches its neighbours in both
+     * directions, so the same plan sees far more sources - the hub's second hop goes from a hundred and
+     * fifty reached accounts to three hundred and fifty, a ring account from nine to ninety-two.
+     *
+     * <p>Everything else is the same: the same seeds, the same step shapes, the same warm-up and run counts,
+     * the same reference check (the reference reads both sides), and the report pairs each traversal with its
+     * single-direction spelling.
+     */
+    private List<Query> bothQueries() {
+        List<Query> queries = new ArrayList<>();
+
+        for (String seed : List.of(HUB, "1000", "1014", "1025", "1049")) {
+            queries.add(bothIds(seed, "both > both", g(seed).both().both(), hop2Both(suite.both(seed, "Payment"))));
+        }
+        queries.add(bothIds(HUB, "bothE > otherV > both",
+                g(HUB).bothE().otherV().both(), hop2Both(suite.both(HUB, "Payment"))));
+        queries.add(bothIds("1014", "bothE > otherV > both",
+                g("1014").bothE().otherV().both(), hop2Both(suite.both("1014", "Payment"))));
+        queries.add(bothIds(HUB, "bothE has(status) > otherV > both",
+                g(HUB).bothE().has("status", "SUCCESS").otherV().both(),
+                hop2Both(AerospikeHopSuite.matching(suite.both(HUB, "Payment"), "status", "SUCCESS"))));
+        queries.add(bothIds(HUB, "both > filter(accountStatus) > both",
+                g(HUB).both().filter("accountStatus", "ACTIVE").both(),
+                hop2Both(byAccountProperty(suite.both(HUB, "Payment"), "accountStatus", "ACTIVE"))));
+        queries.add(bothIds("1014", "both > filter(accountStatus=FROZEN) > both",
+                g("1014").both().filter("accountStatus", "FROZEN").both(),
+                hop2Both(byAccountProperty(suite.both("1014", "Payment"), "accountStatus", "FROZEN"))));
+
+        queries.add(new Query("B-hub both>both>dedup", HUB, "both > both > dedup",
+                g(HUB).both().both() + ".dedup()", Check.IDS, distinct(hop2Both(suite.both(HUB, "Payment"))), null));
+        queries.add(new Query("B-hub both>both>limit(20)", HUB, "both > both > limit(20)",
+                g(HUB).both().both() + ".limit(20)", Check.SIZE, peers(hop2Both(suite.both(HUB, "Payment"))), 20L));
+        queries.add(count("B-hub both>both>count", HUB, "both > both > count",
+                g(HUB).both().both() + ".count()", hop2Both(suite.both(HUB, "Payment")).size()));
+        queries.add(count("B-hub both>both>dedup>count", HUB, "both > both > dedup > count",
+                g(HUB).both().both() + ".dedup().count()",
+                distinct(hop2Both(suite.both(HUB, "Payment"))).size()));
+        queries.add(count("B-1014 both>both>count", "1014", "both > both > count",
+                g("1014").both().both() + ".count()", hop2Both(suite.both("1014", "Payment")).size()));
+
+        queries.add(bothIds(HUB, "both > batch(10) > both",
+                g(HUB).both().batch(10).both(), hop2Both(suite.both(HUB, "Payment"))));
+        queries.add(bothIds(HUB, "both > barrier(10) > both",
+                g(HUB).both().barrier(10).both(), hop2Both(suite.both(HUB, "Payment"))));
+
+        queries.add(size(HUB, "both > both > values(accountStatus)",
+                g(HUB).both().both() + ".values('accountStatus')",
+                hop2Both(suite.both(HUB, "Payment")).size()));
+        queries.add(size(HUB, "both > both > values(firstName)",
+                g(HUB).both().both() + ".values('firstName')",
+                hop2Both(suite.both(HUB, "Payment")).size()));
+        queries.add(size(HUB, "both > both > elementMap",
+                g(HUB).both().both() + ".elementMap()", hop2Both(suite.both(HUB, "Payment")).size()));
+        return queries;
+    }
+
+    /** A small builder so the same traversal can be written with one hop or with both. */
+    private static Hop g(String seed) {
+        return new Hop(seed);
+    }
+
+    /** The steps of a two-hop payment traversal, with {@code both} in place of a direction. */
+    private record Hop(String seed) {
+
+        HopPayment both() {
+            return new HopPayment(seed, ".both('Payment')");
+        }
+
+        HopPayment bothE() {
+            return new HopPayment(seed, ".bothE('Payment')");
+        }
+    }
+
+    private record HopPayment(String seed, String text) {
+
+        HopPayment both() {
+            return new HopPayment(seed, text + ".both('Payment')");
+        }
+
+        HopPayment has(String key, String value) {
+            return new HopPayment(seed, text + ".has('" + key + "','" + value + "')");
+        }
+
+        HopPayment filter(String key, String value) {
+            return new HopPayment(seed, text + ".filter(" + key + ".equals('" + value + "'))");
+        }
+
+        HopPayment otherV() {
+            return new HopPayment(seed, text + ".otherV()");
+        }
+
+        HopPayment batch(int size) {
+            return new HopPayment(seed, text + ".batch(" + size + ")");
+        }
+
+        HopPayment barrier(int size) {
+            return new HopPayment(seed, text + ".barrier(" + size + ")");
+        }
+
+        @Override
+        public String toString() {
+            return "g.V('" + seed + "','Account')" + text;
+        }
+    }
+
+    private Query bothIds(String seed, String shape, HopPayment traversal, List<AerospikeHopSuite.RawEdge> second) {
+        return new Query("B-" + seed + " " + shape, seed, shape, traversal.toString(), Check.IDS,
+                peers(second), null);
+    }
+
+    /** The second hop on the both side: each of the first hop's neighbours is expanded both ways. */
+    private List<AerospikeHopSuite.RawEdge> hop2Both(List<AerospikeHopSuite.RawEdge> first) {
+        return suite.hop2(first, "Payment", EdgeSide.BOTH);
+    }
+
     private Query count(String id, String seed, String shape, String gremlin, long expected) {
         return new Query(id, seed, shape, gremlin, Check.COUNT, List.of(), expected);
     }
@@ -337,12 +463,18 @@ class AerospikeTwoHopPaymentBenchmarkTest {
 
     private static String report(AerospikeHopSuite suite, List<Result> results, List<String> wrong) {
         StringBuilder out = new StringBuilder("\n");
-        out.append("Two-hop Payment, ending on vertices (").append(suite.setId()).append("): ")
-                .append(results.size()).append(" traversals, ").append(WARMUP).append(" warm-up + ")
-                .append(RUNS).append(" timed runs each\n");
-
-        out.append("\nThe traversals\n");
+        List<Result> single = new ArrayList<>();
+        List<Result> both = new ArrayList<>();
         for (Result result : results) {
+            (result.query().id().startsWith("B-") ? both : single).add(result);
+        }
+        out.append("Two-hop Payment, ending on vertices (").append(suite.setId()).append("): ")
+                .append(single.size()).append(" single-direction traversals and ").append(both.size())
+                .append(" with both on every hop, ").append(WARMUP).append(" warm-up + ").append(RUNS)
+                .append(" timed runs each\n");
+
+        out.append("\nThe traversals (both on every hop)\n");
+        for (Result result : both) {
             out.append("  ").append(result.query().gremlin()).append('\n');
         }
 
@@ -359,17 +491,40 @@ class AerospikeTwoHopPaymentBenchmarkTest {
                     traffic.vertexItems(), traffic.edgeItems(), traffic.kvCalls()));
         }
 
-        out.append("\nBy step shape\n");
-        Map<String, List<Double>> byShape = new LinkedHashMap<>();
+        out.append("\nOne direction versus both, per seed and shape (the same plan, the same reference)\n");
+        out.append(String.format("%-40s %22s %22s%n", "seed | shape", "one direction", "both on every hop"));
+        out.append(String.format("%-40s %10s %11s %10s %11s%n",
+                "", "p50", "kv-calls", "p50", "kv-calls"));
+        out.append("-".repeat(86)).append('\n');
+        Map<String, Result> byKey = new LinkedHashMap<>();
         for (Result result : results) {
-            byShape.computeIfAbsent(result.query().steps(), key -> new ArrayList<>())
-                    .add(result.latency().percentileMillis(0.5));
+            byKey.putIfAbsent(pairKey(result.query()), result);
         }
-        for (Map.Entry<String, List<Double>> entry : byShape.entrySet()) {
-            List<Double> p50 = new ArrayList<>(entry.getValue());
-            p50.sort(null);
-            out.append(String.format("  %-44s n=%-3d p50 median %7.2f ms%n",
-                    entry.getKey(), p50.size(), p50.get(p50.size() / 2)));
+        Set<String> printed = new LinkedHashSet<>();
+        for (Result result : results) {
+            String key = pairKey(result.query());
+            if (!printed.add(key)) {
+                continue;
+            }
+            Result other = null;
+            for (Result candidate : results) {
+                if (!pairKey(candidate.query()).equals(key)) {
+                    continue;
+                }
+                if (candidate.query().id().startsWith("B-") != result.query().id().startsWith("B-")) {
+                    other = candidate;
+                    break;
+                }
+            }
+            if (other == null) {
+                continue;
+            }
+            Result singleResult = result.query().id().startsWith("B-") ? other : result;
+            Result bothResult = result.query().id().startsWith("B-") ? result : other;
+            out.append(String.format("%-40s %10.2f %11d %10.2f %11d   %d/%d reached%n", key,
+                    singleResult.latency().percentileMillis(0.5), singleResult.traffic().kvCalls(),
+                    bothResult.latency().percentileMillis(0.5), bothResult.traffic().kvCalls(),
+                    singleResult.answer(), bothResult.answer()));
         }
 
         if (!wrong.isEmpty()) {
@@ -386,11 +541,37 @@ class AerospikeTwoHopPaymentBenchmarkTest {
                 the second hop's reads are grouped, and values/elementMap look at the reached vertices instead
                 of counting them.
 
+                The second set writes both hops as both('Payment'), which reaches a neighbour in either
+                direction: on this graph the hub's second hop goes from a hundred and fifty reached accounts
+                to three hundred and fifty, a ring account from nine to ninety-two. The last table puts the
+                two spellings of one plan side by side - same seed, same steps, same reference check - so the
+                direction is the only difference.
+
                 `answer` is what the traversal returned (a count, the number of vertices, or of values/maps),
                 and the traffic columns say what it cost: `e-items` the edge lists read, `v-items` the vertices
-                read, and `kv-calls` the round trips - which is what latency tracks, on a graph where the hub
-                reaches fifty accounts and each of them pays three more.
+                read, and `kv-calls` the round trips - which is what latency tracks.
                 """);
         return out.toString();
+    }
+
+    /**
+     * The key that pairs a traversal with its both-hop spelling: the seed and the step shape, with every
+     * direction word replaced by the same placeholder (so {@code out > out > dedup} and
+     * {@code both > both > dedup} land on one row).
+     */
+    private static String pairKey(Query query) {
+        StringBuilder key = new StringBuilder();
+        for (String token : query.steps().split(" > ")) {
+            if (key.length() > 0) {
+                key.append(" > ");
+            }
+            String head = token.split("[ (]", 2)[0];
+            key.append(switch (head) {
+                case "out", "in", "both" -> "hop";
+                case "outE", "inE", "bothE" -> "hopE";
+                default -> token;
+            });
+        }
+        return query.seed() + " | " + key;
     }
 }

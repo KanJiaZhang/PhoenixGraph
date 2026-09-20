@@ -2634,3 +2634,45 @@ AerospikeTwoHopPaymentBenchmarkTest
 
 * 一跳 + 两跳混跑（更接近真实仪表盘：点开看一跳、再展开两跳）还没有；
 * `where()` / `order().by()` / `group().by()` 等 step 尚未实现，实现后应补进这套基准。
+
+---
+
+## 43. 每一跳都用 both：同一条两跳语义的方向对照
+
+§42 把两跳 Payment 的各种 Gremlin 写法测了一遍（每跳一个方向）；这一节把**每一跳都换成 `both`**再测同一批形状，
+并与单方向写法并排对照 —— 因为「多方向」在这个图上是实打实的规模变化（hub 的第二跳 150 → 350 个到达点，环上账户 9 → 92），
+它同时也检验了「顶点跳只读对端」「按源批量计数」在多源场景下的表现。
+
+### 43.1 做法
+
+```text
+AerospikeTwoHopPaymentBenchmarkTest.bothQueries()   20 条，全部 both(Payment) x 2 跳、结尾取点
+  形状：both/both、bothE+otherV+both、bothE has(status)+otherV+both、both+filter(accountStatus)+both、
+        dedup、limit(20)、count、dedup.count、跳之间 batch(10)/barrier(10)、values/elementMap
+  与单方向的 22 条同一批：同起点、同预热/计时次数、同混合负载、同样与参考读数器核对（参考也按 BOTH 展开）
+  报告新增一张对照表：把每个 (seed, 形状) 的单方向与 both 两种写法并排放（p50、kv-calls、到达点数）
+```
+
+### 43.2 结论
+
+1. **换 both 的代价 ≈ 源的数量放大**：环上账户 3 个源（3 次往返、2.3–3.3 ms）→ 7 个（7 次、5.1–5.8 ms），到达点 9 → 92；
+   hub 的第二跳翻倍（150 → 350），6.99 → 7.69 ms（5 → 7 次往返）。每多一个源多一次往返，与 §41/§42 的成本模型一致。
+2. **同义写法同价**（`bothE > otherV > both` 与 `both > both` 在 hub 上都是 ~8.4 ms / 7 次），
+   说明「顶点跳不构造边」在双向场景同样成立。
+3. **条件按选择率生效**：hub 的 ACTIVE 命中全部（350 / 8 次往返），1014 的 FROZEN 命中 0（0 个答案 / 2 次往返 / 1.9 ms）。
+4. **结尾 step 的规律不变**：count 最省（v-items=0，hub 4.35 ms / 8 次、1014 3.01 ms / 4 次）；limit 在读点之前截断；
+   dedup/values/elementMap 要读点（~8 ms / 7 次）。
+5. **batch/barrier 仍多花往返**（10 vs 默认 7 次），时延持平；批量参数的收益仍在计数路径（§41）。
+6. **近线基线**：一跳方向 4.43 ms/次、每跳 both 5.76 ms/次；按「到达点」归一化后 both 更划算（约 0.02–0.03 ms/到达点 vs 0.03–0.05 ms）。
+
+### 43.3 过程中的一个问题（助手的 bug，不是引擎）
+
+第一版对照里 `both > filter(accountStatus) > both` 期望 350、实测 50：原因是构造 both 变体的助手**漏了第二跳**
+（只生成了 `.both('Payment').filter(...)`）。在服务上直接验证得到 350 ✓，修好后 20 条 both 变体全部与参考一致 ——
+这正是「每条查询的期望值都从存储记录独立算出来」的价值：少写一跳会立刻暴露。
+
+### 43.4 未做
+
+* 一跳 + 两跳混跑（更接近真实仪表盘）；
+* 边读也按 batch(n) 分组、自适应默认 batch 上调（§41.4）；
+* `where()` / `order().by()` / `group().by()` 实现后补进这套基准。
