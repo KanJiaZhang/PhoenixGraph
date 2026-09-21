@@ -108,6 +108,7 @@ public class GremlinStepRegistry {
             }
         });
         register("elementMap", args -> GremlinSteps.elementMap());
+        register("map", args -> GremlinSteps.map(single(args, "map")));
         register("count", args -> GremlinSteps.count());
         register("limit", args -> GremlinSteps.limit(parseLong(single(args, "limit"))));
         register("dedup", args -> GremlinSteps.dedup());

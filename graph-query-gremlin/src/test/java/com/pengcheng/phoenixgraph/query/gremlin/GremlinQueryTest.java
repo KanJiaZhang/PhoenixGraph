@@ -182,4 +182,32 @@ class GremlinQueryTest {
         assertThrows(QueryException.class, () -> GremlinQuery.parse("g.E()"));
         assertThrows(QueryException.class, () -> GremlinQuery.parse("g.E('a','b')"));
     }
+
+    @Test
+    void parsesAStepClosureAsItsSingleArgument() {
+        // the Groovy form: filter { ... } / map { ... }
+        GremlinQuery query = GremlinQuery.parse("g.V(150, Account).filter { it.get().label() == 'Account' }");
+
+        assertEquals(List.of(new GremlinQuery.Step("filter",
+                List.of("it.get().label() == 'Account'"))), query.steps());
+        assertNull(query.logic());
+    }
+
+    @Test
+    void parsesAClosureAndATrailingLogicBlockTogether() {
+        GremlinQuery query = GremlinQuery.parse(
+                "g.V(1, p).map { it.get().value('name') } { $logic }");
+
+        assertEquals(List.of(new GremlinQuery.Step("map", List.of("it.get().value('name')"))), query.steps());
+        assertEquals("$logic", query.logic());
+    }
+
+    @Test
+    void parsesAClosureWhoseBodyHasParenthesesAndQuotes() {
+        GremlinQuery query = GremlinQuery.parse(
+                "g.V(1, p).filter{it.get().value('a(b)').equals('c,d')}");
+
+        assertEquals(List.of(new GremlinQuery.Step("filter",
+                List.of("it.get().value('a(b)').equals('c,d')"))), query.steps());
+    }
 }

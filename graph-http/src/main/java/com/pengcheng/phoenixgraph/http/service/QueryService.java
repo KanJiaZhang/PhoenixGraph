@@ -279,7 +279,8 @@ public class QueryService {
             GraphBinding binding = graphs.require(name);
             GremlinGraphQuery engine = new GremlinGraphQuery(binding.graphQuery(),
                     NeighborVertexResolver.from(binding.schema()))
-                    .geoProperties(geoPropertyByVertexType(binding.schema()));
+                    .geoProperties(geoPropertyByVertexType(binding.schema()))
+                    .schema(binding.schema());
             if (fuzzyPatterns != null) {
                 engine.fuzzyPatterns(fuzzyPatterns.registryOf(name));
             }

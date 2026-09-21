@@ -135,7 +135,7 @@ public final class GremlinQuery {
         List<String> parts = splitArgs(args).stream().map(GremlinQuery::unquote).toList();
         String rest = s.substring(close + 1).trim();
         String logic = null;
-        int brace = indexOfOutsideQuotes(rest, '{');
+        int brace = indexOfLogicBrace(rest);
         if (brace >= 0) {
             int logicClose = matchingBrace(rest, brace);
             logic = rest.substring(brace + 1, logicClose).trim();
@@ -222,22 +222,75 @@ public final class GremlinQuery {
                 throw new QueryException("Expected '.' before step, got: " + rest);
             }
             rest = rest.substring(1).trim();
-            int stepOpen = rest.indexOf('(');
-            if (stepOpen < 0) {
+            // a step is called with parentheses - has('key'), out() - or, the Groovy way, with a
+            // closure: filter { ... }, map { ... }. The first of the two after the name opens it.
+            int paren = indexOfOutsideQuotes(rest, '(');
+            int brace = indexOfOutsideQuotes(rest, '{');
+            boolean closure;
+            int stepOpen;
+            if (paren >= 0 && (brace < 0 || paren < brace)) {
+                stepOpen = paren;
+                closure = false;
+            } else if (brace >= 0) {
+                stepOpen = brace;
+                closure = true;
+            } else {
                 throw new QueryException("Malformed step (missing '('): " + rest);
             }
             String name = rest.substring(0, stepOpen).trim();
             if (name.isEmpty()) {
                 throw new QueryException("Step name must not be blank in: " + rest);
             }
-            int stepClose = matchingParen(rest, stepOpen);
-            List<String> stepArgs = splitArgs(rest.substring(stepOpen + 1, stepClose)).stream()
-                    .map(GremlinQuery::unquote)
-                    .toList();
+            int stepClose = closure ? matchingBrace(rest, stepOpen) : matchingParen(rest, stepOpen);
+            List<String> stepArgs;
+            if (closure) {
+                // the body is one argument: it is an expression, not a comma-separated call
+                String body = rest.substring(stepOpen + 1, stepClose).trim();
+                stepArgs = body.isEmpty() ? List.of() : List.of(body);
+            } else {
+                stepArgs = splitArgs(rest.substring(stepOpen + 1, stepClose)).stream()
+                        .map(GremlinQuery::unquote)
+                        .toList();
+            }
             steps.add(new Step(name, stepArgs));
             rest = rest.substring(stepClose + 1).trim();
         }
         return List.copyOf(steps);
+    }
+
+    /**
+     * The index of the {@code {} that opens the trailing logic block, or -1.
+     *
+     * <p>A logic block follows the traversal's last step call ({@code .out(knows) { $logic }}), and a
+     * closure belongs to the step name in front of it ({@code .filter { ... }}). The two are told apart
+     * by what precedes the brace: a step call ends with {@code )}, a step name does not.
+     */
+    private static int indexOfLogicBrace(String s) {
+        char quote = 0;
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (quote != 0) {
+                if (c == quote) {
+                    quote = 0;
+                }
+                continue;
+            }
+            if (c == '\'' || c == '"') {
+                quote = c;
+            } else if (c == '{' && followsStepCall(s, i)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /** Whether what precedes {@code at} is whitespace, the end of a step call, or the end of a step closure. */
+    private static boolean followsStepCall(String s, int at) {
+        int i = at - 1;
+        while (i >= 0 && Character.isWhitespace(s.charAt(i))) {
+            i--;
+        }
+        return i < 0 || s.charAt(i) == ')' || s.charAt(i) == '}';
     }
 
     private static int matchingBrace(String s, int open) {

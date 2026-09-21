@@ -15,7 +15,13 @@ import java.util.Set;
  * .filter(relation.equals('directedBy') || xrelation.equals('directed'))
  * .filter(relation = 'directedBy' && confidence != 'low')
  * .filter(name)                      // property must be present
+ * .filter(it.get().value('status').equals('SUCCESS'))   // the Groovy form
+ * .filter { it.get().label() == 'Account' }             // ... and on the label
  * }</pre>
+ *
+ * <p>The Groovy element accessors are rewritten into plain keys first (see
+ * {@link GremlinElementExpression}), so both spellings mean the same predicate; {@code label} and
+ * {@code id} are answered from the element instead of its properties.
  *
  * <p>Grammar (keywords are case-insensitive):
  * <pre>
@@ -25,7 +31,8 @@ import java.util.Set;
  * op         := '=' | '==' | '!='</pre>
  *
  * <p>Comparisons are delegated to {@link GremlinSteps#matches(Object, String)},
- * so they are numeric-aware and otherwise compare string representations.
+ * so they are numeric-aware, case-insensitive for strings, and otherwise compare
+ * string representations.
  * Property values inside quotes may contain {@code ||}, {@code &&} or parens.
  */
 public final class GremlinFilterExpression {
@@ -38,7 +45,7 @@ public final class GremlinFilterExpression {
     private record Predicate(String key, Op op, String value) {
 
         boolean test(GremlinElement element) {
-            Object stored = element.properties().get(key);
+            Object stored = GremlinElementExpression.read(element, key);
             if (op == Op.EXISTS) {
                 return stored != null;
             }
@@ -68,6 +75,7 @@ public final class GremlinFilterExpression {
         if (expression == null || expression.isBlank()) {
             throw new QueryException("filter expects a non-blank expression");
         }
+        expression = GremlinElementExpression.normalize(expression);
         List<List<Predicate>> alternatives = new ArrayList<>();
         for (String orPart : splitTopLevel(expression, "||", "or")) {
             if (orPart.isBlank()) {
@@ -107,7 +115,9 @@ public final class GremlinFilterExpression {
         Set<String> keys = new LinkedHashSet<>();
         for (List<Predicate> conjunction : alternatives) {
             for (Predicate predicate : conjunction) {
-                keys.add(predicate.key());
+                if (!GremlinElementExpression.isPseudo(predicate.key())) {
+                    keys.add(predicate.key());
+                }
             }
         }
         return keys;

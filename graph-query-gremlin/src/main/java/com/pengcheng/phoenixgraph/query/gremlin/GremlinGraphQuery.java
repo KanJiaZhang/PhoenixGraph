@@ -16,6 +16,10 @@ import com.pengcheng.phoenixgraph.query.storage.ScannedEdge;
 import com.pengcheng.phoenixgraph.schema.geo.GeoSearch;
 import com.pengcheng.phoenixgraph.storage.TimeRange;
 import com.pengcheng.phoenixgraph.query.storage.VertexQueryResult;
+import com.pengcheng.phoenixgraph.schema.EdgeDirection;
+import com.pengcheng.phoenixgraph.schema.EdgeSchema;
+import com.pengcheng.phoenixgraph.schema.GraphSchema;
+import com.pengcheng.phoenixgraph.schema.VertexSchema;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -25,6 +29,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Supplier;
 
@@ -40,7 +45,8 @@ import java.util.function.Supplier;
  *       from an edge to its far endpoint ({@code bothE().filter(...).otherV()})</li>
  *   <li>filter — {@code has(key[, value])} and {@code filter(expression)}</li>
  *   <li>vector search — {@code nearest(k[, ef])} over an HNSW index ({@link #hnswIndex})</li>
- *   <li>projection — {@code values(key...)} and {@code elementMap()}</li>
+ *   <li>filter — {@code has(key[, value])} and {@code filter(expression)} / {@code filter { ... }}</li>
+ *   <li>projection — {@code values(key...)}, {@code map { it.get().value('key') }} and {@code elementMap()}</li>
  *   <li>terminal — {@code count()}, {@code limit(n)}, {@code dedup()}</li>
  * </ul>
  * Custom steps / named logic can be added with
@@ -59,6 +65,9 @@ public class GremlinGraphQuery {
     private final Map<String, String> logics = new LinkedHashMap<>();
     private final Map<String, HnswIndex> hnswIndexes = new LinkedHashMap<>();
     private Map<String, String> geoProperties = Map.of();
+
+    /** The schema a named hop's direction is checked against ({@code null} = no check). */
+    private GraphSchema schema;
     private FuzzyPatternRegistry fuzzyPatterns = FuzzyPatternRegistry.empty();
     private GeminiCluster geminiCluster;
     private Supplier<Map<String, HnswIndex>> hnswIndexSource;
@@ -139,6 +148,17 @@ public class GremlinGraphQuery {
      */
     public GremlinGraphQuery geoProperties(Map<String, String> geoPropertyByVertexType) {
         this.geoProperties = geoPropertyByVertexType == null ? Map.of() : Map.copyOf(geoPropertyByVertexType);
+        compiledCache.clear();
+        return this;
+    }
+
+    /**
+     * Wires the schema a hop's direction is checked against: a hop that the schema says can never
+     * match the vertex type the traversal stands on is rejected with the direction to use instead
+     * (see {@link #checkHopDirections}). Without a schema the check is skipped.
+     */
+    public GremlinGraphQuery schema(GraphSchema schema) {
+        this.schema = schema;
         compiledCache.clear();
         return this;
     }
@@ -434,6 +454,7 @@ public class GremlinGraphQuery {
     }
 
     private CompiledQuery compile(GremlinQuery query) {
+        checkHopDirections(query);
         List<GremlinQuery.Step> parsedSteps = new ArrayList<>(query.steps());
         if (query.logic() != null && !query.logic().isBlank()) {
             parsedSteps.addAll(expandLogic(query.logic()));
@@ -947,6 +968,14 @@ public class GremlinGraphQuery {
                 }
             } else if (name.equals("values")) {
                 keys.addAll(steps.get(j).args());
+            } else if (name.equals("map")) {
+                // map { ... } reads one property (or the label/id) off the element and hands on the
+                // value, so nothing after it can read the element
+                List<String> args = steps.get(j).args();
+                if (!args.isEmpty()) {
+                    keys.addAll(GremlinElementExpression.pathKeys(args.get(0)));
+                }
+                break;
             } else if (name.equals("count")) {
                 // count() consumes the elements, so nothing after it needs properties
                 break;
@@ -966,6 +995,100 @@ public class GremlinGraphQuery {
         return name.equals("out") || name.equals("in") || name.equals("both")
                 || name.equals("outE") || name.equals("inE") || name.equals("bothE")
                 || name.equals("otherV") || name.equals("nearest") || name.equals("circle");
+    }
+
+    /**
+     * Rejects a hop the schema says can never match the vertex type the traversal is standing on,
+     * and names the direction that does match.
+     *
+     * <p>{@code g.V('+86-138-10008','Phone').in('PhoneToAccount')} reads an account's phone link the
+     * wrong way round: the class runs {@code Phone -> Account}, so no edge of it points at a Phone
+     * and the answer is empty for a reason the caller cannot see. The direction is fixed by the
+     * schema, so the traversal knows it before it reads anything - and says so instead.
+     *
+     * <p>The check follows the declared vertex type along the traversal and gives up as soon as the
+     * type is no longer known (an edge hop, {@code otherV()}, a vector or fuzzy step, ...), so it
+     * never guesses. A store without a schema (the tests, an in-memory graph) skips it entirely.
+     */
+    private void checkHopDirections(GremlinQuery query) {
+        if (schema == null) {
+            return;
+        }
+        Set<String> types = startTypes(query.source());
+        if (types == null || types.isEmpty()) {
+            return;
+        }
+        for (GremlinQuery.Step step : query.steps()) {
+            String name = step.name();
+            if (isMeta(name) || name.equals("has") || name.equals("filter")
+                    || name.equals("limit") || name.equals("dedup")) {
+                continue; // the traverser goes through unchanged
+            }
+            boolean edgeHop = name.equals("outE") || name.equals("inE") || name.equals("bothE");
+            int direction = switch (name) {
+                case "out", "outE" -> 1;
+                case "in", "inE" -> -1;
+                case "both", "bothE" -> 2;
+                default -> 0;
+            };
+            if (direction == 0) {
+                return; // whatever comes out is not the vertex type we were tracking
+            }
+            if (step.args().size() != 1) {
+                return; // "every class" or several classes: nothing single to check
+            }
+            EdgeSchema edge = schema.edgeSchema(step.args().get(0));
+            if (edge == null) {
+                return; // the resolver reports the unknown class
+            }
+            String sourceName = edge.sourceVertexName();
+            String targetName = edge.targetVertexName();
+            if (edge.direction() == EdgeDirection.DIRECTED
+                    && sourceName != null && targetName != null) {
+                if (direction == 1 && types.stream().noneMatch(sourceName::equals)) {
+                    throw wrongDirection(name, edge, types, true);
+                }
+                if (direction == -1 && types.stream().noneMatch(targetName::equals)) {
+                    throw wrongDirection(name, edge, types, false);
+                }
+            }
+            if (edgeHop) {
+                return; // the next traverser is an edge, not a vertex
+            }
+            Set<String> next = new LinkedHashSet<>();
+            if (direction != 1 && sourceName != null) {
+                next.add(sourceName); // an in-edge reaches the class's source vertex
+            }
+            if (direction != -1 && targetName != null) {
+                next.add(targetName); // an out-edge reaches its target
+            }
+            types = next.isEmpty() ? null : next;
+            if (types == null) {
+                return;
+            }
+        }
+    }
+
+    /** The vertex type a traversal starts from, or {@code null} when it does not declare a known one. */
+    private Set<String> startTypes(GremlinQuery.Source source) {
+        if (source.kind() != GremlinQuery.Source.Kind.VERTICES
+                && source.kind() != GremlinQuery.Source.Kind.VERTEX_TYPE) {
+            return null;
+        }
+        VertexSchema vertex = source.name() == null ? null : schema.vertexSchema(source.name());
+        return vertex == null ? null : Set.of(vertex.name());
+    }
+
+    /** The error a hop in the direction the schema does not have is rejected with. */
+    private static QueryException wrongDirection(String stepName, EdgeSchema edge,
+                                                Set<String> types, boolean triedOut) {
+        String suffix = stepName.endsWith("E") ? "E" : "";
+        String other = triedOut ? "in" : "out";
+        return new QueryException(stepName + "('" + edge.name() + "') cannot match "
+                + String.join("/", new TreeSet<>(types)) + ": " + edge.name() + " runs "
+                + edge.sourceVertexName() + " -> " + edge.targetVertexName()
+                + ", so use " + other + suffix + "('" + edge.name() + "') or both" + suffix
+                + "('" + edge.name() + "')");
     }
 
     /** An optional step argument: blank means "not given". */

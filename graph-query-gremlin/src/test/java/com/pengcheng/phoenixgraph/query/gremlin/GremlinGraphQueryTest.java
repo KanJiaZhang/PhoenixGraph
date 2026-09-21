@@ -8,6 +8,11 @@ import com.pengcheng.phoenixgraph.query.storage.EdgeQueryResult;
 import com.pengcheng.phoenixgraph.query.storage.EdgeSide;
 import com.pengcheng.phoenixgraph.query.storage.GraphQuery;
 import com.pengcheng.phoenixgraph.query.storage.VertexQueryResult;
+import com.pengcheng.phoenixgraph.schema.EdgeEndpointSchema;
+import com.pengcheng.phoenixgraph.schema.EdgeSchema;
+import com.pengcheng.phoenixgraph.schema.GraphSchema;
+import com.pengcheng.phoenixgraph.schema.PropertyType;
+import com.pengcheng.phoenixgraph.schema.VertexSchema;
 import com.pengcheng.phoenixgraph.schema.geo.GeoHit;
 import com.pengcheng.phoenixgraph.schema.geo.GeoPoint;
 import org.junit.jupiter.api.BeforeEach;
@@ -26,6 +31,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -992,6 +998,123 @@ class GremlinGraphQueryTest {
 
         assertEquals(1, result.size());
         assertEquals("e1", ((GremlinEdge) result.get(0)).id());
+    }
+
+    @Test
+    void filterAcceptsTheGroovyElementAccessor() {
+        EdgeQueryResult keep = edge("e1", EdgeSide.OUT, "n1",
+                Map.of("relation", "directedBy", "xrelation", "directed"));
+        EdgeQueryResult drop = edge("e2", EdgeSide.OUT, "n2",
+                Map.of("relation", "other", "xrelation", "other"));
+        when(graphQuery.readEdges("v1", "person", "knows", EdgeSide.OUT, List.of("relation")))
+                .thenReturn(List.of(keep, drop));
+
+        List<Object> result = gremlin.execute("g.V('v1', 'person').outE('knows')"
+                + ".filter(it.get().value('relation').equals('directedBy'))");
+
+        assertEquals(1, result.size());
+        assertEquals("e1", ((GremlinEdge) result.get(0)).id());
+    }
+
+    @Test
+    void filterClosureCanMatchTheElementLabel() {
+        EdgeQueryResult e1 = edge("e1", EdgeSide.OUT, "n1", Map.of());
+        EdgeQueryResult e2 = edge("e2", EdgeSide.OUT, "n2", Map.of());
+        when(graphQuery.readEdges("v1", "person", "knows", EdgeSide.OUT, List.of()))
+                .thenReturn(List.of(e1, e2));
+        when(graphQuery.readVertices(eq("person"), anyList(), isNull()))
+                .thenAnswer(inv -> {
+                    List<Object> ids = inv.getArgument(1);
+                    List<VertexQueryResult> out = new ArrayList<>(ids.size());
+                    for (Object id : ids) {
+                        out.add(new VertexQueryResult("person", id, Map.of(), 1L, 2L));
+                    }
+                    return out;
+                });
+
+        List<Object> result = gremlin.execute("g.V('v1', 'person').out('knows')"
+                + ".filter { it.get().label() == 'person' }");
+
+        assertEquals(2, result.size());
+    }
+
+    @Test
+    void filterClosureComparesStringsCaseInsensitively() {
+        EdgeQueryResult keep = edge("e1", EdgeSide.OUT, "n1", Map.of("status", "ACTIVE"));
+        EdgeQueryResult drop = edge("e2", EdgeSide.OUT, "n2", Map.of("status", "FROZEN"));
+        when(graphQuery.readEdges("v1", "person", "knows", EdgeSide.OUT, List.of("status")))
+                .thenReturn(List.of(keep, drop));
+
+        List<Object> result = gremlin.execute("g.V('v1', 'person').outE('knows')"
+                + ".filter( it.get().value('status').equals('Active') )");
+
+        assertEquals(1, result.size());
+        assertEquals("e1", ((GremlinEdge) result.get(0)).id());
+    }
+
+    @Test
+    void mapClosureProjectsOnePropertyValue() {
+        EdgeQueryResult e1 = edge("e1", EdgeSide.OUT, "n1", Map.of("weight", 0.5));
+        EdgeQueryResult e2 = edge("e2", EdgeSide.OUT, "n2", Map.of("weight", 0.25));
+        when(graphQuery.readEdges("v1", "person", "knows", EdgeSide.OUT, List.of("weight")))
+                .thenReturn(List.of(e1, e2));
+
+        List<Object> result = gremlin.execute(
+                "g.V('v1', 'person').outE('knows').map { it.get().value('weight') }");
+
+        assertEquals(List.of(0.5, 0.25), result);
+    }
+
+    @Test
+    void mapRejectsAnExpressionThatIsNotASingleAccessor() {
+        QueryException failure = assertThrows(QueryException.class, () -> gremlin.execute(
+                "g.V('v1', 'person').outE('knows').map { it.get().value('weight') + 1 }"));
+        assertTrue(failure.getMessage().contains("single element accessor"), failure.getMessage());
+    }
+
+    @Test
+    void aHopAgainstTheEdgeDirectionIsRejectedWithTheDirectionToUse() {
+        gremlin.schema(phoneGraph());
+
+        QueryException failure = assertThrows(QueryException.class, () -> gremlin.execute(
+                "g.V('+86-138-10008','Phone').in('PhoneToAccount')"));
+        assertTrue(failure.getMessage().contains("PhoneToAccount runs Phone -> Account"),
+                failure.getMessage());
+        assertTrue(failure.getMessage().contains("use out('PhoneToAccount') or both('PhoneToAccount')"),
+                failure.getMessage());
+
+        // the direction the schema declares is not rejected, and both() always is not
+        assertTrue(gremlin.execute("g.V('+86-138-10008','Phone').out('PhoneToAccount')").isEmpty());
+        assertTrue(gremlin.execute("g.V('+86-138-10008','Phone').both('PhoneToAccount')").isEmpty());
+        // ... and from an account the same class is walked in the other direction
+        assertTrue(gremlin.execute("g.V('1001','Account').in('PhoneToAccount')").isEmpty());
+    }
+
+    @Test
+    void aDirectionTheSchemaCannotDecideIsNotRejected() {
+        // a class whose endpoints the schema does not name: nothing to check against
+        GraphSchema schema = new GraphSchema(1, "g")
+                .vertex(new VertexSchema(1, "Phone", "phone"))
+                .edge(new EdgeSchema(1, "Link", "link",
+                        new EdgeEndpointSchema(1, "source", "source", PropertyType.ScalarType.STRING, null),
+                        new EdgeEndpointSchema(2, "target", "target", PropertyType.ScalarType.STRING, null)));
+        gremlin.schema(schema);
+
+        assertTrue(gremlin.execute("g.V('p','Phone').in('Link')").isEmpty());
+        // and without a schema at all the check is skipped
+        new GremlinGraphQuery(graphQuery, resolver)
+                .execute("g.V('p','Phone').in('PhoneToAccount')");
+    }
+
+    private static GraphSchema phoneGraph() {
+        return new GraphSchema(1, "payment-graph")
+                .vertex(new VertexSchema(1, "Account", "An account"))
+                .vertex(new VertexSchema(2, "Phone", "A phone number"))
+                .edge(new EdgeSchema(2, "PhoneToAccount", "A phone belongs to an account",
+                        new EdgeEndpointSchema(1, "source", "Phone vertex id",
+                                PropertyType.ScalarType.STRING, "Phone"),
+                        new EdgeEndpointSchema(2, "target", "Account vertex id",
+                                PropertyType.ScalarType.LONG, "Account")));
     }
 
     @Test

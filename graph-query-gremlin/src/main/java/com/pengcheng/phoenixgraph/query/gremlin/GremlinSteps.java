@@ -596,6 +596,18 @@ final class GremlinSteps {
         };
     }
 
+    /** Projects each element to one value, the Groovy {@code map { ... }} way. */
+    static GremlinStep map(String expression) {
+        String key = GremlinElementExpression.pathKey(expression);
+        return (ctx, in) -> {
+            List<Object> out = new ArrayList<>(in.size());
+            for (Object o : in) {
+                out.add(GremlinElementExpression.read(requireElement(o), key));
+            }
+            return out;
+        };
+    }
+
     /** Projects each element to {@code {id, label, property1, property2, ...}}. */
     static GremlinStep elementMap() {
         return (ctx, in) -> {
@@ -964,7 +976,13 @@ final class GremlinSteps {
         return vertices;
     }
 
-    /** Compares a stored property value against a raw string token (numeric-aware). */
+    /**
+     * Compares a stored property value against a raw string token (numeric-aware).
+     *
+     * <p>Strings compare case-insensitively: the filter grammar is written by hand in a query box
+     * ({@code filter(it.get().value('accountStatus').equals('Active'))}) and a status stored as
+     * {@code ACTIVE} is the same status as the one typed {@code Active}.
+     */
     static boolean matches(Object stored, String rawToken) {
         if (stored instanceof Number number) {
             try {
@@ -979,7 +997,7 @@ final class GremlinSteps {
         if (stored instanceof Boolean bool) {
             return Boolean.parseBoolean(rawToken) == bool;
         }
-        return String.valueOf(stored).equals(rawToken);
+        return String.valueOf(stored).equalsIgnoreCase(rawToken);
     }
 
     private static GremlinVertex requireVertex(Object o) {
