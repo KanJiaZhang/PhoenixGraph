@@ -10,9 +10,10 @@
 (8) 图例选中后左下角显示选中点数/边数；(9) 搜索改成“子串或字段缩写”；（两个服务加 `no-cache` 让浏览器不再拿旧 app.js）；(10) 同一对端点的多条边画成弧；(11) `filter`/`map` 换成表达式语言；
 (12) `toList` 等终结步（§49.1）；(13) 多边 `fill: none` + 弧距减半（§49.2）；(14) 闭包里的 `def tmp = it.get();` 与换行/分号语句（§49.3）。**【均在 §47/§48/§49 与 DAILY 里】**
 **现场已重启并对齐：8081（11 个图，payment-graph 指到 `http_demo_v3`）+ 8080（UI，含新搜索实现）+ Aerospike 容器；RocksDB 两个 payment 实例已按单向重新播种（`.rocksdb`，300 条边）。8083（hnsw-dynamic）本轮未起。**
-**下一次入口：提交本轮改动；§53.4 的优化空间（摘要 bin / limit 有序表示，即 §48.6/§50.5 的老待办）；RocksDB 侧同样的 stale 不一致（§53.1）；§52.5 的未做（rewriteWindow 全链重写 / 近线按天整读 / 在线逐出口径）；`vt` 塞进边读（§51.6）；display `$id`（§46.4）；UI 镜像边折叠（§47.8）；`map` 聚合/多列（§48.6）。**
+**下一次入口：继续 §53.4 的优化空间（摘要 bin / limit 有序表示，即 §48.6/§50.5 的老待办）；RocksDB 侧同样的 stale 不一致（§53.1）；§52.5 的未做（rewriteWindow 全链重写 / 近线按天整读 / 在线逐出口径）；`vt` 塞进边读（§51.6）；display `$id`（§46.4）；UI 镜像边折叠（§47.8）；`map` 聚合/多列（§48.6）。**
 
-**工作树状态：本日四个批次共 9+ 个提交，全部已提交。**
+**工作树状态：本日七个批次共 27 个提交，全部已提交并已 push 到 GitHub（`develop`，`origin` = github.com:KanJiaZhang/PhoenixGraph）。**
+**第七批（#23/#25/#24/#26）新增：`WriteOutcome.SUCCESS_STALE`（stale 写统一）、`AerospikeTwoHopExpansion`（150 两跳扩展 loader，独立 set）+ `AerospikeTwoHopExpansionBenchmarkTest`（200→5000 五档 benchmark）+ `*LiveLoadTest`（种 `payment_twohop_exp`）。详见 `CONTEXT.md` §53 / `DAILY` §15。**
 **第六批（Aerospike-Edge 大点三层）新增类：`EdgeTiering`（big 判定 + 分层路由）、`AerospikeNearline`（近线布局/分区数学）、`AerospikeNearlineStore`（TTL 7 天近线 KV + 索引）、`AerospikeVolumeStore`（按月/年 volume）、`AerospikeEdgeOfflineJob`（离线：volume + 预划分 + 冷 delta + big 判定）；`AerospikeEdgeChunks.buildLevels` + `AerospikeEdgeChunkStore.rewriteWindow`（冷 delta）；`AerospikeEdgeGraphQuery` 四参构造器启用分层读（三参旧构造器不变=兼容）。详见 `CONTEXT.md` §52 / `DAILY` §14。**
 
 **上一次会话：2026-09-18（周四，约 17 个提交）· 工作树干净 · 全项目编译通过 · 受影响的模块测试全绿**
