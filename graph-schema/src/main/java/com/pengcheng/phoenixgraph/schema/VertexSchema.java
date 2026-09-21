@@ -25,12 +25,20 @@ public class VertexSchema {
     /** Default index of the vertex id property schema. */
     public static final int ID_INDEX = 0;
 
+    /**
+     * The display-name value meaning "label this vertex by its id": a schema that sets it shows the
+     * vertex id instead of (or as well as) the values of its display properties. It is not a stored
+     * property, so it never collides with one.
+     */
+    public static final String DISPLAY_ID = "$id";
+
     private final int id;
     private final String name;
     private final String description;
     private final VertexPropertySchema idSchema;
     private final MetaPropertySchema createdTime;
     private final MetaPropertySchema lastUpdatedTime;
+    private String displayName;
     private final List<VertexPropertySchema> properties = new ArrayList<>();
     private final Map<Integer, VertexPropertySchema> propertiesById = new HashMap<>();
     private final Map<String, VertexPropertySchema> propertiesByName = new HashMap<>();
@@ -131,7 +139,24 @@ public class VertexSchema {
 
     /** Names of the {@link #displayProperties() display properties}, in declaration order. */
     public List<String> displayPropertyNames() {
+        if (DISPLAY_ID.equals(displayName)) {
+            return List.of(DISPLAY_ID); // the vertex is identified by its id, not by a property
+        }
         return displayProperties().stream().map(VertexPropertySchema::name).toList();
+    }
+
+    /**
+     * The name a UI labels this vertex by: {@value #DISPLAY_ID} to use the vertex id, or
+     * {@code null} to use the {@link #displayProperties() display properties}.
+     */
+    public String displayName() {
+        return displayName;
+    }
+
+    /** Sets the display name (fluent); {@value #DISPLAY_ID} labels the vertex by its id. */
+    public VertexSchema displayName(String displayName) {
+        this.displayName = displayName;
+        return this;
     }
 
     /** Looks up a property (including the id schema) by id, or {@code null} if not found. */

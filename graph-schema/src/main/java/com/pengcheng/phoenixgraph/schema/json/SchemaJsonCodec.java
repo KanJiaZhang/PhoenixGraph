@@ -115,7 +115,8 @@ public class SchemaJsonCodec {
                 toPropertyDto(schema.idSchema()),
                 toPropertyDto(schema.createdTime()),
                 toPropertyDto(schema.lastUpdatedTime()),
-                schema.properties().stream().map(this::toPropertyDto).toList());
+                schema.properties().stream().map(this::toPropertyDto).toList(),
+                schema.displayName());
     }
 
     private EdgeSchemaDto toEdgeDto(EdgeSchema schema) {
@@ -185,6 +186,7 @@ public class SchemaJsonCodec {
         MetaPropertySchema createdTime = toMetaProperty(dto.createdTime(), MetaPropertySchema.createdTime());
         MetaPropertySchema lastUpdatedTime = toMetaProperty(dto.lastUpdatedTime(), MetaPropertySchema.lastUpdatedTime());
         VertexSchema schema = new VertexSchema(dto.id(), dto.name(), dto.description(), idSchema, createdTime, lastUpdatedTime);
+        schema.displayName(dto.displayName());
         if (dto.properties() != null) {
             for (PropertyDto p : dto.properties()) {
                 VertexPropertySchema property = toVectorProperty(

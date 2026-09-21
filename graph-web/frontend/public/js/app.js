@@ -441,6 +441,7 @@
       const props = d.properties || {};
       const parts = [];
       for (const field of fields) {
+        if (field === '$id') { parts.push(String(d.id)); continue; } // schema displays the id itself
         const value = props[field];
         if (value === null || value === undefined || value === '') continue;
         parts.push(flattenValue(value));

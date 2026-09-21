@@ -7,6 +7,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -54,6 +55,45 @@ class DisplayPropertyTest {
 
         // the id property is always rendered by the UI, so it is not part of the display list
         assertEquals(List.of("firstName"), account.displayPropertyNames());
+    }
+
+    @Test
+    void aSchemaCanDisplayTheIdItself() {
+        VertexSchema ip = new VertexSchema(2, "IP", "An IP address")
+                .property(new VertexPropertySchema(1, "ipAddress", "address", PropertyType.ScalarType.STRING)
+                        .display(true))
+                .displayName(VertexSchema.DISPLAY_ID);
+
+        // $id wins over the property flags: the vertex is labelled by its id
+        assertEquals(List.of(VertexSchema.DISPLAY_ID), ip.displayPropertyNames());
+        // ... but the properties stay reachable for values()
+        assertEquals(List.of("ipAddress"),
+                ip.displayProperties().stream().map(VertexPropertySchema::name).toList());
+    }
+
+    @Test
+    void displayIdSurvivesTheJsonRoundTrip() {
+        SchemaJsonCodec codec = new SchemaJsonCodec();
+        GraphSchema original = new GraphSchema(1, "payment-graph", "demo")
+                .vertex(new VertexSchema(1, "IP", "An IP address")
+                        .property(new VertexPropertySchema(1, "ipAddress", "address",
+                                PropertyType.ScalarType.STRING).display(true))
+                        .displayName(VertexSchema.DISPLAY_ID))
+                .vertex(new VertexSchema(2, "Account", "An account"))
+                .edge(new EdgeSchema(1, "Payment", "A payment",
+                        new EdgePropertySchema(1, "source", "source vertex", PropertyType.ScalarType.LONG),
+                        new EdgePropertySchema(2, "target", "target vertex", PropertyType.ScalarType.LONG)));
+
+        String json = codec.toJson(original);
+        assertTrue(json.replaceAll("\\s+", "").contains("\"displayName\":\"$id\""));
+        // a vertex that does not set it carries no key, so schema files stay terse
+        assertEquals(1, json.split("\"displayName\"", -1).length - 1);
+
+        GraphSchema parsed = codec.fromJson(json);
+        assertEquals(List.of(VertexSchema.DISPLAY_ID),
+                parsed.vertexSchema("IP").displayPropertyNames());
+        assertEquals(VertexSchema.DISPLAY_ID, parsed.vertexSchema("IP").displayName());
+        assertNull(parsed.vertexSchema("Account").displayName());
     }
 
     @Test
