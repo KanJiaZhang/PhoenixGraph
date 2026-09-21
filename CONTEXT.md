@@ -3319,3 +3319,121 @@ gemini 26 / fuzzy 37 / hnsw 33 / **query-aerospike 27（+4）** / gremlin 156 / 
 * `vt` 只在新写的记录里，`updateVertexProperty` 单独创建的记录没有类型（退回请求类型）。
 * 47.8 / 48.6 的老遗留不变（UI 不做镜像边折叠、display 属性 `$id`、`limit` 有序表示、摘要 bin、跨查询缓存、
   `map` 无聚合、表达式无字符串函数）。
+
+---
+
+## 51. 第六批：Gremlin 结果的「结果」面板、弧距再减半、类型是过滤条件、regex 形状的正题
+
+### 51.1 Gremlin 的结果进「结果」面板（#20）
+
+用户要的是：`…map { … }.toList()` 这类**不是图元素**的答案（count、values、elementMap、一列字符串）要出现在
+侧栏的「结果」面板里；而返回遍历器（点/边）的查询保持原样 —— 只画画布，不显示那个面板。
+
+改动（`graph-web/frontend/public/js/app.js`）：
+
+* `rowsAvailable()` 不再要求 `cypher`（原来「结果」tab 只对 Cypher 开放），只看 `rowsReady`。
+* `showQueryResult` 里分流：Cypher 的 `columns/rows` 照旧；否则若 `responseValue(result)` 是数组且
+  `!elementValues(...)`（即不是点/边），交给新的 `showGremlinRows(values)` —— 一列一行（`rowsValue` =
+  「值」/「Value」），对象用 JSON 渲染（`elementMap()`、`toBulkSet()` 的行也就能看）；是图元素则
+  `clearRows()`（面板关掉，画布照旧）。
+* i18n：`rowsHint` 改成「Gremlin 的结果值 / Cypher 的行结果会显示在这里」。
+
+实测：`g.V(1001,'Account').bothE('Payment').map { def tmp = it.get(); tmp.value('status') == 'SUCCESS' ? 'S' : 'P' }.toList()`
+→ `["S","S",…]` 共 37 项，面板一行一项；`g.V(1001,'Account').both()` 仍然只出画布。
+
+### 51.2 弧距再减半（#21）
+
+`EDGE_ARC_STEP` 13px → **7px**（用户反馈还是偏大）。
+
+### 51.3 类型是过滤条件：读记录必须符合声明的类型（#22）
+
+现象：UI 选 IP（或任何非 Account 类型）输入 `1001`，仍然画出以 account 1001 为顶点的子图；用户期望
+"这个 IP 的值应该查不到结果"。（第 50.1 节的 `vt` 让"记录自己说类型"成为可能，当时选择的是**改标签**；
+用户这次明确了取向：类型应当是**过滤**。）
+
+两处改动：
+
+1. **存储层（严格读）**：`AerospikeGraphQuery.readVertex/readVertices` 现在要求记录的 `vt` 与请求的类型一致，
+   不一致就当作**没有这个顶点**（原来会按真实类型重新读一次并改标签）。这同时让 Aerospike 与 RocksDB 行为
+   一致 —— RocksDB 的顶点表按类型分 family，本来就读不到（§50.1 实测过）。没有 `vt` 的老记录、或 `vt` 指向
+   schema 里不存在的类型时，仍然按请求的类型读（向后兼容）。
+2. **引擎层（无类名的首跳先校验种子）**：只做第 1 点还不够 —— `g.V('1001','IP').both()` 的首跳会读该记录的
+   **每一个边 bin**（`both()` 没有类名），而一条 Account 记录本来就有那些 bin，于是"以 IP 身份"走完了 Account
+   的邻域。所以 `verifySeeds` 增加一种情形：**首跳是 `out/in/both/outE/inE/bothE` 且没有类名**时，种子先读一遍
+   （`untypedFirstHop`）。种子读不到/类型不符 → 遍历从"没有"开始（结果空、子图空）。
+
+实测（8081）：
+
+```
+g.V("1001","IP").both()        -> result=[]  vertices=0 edges=0      （原来是 account 1001 的子图）
+g.V("1001","IP")               -> result=[]  vertices=0 edges=0
+g.V("1001","Account").both()   -> 正常
+g.V("+86-138-69999","Phone").both() -> 正常（三个账户）
+g.V("+86-138-69999","IP").both()    -> result=[]  vertices=0 edges=0
+```
+
+**代价与取舍**：`verifySeeds` 只在"首跳没有类名"或"计划只剩直通步"时打开，所以**命名类的查询一个往返都没多**
+（压测的 kv-calls 列与改动前一致：`H-135 out` 2、`S-150 out>in(IPToAccount)` 4、`S-150 …dedup` 2…）。
+新加的无类名对照 `g.V('135','Account').both().count()` 是 **12 次往返**（每类两个方向的边 bin 各一次 +
+校验种子 1 次），这也是 `both()` 本来的代价。
+
+> 为什么不做"无条件校验种子"：那会给每个查询都加一个往返，并且要改 13 个钉住"种子不读"这个性能设计的既有
+> 断言（`fanOutUsesNativeBatchReadChunkedByBatchSize`、`intermediateHopsSkipVertexReads`、`nearestPushes*` …）。
+> 更彻底的省法是把 `vt` 一起塞进边读的 bin 投影（同一次往返里知道类型），代价是改 6 个 store 方法与查询层的
+> 批读/邻居读路径 —— 列入未做。
+
+### 51.4 regex 不该抽值 —— 原话终于贴出来了（#18 的正题）
+
+用户这次补上了那句话："regex的pattern不应该提取具体值，这样 zha 和 xia 都能匹配正则表达式，但是不能关联，
+应当保留正则的公式并作为子pattern写入，修改一下"。
+
+第 35.9 节当时确实做了 `regex`（公式/形状）与 `regexValue`（抽值）两个函数，但为了"key 不变、断言不受影响"，
+**演示模式 0 选的是 `regexValue`** —— 于是用户在自己的演示里仍然看到 zha 与 xia 不关联，问题"还在"。
+现在把演示模式 0 改成公式语义：
+
+```
+emailDomain(email)+'_'+countryCode(phone)+'_'+ip2(ip)+'_'+regex(username, '^[a-z]+')
+```
+
+（`FuzzyDemo.SHARED_HABITS` 与运行中的 **`fuzzy-patterns.json`** 同步修改，描述/名称也一起改；
+新增 `FuzzyDemo.NAME_SHAPE` 给测试用，避免硬编码形状 token。）
+
+验证：
+
+* 单测 `twoDifferentNameWordsOfOneShapeLinkUp`：`zhang1988` 与 `xia1999`（同域名/国家//16）同一个 link id ✓；
+* 集成 `theNameWordItselfDoesNotDecideTheLink`：用 `xia1999` 的 context 查，命中第一圈的 6 个账户 ✓；
+* 线上（重播数据后）：两个 context 都得到同一个节点
+  `fl_0_mail.ru_86_10.20_re_a_z_6759fdcb`（`re_a_z_…` 就是 `^[a-z]+` 的形状）✓；
+* `regexValue` 保留（按值分组仍有场景），只是不再出现在演示模式里。
+
+数据按 §50.4 的方式整批重播（先 truncate 再 `FuzzyLinkDemoLoader`），所以库里没有旧的 `…_zhang` 节点 ✓。
+
+### 51.5 回归与压测
+
+全量 `./mvnw test`：**BUILD SUCCESS**（731 → **734**：gremlin +1、integration +1、fuzzy +1；skipped 4）。
+
+两跳压测重跑（`AerospikeTwoHopPaymentBenchmarkTest`，同一台机器，压测时三个服务 JVM 也在跑，**时延列明显受负载影响**，
+按项目惯例看**确定性流量列**）：
+
+```
+H-135 out（命名类）            2 kv（未变）
+H-135 both（命名类）           3 kv（未变）
+H-135 both（无类名，新增对照） 12 kv = 6 个边 bin + 各方向 + 1 次种子校验
+S-150 out > in(IPToAccount)    4 kv（未变）   p50 11–13 ms（负载下；安静时同查询 6.7–7.5 ms）
+S-150 … > dedup                2 kv（未变）
+S-150 … > count                3 kv（未变，v-items=0）
+S-150 … > limit(500)           4 kv（未变，e-items 101→51 = cap 下推）
+S-150 in(IPToAccount,PhoneToAccount) > count  5 kv（多类二跳）
+S-150 bothE(IPToAccount) > otherV             6 kv / 201 e-items
+```
+
+结论与 §50.5 一致：往返次数决定时延；命名类查询没有因为这次改动多花一次往返；无类名的 `both()` 本来就要把
+每一类的边 bin 读一遍（12 次），校验种子只占其中 1 次。
+
+### 51.6 未做 / 待确认
+
+* **把 `vt` 塞进边读**（消除无类名首跳的 +1 往返）——需要改 6 个 store 方法与查询层批读/邻居读；
+* 命名类首跳 + 类型不符的记录仍可能读出该记录同类的边 bin（`g.V('1001','IP').in('IPToAccount')`）；要彻底
+  按类型过滤，得让 store 知道期望类型（同上一条）；
+* 「结果」面板对 Gremlin 是**一列**（值/对象）；聚合或多列要等 `map` 有聚合能力；
+* 47.8 / 48.6 / 50.7 的老遗留不变。

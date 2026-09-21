@@ -90,7 +90,10 @@ class AerospikeTwoHopPaymentBenchmarkTest {
         List<Query> oneHop = oneHopQueries();
         all.addAll(oneHop);
         for (Query query : all) {
-            assertTrue(query.gremlin().contains("Payment"), query.id() + " walks payment edges");
+            // every measurement walks payment edges - or reads every class of the seed on purpose, which
+            // is the one shape whose text does not name the class it walks
+            assertTrue(query.gremlin().contains("Payment") || query.steps().startsWith("both (every class"),
+                    query.id() + " walks payment edges");
             results.add(measure(query));
         }
         // a mixed pass per spelling: every query once per round, back to back, as a dashboard asks them
@@ -472,6 +475,16 @@ class AerospikeTwoHopPaymentBenchmarkTest {
         queries.add(new Query("H-150 out>count", "150", "out > count",
                 "g.V('150','Account').out('Payment').count()", Check.COUNT, List.of(),
                 (long) out("150").size()));
+        // a hop that names no class reads every edge bin of the seed's record, so the seed is verified
+        // first (one more round trip): the price of never walking a record of another type
+        long bothRaw = suite.edges(HUB, "Payment", EdgeSide.OUT).size()
+                + suite.edges(HUB, "Payment", EdgeSide.IN).size()
+                + suite.edges(HUB, "IPToAccount", EdgeSide.OUT).size()
+                + suite.edges(HUB, "IPToAccount", EdgeSide.IN).size()
+                + suite.edges(HUB, "PhoneToAccount", EdgeSide.OUT).size()
+                + suite.edges(HUB, "PhoneToAccount", EdgeSide.IN).size();
+        queries.add(new Query("H-" + HUB + " both (every class)", HUB, "both (every class, seed verified)",
+                "g.V('" + HUB + "','Account').both().count()", Check.COUNT, List.of(), bothRaw));
         return queries;
     }
 
