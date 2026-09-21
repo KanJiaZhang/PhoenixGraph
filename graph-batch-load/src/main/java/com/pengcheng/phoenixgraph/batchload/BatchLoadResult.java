@@ -21,7 +21,7 @@ public record BatchLoadResult(String type, int total, int succeeded, int conflic
         int failed = 0;
         for (ItemResult result : results) {
             switch (result.status()) {
-                case "SUCCESS" -> succeeded++;
+                case "SUCCESS", "SUCCESS_STALE" -> succeeded++;
                 case "CONFLICT" -> conflicts++;
                 default -> failed++;
             }

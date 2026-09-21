@@ -444,7 +444,7 @@ public class AerospikeEdgeStore implements AdjacentEdgeStore {
 
         Map<Integer, EdgeSchema> schemas = new LinkedHashMap<>();
         Map<Integer, Map<Object, Map<Integer, Map<String, Object>>>> bySchemaVertex = new LinkedHashMap<>();
-        record EdgeTargets(int schemaId, Object v1, int dir1, Object v2, int dir2) {}
+        record EdgeTargets(int schemaId, Object v1, int dir1, Object v2, int dir2, String edgeId) {}
         List<EdgeTargets> targets = new ArrayList<>(edges.size());
 
         for (EdgeUpsert edge : edges) {
@@ -466,11 +466,11 @@ public class AerospikeEdgeStore implements AdjacentEdgeStore {
             addEdgeValue(byVertex, destination, destinationDir, edgeId,
                     serializeEdgeValue(updated, edge.createdTime(), source, edge.properties()));
 
-            targets.add(new EdgeTargets(schemaId, source, sourceDir, destination, destinationDir));
+            targets.add(new EdgeTargets(schemaId, source, sourceDir, destination, destinationDir, edgeId));
         }
 
         record BinKey(int schemaId, Object vertexId, int dir) {}
-        Map<BinKey, WriteOutcome> binOutcomes = new LinkedHashMap<>();
+        Map<BinKey, BatchWriteResult> binOutcomes = new LinkedHashMap<>();
         for (Map.Entry<Integer, Map<Object, Map<Integer, Map<String, Object>>>> schemaEntry
                 : bySchemaVertex.entrySet()) {
             EdgeSchema schema = schemas.get(schemaEntry.getKey());
@@ -486,8 +486,10 @@ public class AerospikeEdgeStore implements AdjacentEdgeStore {
         List<WriteOutcome> outcomes = new ArrayList<>(edges.size());
         for (EdgeTargets target : targets) {
             outcomes.add(combine(
-                    binOutcomes.get(new BinKey(target.schemaId(), target.v1(), target.dir1())),
-                    binOutcomes.get(new BinKey(target.schemaId(), target.v2(), target.dir2()))));
+                    edgeOutcome(binOutcomes.get(new BinKey(target.schemaId(), target.v1(), target.dir1())),
+                            target.edgeId()),
+                    edgeOutcome(binOutcomes.get(new BinKey(target.schemaId(), target.v2(), target.dir2())),
+                            target.edgeId())));
         }
         return outcomes;
     }
@@ -564,7 +566,7 @@ public class AerospikeEdgeStore implements AdjacentEdgeStore {
         }
 
         // One read-modify-write per shared direction bin on the vertex.
-        Map<Integer, WriteOutcome> sharedOutcomes = new LinkedHashMap<>();
+        Map<Integer, BatchWriteResult> sharedOutcomes = new LinkedHashMap<>();
         for (Map.Entry<Integer, Map<String, Object>> entry : bySharedDir.entrySet()) {
             sharedOutcomes.put(entry.getKey(),
                     upsertBatchInto(vertexId, edgeSchema, entry.getKey(), entry.getValue()));
@@ -575,7 +577,7 @@ public class AerospikeEdgeStore implements AdjacentEdgeStore {
         List<WriteOutcome> outcomes = new ArrayList<>(plans.size());
         for (EdgeWritePlan plan : plans) {
             if (plan.otherEndpoint() == null) {
-                outcomes.add(sharedOutcomes.get(plan.sharedDir()));
+                outcomes.add(edgeOutcome(sharedOutcomes.get(plan.sharedDir()), plan.edgeId()));
                 continue;
             }
             List<Object> otherSideValue = serializeEdgeValue(
@@ -583,7 +585,8 @@ public class AerospikeEdgeStore implements AdjacentEdgeStore {
                     plan.edge().createdTime(), vertexId, plan.edge().properties());
             WriteOutcome otherOutcome = upsertInto(plan.otherEndpoint(), edgeSchema, plan.otherDir(),
                     plan.edgeId(), otherSideValue);
-            outcomes.add(combine(sharedOutcomes.get(plan.sharedDir()), otherOutcome));
+            outcomes.add(combine(edgeOutcome(sharedOutcomes.get(plan.sharedDir()), plan.edgeId()),
+                    otherOutcome));
         }
         return outcomes;
     }
@@ -633,8 +636,8 @@ public class AerospikeEdgeStore implements AdjacentEdgeStore {
         return new EdgeWritePlan(EDGE_DIR_BOTH, other, EDGE_DIR_BOTH, edgeId, edge);
     }
 
-    private WriteOutcome upsertBatchInto(Object vertexId, EdgeSchema edgeSchema, int dir,
-                                         Map<String, Object> edgeValues) {
+    private BatchWriteResult upsertBatchInto(Object vertexId, EdgeSchema edgeSchema, int dir,
+                                             Map<String, Object> edgeValues) {
         int edgeSchemaId = edgeSchema.id();
         String bin = edgeBin(edgeSchemaId, dir);
         String target = vertexId + "@" + bin;
@@ -657,7 +660,7 @@ public class AerospikeEdgeStore implements AdjacentEdgeStore {
                             Operation.put(new Bin(bin, edges)));
                     businessLog.record(BusinessLogEntry.success("upsertEdgesOnVertex", target,
                             Map.of("bin", bin, "count", edgeValues.size(), "createdVertex", true)));
-                    return WriteOutcome.SUCCESS;
+                    return new BatchWriteResult(WriteOutcome.SUCCESS, Set.of());
                 } catch (AerospikeException e) {
                     last = e; // create race -> re-read and retry (update path)
                     continue;
@@ -666,12 +669,14 @@ public class AerospikeEdgeStore implements AdjacentEdgeStore {
 
             try {
                 Map<String, Object> existing = readEdgeMap(record, bin);
+                Set<String> stale = new LinkedHashSet<>();
                 for (Map.Entry<String, Object> entry : edgeValues.entrySet()) {
                     Object existingValue = existing.get(entry.getKey());
                     if (existingValue != null
                             && mergeEdgeValue(entry.getKey(), entry.getValue(), existingValue) == null) {
                         businessLog.record(BusinessLogEntry.failure("upsertEdgesOnVertex", target,
                                 Map.of("edgeId", entry.getKey(), "bin", bin, "stale", true)));
+                        stale.add(entry.getKey());
                     }
                 }
                 Map<String, Object> edges = mergeAndEvict(existing, edgeValues, limit, metrics);
@@ -679,7 +684,9 @@ public class AerospikeEdgeStore implements AdjacentEdgeStore {
                         Operation.put(new Bin(bin, edges)));
                 businessLog.record(BusinessLogEntry.success("upsertEdgesOnVertex", target,
                         Map.of("bin", bin, "count", edgeValues.size())));
-                return WriteOutcome.SUCCESS;
+                WriteOutcome outcome = stale.size() == edgeValues.size()
+                        ? WriteOutcome.SUCCESS_STALE : WriteOutcome.SUCCESS;
+                return new BatchWriteResult(outcome, stale);
             } catch (AerospikeException e) {
                 last = e; // generation race or transient -> re-read and retry
             }
@@ -691,7 +698,7 @@ public class AerospikeEdgeStore implements AdjacentEdgeStore {
                 "error", last == null ? "unknown" : last.toString());
         errorLog.record(BusinessLogEntry.failure("upsertEdgesOnVertex", target, details));
         businessLog.record(BusinessLogEntry.failure("upsertEdgesOnVertex", target, details));
-        return WriteOutcome.FAILED;
+        return new BatchWriteResult(WriteOutcome.FAILED, Set.of());
     }
 
     /**
@@ -724,8 +731,25 @@ public class AerospikeEdgeStore implements AdjacentEdgeStore {
     }
 
     private static WriteOutcome combine(WriteOutcome shared, WriteOutcome other) {
-        return (shared == WriteOutcome.FAILED || other == WriteOutcome.FAILED)
-                ? WriteOutcome.FAILED : WriteOutcome.SUCCESS;
+        if (shared == WriteOutcome.FAILED || other == WriteOutcome.FAILED) {
+            return WriteOutcome.FAILED;
+        }
+        if (shared == WriteOutcome.SUCCESS_STALE && other == WriteOutcome.SUCCESS_STALE) {
+            return WriteOutcome.SUCCESS_STALE;
+        }
+        return WriteOutcome.SUCCESS;
+    }
+
+    /** What one batch write into a shared bin did: the outcome and which edge ids were stale. */
+    private record BatchWriteResult(WriteOutcome outcome, java.util.Set<String> staleEdgeIds) {
+    }
+
+    /** An edge's outcome inside a shared bin: stale only when that bin kept its stored copy. */
+    private static WriteOutcome edgeOutcome(BatchWriteResult result, String edgeId) {
+        if (result == null || result.outcome() == WriteOutcome.FAILED) {
+            return WriteOutcome.FAILED;
+        }
+        return result.staleEdgeIds().contains(edgeId) ? WriteOutcome.SUCCESS_STALE : WriteOutcome.SUCCESS;
     }
 
     private WriteOutcome upsertInto(Object vertexId, EdgeSchema edgeSchema, int dir, String edgeId, List<Object> value) {
@@ -771,7 +795,7 @@ public class AerospikeEdgeStore implements AdjacentEdgeStore {
                     if (merged == null) {
                         businessLog.record(BusinessLogEntry.failure("upsertEdge", target,
                                 Map.of("edgeId", edgeId, "bin", bin, "stale", true)));
-                        return WriteOutcome.CONFLICT;
+                        return WriteOutcome.SUCCESS_STALE;
                     }
                     edges.put(edgeId, merged);
                 }

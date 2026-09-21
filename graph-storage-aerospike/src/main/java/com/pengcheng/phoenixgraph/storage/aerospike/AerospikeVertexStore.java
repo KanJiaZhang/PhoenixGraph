@@ -236,7 +236,7 @@ public class AerospikeVertexStore implements VertexStore {
      * causes a bounded re-read and retry.
      *
      * @return {@link WriteOutcome#SUCCESS} when created or updated,
-     *         {@link WriteOutcome#CONFLICT} when every incoming property is
+     *         {@link WriteOutcome#SUCCESS_STALE} when every incoming property is
      *         stale (nothing written), {@link WriteOutcome#FAILED} after retries
      */
     public WriteOutcome upsertVertex(Object vertexId, Map<Integer, VertexPropertyValue> properties,
@@ -276,7 +276,7 @@ public class AerospikeVertexStore implements VertexStore {
                             || vertexType.equals(readString(record, VERTEX_TYPE_BIN)))) {
                         businessLog.record(BusinessLogEntry.failure("upsertVertex", target,
                                 conflictDetails(payload, "all properties stale")));
-                        return WriteOutcome.CONFLICT;
+                        return WriteOutcome.SUCCESS_STALE;
                     }
                     long newUpdated = Math.max(readLong(record, LAST_UPDATED_TIME_BIN),
                             mergedPropertyMax(record, toWrite));
@@ -316,8 +316,8 @@ public class AerospikeVertexStore implements VertexStore {
     /**
      * Batch upsert of vertices. Each vertex is inserted when absent, otherwise
      * updated per property with a per-property {@code lastModifiedTime} CAS and
-     * a record-generation CAS. Stale records are reported as
-     * {@link WriteOutcome#CONFLICT}.
+     * a record-generation CAS. A vertex whose properties are all stale is
+     * reported as {@link WriteOutcome#SUCCESS_STALE}.
      */
     public List<WriteOutcome> upsertVertices(List<VertexUpsert> upserts) {
         Objects.requireNonNull(upserts, "upserts");
@@ -356,7 +356,7 @@ public class AerospikeVertexStore implements VertexStore {
                     String vertexType = vertexTypeOf(upsert);
                     if (toWrite.isEmpty()
                             && (vertexType == null || vertexType.equals(readString(record, VERTEX_TYPE_BIN)))) {
-                        outcomes.set(i, WriteOutcome.CONFLICT);
+                        outcomes.set(i, WriteOutcome.SUCCESS_STALE);
                     } else {
                         long newUpdated = Math.max(readLong(record, LAST_UPDATED_TIME_BIN),
                                 mergedPropertyMax(record, toWrite));
@@ -546,7 +546,9 @@ public class AerospikeVertexStore implements VertexStore {
             return;
         }
         String target = String.valueOf(vertexId);
-        if (outcome == WriteOutcome.CONFLICT) {
+        if (outcome == WriteOutcome.SUCCESS_STALE) {
+            businessLog.record(BusinessLogEntry.failure("upsertVertices", target, Map.of("stale", true)));
+        } else if (outcome == WriteOutcome.CONFLICT) {
             businessLog.record(BusinessLogEntry.failure("upsertVertices", target, Map.of("conflict", true)));
         } else {
             Map<String, Object> details = Map.of("error", "batch write failed");

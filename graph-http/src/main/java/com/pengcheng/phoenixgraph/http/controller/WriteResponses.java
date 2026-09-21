@@ -15,7 +15,7 @@ final class WriteResponses {
 
     static ResponseEntity<WriteResult> of(Object id, WriteOutcome outcome) {
         HttpStatus status = switch (outcome) {
-            case SUCCESS -> HttpStatus.OK;
+            case SUCCESS, SUCCESS_STALE -> HttpStatus.OK;
             case CONFLICT -> HttpStatus.CONFLICT;
             case FAILED -> HttpStatus.INTERNAL_SERVER_ERROR;
         };

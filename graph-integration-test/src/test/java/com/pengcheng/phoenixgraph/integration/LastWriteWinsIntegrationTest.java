@@ -61,7 +61,7 @@ class LastWriteWinsIntegrationTest {
 
             // newer first, then older: the older write is refused and nothing changes
             assertEquals(WriteOutcome.SUCCESS, upsert(vertexStore, "v-new-first", "new", NEW));
-            assertEquals(WriteOutcome.CONFLICT, upsert(vertexStore, "v-new-first", "old", OLD));
+            assertEquals(WriteOutcome.SUCCESS_STALE, upsert(vertexStore, "v-new-first", "old", OLD));
             assertValue(vertexStore, "v-new-first", "new", NEW);
             // ... while a still newer one is accepted
             assertEquals(WriteOutcome.SUCCESS, upsert(vertexStore, "v-new-first", "newest", NEWEST));
@@ -73,7 +73,7 @@ class LastWriteWinsIntegrationTest {
             assertValue(vertexStore, "v-old-first", "new", NEW);
 
             // the same timestamp is not newer: the stored value stays
-            assertEquals(WriteOutcome.CONFLICT, upsert(vertexStore, "v-old-first", "same-time", NEW));
+            assertEquals(WriteOutcome.SUCCESS_STALE, upsert(vertexStore, "v-old-first", "same-time", NEW));
             assertValue(vertexStore, "v-old-first", "new", NEW);
 
             // and a property written later than the vertex's own lastUpdatedTime still wins
@@ -95,13 +95,12 @@ class LastWriteWinsIntegrationTest {
             EdgeSchema payment = schema.edgeSchema("Payment");
             truncate(client, config.namespace(), set);
 
-            // newer first, then older: the older one is ignored and the stored value stays
+            // newer first, then older: the older one is ignored and the stored value stays.
+            // A write whose every property is stale now reports SUCCESS_STALE - a success with a
+            // note, not a conflict - on the edge path exactly as on the vertex path.
             assertEquals(WriteOutcome.SUCCESS, upsertEdge(edgeStore, payment, "e-new-first", "SUCCESS", NEW));
-            // an edge write reports SUCCESS whenever the bin was written (the stale property is
-            // logged, not turned into CONFLICT the way the vertex path does), so the value is what
-            // this asserts
-            assertTrue(upsertEdge(edgeStore, payment, "e-new-first", "PENDING", OLD) != WriteOutcome.FAILED,
-                    "a stale edge write is not a failure");
+            assertEquals(WriteOutcome.SUCCESS_STALE,
+                    upsertEdge(edgeStore, payment, "e-new-first", "PENDING", OLD));
             assertEdgeValue(edgeStore, payment, "e-new-first", "SUCCESS", NEW);
 
             // older first, then newer
@@ -110,8 +109,8 @@ class LastWriteWinsIntegrationTest {
             assertEdgeValue(edgeStore, payment, "e-old-first", "SUCCESS", NEW);
 
             // the same timestamp again: not newer, so the stored value stays
-            assertTrue(upsertEdge(edgeStore, payment, "e-old-first", "FAILED", NEW) != WriteOutcome.FAILED,
-                    "a same-timestamp edge write is not a failure");
+            assertEquals(WriteOutcome.SUCCESS_STALE,
+                    upsertEdge(edgeStore, payment, "e-old-first", "FAILED", NEW));
             assertEdgeValue(edgeStore, payment, "e-old-first", "SUCCESS", NEW);
 
             // the two edges live in the same source record and do not overwrite each other
