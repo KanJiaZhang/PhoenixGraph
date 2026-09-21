@@ -114,6 +114,19 @@ class FuzzyLinkIntegrationTest {
     }
 
     @Test
+    void theNameWordItselfDoesNotDecideTheLink() {
+        // the first pattern keeps the formula of its regular expression instead of what it matched,
+        // so zhang1988 (the ring) and xia1999 (a value of the same shape) are on one node
+        String xia = "{\"email\":\"19990101@mail.ru\",\"phone\":\"+8613800138001\","
+                + "\"ip\":\"10.20.77.9\",\"username\":\"xia1999\"}";
+
+        List<Object> accounts = gremlin.execute("g.V().fuzzyLink(0, '" + xia + "').out('FuzzyLinkedTo')");
+
+        assertEquals(Set.of("fz_a1", "fz_a2", "fz_a3", "fz_a4", "fz_a5", "fz_a6"), idsOf(accounts),
+                "the ring, reached by a name word of the same shape");
+    }
+
+    @Test
     void theOtherPatternFindsTheOtherRing() {
         List<Object> accounts = gremlin.execute("g.V().fuzzyLink(1, '{"
                 + "\"email\":\"44100101@qq.com\",\"ip\":\"10.30.40.11\",\"cardNumber\":\"6217000090009001\""
@@ -129,7 +142,7 @@ class FuzzyLinkIntegrationTest {
 
         assertEquals(1, links.size());
         GremlinVertex link = (GremlinVertex) links.get(0);
-        assertEquals("mail.ru_86_10.20_zhang", link.properties().get("key"));
+        assertEquals("mail.ru_86_10.20_" + FuzzyDemo.NAME_SHAPE, link.properties().get("key"));
         assertEquals(0, ((Number) link.properties().get("patternId")).intValue());
     }
 
@@ -189,7 +202,7 @@ class FuzzyLinkIntegrationTest {
         String again = FuzzyKey.of(FuzzyDemo.SHARED_HABITS.parsed()
                 .key(FuzzyContexts.fromJson(contextJson(FuzzyLinkDemoLoader.firstRingContext()))));
 
-        assertEquals("mail.ru_86_10.20_zhang", fromTheLoader);
+        assertEquals("mail.ru_86_10.20_" + FuzzyDemo.NAME_SHAPE, fromTheLoader);
         assertEquals(fromTheLoader, again, "the same context always lands on the same node");
     }
 

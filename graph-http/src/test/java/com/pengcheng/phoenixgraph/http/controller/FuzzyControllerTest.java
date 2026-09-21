@@ -174,8 +174,8 @@ class FuzzyControllerTest {
                                 {"vertexName":"Account","vertexId":"fz_a1","patternId":0}"""))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.links[0].patternId").value(0))
-                .andExpect(jsonPath("$.links[0].key").value("mail.ru_86_10.20_zhang"))
-                .andExpect(jsonPath("$.links[0].linkVertexId").value("fl_0_mail.ru_86_10.20_zhang"));
+                .andExpect(jsonPath("$.links[0].key").value("mail.ru_86_10.20_" + FuzzyDemo.NAME_SHAPE))
+                .andExpect(jsonPath("$.links[0].linkVertexId").value("fl_0_mail.ru_86_10.20_" + FuzzyDemo.NAME_SHAPE));
     }
 
     @Test
@@ -202,7 +202,7 @@ class FuzzyControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.patternId").value(0))
                 .andExpect(jsonPath("$.title").value("pattern -> ring -> payments -> receiver"))
-                .andExpect(jsonPath("$.key").value("mail.ru_86_10.20_zhang"))
+                .andExpect(jsonPath("$.key").value("mail.ru_86_10.20_" + FuzzyDemo.NAME_SHAPE))
                 .andExpect(jsonPath("$.query").value(org.hamcrest.Matchers.allOf(
                         org.hamcrest.Matchers.containsString("g.V().fuzzyLink(0, '"),
                         org.hamcrest.Matchers.containsString("\"email\":\"19880101@mail.ru\""),
@@ -247,7 +247,7 @@ class FuzzyControllerTest {
     void theDemoPatternsReadTheContextTheyDocument() {
         FuzzyContext context = FuzzyDemo.demoContext();
 
-        assertEquals("mail.ru_86_10.20_zhang", FuzzyDemo.SHARED_HABITS.key(context),
+        assertEquals("mail.ru_86_10.20_" + FuzzyDemo.NAME_SHAPE, FuzzyDemo.SHARED_HABITS.key(context),
                 "the word the value is reduced to is the fragment");
         assertTrue(FuzzyDemo.MACHINE_MAIL.key(context).startsWith("10.20.31_621700_re_"),
                 "the machine-made email contributes its shape: " + FuzzyDemo.MACHINE_MAIL.key(context));

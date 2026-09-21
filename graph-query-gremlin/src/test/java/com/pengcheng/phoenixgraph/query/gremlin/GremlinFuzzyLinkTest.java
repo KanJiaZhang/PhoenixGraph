@@ -35,10 +35,11 @@ class GremlinFuzzyLinkTest {
             + "\"ip\":\"10.20.88.4\",\"username\":\"zhang1979\",\"cardNumber\":\"6217000099998888\"}";
 
     private static final String LINK_A = linkOf(CONTEXT_A);
+    private static final String HONEST_CONTEXT =
+            "{\"email\":\"li.wei@qq.com\",\"phone\":\"+8613700137000\",\"ip\":\"172.16.5.9\","
+                    + "\"username\":\"liwei\"}";
     private static final String LINK_HONEST = FuzzyDemo.SHARED_HABITS.linkVertexId(
-            com.pengcheng.phoenixgraph.fuzzy.FuzzyContexts.fromJson(
-                    "{\"email\":\"li.wei@qq.com\",\"phone\":\"+8613700137000\",\"ip\":\"172.16.5.9\","
-                            + "\"username\":\"liwei\"}"));
+            com.pengcheng.phoenixgraph.fuzzy.FuzzyContexts.fromJson(HONEST_CONTEXT));
     // the second pattern puts the shape of the machine-made email in the key, so the id is computed
     private static final String LINK_MACHINE = FuzzyDemo.MACHINE_MAIL.linkVertexId(
             com.pengcheng.phoenixgraph.fuzzy.FuzzyContexts.fromJson(
@@ -46,8 +47,8 @@ class GremlinFuzzyLinkTest {
                             + "\"cardNumber\":\"6217000010001234\"}"));
 
     private static final Map<String, Map<String, Object>> VERTICES = Map.of(
-            LINK_A, linkProperties("mail.ru_86_10.20_zhang", 0),
-            LINK_HONEST, linkProperties("qq.com_86_172.16_liwei", 0),
+            LINK_A, linkProperties(habitsKey(CONTEXT_A), 0),
+            LINK_HONEST, linkProperties(habitsKey(HONEST_CONTEXT), 0),
             LINK_MACHINE, linkProperties(FuzzyDemo.MACHINE_MAIL.key(
                     com.pengcheng.phoenixgraph.fuzzy.FuzzyContexts.fromJson(
                             "{\"email\":\"19880101@mail.ru\",\"ip\":\"10.20.31.7\",\"cardNumber\":\"6217000010001234\"}")), 1),
@@ -87,14 +88,14 @@ class GremlinFuzzyLinkTest {
         assertEquals(1, links.size());
         GremlinVertex link = (GremlinVertex) links.get(0);
         assertEquals(LINK_A, link.id(), "the context came from the account's own properties");
-        assertEquals("mail.ru_86_10.20_zhang", link.properties().get("key"));
+        assertEquals(habitsKey(CONTEXT_A), link.properties().get("key"));
     }
 
     @Test
     void theLinkExplainsItself() {
         List<Object> keys = gremlin().execute("g.V().fuzzyLink(0, '" + CONTEXT_A + "').values('key')");
 
-        assertEquals(List.of("mail.ru_86_10.20_zhang"), keys, "the projection after the step is honoured");
+        assertEquals(List.of(habitsKey(CONTEXT_A)), keys, "the projection after the step is honoured");
     }
 
     @Test
@@ -252,6 +253,12 @@ class GremlinFuzzyLinkTest {
 
     private static String linkOf(String contextJson) {
         return FuzzyDemo.SHARED_HABITS.linkVertexId(
+                com.pengcheng.phoenixgraph.fuzzy.FuzzyContexts.fromJson(contextJson));
+    }
+
+    /** The key the first demo pattern produces for a context (the shape of its regex is part of it). */
+    private static String habitsKey(String contextJson) {
+        return FuzzyDemo.SHARED_HABITS.key(
                 com.pengcheng.phoenixgraph.fuzzy.FuzzyContexts.fromJson(contextJson));
     }
 
