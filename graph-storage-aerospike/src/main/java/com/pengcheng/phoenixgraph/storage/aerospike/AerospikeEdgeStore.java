@@ -956,7 +956,13 @@ public class AerospikeEdgeStore implements AdjacentEdgeStore {
      */
     public long countEdges(Object vertexId, int edgeSchemaId, int directionCode, EdgeRead read) {
         Objects.requireNonNull(read, "read");
-        Record record = db.get(null, key(vertexId), edgeBin(edgeSchemaId, directionCode));
+        String bin = edgeBin(edgeSchemaId, directionCode);
+        if (!read.hasFilter() && !read.hasWindow()) {
+            // no condition and no window: the bin's size is the answer, and the server computes it
+            // from the map without ever sending the map
+            return db.mapSize(key(vertexId), bin);
+        }
+        Record record = db.get(null, key(vertexId), bin);
         return isMissing(record) ? 0 : countInRecord(record, edgeSchemaId, directionCode, read);
     }
 
@@ -974,8 +980,13 @@ public class AerospikeEdgeStore implements AdjacentEdgeStore {
         if (vertexIds.isEmpty()) {
             return 0;
         }
-        Key[] keys = vertexIds.stream().map(this::key).toArray(Key[]::new);
         String bin = edgeBin(edgeSchemaId, directionCode);
+        if (!read.hasFilter() && !read.hasWindow()) {
+            // one batched server-side count: one round trip, and the bins themselves stay put
+            Key[] keys = vertexIds.stream().map(this::key).toArray(Key[]::new);
+            return java.util.Arrays.stream(db.mapSizes(keys, bin)).sum();
+        }
+        Key[] keys = vertexIds.stream().map(this::key).toArray(Key[]::new);
         Record[] records = db.get(new BatchPolicy(), keys, bin);
         long total = 0;
         for (Record record : records) {

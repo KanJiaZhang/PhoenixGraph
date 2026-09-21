@@ -56,6 +56,19 @@ class AerospikeTwoHopExpansionLiveLoadTest {
             long distinct = both.stream().map(Object::toString).distinct().count();
             System.out.printf("distinct reached accounts: %d%n", distinct);
             assertEquals(100, distinct, "99 second-hop accounts plus the hub itself");
+
+            // a count after a hop is pushed into the store, which now answers it from the bin's shape
+            // on the server (a number, not the bin): it must agree with the reach the data says
+            assertEquals(50, countOf(gremlin, "g.V('150','Account').out('Payment').count()"));
+            assertEquals(50, countOf(gremlin, "g.V('150','Account').both('Payment').count()"));
+            assertEquals(4950, countOf(gremlin,
+                    "g.V('150','Account').out('Payment').out('Payment').count()"));
         }
+    }
+
+    private static long countOf(GremlinGraphQuery gremlin, String query) {
+        List<Object> answer = gremlin.execute(query);
+        System.out.printf("%s -> %s%n", query, answer);
+        return ((Number) answer.get(0)).longValue();
     }
 }

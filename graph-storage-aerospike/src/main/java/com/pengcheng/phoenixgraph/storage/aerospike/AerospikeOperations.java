@@ -1,6 +1,7 @@
 package com.pengcheng.phoenixgraph.storage.aerospike;
 
 import com.aerospike.client.AerospikeClient;
+import com.aerospike.client.BatchRead;
 import com.aerospike.client.BatchRecord;
 import com.aerospike.client.Bin;
 import com.aerospike.client.Key;
@@ -8,6 +9,7 @@ import com.aerospike.client.Record;
 import com.aerospike.client.ScanCallback;
 import com.aerospike.client.cluster.Node;
 import com.aerospike.client.Operation;
+import com.aerospike.client.cdt.MapOperation;
 import com.aerospike.client.policy.BatchPolicy;
 import com.aerospike.client.policy.Policy;
 import com.aerospike.client.policy.QueryPolicy;
@@ -20,6 +22,7 @@ import com.aerospike.client.task.IndexTask;
 import com.pengcheng.phoenixgraph.metrics.Metrics;
 import com.pengcheng.phoenixgraph.metrics.MetricsSink;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -50,6 +53,27 @@ public interface AerospikeOperations {
 
     Record operate(WritePolicy policy, Key key, Operation... operations);
 
+    /**
+     * The number of entries in a map bin, computed by the server.
+     *
+     * <p>It is a read-only CDT operation, so the payload is one number rather than the whole map -
+     * what turns {@code count()} on a hub's edge bin from "read the bin and measure it" into "read
+     * one number". It is counted as a read (of that bin), not as a write, which is what it is.
+     *
+     * @return the entries in {@code bin}, or {@code 0} when the record or the bin is absent
+     */
+    long mapSize(Key key, String bin);
+
+    /**
+     * The sizes of one map bin across many keys, computed by the server in one batch.
+     *
+     * <p>The batch form of {@link #mapSize(Key, String)}: one round trip for the whole set, and
+     * still only the numbers on the wire.
+     *
+     * @return one size per key, in the key order ({@code 0} for an absent record or bin)
+     */
+    long[] mapSizes(Key[] keys, String bin);
+
     boolean operate(BatchPolicy policy, List<BatchRecord> records);
 
     void scanAll(ScanPolicy policy, String namespace, String set, ScanCallback callback, String... binNames);
@@ -68,7 +92,6 @@ public interface AerospikeOperations {
 
     /** A client with a counter on every call. */
     final class Metered implements AerospikeOperations {
-
         private final AerospikeClient client;
         private final MetricsSink metrics;
 
@@ -230,6 +253,48 @@ public interface AerospikeOperations {
                 metrics.increment(Metrics.KV_WRITE_FAILED);
                 throw e;
             }
+        }
+
+        @Override
+        public long mapSize(Key key, String bin) {
+            Record record;
+            try {
+                record = client.operate(null, key, MapOperation.size(bin));
+                read(key, new String[] {bin}, record == null ? 0 : 1);
+            } catch (RuntimeException e) {
+                readFailed();
+                throw e;
+            }
+            Object size = record == null || record.bins == null ? null : record.bins.get(bin);
+            return size instanceof Number number ? number.longValue() : 0;
+        }
+
+        @Override
+        public long[] mapSizes(Key[] keys, String bin) {
+            long[] sizes = new long[keys.length];
+            List<BatchRead> reads = new ArrayList<>(keys.length);
+            for (Key key : keys) {
+                // a read-only CDT op belongs in a BatchRead: a BatchWrite rejects a batch with no write
+                reads.add(new BatchRead(key, new Operation[] {MapOperation.size(bin)}));
+            }
+            try {
+                client.get(new BatchPolicy(), reads);
+                Record[] records = new Record[keys.length];
+                for (int i = 0; i < keys.length; i++) {
+                    records[i] = reads.get(i).record;
+                }
+                readBatch(keys, new String[] {bin}, records);
+            } catch (RuntimeException e) {
+                readFailed();
+                throw e;
+            }
+            for (int i = 0; i < keys.length; i++) {
+                Record record = reads.get(i).record;
+                // an absent bin comes back as a record with no bins at all: not an error, a zero
+                Object size = record == null || record.bins == null ? null : record.bins.get(bin);
+                sizes[i] = size instanceof Number number ? number.longValue() : 0;
+            }
+            return sizes;
         }
 
         @Override
