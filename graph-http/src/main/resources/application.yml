@@ -5,9 +5,9 @@ spring:
     resources:
       cache:
         cachecontrol:
-          # the UI is edited while the service runs: a browser must revalidate its copy of
-          # app.js/style.css instead of serving the one it cached from an earlier build
-          no-cache: true
+          # the UI is edited while the service runs: a browser must never serve a copy of
+          # app.js/style.css it cached from an earlier build
+          no-store: true
 
 server:
   port: 8081
