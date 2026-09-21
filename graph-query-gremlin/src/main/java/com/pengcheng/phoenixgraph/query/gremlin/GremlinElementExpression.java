@@ -52,7 +52,7 @@ final class GremlinElementExpression {
         java.util.regex.Matcher matcher = VALUE.matcher(text);
         matcher.region(index, text.length());
         if (matcher.lookingAt()) {
-            return new Accessor(matcher.group(2), matcher.end());
+            return new Accessor(resolveKey(matcher.group(2)), matcher.end());
         }
         matcher = LABEL.matcher(text);
         matcher.region(index, text.length());
@@ -80,6 +80,19 @@ final class GremlinElementExpression {
     /** Whether a key is one of the element accessors rather than a stored property. */
     static boolean isPseudo(String key) {
         return LABEL_KEY.equals(key) || ID_KEY.equals(key) || ELEMENT_KEY.equals(key);
+    }
+
+    /**
+     * The Gremlin spellings of the element accessors: {@code value('id')}/{@code value('$id')} mean
+     * {@code id()} and {@code value('label')}/{@code value('$label')} mean {@code label()}, so they
+     * resolve to the pseudo keys instead of looking for a property of that name.
+     */
+    private static String resolveKey(String key) {
+        return switch (key.toLowerCase(java.util.Locale.ROOT)) {
+            case "id", "$id" -> ID_KEY;
+            case "label", "$label" -> LABEL_KEY;
+            default -> key;
+        };
     }
 
     /** Reads a (possibly pseudo) key off an element: a property value, its label, its id or itself. */

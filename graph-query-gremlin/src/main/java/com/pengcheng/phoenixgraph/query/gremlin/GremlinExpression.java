@@ -450,6 +450,10 @@ public final class GremlinExpression {
                     || name.equals("id") || name.equals("key")) {
                 return elementMethod(receiver, name, args);
             }
+            Value builtin = stringMethod(receiver, name, args, method);
+            if (builtin != null) {
+                return builtin;
+            }
             if (args.size() != 1) {
                 throw error("'" + method + "' takes one argument");
             }
@@ -482,6 +486,114 @@ public final class GremlinExpression {
         }
 
         /**
+         * The string and number methods any value answers: {@code length()}, {@code toUpperCase()},
+         * {@code toLowerCase()}, {@code trim()}, {@code toString()}, {@code isEmpty()},
+         * {@code abs()}, {@code substring(from[, to])}, {@code replace(from, to)} and
+         * {@code indexOf(needle)}.
+         *
+         * <p>They read the receiver through {@code String.valueOf}, so they work on a property, a
+         * literal or the result of another call alike, and a null receiver yields null - the same
+         * "a missing value stays missing" rule the comparisons follow. {@code substring} and
+         * {@code indexOf} follow the Groovy convention that a negative index counts from the end and
+         * an out-of-range one is clamped, so {@code substring(-2)} is the last two characters.
+         *
+         * @return the method as a value, or {@code null} when the name is not one of them
+         */
+        private Value stringMethod(Value receiver, String name, List<Value> args, String written) {
+            return switch (name) {
+                case "length" -> noArgs(receiver, args, written,
+                        value -> (long) String.valueOf(value).length());
+                case "touppercase" -> noArgs(receiver, args, written,
+                        value -> String.valueOf(value).toUpperCase(Locale.ROOT));
+                case "tolowercase" -> noArgs(receiver, args, written,
+                        value -> String.valueOf(value).toLowerCase(Locale.ROOT));
+                case "trim" -> noArgs(receiver, args, written, value -> String.valueOf(value).trim());
+                case "tostring" -> noArgs(receiver, args, written, String::valueOf);
+                case "isempty" -> noArgs(receiver, args, written,
+                        value -> String.valueOf(value).isEmpty());
+                case "abs" -> noArgs(receiver, args, written, value -> value instanceof Number number
+                        ? (isIntegral(number) ? (Object) Math.abs(number.longValue())
+                                : (Object) Math.abs(number.doubleValue()))
+                        : null);
+                case "substring" -> substring(receiver, args, written);
+                case "replace" -> {
+                    requireArity(args, 2, written);
+                    Value from = args.get(0);
+                    Value to = args.get(1);
+                    yield element -> {
+                        Object value = receiver.evaluate(element);
+                        return value == null ? null : String.valueOf(value)
+                                .replace(String.valueOf(from.evaluate(element)),
+                                        String.valueOf(to.evaluate(element)));
+                    };
+                }
+                case "indexof" -> {
+                    requireArity(args, 1, written);
+                    Value needle = args.get(0);
+                    yield element -> {
+                        Object value = receiver.evaluate(element);
+                        return value == null ? null : (long) String.valueOf(value)
+                                .indexOf(String.valueOf(needle.evaluate(element)));
+                    };
+                }
+                default -> null;
+            };
+        }
+
+        /** A no-argument method whose value is a function of the receiver's value. */
+        private Value noArgs(Value receiver, List<Value> args, String written,
+                             java.util.function.Function<Object, Object> op) {
+            requireArity(args, 0, written);
+            return element -> {
+                Object value = receiver.evaluate(element);
+                return value == null ? null : op.apply(value);
+            };
+        }
+
+        /** {@code substring(from)} or {@code substring(from, to)}: negative counts from the end. */
+        private Value substring(Value receiver, List<Value> args, String written) {
+            if (args.size() != 1 && args.size() != 2) {
+                throw error("'" + written + "' takes one or two arguments");
+            }
+            Value from = args.get(0);
+            Value to = args.size() == 2 ? args.get(1) : null;
+            return element -> {
+                Object value = receiver.evaluate(element);
+                if (value == null) {
+                    return null;
+                }
+                String text = String.valueOf(value);
+                int start = index(from.evaluate(element), text.length());
+                int end = to == null ? text.length() : index(to.evaluate(element), text.length());
+                if (start > end) {
+                    int swap = start;
+                    start = end;
+                    end = swap;
+                }
+                return text.substring(start, end);
+            };
+        }
+
+        /** A Groovy-style index: negative counts from the end, anything out of range is clamped. */
+        private static int index(Object value, int length) {
+            if (!(value instanceof Number number)) {
+                return 0;
+            }
+            int index = number.intValue();
+            if (index < 0) {
+                index += length;
+            }
+            return Math.max(0, Math.min(index, length));
+        }
+
+        private void requireArity(List<Value> args, int expected, String written) {
+            if (args.size() != expected) {
+                throw error("'" + written + "' takes " + (expected == 0 ? "no arguments"
+                        : expected + " argument" + (expected == 1 ? "" : "s")));
+            }
+        }
+
+        /**
          * An accessor called on a receiver that turns out to be an element, the way a closure that
          * bound one to a variable writes it: {@code def tmp = it.get(); tmp.value('status')}.
          *
@@ -493,8 +605,16 @@ public final class GremlinExpression {
             if (takesKey ? args.size() != 1 : !args.isEmpty()) {
                 throw error("'" + name + "' takes " + (takesKey ? "one argument" : "no arguments"));
             }
-            String key = takesKey && args.get(0) instanceof Const constant
+            String written = takesKey && args.get(0) instanceof Const constant
                     && constant.value() instanceof String text ? text : null;
+            // value('id')/value('label') are the Gremlin spellings of id()/label(): resolve them to the
+            // pseudo keys rather than looking for a property of that name
+            String key = written == null ? null
+                    : switch (written.toLowerCase(Locale.ROOT)) {
+                        case "id" -> GremlinElementExpression.ID_KEY;
+                        case "label" -> GremlinElementExpression.LABEL_KEY;
+                        default -> written;
+                    };
             if (key != null) {
                 if (GremlinElementExpression.isPseudo(key)) {
                     elementIdentity = true;
