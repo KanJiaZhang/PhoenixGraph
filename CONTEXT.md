@@ -3160,3 +3160,162 @@ filter(status = 'SUCCESS').count()                                              
 未做（沿用 §48.6）：`map` 无聚合与多列；表达式无字符串函数（`toString`/`substring`/`toUpperCase`）；因此
 上面那条 `t.id().toString()` 会明确报 "'toString' takes one argument"；`value('id')` 仍按属性名；
 UI 不做镜像边折叠、display 属性 `$id`、`limit` 有序表示、摘要 bin、跨查询 bin 缓存。
+
+---
+
+## 50. 第五批：顶点记录的类型、last-write-wins 复验、链接不写账户、regex 形状复验、两跳再压测
+
+### 50.1 顶点记录带上自己的类型（#15）
+
+用户报的现象：UI 选 IP、输入 `+86-138-69999`（其实是 Phone），能查到这个点、也能看到它的三条边，但
+**点的属性面板显示 IP**（`ipAddress: "+86"` —— 手机号的国家码被当成 IP 地址读了出来）。选 Phone 输入 IP 的 id 同理。
+
+根因很清楚：`AerospikeGraphQuery.readVertex(id, vertexName, ...)` **只信调用方给的类型名** —— 它用那个
+schema 把属性 bin（按索引存）翻译成名字，而记录里没有任何东西说明自己是什么。id 本身不带类型，
+所以"用 IP 的 schema 读一条 Phone 记录"就得到上面那一幕。RocksDB 的两个 store 不受影响：它们的顶点
+按类型分 column family（`vertex:<类型>`），用 IP family 读 Phone 的 id 根本读不到记录，返回空 ✓（实测）。
+
+修法是让记录自己说是谁：
+
+* `AerospikeVertexStore` 新增一个普通 bin `vt`（**不是** `vp_` 前缀，所以属性解码不会碰它），
+  写入时从 `VertexUpsert.vertexSchema().name()`（以及 `upsertVertex(Vertex)` 的 `vertex.schema().name()`、
+  `GraphService.upsertVertex` 的请求类型）取类型名。批量与单条两条写路径都带上它。
+* `StoredVertex` 加一个 `vertexType` 组件（旧的 4 参构造器保留，老记录/测试不受影响）；
+  `propertyBins()` **必须**把 `vt` 拼进每次读的 bin 列表 —— 漏了这一句时改了也读不到（第一版就是这么错的）。
+* `AerospikeGraphQuery` 读到记录后先看它的类型：与请求的类型不同就用**记录的类型**重新读一次
+  （投影也换成那个类型的属性），返回 `VertexQueryResult(真实类型, ...)`；老记录没有 `vt`、或 `vt` 指向
+  一个 schema 里没有的类型时，退回请求的名字（向后兼容）。
+
+实测（重启后的 8081）：
+
+```
+g.V('+86-138-69999','IP')    -> Phone:+86-138-69999 {"cnCode":"+86","phoneNumber":"138-69999"}
+g.V('10.99.0.1','Phone')     -> IP:10.99.0.1        {"ipAddress":"10.99.0.1"}
+g.V('10.99.0.1','IP')        -> IP:10.99.0.1        {"ipAddress":"10.99.0.1"}   （本来就对）
+```
+
+注意：`vt` 是写记录时写进去的，所以**已有的老数据要重新播种一次**才有类型（本次已重播 `http_demo_v3`）。
+写路径里 `updateVertexProperty`（按属性号的单属性更新）不带类型，它创建的记录仍然退回请求的类型。
+
+### 50.2 last-write-wins：新的验证与结论（#16）
+
+要验证的是："同一个点或同一条边的同一个属性，两次写入的 `lastUpdatedTime` 不同，**无论谁先到**，
+库里留下的都是 `lastUpdatedTime` 最新的那个值"。新增集成测试 `LastWriteWinsIntegrationTest`（自带
+scratch set，写真实 Aerospike，两方向各来一遍）：
+
+```
+点属性：新先到 -> 旧被拒（CONFLICT，值/时间不变）；再来一个更新的 -> 接受
+点属性：旧先到 -> 新后到 -> 接受，留下新值
+点属性：时间戳相同 -> 不算更新（CONFLICT），值不变
+边属性：同上三种情形（新先到 / 旧先到 / 相同时间戳）
+```
+
+**结论：数据规则成立** —— 点用 `isNewer(incoming, stored) = incoming > stored`，边用
+`incoming.lastUpdatedTime() > old.lastUpdatedTime()`，都是"严格更新才覆盖"，所以最终值总是最新时间戳的那个，
+与到达顺序无关 ✓。
+
+一处**语义差异（不是数据 bug）**记录在案：**边**写入即便所有属性都 stale 也返回 `SUCCESS`（bin 确实被写了一次，
+stale 的只在业务日志里记 `stale=true`），而**点**写入会返回 `CONFLICT`。要让两侧一致，得把"这条边是否全 stale"
+从 `upsertBatchInto` 的 bin 级结果里带出来再合并，属于接口语义改动，本轮没做（测试里明确断言了这一点）。
+
+### 50.3 链接只写 link 点和 link 边，不碰账户（#17）
+
+先说结论：**代码路径里本来就没有把 context 写进账户的地方** —— `fuzzyLink` 这个 step 只读 link 点，
+`FuzzyLinkingService.link` 只写 `linkVertex(...)`（FuzzyLink 点）与 `linkEdge(...)`（FuzzyLinkedTo 边），
+`FuzzyController` 的 `/links` 只是解析 context（顶点属性会**补进 context** 供模式读取，方向是"读"不是"写"）。
+用真实服务实测：给 `fz_a1` 带一个 schema 里根本没有的 key（`deviceId`/`extraKey`）去 link，账户属性
+**一模一样**（前后两次 `readVertex` 的属性名、值、createdTime、lastUpdatedTime 全等），link 点与边正常生成 ✓。
+
+为了让这条约定以后不会被悄悄破坏，新增集成测试 `FuzzyLinkingServiceIntegrationTest`（真实 Aerospike、
+真实 `FuzzyLinkingService`、自己的 scratch set）：写一个账户 → 带额外 key 的 context 调 `link()` →
+断言 link 点存在、link 边存在，且账户的属性集合、每个值、createdTime、lastUpdatedTime **全部不变**。
+
+> 补充说明：demo 数据里账户身上那些 `email`/`phoneNumber`/`cardNumber`/`ipAddress` 是**账户自己的属性**
+> （schema 里就声明了它们），模式正是靠读这些属性才能从"点自身"出发建立链接（`g.V('fz_a1').fuzzyLink(0)`）；
+> 它们不是链接时从 context 写进去的。如果用户的意思是要 demo 账户不带这些片段，那会牺牲"从点自省团伙"
+> 这个演示；需要确认。
+
+### 50.4 regex 形状语义：复验 + 重新生成数据（#18）
+
+用户说"regex pattern 的生成方式"要改进，并要"如果还是存在同样的问题就修复并重新生成 fuzzyLink 的数据"，
+但**"以下问题"这段没贴出来**。先按 §35.9 的验收点逐条复验（8081 实测）：
+
+| 验收点 | 结果 |
+|---|---|
+| `regex` 把**形状**写进 key（不是抽出来的值） | ✓ 节点 id `fl_1_10.30.40_621700_re_d_4_8aafc7c1`（`re_d_4_8aafc7c1` = `^\d{4}` 的形状） |
+| 同形状、**全新值**也连到同一个节点 | ✓ `fuzzyLink(1, {email 99990101@qq.com, ip 10.30.40.99, card …9999})` → 同一个 `fl_1_…` 节点 |
+| `regexValue` 仍然抽值（模式 0 的 `^([a-z]+)`） | ✓ key 仍是 `mail.ru_86_10.20_zhang`；换成 `xia1999` 得到 `…_xia`（另一个节点，符合"按值分组"） |
+| `\d`/`\w` 转义没被吃掉（§35.8 的老 bug） | ✓ `'^\d{4}'` 正常匹配 4 位；不匹配时模式不生效（`12ab@…` → 无链接） |
+| 形状的可读段 + hash 让"长得像但不同"的正则分开 | ✓ 有单测（`^([a-z]+)` vs `^[a-z]+` 的 key 不同） |
+
+数据侧：本次**已经把 fuzzy demo 数据整批重新生成**（`demoSharedGraphViaApi` 先 truncate 了
+`http_demo_v3`，随后 `FuzzyLinkDemoLoader` 重播 17 个账户 / 15 个 link 点 / 26 条 link 边），
+所以现在库里不存在上一代形状留下的节点 ✓。
+
+### 50.5 两跳再压测：150 的 payment→payment 与 payment→IP（#19）
+
+在 `AerospikeTwoHopPaymentBenchmarkTest`（真实 Aerospike、`http_demo_v3`、每条 3 次预热 + 12 次计时、
+答案都与参考读数器核对）的 star 段（种子 `150`）上补到 **20 条遍历**：除原有的 `out>in(IPToAccount)`、
+`both>`、`outE has(status) > otherV >`、`filter(accountStatus)`、`dedup`、`limit(500)`、`count`、
+`dedup>count`、`batch(10)`、`barrier(100)`、`in(PhoneToAccount)>count`、`values(ipAddress)` 之外，新增
+`toList()`、`map { it.get().value('ipAddress') }`、多类二跳 `in('IPToAccount','PhoneToAccount')`、
+边跳中转 `bothE('IPToAccount').otherV()`、`has(ipAddress)>count`、`limit(100)`、`dedup>limit(50)`、
+以及 `out('Payment').out('Payment')>count`。
+
+150 段实测（p50 ms / kv-calls / 答案条数）：
+
+```
+out > in(IPToAccount)                      7.47 / 4  / 1662
+both > in(IPToAccount)                     8.65 / 5  / 1662
+outE has(status) > otherV > in(IPToAccount) 6.88 / 4 / 1662
+out > filter(accountStatus) > in(IPToAccount) 8.65 / 6 / 1662
+out > in(IPToAccount) > dedup              5.24 / 2  / 61
+out > in(IPToAccount) > count              4.00 / 3  / 1662
+out > in(IPToAccount) > dedup > count      4.46 / 2  / 61
+out > in(IPToAccount) > limit(100)         4.52 / 3  / 100
+out > in(IPToAccount) > has(ipAddress)>count 6.95 / 4 / 1662
+out > in(IPToAccount) > values(ipAddress)  6.95 / 4  / 1662
+out > in(IPToAccount) > toList             6.95 / 4  / 1662
+out > in(IPToAccount) > map(ipAddress)     6.55 / 4  / 1662
+out > in(IPToAccount,PhoneToAccount) > count 7.60 / 5 / 1757
+out > bothE(IPToAccount) > otherV          9.96 / 6  / 1662
+out > in(PhoneToAccount) > count           2.62 / 3  / 95
+out > out(Payment) > count                 2.69 / 3  / 0        （它付的账户不出款）
+```
+
+以及 Payment→Payment 的对照（同一份报告里）：
+
+```
+B-150 both > both                          8.39 / 5 / 100      （150 双向两跳只有 100 条）
+P-150 out > out                            3.01 / 2 / 0
+P-135 out > out                            6.03 / 3 / 396
+P-1000 out > out                           2.36 / 3 / 33
+```
+
+结论（与 §45 一致，没有新的退化）：
+
+* **往返次数决定时延**：`count` 3 次往返 4.0 ms，物化 1662 个点 4 次 7.5 ms，`bothE>otherV` 6 次 10.0 ms；
+  `batch(10)` 把往返抬到 9 次（6.4 ms），`barrier(100)` 3 次（6.5 ms）。
+* **150 的"两跳"要以 IP/Phone 收尾才有量**：它付的 100 个账户自己不出款（`out>out` = 0），
+  但每个账户挂着共享 IP，所以 `out('Payment').in('IPToAccount')` 是 1662 条、61 个不同 IP。
+* `dedup`（2 次往返、5.2 ms）与 `limit(k)`（cap 下推、4.5 ms）都能把 1662 压到几十条，
+  是仪表盘上最划算的写法；`count`/`dedup>count` 不构造顶点（v-items=0）。
+* 混合负载：star 段 20 条 × 4 轮 80 次执行 520 ms（6.5 ms/次）；一跳+两跳混跑 124 次 352 ms（2.8 ms/次）。
+
+### 50.6 回归
+
+全量 `./mvnw test`：**BUILD SUCCESS**，731 条（skipped 4），逐模块：schema 74 / core 13 / metrics 18 /
+storage 17 / storage-aerospike 38 / storage-rocksdb 32 / query 15 / rocksdb-inline 16 / rocksdb-edge 21 /
+gemini 26 / fuzzy 37 / hnsw 33 / **query-aerospike 27（+4）** / gremlin 156 / cypher 25 / compute 11 /
+**http 70（+1）** / batch 9 / mapreduce 3 / **integration 90（+2）**。
+
+### 50.7 未做 / 待确认
+
+* **#18 的"以下问题"没有贴出来**：按 §35.9 的验收点复验全过（见 50.4），数据也整批重生成过；
+  如果用户看到的仍是一个具体反例，需要把那句话补上（哪个模式、哪个 context、期望什么）。
+* **#17 的口径**：如果用户其实是要 demo 账户**不带** `email/phoneNumber/cardNumber/ipAddress` 这些片段，
+  那要同时放弃"从点自身属性建立链接"的演示（`g.V(id).fuzzyLink(0)`），需要确认。
+* 边写入"全 stale 也返回 SUCCESS"的语义（50.2），与点侧的 CONFLICT 不一致，尚未统一。
+* `vt` 只在新写的记录里，`updateVertexProperty` 单独创建的记录没有类型（退回请求类型）。
+* 47.8 / 48.6 的老遗留不变（UI 不做镜像边折叠、display 属性 `$id`、`limit` 有序表示、摘要 bin、跨查询缓存、
+  `map` 无聚合、表达式无字符串函数）。
