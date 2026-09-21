@@ -37,5 +37,8 @@ target/
 # RocksDB graph directories (created by the service / the RocksDB loader)
 .rocksdb/
 
+# service logs and scratch files written while running it
+.logs/
+
 # exported session transcripts (regenerate with tools/session-export.mjs)
 .sessions/

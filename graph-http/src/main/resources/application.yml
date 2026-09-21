@@ -1,6 +1,13 @@
 spring:
   application:
     name: phoenixgraph-http
+  web:
+    resources:
+      cache:
+        cachecontrol:
+          # the UI is edited while the service runs: a browser must revalidate its copy of
+          # app.js/style.css instead of serving the one it cached from an earlier build
+          no-cache: true
 
 server:
   port: 8081

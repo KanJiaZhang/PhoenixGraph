@@ -147,6 +147,7 @@
       type: '类型',
       community: '社区',
       count: '点',
+      legendSelected: '图例选中',
       enterId: '请输入顶点 ID',
       noVertexType: '当前图没有顶点类型',
       enterGremlin: '请输入 gremlin 查询',
@@ -232,6 +233,7 @@
       type: 'Type',
       community: 'Community',
       count: 'vertices',
+      legendSelected: 'Legend',
       enterId: 'Enter a vertex ID',
       noVertexType: 'This graph has no vertex types',
       enterGremlin: 'Enter a gremlin query',
@@ -305,6 +307,7 @@
     algoSelect: document.getElementById('algoSelect'),
     searchInput: document.getElementById('searchInput'),
     searchClear: document.getElementById('searchClear'),
+    legendCount: document.getElementById('legendCount'),
     toast: document.getElementById('toast'),
     exportBtn: document.getElementById('exportBtn'),
     canvas: document.getElementById('canvas'),
@@ -677,13 +680,14 @@
       nodes = nodes.filter((n) => viewFilter.has(n.key));
       links = links.filter((l) => viewFilter.has(l.source) && viewFilter.has(l.target));
     }
+    assignEdgeArcs(links);
     currentNodes = nodes;
     currentLinks = links;
 
     const linkSel = root.append('g')
-      .selectAll('line')
+      .selectAll('path')
       .data(links)
-      .join('line')
+      .join('path')
       .attr('class', 'edge')
       .attr('marker-end', 'url(#arrow)')
       .on('click', (event, d) => { event.stopPropagation(); selectEdge(d); });
@@ -766,16 +770,59 @@
 
   // stop each line at the node edge so the arrow head stays visible above the node
   const EDGE_NODE_GAP = 13;
+  // how far apart the arcs of one vertex pair are (px)
+  const EDGE_ARC_STEP = 26;
+
+  /**
+   * Gives every edge of the same vertex pair its own arc.
+   *
+   * <p>Several edges can connect the same two vertices (an account pays the same receiver more than
+   * once, and a pair can be walked in both directions). Drawn as straight lines they sit on top of
+   * each other and only one is visible, so the group is fanned out symmetrically around the chord:
+   * one edge stays straight, three give -1/0/+1 and so on. The pair is unordered, so a direction
+   * and its reverse are fanned too instead of overlapping.
+   */
+  function assignEdgeArcs(links) {
+    const keyOf = (endpoint) => (endpoint && typeof endpoint === 'object' ? endpoint.key : endpoint);
+    const groups = new Map();
+    for (const l of links) {
+      const s = keyOf(l.source);
+      const t = keyOf(l.target);
+      const key = s < t ? `${s}|${t}` : `${t}|${s}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(l);
+    }
+    for (const group of groups.values()) {
+      if (group.length < 2) {
+        group[0].arc = 0;
+        continue;
+      }
+      // a stable order, so the arcs do not swap places between renders
+      group.sort((a, b) => (a.label === b.label
+        ? String(a.id).localeCompare(String(b.id)) : a.label.localeCompare(b.label)));
+      const middle = (group.length - 1) / 2;
+      group.forEach((l, i) => { l.arc = (i - middle) * EDGE_ARC_STEP; });
+    }
+  }
+
   function setEdgeGeometry(el, l) {
     const x1 = l.source.x, y1 = l.source.y, x2 = l.target.x, y2 = l.target.y;
     const dx = x2 - x1, dy = y2 - y1;
     const len = Math.hypot(dx, dy) || 1;
     const off = Math.max(0, Math.min(EDGE_NODE_GAP, len / 2 - 0.5));
     const ux = dx / len, uy = dy / len;
-    el.setAttribute('x1', x1 + ux * off);
-    el.setAttribute('y1', y1 + uy * off);
-    el.setAttribute('x2', x2 - ux * off);
-    el.setAttribute('y2', y2 - uy * off);
+    const sx = x1 + ux * off, sy = y1 + uy * off;
+    const ex = x2 - ux * off, ey = y2 - uy * off;
+    const arc = l.arc || 0;
+    if (!arc) {
+      el.setAttribute('d', `M ${sx} ${sy} L ${ex} ${ey}`);
+      return;
+    }
+    // quadratic curve bulging sideways; the marker follows its end tangent, so the
+    // arrow head still points at the target
+    const cx = (sx + ex) / 2 - uy * arc;
+    const cy = (sy + ey) / 2 + ux * arc;
+    el.setAttribute('d', `M ${sx} ${sy} Q ${cx} ${cy} ${ex} ${ey}`);
   }
 
   // ---- legend filter (vertex type or community) ----
@@ -806,6 +853,7 @@
     if (!legendFilter) {
       nodes.classed('legend-hit', false).classed('legend-dim', false);
       edges.classed('legend-hit', false).classed('legend-dim', false);
+      showLegendCount(null);
       return;
     }
     const communityOf = algoState && algoState.type === 'community' ? algoState.communityOf : null;
@@ -815,6 +863,23 @@
     const keepEdge = (d) => hit(d.source) && hit(d.target);
     nodes.classed('legend-hit', hit).classed('legend-dim', (d) => !hit(d));
     edges.classed('legend-hit', keepEdge).classed('legend-dim', (d) => !keepEdge(d));
+    // how much the selection actually covers, in the bottom-left corner
+    showLegendCount({ vertices: nodes.filter(hit).size(), edges: edges.filter(keepEdge).size() });
+  }
+
+  /** The bottom-left chip that says what the legend selection covers (null hides it). */
+  function showLegendCount(counts) {
+    if (!el.legendCount) return;
+    if (!counts) {
+      el.legendCount.hidden = true;
+      if (el.valuePanel) el.valuePanel.classList.remove('shifted');
+      return;
+    }
+    el.legendCount.textContent = `${t('legendSelected')} ${counts.vertices} ${t('vertices')} · `
+      + `${counts.edges} ${t('edges')}`;
+    el.legendCount.hidden = false;
+    // the query-result window shares that corner: make room for the chip
+    if (el.valuePanel) el.valuePanel.classList.add('shifted');
   }
 
   function applyPickedHighlight() {
@@ -1339,12 +1404,13 @@
     return d.__fields;
   }
 
-  // A token matches a field when the field contains it, or when the token is a subsequence of it
-  // (so "pmt" still finds "payment"). Matching field by field - not against the whole element
-  // concatenated - is what keeps "ada" from matching an account whose address happens to hold an
-  // a, a d and another a, and "10018" from matching the edge between 1001 and 1008.
+  // A token matches a field when the field contains it, or when the token reads as an abbreviation
+  // of that field (the field's first letter, then the token's remaining letters in order, so "pmt"
+  // finds "payment"). Anchoring the abbreviation keeps "ada" out of "radia" and "10018" out of
+  // "pay_rep_1001_1008_0", which a free subsequence would happily match.
   function fieldMatches(field, token) {
-    return field.includes(token) || fuzzyMatch(token, field);
+    if (field.includes(token)) return true;
+    return field.charCodeAt(0) === token.charCodeAt(0) && fuzzyMatch(token, field);
   }
 
   function elementMatches(d, extra, tokens) {
