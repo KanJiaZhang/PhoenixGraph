@@ -79,13 +79,8 @@ public class AerospikeGraphQuery implements GraphQuery {
         Map<Integer, String> requested = requestedVertexProperties(vertexSchema, names);
 
         StoredVertex vertex = vertexStore.readVertex(vertexId, new ArrayList<>(requested.keySet()));
-        if (vertex == null) {
-            return null;
-        }
-        VertexSchema actual = storedVertexSchema(vertexSchema, vertex);
-        if (actual != vertexSchema) {
-            // the record says it is another type; read it as what it is
-            return readAs(actual, vertexId);
+        if (vertex == null || !matchesRequestedType(vertexSchema, vertex)) {
+            return null; // the record is another type: this type has no vertex with that id
         }
         return toVertexResult(vertexName, vertex, requested);
     }
@@ -104,39 +99,28 @@ public class AerospikeGraphQuery implements GraphQuery {
         List<StoredVertex> stored = vertexStore.readVertices(vertexIds, new ArrayList<>(requested.keySet()));
         List<VertexQueryResult> results = new ArrayList<>(vertexIds.size());
         for (StoredVertex vertex : stored) {
-            if (vertex == null) {
-                results.add(null);
-                continue;
-            }
-            VertexSchema actual = storedVertexSchema(vertexSchema, vertex);
-            results.add(actual == vertexSchema
-                    ? toVertexResult(vertexName, vertex, requested)
-                    : readAs(actual, vertex.vertexId()));
+            results.add(vertex == null || !matchesRequestedType(vertexSchema, vertex)
+                    ? null
+                    : toVertexResult(vertexName, vertex, requested));
         }
         return results;
     }
 
     /**
-     * The vertex type the record says it is, or the requested one when the record does not say.
+     * Whether a record may answer a read that asked for {@code requested}.
      *
-     * <p>An id does not carry a type: asking for {@code readVertex("+86-138-69999", "IP")} used to
-     * answer a phone under the IP's property names ({@code ipAddress: "+86"}). The record's own type
-     * decides, and a record written before the type bin existed keeps the old answer.
+     * <p>An id does not carry a type: asking for {@code readVertex("1001", "IP")} used to answer the
+     * account 1001 under the IP's property names. The vertex type a record was written as is what
+     * decides - a record of another type is simply not this type's vertex, the way it already is for
+     * a store whose vertex tables are per type (RocksDB). A record written before the type bin
+     * existed declares nothing, so the requested type is taken at its word.
      */
-    private VertexSchema storedVertexSchema(VertexSchema requested, StoredVertex vertex) {
+    private boolean matchesRequestedType(VertexSchema requested, StoredVertex vertex) {
         String stored = vertex.vertexType();
         if (stored == null || stored.equals(requested.name())) {
-            return requested;
+            return true;
         }
-        VertexSchema actual = schema.vertexSchema(stored);
-        return actual == null ? requested : actual;
-    }
-
-    /** Reads a vertex again as the type its record declares, projecting that type's properties. */
-    private VertexQueryResult readAs(VertexSchema vertexSchema, Object vertexId) {
-        Map<Integer, String> properties = requestedVertexProperties(vertexSchema, List.of());
-        StoredVertex vertex = vertexStore.readVertex(vertexId, new ArrayList<>(properties.keySet()));
-        return vertex == null ? null : toVertexResult(vertexSchema.name(), vertex, properties);
+        return schema.vertexSchema(stored) == null; // stamped with a type this schema does not know
     }
 
     private Map<Integer, String> requestedVertexProperties(VertexSchema vertexSchema, List<String> names) {

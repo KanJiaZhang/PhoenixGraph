@@ -107,20 +107,14 @@ class AerospikeGraphQueryTest {
     }
 
     @Test
-    void readVertexAnswersWithTheTypeTheRecordDeclares() {
-        // the caller asks for a person, but the record says it is software: its own type wins, and
-        // its properties are named by that type (index 1 is 'lang', not 'name')
+    void readVertexOfAnotherTypeIsNotFound() {
+        // the caller asks for a person, the record says it is software: this type has no such vertex,
+        // so the read answers nothing rather than the software under the person's property names
         StoredVertex stored = new StoredVertex("v1",
                 Map.of(1, new VertexPropertyValue("java", 200L)), 100L, 200L, "software");
         when(vertexStore.readVertex(eq("v1"), anyList())).thenReturn(stored);
-        when(vertexStore.readVertex(eq("v1"), eq(List.of(1)))).thenReturn(stored);
 
-        VertexQueryResult result = query.readVertex("v1", "person", (String[]) null);
-
-        assertEquals("software", result.vertexName());
-        assertEquals(Map.of("lang", "java"), result.properties());
-        // the second read asks for the properties of the type the record declares
-        verify(vertexStore).readVertex("v1", List.of(1));
+        assertNull(query.readVertex("v1", "person", (String[]) null));
     }
 
     @Test
@@ -144,19 +138,17 @@ class AerospikeGraphQueryTest {
     }
 
     @Test
-    void readVerticesAnswersPerVertexWithTheTypeEachRecordDeclares() {
+    void readVerticesSkipsTheRecordsOfAnotherType() {
         StoredVertex person = new StoredVertex("v1",
                 Map.of(1, new VertexPropertyValue("alice", 200L)), 100L, 200L, "person");
         StoredVertex software = new StoredVertex("v2",
                 Map.of(1, new VertexPropertyValue("java", 200L)), 100L, 200L, "software");
         when(vertexStore.readVertices(anyList(), anyList())).thenReturn(List.of(person, software));
-        when(vertexStore.readVertex(eq("v2"), eq(List.of(1)))).thenReturn(software);
 
         List<VertexQueryResult> results = query.readVertices("person", List.of("v1", "v2"), null);
 
         assertEquals("person", results.get(0).vertexName());
-        assertEquals("software", results.get(1).vertexName());
-        assertEquals(Map.of("lang", "java"), results.get(1).properties());
+        assertNull(results.get(1), "a record of another type is not a person");
     }
 
     // --- edges ---

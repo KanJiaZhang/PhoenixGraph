@@ -1178,6 +1178,16 @@ class GremlinGraphQueryTest {
     }
 
     @Test
+    void aHopWithoutAnEdgeClassVerifiesTheSeedFirst() {
+        // both()/outE() with no class read every edge bin the record has, and a record of another type
+        // holds bins of its own: a seed that is not the vertex the traversal asked for must start from
+        // nothing rather than be walked as if it were
+        assertTrue(gremlin.execute("g.V('nope', 'person').both()").isEmpty());
+        assertTrue(gremlin.execute("g.V('nope', 'person').bothE()").isEmpty());
+        verify(graphQuery, never()).readAllEdgesBatch(anyList(), any(), anyList());
+    }
+
+    @Test
     void aTerminalStepStillVerifiesTheSeed() {
         // the seed does not exist, and toList() hands it on as it is: the answer is empty, not a phantom
         assertEquals(List.of(), gremlin.execute("g.V('nope', 'person').toList()"));

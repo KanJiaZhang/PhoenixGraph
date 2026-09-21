@@ -555,8 +555,15 @@ public class GremlinGraphQuery {
         // the seeds are verified instead, so a missing id is absent from the answer rather than counted.
         // A hop (or a count written as a hop) reads the seed's edges, and an algorithm step reads the graph
         // around it, so neither needs the check - they answer nothing for a vertex that is not there.
-        boolean verifySeeds = startProperties == null && plannedSteps.stream()
-                .allMatch(step -> isSeedPassThrough(step.name()));
+        // A seed is normally not read: the first hop only needs its id. An id, however, does not carry
+        // a type, and a hop that names no edge class reads every edge bin of the record - which a
+        // record of another type has as well, so the traversal would walk the wrong neighbourhood
+        // (g.V('1001','IP').both() used to answer with account 1001's neighbours). Those plans verify
+        // the seeds first: a missing or mistyped id starts from nothing. A plan that reads the seed's
+        // properties anyway does the same by dropping what is not there.
+        boolean verifySeeds = startProperties == null
+                && (untypedFirstHop(plannedSteps) || plannedSteps.stream()
+                        .allMatch(step -> isSeedPassThrough(step.name())));
         return new CompiledQuery(query.source(), properties, startProperties, verifySeeds, stepNames, steps);
     }
 
@@ -567,6 +574,23 @@ public class GremlinGraphQuery {
      * missing vertex), a projection reads its record (absent), and an algorithm step builds the graph
      * around it (empty).
      */
+    /**
+     * Whether the plan's first step is a hop that names no edge class.
+     *
+     * <p>Such a hop reads every edge bin the record has, so it cannot tell a vertex of the type the
+     * traversal asked for from a record of another type holding the same bins - which is why the
+     * seeds are verified for these plans (see the {@code verifySeeds} decision in {@code compile}).
+     */
+    private static boolean untypedFirstHop(List<GremlinQuery.Step> steps) {
+        for (GremlinQuery.Step step : steps) {
+            if (isMeta(step.name())) {
+                continue;
+            }
+            return isHop(step.name()) && step.args().isEmpty();
+        }
+        return false;
+    }
+
     private static boolean isSeedPassThrough(String name) {
         return isMeta(name) || TERMINAL_STEPS.contains(name)
                 || name.equals("count") || name.equals("limit") || name.equals("dedup");
