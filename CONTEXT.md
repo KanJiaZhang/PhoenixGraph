@@ -2810,3 +2810,108 @@ schema JSON 顶点加 `"displayName": "$id"` → `displayPropertyNames()` 返回
 IP/Phone 的 schema 改 `$id`（`ipAddress`/国内号属性保留给 `values()`）。
 
 **运维**：服务要看到新数据需重新 `clean package -am` 构建并把 payment-graph 的 set 指到 `http_demo_v3`。
+
+---
+
+## 47. 仪表盘七问：边方向与去重、重复支付、搜索高亮、方向提示、成对边 ID、filter/map 闭包
+
+用户在 UI 上提了七件事：1001 的 IP/Phone 边画成双向且数目翻倍、135/1001 之间同一对端点应有好多笔 Payment、
+搜索框高亮乱选、方向写错只给 0 items 不解释、IP/Phone 边要按 pair 做 ID、以及 TinkerPop 风格的
+`filter { ... }` / `map { ... }` 闭包（外加 `it.get().value('x')`）报错。逐条如下。
+
+### 47.1 边方向与去重：数据只写一个方向，UI 自然画单向（#1）
+
+第 46 节已把 Aerospike demo 改成单向（§46.2），但服务还指着 `http_demo_v2`，而 RocksDB 的两个实例
+仍由 `PaymentGraphRocksDbLoader` 写入 `AccountToIP` + `IPToAccount`（以及 Phone 的一对）镜像边 ——
+于是同一个 link 有两条反向的边，UI 画成双向箭头，`both()` 把两条都数进去（1001：15 条 = 11 条 link + 4 条镜像）。
+
+修法是把"数据只写一个方向"补齐，而不是让 UI 猜哪条是镜像：
+
+* `application.yml` 的 payment-graph（Aerospike）指到 `http_demo_v3`（primary 与两个 RocksDB 图都改）；
+* `PaymentGraphRocksDbLoader.paymentEdges` 只写 `IPToAccount` / `PhoneToAccount`（200 payments + 50 + 50 = 300 条边，
+  原来是 400）；schema 里那两个镜像类保留声明（老数据的 bin 名不受影响），只是不再有数据；
+* v3 seeder 里显式补上 `+86-138-69999 -> 1001`，于是 1001 既有 IP 也有 Phone 的单向 link（用户就是拿它举例的）。
+
+实测（服务在跑，`g.V('1001','Account').both()`）：`edges: 54 {Payment: 37, PhoneToAccount: 1, IPToAccount: 16}`，
+没有 `AccountTo*`；两个 RocksDB 图同样 `{Payment: 7, PhoneToAccount: 1, IPToAccount: 1}`、镜像 0 条；
+`both().count() == both('Payment','IPToAccount','PhoneToAccount').count()`（都 54）。
+
+### 47.2 同一个 <source,target> 上的多笔 Payment（#2）
+
+`QueryApiIntegrationTest.seedSharedGraph` 新增一组"重复支付"：135 → 1000/1001/1002/1003（4 对，各 5–8 笔）、
+1001 → 1002/1008/1014（3 对，各 5–10 笔），共 55 笔，id 是 `pay_rep_<src>_<dst>_<k>`、状态按 `k % 3` 混 PENDING/SUCCESS。
+hub 135 的出边从 50 变成 **76**（`PaymentGraphConsistencyTest` 的 `assumeTrue` 与断言同步改成 76）；
+`AerospikeHopSuite` 的期望值本来就是参考读数器现算的，所以只有描述文字里的"50"变旧。
+
+### 47.3 搜索高亮：逐字段匹配，不再把整个元素拼成一串（#3）
+
+`applySearch` 原来把 label + id + 所有属性值**拼成一个字符串**再做子序列匹配，于是
+"linus" 能在 "account 1000 … personal … savings" 里凑出 l-i-n-u-s，"ada" 能在 "addr-1000 personal" 里凑出 a-d-a，
+"10018" 能在边 "1001 … 1008" 里凑出 1-0-0-1-8 —— 全都高亮。
+
+现在 `elementFields` 给每个元素一组字段（label、id、每个属性值、边再加两个端点 id），
+`fieldMatches` = 字段包含 token **或** token 是**该字段**的子序列（"pmt"→"payment" 仍然可用），
+多个 token 可以落在不同字段（"hopper barbara" ✓）。用 node 复算过用户的四个例子（Linus/Ada/10018/1001）全对。
+
+### 47.4 IP/Phone 边的 id 就是端点对（#5）
+
+`PhoneToAccount` / `IPToAccount` 的边 id 从 `sip_3_7` 这类序号改成 **`<phone|ip>:<account>`**，
+schema 里这两个类的 `idSchema.type` 从 `LONG` 改成 `STRING`（只有描述性的用处，存储层不看它）。
+于是同一对端点再写一次就是同一个 id（覆盖，不是新增），§47.1 的 "link 只算一次" 在数据层面也成立。
+
+### 47.5 方向写错时告诉用户该用 out 还是 in（#4）
+
+`g.V('+86-138-10008','Phone').in('PhoneToAccount')` 以前安静地返回 0 items。新增
+`GremlinGraphQuery.schema(GraphSchema)` + `checkHopDirections`：从声明的起点类型出发，沿单类 hop 维护
+"当前可能的点类型"，若某跳的方向与该类声明的 source/target 不相交就**报错并给出方向**：
+
+```
+in('PhoneToAccount') cannot match Phone: PhoneToAccount runs Phone -> Account,
+so use out('PhoneToAccount') or both('PhoneToAccount')
+```
+
+只在 schema 已知时检查（测试里直接 new 出来的引擎没有 schema → 行为不变）；`both()`、无类名、多类、
+`otherV()`/`nearest`/`circle` 之后（类型未知）都不检查，所以只会拦下必然为空的查询。
+
+### 47.6 `filter { ... }` / `map { ... }` 与 `it.get().value(...)`（#6、#7）
+
+两个 bug 的根因不同：
+
+* **`filter( it.get().value('accountStatus').equals('Active') )` 报"找不到 property accountStatus"**：
+  表达式被当成裸 key（`it.get().value('accountStatus')` 整串成了一个属性名），投影计划拿它去 schema 里查。新增
+  `GremlinElementExpression`，先把 Groovy 取值规范化成引擎语法：`it.get().value('k')`→`k`、
+  `it.get().label()`→`@label`、`it.get().id()`→`@id`（两个伪 key 由元素本身回答，且不进属性投影）。
+  顺带把字符串比较改成**忽略大小写**（`GremlinSteps.matches`）：`equals('Active')` 命中 `ACTIVE`。
+* **`filter { ... }` / `map { ... }` 报 "Malformed step (missing '(')"**：解析器只认 `(`，
+  而且 `parse` 会先把**任何** `{` 当成"结尾 logic 块"吃掉，`.filter { … }` 就只剩 `.filter`。现在
+  `parseSteps` 同时接受 `(` 与 `{`（闭包体整体作为一个参数）；"logic 块"只在 `{` 的前一个非空白字符是
+  `)` 或 `}` 时才成立（`.out(knows) { $logic }` ✓、`.filter { … }` ✗）。
+* 新增 **`map` 步**（`GremlinSteps.map`，注册在 `GremlinStepRegistry`）：`map { it.get().value('accountStatus') }`
+  / `map { it.get().label() }` / `map { it.get().id() }`，投影成标量；不是单个取值就明确报错。
+
+实测（8081 在跑）：
+```
+g.V(150,'Account').both('Payment').filter( it.get().value('accountStatus').equals('Active') ).count()  -> [100]
+g.V(150,'Account').filter {it.get().label() == 'Account'}.count()                                       -> [1]
+g.V(150,'Account').both('Payment').map { it.get().value('accountStatus') }.dedup()                      -> ["ACTIVE"]
+g.V('+86-138-10008','Phone').in('PhoneToAccount')                                                       -> 400 + 方向提示
+```
+
+### 47.7 回归与运维
+
+* 全量 `./mvnw test`（Aerospike 在跑，`AEROSPIKE_*` 按 §3）：**BUILD SUCCESS**，integration 88 条
+  （4 skipped：需要 `-Drocksdb.live.dir` / HNSW 数据集的现场用例）；gremin 146、http 69、schema 38 …
+* RocksDB 边数断言随镜像边消失从 400 → 300（`RocksDbLiveLoadTest` / `RocksDbStorageIntegrationTest`），
+  `inlineStore.edgeCount("Payment")` 仍是 400（每条 payment 按两个端点各存一次）；
+  RocksDB 的 demo 查询从 `out('AccountToIP')`/`out('AccountToPhone')` 改成 `in('IPToAccount')`/`in('PhoneToAccount')`。
+* 现场：`clean install` 重建 fat jar → 重启 8081/8080（8083 那个 hnsw-dynamic profile 需要
+  `--phoenixgraph.gemini.first-port=19110`，否则与主实例的 19100–19103 冲突）；v3 由
+  `QueryApiIntegrationTest.demoSharedGraphViaApi` 播种，RocksDB 由 `RocksDbLiveLoadTest` 写 `.rocksdb`。
+
+### 47.8 未做
+
+* UI 仍是"数据里有什么就画什么"：如果某个 store 真的同时存了镜像边，UI 还是画两条（现在四个 demo 图都不会）。
+  要彻底与存储无关，得给 schema 加"镜像类"声明并让子图/UI 折叠 —— 没有数据需要它，所以没做。
+* `map` 只支持单个取值（不支持 `it.get().value('a') + ' ' + it.get().value('b')`）；
+  `filter { }` 不支持 `!`、算术、`and`/`or` 以外的 Groovy 语法（`&&`/`||`/`and`/`or` 可用）。
+* 上一轮遗留仍未做：display 属性 `$id`、`limit` 有序表示、摘要 bin、跨查询 bin 缓存。

@@ -1328,13 +1328,28 @@
     return endpoint && typeof endpoint === 'object' ? endpoint.key : endpoint;
   }
 
-  function elementHaystack(d, extra) {
-    if (d.__hay === undefined) {
-      const parts = [d.label, d.id, ...extra];
-      for (const [key, value] of Object.entries(d.properties || {})) parts.push(key, flattenValue(value));
-      d.__hay = parts.filter(Boolean).join(' ').toLowerCase();
+  // The searchable fields of one element: its label, its id and one field per property value (plus
+  // whatever the caller adds - an edge adds the ids of the vertices it connects).
+  function elementFields(d, extra) {
+    if (d.__fields === undefined) {
+      const fields = [d.label, d.id, ...extra];
+      for (const [key, value] of Object.entries(d.properties || {})) fields.push(key, flattenValue(value));
+      d.__fields = fields.filter(Boolean).map((field) => String(field).toLowerCase());
     }
-    return d.__hay;
+    return d.__fields;
+  }
+
+  // A token matches a field when the field contains it, or when the token is a subsequence of it
+  // (so "pmt" still finds "payment"). Matching field by field - not against the whole element
+  // concatenated - is what keeps "ada" from matching an account whose address happens to hold an
+  // a, a d and another a, and "10018" from matching the edge between 1001 and 1008.
+  function fieldMatches(field, token) {
+    return field.includes(token) || fuzzyMatch(token, field);
+  }
+
+  function elementMatches(d, extra, tokens) {
+    const fields = elementFields(d, extra);
+    return tokens.every((token) => fields.some((field) => fieldMatches(field, token)));
   }
 
   function applySearch() {
@@ -1348,16 +1363,15 @@
       return;
     }
     const tokens = query.split(/\s+/).filter(Boolean);
-    const hits = (hay) => tokens.every((token) => fuzzyMatch(token, hay));
 
     const hitNodes = new Set();
-    nodes.each(function (d) { if (hits(elementHaystack(d, []))) hitNodes.add(d.key); });
+    nodes.each(function (d) { if (elementMatches(d, [], tokens)) hitNodes.add(d.key); });
 
     const hitEdges = new Set();
     const adjacent = new Set(); // endpoints of matched edges stay visible
     edges.each(function (d) {
       const key = d.label + '::' + d.id;
-      if (hits(elementHaystack(d, [endpointKey(d.source), endpointKey(d.target)]))) {
+      if (elementMatches(d, [endpointKey(d.source), endpointKey(d.target)], tokens)) {
         hitEdges.add(key);
         const s = endpointKey(d.source);
         const t = endpointKey(d.target);

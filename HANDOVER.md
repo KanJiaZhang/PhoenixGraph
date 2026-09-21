@@ -1,14 +1,13 @@
 # Handover — resume here
 
 > 本文件是**断点续做手记**：今天做了什么（结论）、现场怎么恢复、明天从哪继续。
-> 详细设计与实测数据在 `CONTEXT.md`：**2026-09-20 新增 §38–46**（Aerospike 准确性与时延 / 子图裁剪与 IP-Phone id / 顶点跳只读对端 / 两跳 benchmark 与批量计数 / 两跳 Payment 到点近线基准 / 每一跳 both 的方向对照 / 换成 150 星型 hub 再测一遍 / 落地三条建议 / 仪表盘十问修复）；**2026-09-18 新增 §32–37**（两轮 store 下沉优化 / 模糊关联 / regex 形状语义 / UI / 分布式算法 / **类起点与扫描端口**）；2026-09-17 是 §21–31。
+> 详细设计与实测数据在 `CONTEXT.md`：**2026-09-21 新增 §47**（仪表盘七问：边方向与去重 / 同端点多笔 Payment / 搜索高亮逐字段 / 方向提示 / 成对边 ID / filter·map 闭包）；**2026-09-20 是 §38–46**；**2026-09-18 是 §32–37**（含**类起点与扫描端口**）；2026-09-17 是 §21–31。
 
-**最后一次会话：2026-09-20（周六）· 工作树干净 · 相关模块测试全绿（query-gremlin 136 / storage-aerospike 38 / query-aerospike 23 / http 69 / integration-test 88）**
-**本轮九段：(1) Aerospike 20 条一跳/两跳准确性与时延（§38）；(2) 修 UI 六个问题（§39）；(3) 顶点跳只读对端 + 种子存在性（§40）；
-  (4) 两跳 benchmark + 批量计数（§41）；(5) 两跳 Payment 近线基准（§42）；(6) 每跳 both 方向对照（§43）；(7) 150 星型 hub（§44）；
-  (8) 落地三条建议：dedup 只按 id / 自适应合批 / 一跳两跳混跑（§45）；
-  (9) **仪表盘十问修复**（§46：limit 早停、多类 hop、IP/Phone 单向 + 共享、both() 计数一致、Phone 显示名去重复 +86、输入框一跳；demo set 换 http_demo_v3）。**
-**下一次入口：display 属性 $id（schema + UI）；重新构建服务并把 payment-graph 指到 http_demo_v3；既有一跳+两跳混跑、边读合批、limit 有序表示、摘要 bin、跨查询缓存。**
+**最后一次会话：2026-09-21（周日）· 全量 `./mvnw test` 绿（gremlin 146 / http 69 / integration 88（4 skipped）/ schema 38 / gemini 21 / fuzzy 26 / hnsw 37 / …）**
+**本轮七段（用户报的七件事，CONTEXT §47）：(1) 边只写一个方向、边数不再翻倍（§47.1）；(2) 135/1001 同一对端点各补 5–8 笔 Payment（§47.2）；
+(3) 搜索高亮改成逐字段匹配（§47.3）；(4) IP/Phone 边 id 改成 `<端点>:<端点>`（§47.4）；(5) 方向写错给出 out/in 提示（§47.5）；(6) `filter { … }` 闭包 + `it.get().value(…)`（§47.6）；(7) 新增 `map { … }` 步（§47.6）。**
+**现场已重启并对齐：8081（11 个图，payment-graph 指到 `http_demo_v3`）+ 8080（UI，含新搜索实现）+ Aerospike 容器；RocksDB 两个 payment 实例已按单向重新播种（`.rocksdb`，300 条边）。8083（hnsw-dynamic）本轮未起。**
+**下一次入口：提交本轮改动；display 属性 `$id`（§46.4）；UI 与存储无关的镜像边折叠（§47.8）；`limit` 有序表示 / 摘要 bin / 跨查询 bin 缓存。**
 
 **上一次会话：2026-09-18（周四，约 17 个提交）· 工作树干净 · 全项目编译通过 · 受影响的模块测试全绿**
 **（`graph-gemini` 26 + `graph-query-gremlin` 115 + `graph-http` 68 + `graph-fuzzy` 37；服务在跑，见 §1.1）**
@@ -125,7 +124,7 @@
 | **8081** | `graph-http`（默认 profile） | **11 个图**：payment ×3、geo ×2、`payment-graph-as-edge`、`kg-entity-graph`、`hnsw-sift`、`hnsw-dynamic`、**`payment-graph-smart`**、**`payment-graph-smart-rocksdb`** |
 | **19100–19103** | 同 8081 进程内的 **4 个 Gemini worker** | `GET /gemini/status`；`graph-http` 启动即监听（`phoenixgraph.gemini.workers/first-port/mode`）；`mode=process` 时每个 worker 是独立 JVM |
 | **8080** | `graph-web` | UI（`/api/graphs` 列图、`/api/query` 代理到 8081） |
-| **8083** | `graph-http --spring.profiles.active=hnsw-dynamic` | 写入即索引的向量 demo（REST 写点 → 立即可 `nearest`） |
+| **8083** | `graph-http --spring.profiles.active=hnsw-dynamic`（本轮未起） | 写入即索引的向量 demo（REST 写点 → 立即可 `nearest`）；**必须加 `--phoenixgraph.gemini.first-port=19110`**，否则 Gemini worker 的 19100–19103 与 8081 冲突而启动失败 |
 
 起停（`jps -l | grep graph-` 看 PID；Windows 下 `taskkill /F /PID <pid>`）：
 
@@ -133,7 +132,8 @@
 ./mvnw -q -pl graph-http,graph-web -am -DskipTests package
 java -jar graph-http/target/graph-http-0.1.0-SNAPSHOT.jar
 java -jar graph-web/target/graph-web-0.1.0-SNAPSHOT.jar
-java -jar graph-http/target/graph-http-0.1.0-SNAPSHOT.jar --spring.profiles.active=hnsw-dynamic --server.port=8083
+java -jar graph-http/target/graph-http-0.1.0-SNAPSHOT.jar --spring.profiles.active=hnsw-dynamic --server.port=8083 \
+     --phoenixgraph.gemini.first-port=19110
 # 健康检查
 curl -s localhost:8081/api/v1/graphs | head -c 200
 ```
@@ -142,12 +142,13 @@ curl -s localhost:8081/api/v1/graphs | head -c 200
 
 | 位置 | 内容 |
 |---|---|
-| `http_demo_v1` | payment-graph 星形图（Aerospike，hub `135`） |
+| `http_demo_v3`（**service 现在读这个**） | payment-graph 的单向 demo（Aerospike）：135/150 + 1000–1049 + 2000–2099，IP/Phone → Account 各一条，hub `135` **76** 笔出款（50 + 26 笔同端点多笔），由 `QueryApiIntegrationTest.demoSharedGraphViaApi` 播种 |
+| `http_demo_v2` | 旧的星形图（hub `135` 50 笔，IP/Phone 边**双向镜像**）；只有 `demoStarGraphViaApi` 还在写它 |
 | `kg_nell995_v2` | NELL-995 知识图谱（1 种点 `Entity` + 1 种边，按 relation 分 10 片），11.3 万点 / 15 万边 |
 | `hnsw_sift_v1` | SIFT small 10,000×128（`Vector` + `vector_0..vector_14`），10,001 点 |
 | `hnsw_dynamic_v1` | 600×128（`Doc` + `embedding`，schema 零层边，启动自动建） |
 | `payment_as_edge_v1` | **今日新增**：`payment-graph-as-edge` 的 51 个点 + hub `9000001` 的 **30 万笔**收款（聚合边表 `_edge_out_1`/`_edge_in_1`/`_edgeheads`），其中 5 笔内联改写为 `REFUNDED` |
-| `.rocksdb/`（仓库根，21MB，已 gitignore） | `payment-graph-rocksdb-inline`、`payment-graph-rocksdb-edge`（各 151 点/400 边）、`geo-merchants-rocksdb-inline`、`geo-merchants-rocksdb-edge`（各 240 商户 + S2 geo 索引） |
+| `.rocksdb/`（仓库根，已 gitignore） | `payment-graph-rocksdb-inline`、`payment-graph-rocksdb-edge`（各 151 点/**300 边**，单向）、`geo-merchants-rocksdb-inline`、`geo-merchants-rocksdb-edge`（各 240 商户 + S2 geo 索引） |
 
 **重新播种（数据丢了才需要）**：
 
@@ -165,7 +166,7 @@ curl -s 127.0.0.1:19100/gemini/status            # 单个 worker 的状态（sup
 # 测试：graph-gemini（分区/双表示/集群/子进程）、GremlinDistStepsTest（DIST 五种步）
 ./mvnw -q -pl graph-gemini,graph-query-gremlin test
 
-# 模糊关联的两圈演示数据（幂等，可反复跑；payment-graph / set http_demo_v1）
+# 模糊关联的两圈演示数据（幂等，可反复跑；payment-graph / set http_demo_v3）
 ./mvnw -q -pl graph-integration-test -am test -Dtest='FuzzyLinkIntegrationTest' -Dsurefire.failIfNoSpecifiedTests=false
 
 # Aerospike-Edge 的 30 万笔 demo（约 4 秒；写入前会 truncate 边表与 hub 表）
@@ -311,7 +312,7 @@ curl -s -X POST localhost:8081/api/v1/vector-index/rebuild \
 
 ## 5. 已知问题 / 限制
 
-* **demo 数据的时间戳是单一的**（`http_demo_v1` 里所有边同一 createdTime）⇒ 时间窗口的收益在 demo 上看不出来，
+* **demo 数据的时间戳是单一的**（`http_demo_v3` 里所有边同一 createdTime）⇒ 时间窗口的收益在 demo 上看不出来，
   窗口下沉用自造数据（`AerospikeEdgeWindowPushdownTest` 的 3 条相隔一天的边）验证；
 * **Aerospike 时延测量对机器负载敏感**（繁忙时同一批查询到 1.5 倍），流量列是确定性的，做回归时看流量列；
 * **一跳「最终答案是点」时会读全部属性**（1.1/1.4 v-items=50）—— 优化方向见 §2 第 0 条第 6 项。
