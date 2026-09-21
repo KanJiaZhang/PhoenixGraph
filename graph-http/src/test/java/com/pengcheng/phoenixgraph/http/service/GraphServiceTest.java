@@ -33,6 +33,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyMap;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -46,7 +47,7 @@ class GraphServiceTest {
     void aVertexWriteIndexesItsVectorProperty() {
         VectorIndexManager vectorIndexes = Mockito.mock(VectorIndexManager.class);
         GraphService indexing = new GraphService(vertexStore, edgeStore, schema(), new ObjectMapper(), vectorIndexes);
-        when(vertexStore.upsertVertex(any(), anyMap(), anyLong(), anyLong())).thenReturn(WriteOutcome.SUCCESS);
+        when(vertexStore.upsertVertex(any(), anyMap(), anyLong(), anyLong(), any())).thenReturn(WriteOutcome.SUCCESS);
 
         WriteOutcome outcome = indexing.upsertVertex(new VertexRequest("v1", "Account",
                 List.of(new VertexPropertyRequest(1, "alice", 100L)), 50L, 100L));
@@ -54,6 +55,8 @@ class GraphServiceTest {
         assertEquals(WriteOutcome.SUCCESS, outcome);
         // the index of every isVector property of the vertex type is updated after the write
         Mockito.verify(vectorIndexes).indexVertex("payment-graph", "Account", "v1");
+        // and the record is stamped with the vertex type it was written as
+        Mockito.verify(vertexStore).upsertVertex(eq("v1"), anyMap(), eq(50L), eq(100L), eq("Account"));
     }
 
     @Test

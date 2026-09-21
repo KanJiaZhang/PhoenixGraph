@@ -82,6 +82,11 @@ public class AerospikeGraphQuery implements GraphQuery {
         if (vertex == null) {
             return null;
         }
+        VertexSchema actual = storedVertexSchema(vertexSchema, vertex);
+        if (actual != vertexSchema) {
+            // the record says it is another type; read it as what it is
+            return readAs(actual, vertexId);
+        }
         return toVertexResult(vertexName, vertex, requested);
     }
 
@@ -99,9 +104,39 @@ public class AerospikeGraphQuery implements GraphQuery {
         List<StoredVertex> stored = vertexStore.readVertices(vertexIds, new ArrayList<>(requested.keySet()));
         List<VertexQueryResult> results = new ArrayList<>(vertexIds.size());
         for (StoredVertex vertex : stored) {
-            results.add(vertex == null ? null : toVertexResult(vertexName, vertex, requested));
+            if (vertex == null) {
+                results.add(null);
+                continue;
+            }
+            VertexSchema actual = storedVertexSchema(vertexSchema, vertex);
+            results.add(actual == vertexSchema
+                    ? toVertexResult(vertexName, vertex, requested)
+                    : readAs(actual, vertex.vertexId()));
         }
         return results;
+    }
+
+    /**
+     * The vertex type the record says it is, or the requested one when the record does not say.
+     *
+     * <p>An id does not carry a type: asking for {@code readVertex("+86-138-69999", "IP")} used to
+     * answer a phone under the IP's property names ({@code ipAddress: "+86"}). The record's own type
+     * decides, and a record written before the type bin existed keeps the old answer.
+     */
+    private VertexSchema storedVertexSchema(VertexSchema requested, StoredVertex vertex) {
+        String stored = vertex.vertexType();
+        if (stored == null || stored.equals(requested.name())) {
+            return requested;
+        }
+        VertexSchema actual = schema.vertexSchema(stored);
+        return actual == null ? requested : actual;
+    }
+
+    /** Reads a vertex again as the type its record declares, projecting that type's properties. */
+    private VertexQueryResult readAs(VertexSchema vertexSchema, Object vertexId) {
+        Map<Integer, String> properties = requestedVertexProperties(vertexSchema, List.of());
+        StoredVertex vertex = vertexStore.readVertex(vertexId, new ArrayList<>(properties.keySet()));
+        return vertex == null ? null : toVertexResult(vertexSchema.name(), vertex, properties);
     }
 
     private Map<Integer, String> requestedVertexProperties(VertexSchema vertexSchema, List<String> names) {

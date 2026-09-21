@@ -80,6 +80,15 @@ public class AerospikeVertexStore implements VertexStore {
     public static final String LAST_UPDATED_TIME_BIN = PROPERTY_BIN_PREFIX + LAST_UPDATED_TIME_INDEX;
 
     /**
+     * The vertex schema name the record was written as (a plain bin, not a property).
+     *
+     * <p>An id alone does not say what a vertex is: {@code readVertex(id, "IP")} for a phone id
+     * happily decodes the phone's bins under the IP's property names. The record carrying its own
+     * type is what lets the read answer with the type the vertex really is.
+     */
+    public static final String VERTEX_TYPE_BIN = "vt";
+
+    /**
      * Sentinel {@code lastUpdatedTime} marking a vertex as expired (soft
      * delete): 1970-01-01T00:00:00Z (epoch 0).
      */
@@ -232,6 +241,16 @@ public class AerospikeVertexStore implements VertexStore {
      */
     public WriteOutcome upsertVertex(Object vertexId, Map<Integer, VertexPropertyValue> properties,
                                      long createdTime, long lastUpdatedTime) {
+        return upsertVertex(vertexId, properties, createdTime, lastUpdatedTime, null);
+    }
+
+    /**
+     * The same upsert, stamping the record with the vertex type it is written as.
+     *
+     * @param vertexType the vertex schema name, or {@code null} to leave the type bin untouched
+     */
+    public WriteOutcome upsertVertex(Object vertexId, Map<Integer, VertexPropertyValue> properties,
+                                     long createdTime, long lastUpdatedTime, String vertexType) {
         Objects.requireNonNull(properties, "properties");
         String target = String.valueOf(vertexId);
         Map<String, Object> payload = upsertPayload(properties, createdTime, lastUpdatedTime);
@@ -250,10 +269,11 @@ public class AerospikeVertexStore implements VertexStore {
                 if (record == null) {
                     long effectiveUpdated = maxPropertyLastModified(properties, lastUpdatedTime);
                     db.operate(createOnlyPolicy(), key(vertexId),
-                            buildCreateOps(properties, createdTime, effectiveUpdated));
+                            buildCreateOps(properties, createdTime, effectiveUpdated, vertexType));
                 } else {
                     Map<Integer, VertexPropertyValue> toWrite = decideUpdates(vertexId, record, properties);
-                    if (toWrite.isEmpty()) {
+                    if (toWrite.isEmpty() && (vertexType == null
+                            || vertexType.equals(readString(record, VERTEX_TYPE_BIN)))) {
                         businessLog.record(BusinessLogEntry.failure("upsertVertex", target,
                                 conflictDetails(payload, "all properties stale")));
                         return WriteOutcome.CONFLICT;
@@ -262,7 +282,8 @@ public class AerospikeVertexStore implements VertexStore {
                             mergedPropertyMax(record, toWrite));
                     boolean missingCreatedTime = record.bins.get(CREATED_TIME_BIN) == null;
                     db.operate(generationPolicy(record.generation), key(vertexId),
-                            buildUpdateOps(toWrite, newUpdated, missingCreatedTime ? createdTime : null));
+                            buildUpdateOps(toWrite, newUpdated, missingCreatedTime ? createdTime : null,
+                                    vertexType));
                 }
                 businessLog.record(BusinessLogEntry.success("upsertVertex", target, payload));
                 return WriteOutcome.SUCCESS;
@@ -288,7 +309,8 @@ public class AerospikeVertexStore implements VertexStore {
                     new VertexPropertyValue(property.value(), property.meta().lastUpdatedTime()));
         }
         return upsertVertex(vertex.id(), properties,
-                vertex.meta().createdTime(), vertex.meta().lastUpdatedTime());
+                vertex.meta().createdTime(), vertex.meta().lastUpdatedTime(),
+                vertex.schema() == null ? null : vertex.schema().name());
     }
 
     /**
@@ -326,18 +348,22 @@ public class AerospikeVertexStore implements VertexStore {
                 if (isMissing(record)) {
                     long effectiveUpdated = maxPropertyLastModified(upsert.properties(), upsert.lastUpdatedTime());
                     writes.add(new BatchWrite(createOnlyBatchPolicy(), keys[i],
-                            buildCreateOps(upsert.properties(), upsert.createdTime(), effectiveUpdated)));
+                            buildCreateOps(upsert.properties(), upsert.createdTime(), effectiveUpdated,
+                                    vertexTypeOf(upsert))));
                     writeIndices.add(i);
                 } else {
                     Map<Integer, VertexPropertyValue> toWrite = decideUpdates(upsert.vertexId(), record, upsert.properties());
-                    if (toWrite.isEmpty()) {
+                    String vertexType = vertexTypeOf(upsert);
+                    if (toWrite.isEmpty()
+                            && (vertexType == null || vertexType.equals(readString(record, VERTEX_TYPE_BIN)))) {
                         outcomes.set(i, WriteOutcome.CONFLICT);
                     } else {
                         long newUpdated = Math.max(readLong(record, LAST_UPDATED_TIME_BIN),
                                 mergedPropertyMax(record, toWrite));
                         boolean missingCreatedTime = record.bins.get(CREATED_TIME_BIN) == null;
                         writes.add(new BatchWrite(generationBatchPolicy(record.generation), keys[i],
-                                buildUpdateOps(toWrite, newUpdated, missingCreatedTime ? upsert.createdTime() : null)));
+                                buildUpdateOps(toWrite, newUpdated,
+                                        missingCreatedTime ? upsert.createdTime() : null, vertexType)));
                         writeIndices.add(i);
                     }
                 }
@@ -448,22 +474,25 @@ public class AerospikeVertexStore implements VertexStore {
     }
 
     private static Operation[] buildCreateOps(Map<Integer, VertexPropertyValue> properties,
-                                              long createdTime, long lastUpdatedTime) {
-        Operation[] ops = new Operation[properties.size() * 2 + 2];
+                                              long createdTime, long lastUpdatedTime, String vertexType) {
+        Operation[] ops = new Operation[properties.size() * 2 + 2 + (vertexType == null ? 0 : 1)];
         int i = 0;
         for (Map.Entry<Integer, VertexPropertyValue> entry : properties.entrySet()) {
             ops[i++] = Operation.put(new Bin(propertyBin(entry.getKey()), Value.get(entry.getValue().value())));
             ops[i++] = Operation.put(new Bin(propertyTimeBin(entry.getKey()), entry.getValue().lastModifiedTime()));
         }
         ops[i++] = Operation.put(new Bin(CREATED_TIME_BIN, createdTime));
-        ops[i] = Operation.put(new Bin(LAST_UPDATED_TIME_BIN, lastUpdatedTime));
+        ops[i++] = Operation.put(new Bin(LAST_UPDATED_TIME_BIN, lastUpdatedTime));
+        if (vertexType != null) {
+            ops[i] = Operation.put(new Bin(VERTEX_TYPE_BIN, vertexType));
+        }
         return ops;
     }
 
     private static Operation[] buildUpdateOps(Map<Integer, VertexPropertyValue> toWrite,
-                                              long lastUpdatedTime, Long createdTime) {
+                                              long lastUpdatedTime, Long createdTime, String vertexType) {
         int extra = createdTime == null ? 1 : 2;
-        Operation[] ops = new Operation[toWrite.size() * 2 + extra];
+        Operation[] ops = new Operation[toWrite.size() * 2 + extra + (vertexType == null ? 0 : 1)];
         int i = 0;
         for (Map.Entry<Integer, VertexPropertyValue> entry : toWrite.entrySet()) {
             ops[i++] = Operation.put(new Bin(propertyBin(entry.getKey()), Value.get(entry.getValue().value())));
@@ -472,13 +501,26 @@ public class AerospikeVertexStore implements VertexStore {
         if (createdTime != null) {
             ops[i++] = Operation.put(new Bin(CREATED_TIME_BIN, createdTime));
         }
-        ops[i] = Operation.put(new Bin(LAST_UPDATED_TIME_BIN, lastUpdatedTime));
+        ops[i++] = Operation.put(new Bin(LAST_UPDATED_TIME_BIN, lastUpdatedTime));
+        if (vertexType != null) {
+            ops[i] = Operation.put(new Bin(VERTEX_TYPE_BIN, vertexType));
+        }
         return ops;
+    }
+
+    /** The vertex type name an upsert is written as, or {@code null} when it does not name one. */
+    private static String vertexTypeOf(VertexUpsert upsert) {
+        return upsert.vertexSchema() == null ? null : upsert.vertexSchema().name();
     }
 
     private static long readLong(Record record, String bin) {
         Object value = record.bins.get(bin);
         return value == null ? 0L : ((Number) value).longValue();
+    }
+
+    private static String readString(Record record, String bin) {
+        Object value = record.bins.get(bin);
+        return value == null ? null : String.valueOf(value);
     }
 
     private static Map<String, Object> upsertPayload(Map<Integer, VertexPropertyValue> properties,
@@ -560,6 +602,8 @@ public class AerospikeVertexStore implements VertexStore {
         }
         bins.add(CREATED_TIME_BIN);
         bins.add(LAST_UPDATED_TIME_BIN);
+        // the type bin is read with every projection: it is what says which vertex this record is
+        bins.add(VERTEX_TYPE_BIN);
         return bins.toArray(new String[0]);
     }
 
@@ -589,7 +633,8 @@ public class AerospikeVertexStore implements VertexStore {
             }
         }
         return new StoredVertex(vertexId, properties,
-                readLong(record, CREATED_TIME_BIN), readLong(record, LAST_UPDATED_TIME_BIN));
+                readLong(record, CREATED_TIME_BIN), readLong(record, LAST_UPDATED_TIME_BIN),
+                readString(record, VERTEX_TYPE_BIN));
     }
 
     /** Reads a single property value by property index. */

@@ -93,7 +93,7 @@ public class GraphService {
     public WriteOutcome upsertVertex(VertexRequest request) {
         VertexUpsert upsert = toVertexUpsert(request);
         WriteOutcome outcome = vertexStore.upsertVertex(upsert.vertexId(), upsert.properties(),
-                upsert.createdTime(), upsert.lastUpdatedTime());
+                upsert.createdTime(), upsert.lastUpdatedTime(), upsert.vertexSchema().name());
         if (outcome == WriteOutcome.SUCCESS && vectorIndexes != null) {
             vectorIndexes.indexVertex(schema.name(), upsert.vertexSchema().name(), upsert.vertexId());
         }

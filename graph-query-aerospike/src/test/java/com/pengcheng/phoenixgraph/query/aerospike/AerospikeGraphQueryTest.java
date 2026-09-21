@@ -106,6 +106,59 @@ class AerospikeGraphQueryTest {
         assertThrows(QueryException.class, () -> query.readVertex("v1", "person", "nope"));
     }
 
+    @Test
+    void readVertexAnswersWithTheTypeTheRecordDeclares() {
+        // the caller asks for a person, but the record says it is software: its own type wins, and
+        // its properties are named by that type (index 1 is 'lang', not 'name')
+        StoredVertex stored = new StoredVertex("v1",
+                Map.of(1, new VertexPropertyValue("java", 200L)), 100L, 200L, "software");
+        when(vertexStore.readVertex(eq("v1"), anyList())).thenReturn(stored);
+        when(vertexStore.readVertex(eq("v1"), eq(List.of(1)))).thenReturn(stored);
+
+        VertexQueryResult result = query.readVertex("v1", "person", (String[]) null);
+
+        assertEquals("software", result.vertexName());
+        assertEquals(Map.of("lang", "java"), result.properties());
+        // the second read asks for the properties of the type the record declares
+        verify(vertexStore).readVertex("v1", List.of(1));
+    }
+
+    @Test
+    void readVertexKeepsTheRequestedTypeWhenTheRecordDoesNotDeclareOne() {
+        StoredVertex stored = new StoredVertex("v1",
+                Map.of(1, new VertexPropertyValue("alice", 200L)), 100L, 200L);
+        when(vertexStore.readVertex(eq("v1"), anyList())).thenReturn(stored);
+
+        assertEquals("person", query.readVertex("v1", "person", (String[]) null).vertexName());
+        assertEquals(Map.of("name", "alice"),
+                query.readVertex("v1", "person", (String[]) null).properties());
+    }
+
+    @Test
+    void readVertexKeepsTheRequestedTypeWhenTheStoredOneIsUnknown() {
+        StoredVertex stored = new StoredVertex("v1",
+                Map.of(1, new VertexPropertyValue("alice", 200L)), 100L, 200L, "gone");
+        when(vertexStore.readVertex(eq("v1"), anyList())).thenReturn(stored);
+
+        assertEquals("person", query.readVertex("v1", "person", (String[]) null).vertexName());
+    }
+
+    @Test
+    void readVerticesAnswersPerVertexWithTheTypeEachRecordDeclares() {
+        StoredVertex person = new StoredVertex("v1",
+                Map.of(1, new VertexPropertyValue("alice", 200L)), 100L, 200L, "person");
+        StoredVertex software = new StoredVertex("v2",
+                Map.of(1, new VertexPropertyValue("java", 200L)), 100L, 200L, "software");
+        when(vertexStore.readVertices(anyList(), anyList())).thenReturn(List.of(person, software));
+        when(vertexStore.readVertex(eq("v2"), eq(List.of(1)))).thenReturn(software);
+
+        List<VertexQueryResult> results = query.readVertices("person", List.of("v1", "v2"), null);
+
+        assertEquals("person", results.get(0).vertexName());
+        assertEquals("software", results.get(1).vertexName());
+        assertEquals(Map.of("lang", "java"), results.get(1).properties());
+    }
+
     // --- edges ---
 
     @Test
@@ -255,6 +308,9 @@ class AerospikeGraphQueryTest {
                 .property(new VertexPropertySchema(1, "name", null, PropertyType.ScalarType.STRING))
                 .property(new VertexPropertySchema(2, "age", null, PropertyType.ScalarType.INT));
 
+        VertexSchema software = new VertexSchema(2, "software", null)
+                .property(new VertexPropertySchema(1, "lang", null, PropertyType.ScalarType.STRING));
+
         EdgeSchema knows = new EdgeSchema(1, "knows", null,
                 new EdgePropertySchema(1, "source", null, PropertyType.ScalarType.LONG),
                 new EdgePropertySchema(2, "target", null, PropertyType.ScalarType.LONG),
@@ -268,7 +324,7 @@ class AerospikeGraphQueryTest {
                 EdgeDirection.UNDIRECTED)
                 .property(new EdgePropertySchema(3, "strength", null, PropertyType.ScalarType.INT));
 
-        return new GraphSchema(1, "g", null).vertex(person).edge(knows).edge(friend);
+        return new GraphSchema(1, "g", null).vertex(person).vertex(software).edge(knows).edge(friend);
     }
 
     private static StoredEdgeValue knowsEdge(String edgeId, Object otherVertexId, double weight, long since) {

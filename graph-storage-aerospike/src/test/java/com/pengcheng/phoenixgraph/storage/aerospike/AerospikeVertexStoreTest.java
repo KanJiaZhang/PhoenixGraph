@@ -32,7 +32,8 @@ class AerospikeVertexStoreTest {
 
     @Test
     void propertyBinsIncludeValueTimeAndMetaBins() {
-        assertArrayEquals(new String[]{"vp_1", "vpt_1", "vp_3", "vpt_3", "vp_-2", "vp_-1"},
+        // the type bin is read with every projection: it says which vertex the record is
+        assertArrayEquals(new String[] {"vp_1", "vpt_1", "vp_3", "vpt_3", "vp_-2", "vp_-1", "vt"},
                 AerospikeVertexStore.propertyBins(List.of(1, 3)));
     }
 
