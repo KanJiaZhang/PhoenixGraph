@@ -3054,3 +3054,109 @@ spring:
 * `value('id')` 仍被当作属性名（要用 `it.get().id()`），报错信息来自 schema，不是表达式；
 * 47.8 的遗留仍然在：UI 对"真的同时存了镜像边"的 store 不做折叠、display 属性 `$id`、
   `limit` 有序表示、摘要 bin、跨查询 bin 缓存。
+
+---
+
+## 49. 仪表盘五问（三）：终结步、多边外观、带变量的闭包
+
+用户接着报了三件事：`toList` 这类"toX"步不支持；同源多边在 UI 上是黑底、颜色和其它边不一致、弧度太大；
+`map` 里写 `def tmp = it.get(); tmp.value('status') == ... ? ... : ...` 报 `unexpected 't'`。逐条如下。
+
+### 49.1 终结步：`toList` 与同伴（#12）
+
+TinkerPop 的终结步在这里要么是"引擎本来就这么返回"，要么是"收集方式不同"，所以实现很薄：
+
+| 步 | 语义 |
+|---|---|
+| `toList()` / `toIterator()` | 原样返回（引擎的答案本来就是一个 list） |
+| `toSet()` | 每个遍历器一次，首次出现顺序（元素按 label+id，标量按值）——与 `dedup()` 同一实现 |
+| `toBulkSet()` | 每个不同的遍历器出现在一行 `{value, label?, count}`，首次出现顺序 |
+| `next()` / `next(n)` | 前 1 个 / 前 n 个 |
+| `iterate()` / `none()` / `discard()` | 遍历照跑，答案是空的 |
+
+三处需要知道它们是"透明的"（`GremlinGraphQuery.TERMINAL_STEPS`）：
+
+* **属性投影**：`g.V(id).toList()` 应该是"这个点本身"，所以终结步像 `dedup`/`limit` 一样不消耗属性 ——
+  `neededProperties` 跳过它们。于是 `g.V(id).toList()` 读全部属性，`values('status').toList()` 只读 status，
+  `outE('x').toList()` 与裸 `outE('x')` 完全一样。
+* **种子校验**：`g.V('不存在的id').toList()` 必须给空（而不是派出一个幽灵点），所以终结步算 `isSeedPassThrough`。
+* **方向检查**：它们不改变当前点类型，检查继续往下走。
+
+`toList(3)` 这类带参数的写法明确报错（"expects no arguments"）。
+
+实测（8081，1001 的 37 条出款边）：
+
+```
+...bothE('Payment').toList().count()                     -> [37]
+...bothE('Payment').values('status').toSet()             -> ["SUCCESS","PENDING"]
+...bothE('Payment').values('status').toBulkSet()         -> [{"value":"SUCCESS","count":24},{"value":"PENDING","count":13}]
+...bothE('Payment').values('status').next()              -> ["SUCCESS"]
+...bothE('Payment').values('status').next(3)             -> ["SUCCESS","SUCCESS","SUCCESS"]
+...bothE('Payment').iterate()                            -> []
+```
+
+### 49.2 多边外观：曲线的 `fill` 与弧距（#13）
+
+第 48.3 节把边从 `<line>` 换成 `<path>` 时漏了一件事：**SVG 的 path 默认 `fill: black`**。
+直线段（`M..L..`）面积为 0 看不出来，而曲线（`M..Q..`）和弦围出的月牙区域被填成黑色 —— 用户看到的
+"同源多边背景色黑色"就是它。CSS 的 `.edge` 加一句 `fill: none`，曲线里的边就只剩描边，颜色与其它边
+完全一致（同一个 `stroke`）。
+
+弧度也按用户要求减半：`EDGE_ARC_STEP` 26px → **13px**（5 条边从 -52/-26/0/+26/+52 变成
+-26/-13/0/+13/+26）。
+
+### 49.3 闭包里的语句与变量（#14）
+
+用户写的是：
+
+```groovy
+g.V(1001,'Account').bothE('Payment').map {
+    def tmp =  it.get();
+    tmp.value('status') == 'SUCCESS' ? 'S' : 'P';
+}
+```
+
+`unexpected 't'` 来自三个缺失的能力：闭包不是一条表达式而是一小段**程序**；元素本身要能赋给变量；
+`value('status')` 要能作用在变量上。现在：
+
+* **程序**：`program()` 解析"语句序列"，`;` 或**换行**分隔，值是最后一条语句。换行分隔用的是 ASI 式判断 ——
+  只有当换行**前一个字符能结束语句**（`)`、`]`、`}`、引号、字母数字下划线）**且**换行**后一个字符能开始语句**
+  （字母、数字、引号、`(`）时才算分隔。所以
+  ```
+  def tmp = it.get()
+  tmp.value('status') == 'SUCCESS'
+  ```
+  是两条语句（无需 `;`），而
+  ```
+  it.get().value('a') ==
+      'x'
+  ```
+  仍是一条表达式。三元跨行也没问题，因为换行在 `conditional()` 内部就被跳过了。
+* **变量**：`def name = expr` 声明；不带 `def` 的 `name = expr` **只有 name 是已声明的变量**才算赋值 ——
+  因为老语法用 `relation = 'r1'` 表示相等比较，这一条被 `GremlinFilterExpressionTest` 立刻抓到
+  （三个用例从 false 变 true）。`primary()` 先查变量表，再当属性名。
+* **元素**：`it.get()`（以及裸 `it`）求值为元素本身（伪键 `@it`）；`value('k')`/`values('k')`/`label()`/`id()`/`key()`
+  是"元素方法"，作用在任何求值为元素的接收者上（`tmp.value('status')`、`tmp.label()`）。
+  字面量现在是 `Const`，所以 `tmp.value('status')` 的键在**编译期**就知道并进入投影计划（否则 store 不会读它）。
+  链式变量也行：`def s = t.value('status'); s == 'SUCCESS' ? 'ok' : 'no'`。
+* **下推**：`@it` 与 `label()`/`id()`/`key()` 都算"读了元素身份"（`readsElementIdentity()`），
+  因此 `filter { def t = it.get(); ... }` 不会被折进 store 的解码条件（保守但正确）。
+
+实测（8081）：
+
+```
+map { def tmp =  it.get(); tmp.value('status') == 'SUCCESS' ? 'S' : 'P'; }.dedup()   -> ["S","P"]
+filter { def t = it.get(); t.value('status') == 'SUCCESS' }.count()                 -> [24]
+filter { def t = it.get(); t.label() == 'Payment' && t.id().contains('pay_rep') }.count() -> [30]
+map { def t = it.get(); t.label() }.dedup()                                        -> ["Payment"]
+filter(status = 'SUCCESS').count()                                                 -> [24]（老语法不受影响）
+```
+
+### 49.4 回归与未做
+
+全量 `./mvnw test`：**BUILD SUCCESS**；`graph-query-gremlin` 从 150 涨到 **156**（新增：变量 map / 变量 filter /
+终结步 / toBulkSet / 终结步的种子校验与参数校验）。
+
+未做（沿用 §48.6）：`map` 无聚合与多列；表达式无字符串函数（`toString`/`substring`/`toUpperCase`）；因此
+上面那条 `t.id().toString()` 会明确报 "'toString' takes one argument"；`value('id')` 仍按属性名；
+UI 不做镜像边折叠、display 属性 `$id`、`limit` 有序表示、摘要 bin、跨查询 bin 缓存。
