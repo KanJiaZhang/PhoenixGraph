@@ -162,15 +162,29 @@ public final class AerospikeEdgeChunks {
         List<EdgeEntry> sorted = new ArrayList<>(edges);
         sorted.sort(Comparator.comparingLong(EdgeEntry::createdTime).thenComparing(EdgeEntry::edgeId));
 
-        List<ChunkRecord> records = new ArrayList<>();
         List<ChunkRecord> level = new ArrayList<>();
         for (int start = 0; start < sorted.size(); start += size) {
             List<EdgeEntry> chunk = List.copyOf(sorted.subList(start, Math.min(start + size, sorted.size())));
             level.add(new ChunkRecord(0, chunk.get(0).createdTime(),
                     chunk.get(chunk.size() - 1).createdTime(), chunk, null));
         }
-        records.addAll(level);
+        List<ChunkRecord> records = new ArrayList<>(level);
+        records.addAll(buildLevels(level, chunkSize));
+        return List.copyOf(records);
+    }
 
+    /**
+     * Rebuilds the index levels above already-built level-0 chunks, returning the records of
+     * levels 1..root in level order. The level-0 records must be in creation-time order.
+     *
+     * <p>This is what a day's delta update uses: it rebuilds only the level-0 chunks of the day,
+     * then regroups <em>every</em> level-0 span into fresh parents - the other days' chunks are
+     * untouched, but the parents above them have to be rewritten because one child's span changed.
+     */
+    public static List<ChunkRecord> buildLevels(List<ChunkRecord> level0, int chunkSize) {
+        int size = chunkSize <= 0 ? DEFAULT_CHUNK_SIZE : chunkSize;
+        List<ChunkRecord> level = new ArrayList<>(level0);
+        List<ChunkRecord> records = new ArrayList<>();
         int levelNumber = 0;
         while (level.size() > 1 && levelNumber < MAX_LEVEL) {
             levelNumber++;

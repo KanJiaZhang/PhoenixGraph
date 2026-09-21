@@ -152,4 +152,26 @@ class AerospikeEdgeChunksTest {
         assertEquals(List.of(), AerospikeEdgeChunks.build(List.of(), 2_000));
         assertEquals(1, AerospikeEdgeChunks.levelsFor(0, 2_000));
     }
+
+    @Test
+    void buildLevelsRebuildsTheSameParentsAsBuild() {
+        List<AerospikeEdgeChunks.EdgeEntry> edges = new ArrayList<>();
+        for (int i = 0; i < 10_000; i++) {
+            edges.add(edge("e" + i, i));
+        }
+        List<AerospikeEdgeChunks.ChunkRecord> whole = AerospikeEdgeChunks.build(edges, 64);
+        List<AerospikeEdgeChunks.ChunkRecord> level0 = whole.stream()
+                .filter(record -> record.level() == 0).toList();
+        List<AerospikeEdgeChunks.ChunkRecord> parents = AerospikeEdgeChunks.buildLevels(level0, 64);
+
+        // the parents of a rebuilt tree are the parents build produced, level by level
+        List<AerospikeEdgeChunks.ChunkRecord> wholeParents = whole.stream()
+                .filter(record -> record.level() > 0).toList();
+        assertEquals(wholeParents.size(), parents.size());
+        for (int i = 0; i < parents.size(); i++) {
+            assertEquals(wholeParents.get(i).level(), parents.get(i).level());
+            assertEquals(wholeParents.get(i).min(), parents.get(i).min());
+            assertEquals(wholeParents.get(i).max(), parents.get(i).max());
+        }
+    }
 }

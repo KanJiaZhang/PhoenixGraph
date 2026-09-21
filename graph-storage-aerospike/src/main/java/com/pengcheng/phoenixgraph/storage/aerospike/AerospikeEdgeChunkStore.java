@@ -20,6 +20,7 @@ import com.pengcheng.phoenixgraph.storage.TimeRange;
 import com.pengcheng.phoenixgraph.storage.log.JulBusinessLog;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -285,6 +286,146 @@ public final class AerospikeEdgeChunkStore {
                 Map.of("edgeClass", edgeSchema.name(), "direction", directionCode,
                         "edges", edgeCount, "records", written, "levels", root.level() + 1)));
         return written;
+    }
+
+    /**
+     * Applies the offline job's latest-day deltas to the cold tables of one vertex: reads the
+     * level-0 chunks whose span overlaps {@code window}, merges the updated edges over them (by
+     * edge id, the updated copy wins), re-chunks that day, and rebuilds the index levels above
+     * it. The other days' level-0 chunks are untouched; only the parents above them are rewritten
+     * because one child's span changed.
+     *
+     * <p>When the vertex has no cold table yet (the first import), this writes the edges as a
+     * fresh tree instead.
+     *
+     * @param updatedEdges the day's edges after the deltas (each id appears once, newest copy)
+     * @param chunkSize    the chunk size the original import used (the offline job's own setting)
+     * @return how many records were written
+     */
+    public int rewriteWindow(EdgeSchema edgeSchema, int directionCode, Object vertexId,
+                             TimeRange window, List<AerospikeEdgeChunks.EdgeEntry> updatedEdges,
+                             int chunkSize) {
+        String set = AerospikeEdgeChunks.edgeSet(baseSet, edgeSchema, directionCode);
+        HubInfo hub = readHub(edgeSchema, directionCode, vertexId);
+        if (hub == null || hub.isEmpty() || hub.levels() <= 0) {
+            return writeChunks(edgeSchema, directionCode, vertexId, updatedEdges.size(),
+                    AerospikeEdgeChunks.build(updatedEdges, chunkSize));
+        }
+
+        // every level-0 span, full width (the parents above them are rebuilt from these)
+        List<long[]> level0Spans = new ArrayList<>();
+        if (hub.levels() <= 1) {
+            level0Spans.add(new long[]{hub.minCreatedTime(), hub.maxCreatedTime()});
+        } else {
+            descendLevel0(set, vertexId, hub.levels() - 1, hub.minCreatedTime(), hub.maxCreatedTime(),
+                    level0Spans);
+        }
+
+        // read the window's level-0 chunks and merge the deltas over them
+        Map<String, List<Object>> windowEdges = new LinkedHashMap<>();
+        List<String> staleKeys = new ArrayList<>();
+        for (long[] span : level0Spans) {
+            if (!window.overlaps(span[0], span[1])) {
+                continue;
+            }
+            String key = AerospikeEdgeChunks.chunkKey(vertexId, span[0], span[1], 0);
+            staleKeys.add(key);
+            Record record = db.get(null, new Key(namespace, set, key));
+            if (record == null || record.bins == null) {
+                continue;
+            }
+            Object raw = record.bins.get(AerospikeEdgeChunks.EDGES_BIN);
+            if (raw instanceof Map<?, ?> map) {
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    windowEdges.put(String.valueOf(entry.getKey()), (List<Object>) entry.getValue());
+                }
+            }
+        }
+        int oldWindowCount = windowEdges.size();
+        for (AerospikeEdgeChunks.EdgeEntry updated : updatedEdges) {
+            windowEdges.put(updated.edgeId(), updated.value());
+        }
+
+        List<AerospikeEdgeChunks.EdgeEntry> windowEntries = new ArrayList<>(windowEdges.size());
+        for (Map.Entry<String, List<Object>> entry : windowEdges.entrySet()) {
+            windowEntries.add(toEntry(entry.getKey(), entry.getValue()));
+        }
+        List<AerospikeEdgeChunks.ChunkRecord> rebuilt =
+                AerospikeEdgeChunks.build(windowEntries, chunkSize);
+        List<AerospikeEdgeChunks.ChunkRecord> rebuiltLevel0 = new ArrayList<>();
+        for (AerospikeEdgeChunks.ChunkRecord record : rebuilt) {
+            if (record.level() == 0) {
+                rebuiltLevel0.add(record);
+            }
+        }
+
+        // the full level-0 list: the untouched days' spans + the rebuilt day
+        List<AerospikeEdgeChunks.ChunkRecord> fullLevel0 = new ArrayList<>();
+        for (long[] span : level0Spans) {
+            if (!window.overlaps(span[0], span[1])) {
+                fullLevel0.add(new AerospikeEdgeChunks.ChunkRecord(0, span[0], span[1], null, null));
+            }
+        }
+        fullLevel0.addAll(rebuiltLevel0);
+        fullLevel0.sort(Comparator.comparingLong(AerospikeEdgeChunks.ChunkRecord::min)
+                .thenComparing(AerospikeEdgeChunks.ChunkRecord::max));
+        List<AerospikeEdgeChunks.ChunkRecord> parents =
+                AerospikeEdgeChunks.buildLevels(fullLevel0, chunkSize);
+
+        // the old index records are all replaced (their children's spans may have changed)
+        if (hub.levels() > 1) {
+            collectIndexKeys(set, vertexId, hub.levels() - 1, hub.minCreatedTime(), hub.maxCreatedTime(),
+                    staleKeys);
+        }
+        for (String key : staleKeys) {
+            db.delete(new WritePolicy(), new Key(namespace, set, key));
+        }
+
+        long newTotal = Math.max(0, hub.edgeCount() - oldWindowCount) + windowEntries.size();
+        List<AerospikeEdgeChunks.ChunkRecord> records = new ArrayList<>(rebuiltLevel0);
+        records.addAll(parents);
+        return writeChunks(edgeSchema, directionCode, vertexId, newTotal, records);
+    }
+
+    /** Walks from a chunk down to level 1, collecting every level-0 span (full width). */
+    private void descendLevel0(String set, Object vertexId, int level, long min, long max,
+                               List<long[]> spans) {
+        Record record = db.get(null, new Key(namespace, set,
+                AerospikeEdgeChunks.chunkKey(vertexId, min, max, level)));
+        if (record == null || record.bins == null) {
+            return;
+        }
+        List<long[]> children = children(record);
+        if (level == 1) {
+            spans.addAll(children);
+            return;
+        }
+        for (long[] span : children) {
+            descendLevel0(set, vertexId, level - 1, span[0], span[1], spans);
+        }
+    }
+
+    /** Collects the key of every index-level chunk (levels 1..given level) from the given chunk down. */
+    private void collectIndexKeys(String set, Object vertexId, int level, long min, long max,
+                                  List<String> keys) {
+        keys.add(AerospikeEdgeChunks.chunkKey(vertexId, min, max, level));
+        if (level <= 1) {
+            return;
+        }
+        Record record = db.get(null, new Key(namespace, set,
+                AerospikeEdgeChunks.chunkKey(vertexId, min, max, level)));
+        if (record == null || record.bins == null) {
+            return;
+        }
+        for (long[] span : children(record)) {
+            collectIndexKeys(set, vertexId, level - 1, span[0], span[1], keys);
+        }
+    }
+
+    /** A raw serialized value back into an entry (the stored form is [updated, created, peer, props]). */
+    private static AerospikeEdgeChunks.EdgeEntry toEntry(String edgeId, List<Object> value) {
+        return new AerospikeEdgeChunks.EdgeEntry(edgeId, value.get(2),
+                ((Number) value.get(1)).longValue(), ((Number) value.get(0)).longValue(), value);
     }
 
     private void flush(List<BatchRecord> writes) {
