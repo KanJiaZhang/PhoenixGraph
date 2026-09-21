@@ -97,9 +97,9 @@ class PaymentGraphConsistencyTest {
         gremlin = new GremlinGraphQuery(new AerospikeGraphQuery(vertexStore, edgeStore, schema), resolver);
         cypher = new CypherGraphQuery(new AerospikeGraphQuery(vertexStore, edgeStore, schema), resolver);
         statusPropertyId = schema.edgeSchema("Payment").property("status").id();
-        assumeTrue(paymentCount(HUB) == 50,
+        assumeTrue(paymentCount(HUB) == 76,
                 "the payment demo data is not loaded in set '" + vertexSet + "' (account " + HUB
-                        + " should have 50 payments); run the loader or set -Dpayment.vertexSet=");
+                        + " should have 76 payments); run the loader or set -Dpayment.vertexSet=");
     }
 
     @AfterAll
@@ -482,7 +482,7 @@ class PaymentGraphConsistencyTest {
         assertTrue(edges.getMessage().contains("RocksDB-Edge"), edges.getMessage());
 
         // a query that names its ids is still answered here: only a class is out of reach
-        assertEquals(List.of(50L), gremlin.execute("g.V('" + HUB + "','Account').outE('Payment').count()"));
+        assertEquals(List.of(76L), gremlin.execute("g.V('" + HUB + "','Account').outE('Payment').count()"));
     }
 
     private int schemaIdOf(String edgeName) {

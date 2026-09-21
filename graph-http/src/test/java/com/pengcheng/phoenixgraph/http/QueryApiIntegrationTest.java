@@ -311,7 +311,7 @@ class QueryApiIntegrationTest {
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(query("g.V('135','Account').out('Payment').count()")))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$[0]").value(50));
+                    .andExpect(jsonPath("$[0]").value(76));
 
             // a multi-account IP links to three accounts (10.99.255.2 -> 2000, 2001, 2002)
             api.perform(post("/api/v1/query")
@@ -544,7 +544,8 @@ class QueryApiIntegrationTest {
             int links = 3 + ((i * 37) % 78);
             for (int k = 0; k < links; k++) {
                 String acc = accounts.get((i * 29 + k * 41) % accounts.size());
-                edges.add(new EdgeUpsert("sip_" + i + "_" + k, ipToAccount, ipId, acc,
+                // the id is the pair, so a link that is generated twice is one edge, not two
+                edges.add(new EdgeUpsert(ipId + ":" + acc, ipToAccount, ipId, acc,
                         Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
             }
         }
@@ -554,32 +555,49 @@ class QueryApiIntegrationTest {
             int links = 2 + ((i * 23) % 9);
             for (int k = 0; k < links; k++) {
                 String acc = accounts.get((i * 17 + k * 31) % accounts.size());
-                edges.add(new EdgeUpsert("sph_" + i + "_" + k, phoneToAccount, phoneId, acc,
+                edges.add(new EdgeUpsert(phoneId + ":" + acc, phoneToAccount, phoneId, acc,
                         Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
             }
         }
         // explicit multi-account examples: 10.99.255.1 -> {1000,1001}, 10.99.255.2 -> {2000,2001,2002}
-        edges.add(new EdgeUpsert("mip_0", ipToAccount, "10.99.255.1", "1000",
+        edges.add(new EdgeUpsert("10.99.255.1:1000", ipToAccount, "10.99.255.1", "1000",
                 Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
-        edges.add(new EdgeUpsert("mip_1", ipToAccount, "10.99.255.1", "1001",
+        edges.add(new EdgeUpsert("10.99.255.1:1001", ipToAccount, "10.99.255.1", "1001",
                 Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
-        edges.add(new EdgeUpsert("mip_2", ipToAccount, "10.99.255.2", "2000",
+        edges.add(new EdgeUpsert("10.99.255.2:2000", ipToAccount, "10.99.255.2", "2000",
                 Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
-        edges.add(new EdgeUpsert("mip_3", ipToAccount, "10.99.255.2", "2001",
+        edges.add(new EdgeUpsert("10.99.255.2:2001", ipToAccount, "10.99.255.2", "2001",
                 Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
-        edges.add(new EdgeUpsert("mip_4", ipToAccount, "10.99.255.2", "2002",
+        edges.add(new EdgeUpsert("10.99.255.2:2002", ipToAccount, "10.99.255.2", "2002",
                 Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
-        // +86-138-69999 -> {1002,1003}, +86-138-69998 -> {2003,2004,2005}
-        edges.add(new EdgeUpsert("mph_0", phoneToAccount, "+86-138-69999", "1002",
+        // +86-138-69999 -> {1001,1002,1003}, +86-138-69998 -> {2003,2004,2005}
+        edges.add(new EdgeUpsert("+86-138-69999:1001", phoneToAccount, "+86-138-69999", "1001",
                 Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
-        edges.add(new EdgeUpsert("mph_1", phoneToAccount, "+86-138-69999", "1003",
+        edges.add(new EdgeUpsert("+86-138-69999:1002", phoneToAccount, "+86-138-69999", "1002",
                 Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
-        edges.add(new EdgeUpsert("mph_2", phoneToAccount, "+86-138-69998", "2003",
+        edges.add(new EdgeUpsert("+86-138-69999:1003", phoneToAccount, "+86-138-69999", "1003",
                 Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
-        edges.add(new EdgeUpsert("mph_3", phoneToAccount, "+86-138-69998", "2004",
+        edges.add(new EdgeUpsert("+86-138-69998:2003", phoneToAccount, "+86-138-69998", "2003",
                 Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
-        edges.add(new EdgeUpsert("mph_4", phoneToAccount, "+86-138-69998", "2005",
+        edges.add(new EdgeUpsert("+86-138-69998:2004", phoneToAccount, "+86-138-69998", "2004",
                 Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
+        edges.add(new EdgeUpsert("+86-138-69998:2005", phoneToAccount, "+86-138-69998", "2005",
+                Map.of(3, new EdgePropertyValue(t, t, t)), t, t));
+        // several payments between the same sender and receiver, the way a real account has them
+        // (135 pays 1000..1003 and 1001 pays 1002/1008/1014 more than once; each edge id is unique)
+        String[][] repeated = {
+                {"135", "1000"}, {"135", "1001"}, {"135", "1002"}, {"135", "1003"},
+                {"1001", "1002"}, {"1001", "1008"}, {"1001", "1014"}};
+        for (int p = 0; p < repeated.length; p++) {
+            String source = repeated[p][0];
+            String target = repeated[p][1];
+            int extra = 5 + (p % 6); // 5..10 more payments for this pair
+            for (int k = 0; k < extra; k++) {
+                edges.add(new EdgeUpsert("pay_rep_" + source + "_" + target + "_" + k, payment,
+                        source, target,
+                        Map.of(3, new EdgePropertyValue(k % 3 == 0 ? "PENDING" : "SUCCESS", t, t)), t, t));
+            }
+        }
         assertNoFailures(upsertEdgesChunked(edgeStore, edges));
     }
 

@@ -243,8 +243,8 @@
       "idSchema": {
         "id": 0,
         "name": "id",
-        "description": "Edge id",
-        "type": "LONG"
+        "description": "Edge id, PhoneId:AccountId",
+        "type": "STRING"
       },
       "source": {
         "id": 1,
@@ -387,8 +387,8 @@
       "idSchema": {
         "id": 0,
         "name": "id",
-        "description": "Edge id",
-        "type": "LONG"
+        "description": "Edge id, Ip:AccountId",
+        "type": "STRING"
       },
       "source": {
         "id": 1,

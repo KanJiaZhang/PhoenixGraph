@@ -14,8 +14,9 @@ phoenixgraph:
     host: localhost
     port: 3000
     namespace: test
-    # primary graph: used by the write endpoints
-    vertex-set: http_demo_v2
+    # primary graph: used by the write endpoints; the demo links (IP/Phone -> Account) are
+    # single-direction in http_demo_v3, so a UI draws one directed edge per link
+    vertex-set: http_demo_v3
     schema: payment-graph
     # RocksDB graphs resolve their (relative) schema paths against this directory
     rocksdb-root: .rocksdb
@@ -25,9 +26,9 @@ phoenixgraph:
       # the same payment graph served by the two RocksDB storage schemes (see
       # PaymentGraphRocksDbLoader for loading the demo data into them)
       - schema: payment-graph-rocksdb-inline
-        vertex-set: http_demo_v2
+        vertex-set: http_demo_v3
       - schema: payment-graph-rocksdb-edge
-        vertex-set: http_demo_v2
+        vertex-set: http_demo_v3
       # shops around People's Square with an S2 geo index, in both RocksDB schemes:
       # g.V('1','Merchant').geoNear('{"lat":31.2304,"lon":121.4737,"radiusKm":1}')
       - schema: geo-merchants-rocksdb-inline

@@ -200,12 +200,10 @@ public final class PaymentGraphRocksDbLoader {
         return indexed;
     }
 
-    /** The edges of the demo graph: hub payments, a ring, and IP/phone links both ways. */
+    /** The edges of the demo graph: hub payments, a ring, and IP/phone links one way. */
     public static List<RocksDbEdgeUpsert> paymentEdges(GraphSchema schema) {
         EdgeSchema payment = schema.edgeSchema("Payment");
-        EdgeSchema accountToIp = schema.edgeSchema("AccountToIP");
         EdgeSchema ipToAccount = schema.edgeSchema("IPToAccount");
-        EdgeSchema accountToPhone = schema.edgeSchema("AccountToPhone");
         EdgeSchema phoneToAccount = schema.edgeSchema("PhoneToAccount");
 
         List<RocksDbEdgeUpsert> edges = new ArrayList<>();
@@ -235,18 +233,16 @@ public final class PaymentGraphRocksDbLoader {
             }
         }
 
-        // every account owns an IP and a phone, and both link back
+        // every account owns an IP and a phone, and each link is stored once, in the direction its
+        // class declares (IP -> Account, Phone -> Account), so a UI draws one arrow per link and
+        // counts it once. The id is the pair, so the same link can never be written twice.
         for (int i = 0; i < ACCOUNT_COUNT; i++) {
             long accountId = FIRST_ACCOUNT + i;
             String ipId = ipAddressOf(i);
             String phoneId = phoneNumberOf(i);
-            edges.add(edge(accountToIp, "a2ip_" + i, accountId, ipId,
-                    edgeValues(accountToIp, Map.of("loginTime", time + i), time), time + i));
-            edges.add(edge(ipToAccount, "ip2a_" + i, ipId, accountId,
+            edges.add(edge(ipToAccount, ipId + ":" + accountId, ipId, accountId,
                     edgeValues(ipToAccount, Map.of("linkedAt", time + i), time), time + i));
-            edges.add(edge(accountToPhone, "a2ph_" + i, accountId, phoneId,
-                    edgeValues(accountToPhone, Map.of("linkedAt", time + i), time), time + i));
-            edges.add(edge(phoneToAccount, "ph2a_" + i, phoneId, accountId,
+            edges.add(edge(phoneToAccount, phoneId + ":" + accountId, phoneId, accountId,
                     edgeValues(phoneToAccount, Map.of("linkedAt", time + i), time), time + i));
         }
         return edges;

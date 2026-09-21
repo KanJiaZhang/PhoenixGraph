@@ -59,21 +59,21 @@ class RocksDbStorageIntegrationTest {
     private static final List<String> GREMLIN_QUERIES = List.of(
             "g.V('135','Account').out('Payment').count()",
             "g.V('135','Account').outE('Payment').values('status')",
-            "g.V('135','Account').out('Payment').out('AccountToIP').values('ipAddress')",
-            "g.V('1000','Account').out('AccountToPhone').values('cnCode')",
-            "g.V('1000','Account').in('AccountToPhone').values('phoneNumber')",
+            "g.V('135','Account').out('Payment').in('IPToAccount').values('ipAddress')",
+            "g.V('1000','Account').in('PhoneToAccount').values('cnCode')",
+            "g.V('1000','Account').in('PhoneToAccount').values('phoneNumber')",
             "g.V('135','Account').both('Payment').both('Payment').limit(3).values('accountStatus')",
             "g.V('135','Account').outE('Payment').limit(2).elementMap()",
             "g.V('135','Account').both().count()",
             "g.V('" + PaymentGraphRocksDbLoader.ipAddressOf(0)
-                    + "','IP').out('IPToAccount').out('AccountToPhone').values('phoneNumber')");
+                    + "','IP').out('IPToAccount').in('PhoneToAccount').values('phoneNumber')");
 
     private static final List<String> CYPHER_QUERIES = List.of(
             "MATCH (a:Account {id:'135'})-[p:Payment]->(b:Account) RETURN count(*) AS n",
             "MATCH (a:Account {id:'135'})-[p:Payment]->(b:Account) "
                     + "RETURN p.status AS status, count(*) AS n ORDER BY n DESC",
-            "MATCH (a:Account {id:'1000'})-[:AccountToPhone]->(ph:Phone) RETURN ph.cnCode AS cn",
-            "MATCH (a:Account {id:'1000'})-[:AccountToIP]->(ip:IP), (ip)-[:IPToAccount]->(b:Account) "
+            "MATCH (ph:Phone)-[:PhoneToAccount]->(a:Account {id:'1000'}) RETURN ph.cnCode AS cn",
+            "MATCH (ip:IP)-[:IPToAccount]->(a:Account {id:'1000'}), (ip)-[:IPToAccount]->(b:Account) "
                     + "RETURN ip.ipAddress AS ip, b.id AS id",
             "MATCH (a:Account)-[p:Payment]->(b:Account) WHERE a.id = '135' RETURN b.firstName AS name");
 
@@ -89,7 +89,8 @@ class RocksDbStorageIntegrationTest {
         PaymentGraphRocksDbLoader.LoadResult edgeLoad = PaymentGraphRocksDbLoader.load(edgeSchema,
                 directory.resolve("edge").toString(), true);
         assertEquals(151, inlineLoad.vertices());
-        assertEquals(400, inlineLoad.edges());
+        // 200 payments + 50 IP -> Account + 50 Phone -> Account links, each stored once
+        assertEquals(300, inlineLoad.edges());
         assertEquals(inlineLoad.vertices(), edgeLoad.vertices());
         assertEquals(inlineLoad.edges(), edgeLoad.edges());
 
@@ -158,11 +159,11 @@ class RocksDbStorageIntegrationTest {
         assertEquals(List.of(50L), edgeGremlin.execute("g.V('135','Account').out('Payment').count()"));
 
         // the hub pays 50 accounts, each of which owns one IP and one phone
-        assertEquals(50, inlineGremlin.execute("g.V('135','Account').out('Payment').out('AccountToIP')").size());
+        assertEquals(50, inlineGremlin.execute("g.V('135','Account').out('Payment').in('IPToAccount')").size());
         assertEquals(List.of("+86"), edgeGremlin.execute(
-                "g.V('1000','Account').out('AccountToPhone').values('cnCode')"));
+                "g.V('1000','Account').in('PhoneToAccount').values('cnCode')"));
         assertEquals(List.of(PaymentGraphRocksDbLoader.phoneNumberOf(0)), edgeGremlin.execute(
-                "g.V('1000','Account').out('AccountToPhone').values('phoneNumber')"));
+                "g.V('1000','Account').in('PhoneToAccount').values('phoneNumber')"));
 
         // two hops out and back: the status values of the accounts reached from the hub
         List<Object> statuses = inlineGremlin.execute(
@@ -188,7 +189,7 @@ class RocksDbStorageIntegrationTest {
         assertEquals(135L, account.rows().get(0).get("id"));
 
         CypherResult twoHop = edgeCypher.execute(
-                "MATCH (a:Account {id:'1000'})-[:AccountToIP]->(ip:IP), (ip)-[:IPToAccount]->(b:Account) "
+                "MATCH (ip:IP)-[:IPToAccount]->(a:Account {id:'1000'}), (ip)-[:IPToAccount]->(b:Account) "
                         + "RETURN ip.ipAddress AS ip, b.id AS id");
         assertEquals(1, twoHop.rows().size());
         assertEquals("10.0.0.0", twoHop.rows().get(0).get("ip"));

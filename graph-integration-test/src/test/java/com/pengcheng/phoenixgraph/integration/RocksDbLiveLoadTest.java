@@ -53,7 +53,8 @@ class RocksDbLiveLoadTest {
             System.out.printf("loaded %s (%s) at %s: %d vertices, %d edges%n", result.graph(),
                     result.storage().configName(), result.path(), result.vertices(), result.edges());
             assertEquals(151, result.vertices());
-            assertEquals(400, result.edges());
+            // 200 payments + 50 IP -> Account + 50 Phone -> Account links, each stored once
+            assertEquals(300, result.edges());
             assertTrue(Files.isDirectory(Path.of(result.path())), result.path() + " should exist");
         }
 
@@ -74,7 +75,7 @@ class RocksDbLiveLoadTest {
                     NeighborVertexResolver.from(edgeSchema));
 
             assertEquals(List.of(50L), inlineGremlin.execute("g.V('135','Account').out('Payment').count()"));
-            assertEquals(50, inlineGremlin.execute("g.V('135','Account').out('Payment').out('AccountToIP')").size());
+            assertEquals(50, inlineGremlin.execute("g.V('135','Account').out('Payment').in('IPToAccount')").size());
             assertEquals(50L, ((Number) edgeCypher.execute(
                             "MATCH (a:Account {id:'135'})-[p:Payment]->(b:Account) RETURN count(*) AS n")
                     .rows().get(0).get("n")).longValue());
