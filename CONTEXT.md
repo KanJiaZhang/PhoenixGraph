@@ -3511,3 +3511,86 @@ online   [onlineEarliest, +∞)   内联 ve_<schema>_<dir> bin（已有，受 ma
 * 在线 bin 的逐出按 `lastUpdatedTime` 而非 `createdTime`，与"在线层=最新 createdTime"的口径有细微差别，
   文档化即可。
 * 边写入 stale 返回 CONFLICT（点侧）/ SUCCESS（边侧批量）仍不一致（§50 遗留）。
+
+---
+
+## 53. 第七批：stale 写统一、结果面板复核、150 的两跳扩展数据与 benchmark
+
+### 53.1 stale 写统一为 `SUCCESS_STALE`（#23）
+
+之前"全 stale"在点侧返回 `CONFLICT`、在边侧（批量）返回 `SUCCESS`（只记日志）。现在统一成一个新结果
+`WriteOutcome.SUCCESS_STALE`（"什么都没写，但记录已经是新的，不是错、也不是要重试的冲突"）：
+
+* 点单条 `upsertVertex`、点批量 `upsertVertices`：全 stale → `SUCCESS_STALE`（原 `CONFLICT`）；
+* 边单条 `upsertInto`、边批量 `upsertBatchInto`/`upsertEdges`/`upsertEdgesOnVertex`：全 stale →
+  `SUCCESS_STALE`（批量路径现在把每个 bin 里 stale 的 edge id 带出来，逐边合并两个端点的结果：
+  两边都 stale → `SUCCESS_STALE`，一边 stale 一边新写 → `SUCCESS`，任一 `FAILED` → `FAILED`）。
+* 消费侧：HTTP `WriteResponses` 把 `SUCCESS_STALE` 映射成 **200 OK**；CSV 批量加载把 `SUCCESS_STALE`
+  计入 `succeeded`（不是 conflict 也不是 failed）。`MetricsBusinessLog` 不依赖 `CONFLICT`（看的是
+  日志里的 `stale=true`/`conflict=true`），指标不变。`CONFLICT` 保留给真正的 CAS/代数冲突（`toOutcome`）。
+* 测试：`LastWriteWinsIntegrationTest` 的点/边 stale 断言全部改为 `SUCCESS_STALE`。全量测试绿。
+
+> RocksDB 侧同一条"点全 stale→CONFLICT、边全 stale→SUCCESS"的不一致**本轮未动**（用户指认的是 Aerospike
+> 这一处；RocksDB 的 `RocksDbVertexTable`/`RocksDbEdgeStore` 若要同样统一，改动面更大，列为后续）。
+
+### 53.2 「结果」面板复核（#25）
+
+用户报 `g.V(1001,'Account').bothE('Payment').map {...}.toList()` 的结果还是没进「结果」面板。用
+**headless Edge 驱动真实 UI** 复核（不是看代码、不是看 curl）：该查询在 gremlin 模式下点击「查询」后
+
+```
+rowsPanel.hidden=false  rowsTable 38 行（表头"值" + 37 行 S/P）  结果 tab 激活  浮窗 "S · P"
+```
+
+**功能是好的**，第 51.1 的修法确实生效了。问题在浏览器缓存了旧 `app.js`（`no-cache` 只会"用前再验证"，
+已打开的旧页面不会自动重取）。措施：两个 `application.yml` 的静态资源缓存从 `no-cache` 改成
+**`no-store`**（每次导航都重取），并提醒用户**硬刷新（Ctrl+Shift+R）**。没有其它代码问题。
+
+### 53.3 150 的两跳扩展数据（#24）
+
+新增 `AerospikeTwoHopExpansion`（集成测试侧 loader，`payment-graph.json` 的 Account 用**字符串 id**，
+与 demo 一致）：150 → K 个一层账户，每个一层账户 → L 个二层账户，于是
+`g.V('150','Account').both('Payment').both('Payment')` 的二跳 = **K×(L+1)**（每个一层账户的 both 有 L 条出
+边 + 1 条回到 150 的入边）。每跳再挂少量 IP/Phone 边（150 各 1 条，每个一层账户各 1 条）。写在**独立
+vertex set**（先 truncate），不动 `http_demo_v3`（避免破坏既有 benchmark 的断言）。
+
+```
+K=50, L=99  → 二跳 5000 条边、100 个不同账户（99 个二层 + 150 自己）
+```
+
+`AerospikeTwoHopExpansionLiveLoadTest` 把 5000 条边的扩展种进 `payment_twohop_exp` 并跑那条查询：实测
+**5000 条边 / 100 个不同账户** ✓。
+
+### 53.4 两跳 benchmark：200 → 500 → 1000 → 2000 → 5000（#26）
+
+`AerospikeTwoHopExpansionBenchmarkTest`：五个档位各自独立 set 加载，各跑 7 条遍历
+（`both>both` / `…count` / `…dedup>count` / `out>out` / `out>out>count` / `both>bothE` / `…limit(100)`），
+预热 3 + 计时 10，报告 mean/p95/p99/max + v-items/e-items/decoded/kv-calls。实测（Aerospike，安静）：
+
+```
+both>both            200→5000  6.79→14.62 ms  kv 5→6    e-items 22→102  decoded 0
+both>both>count      200→5000  4.89→ 9.79 ms  kv 4→4    e-items 22→102  decoded 0
+out>out              200→5000  4.10→11.37 ms  kv 3→4
+both>bothE           200→5000  3.94→16.29 ms  kv 4→4    decoded 200→5000
+both>both>limit(100) 200→5000  4.37→12.62 ms  kv 5→6    （limit 仍读满整个 bin）
+```
+
+**分析与优化空间**：
+
+1. **第二跳是批量读**：kv-calls 与 reach 无关（`both>both` 从 200 到 5000 都是 5~6 次往返，因为一层账户的
+   邻居头是 native batch get）。latency 随 reach 增长是**子线性**的（reach 25×、latency 2×），不是往返数在涨，
+   而是每个 bin 的**载荷**（一个一层账户的 both bin 从 20 条涨到 100 条）在涨。
+2. **`both>bothE` 在构造边**：decoded = reach（5000 条边逐条建对象）→ 16.3 ms。只跳不取边就用顶点跳
+   （`both>both`，decoded=0），引擎已经这么下推（§50.4/§50.5 的老结论）。
+3. **`limit` 仍读满整个 bin**（`limit(100)` 的 e-items 与不 limit 相同）：内联 bin 没有"按时间的前 k 条"
+   有序表示，cap 只截结果不省读。→ 与 §48.6/§50.5 的"`limit` 有序表示 / 摘要 bin"是同一个待办。
+4. **`count` 读的是 bin 的形状**（decoded=0 ✓），但仍要把整份 bin 载荷拉回来：给 (顶点,边类,方向) 存一个
+   **摘要计数 bin** 能把 count 变成 O(1) 且不拉 bin（老遗留）。
+
+结论：引擎层（批量读、顶点跳不构边、count 不构边）已把往返数压平；剩下的成本是**载荷大小**与**按需截断**，
+对应老待办"摘要 bin + limit 有序表示"。
+
+### 53.5 回归
+
+全量 `./mvnw test` **BUILD SUCCESS，0 失败 / 0 错误**（新增：LWW 断言语义更新、两跳扩展 loader、
+两跳 benchmark、两跳 live-load）。

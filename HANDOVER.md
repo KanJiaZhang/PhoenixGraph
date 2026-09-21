@@ -1,8 +1,8 @@
 # Handover — resume here
 
 > 本文件是**断点续做手记**：今天做了什么（结论）、现场怎么恢复、明天从哪继续。
-> 详细设计与实测数据在 `CONTEXT.md`：**2026-09-21 新增 §47–§52**（§47 仪表盘七问；§48 四问（二）；§49 三问（三）；§50 五问（四）：顶点类型 `vt` / last-write-wins / 链接不写账户 / regex 形状复验 / 两跳再压测；§51 四问（五）：Gremlin 结果进「结果」面板 / 弧距再减半 / 类型是过滤条件 / regex 保留公式；**§52（六）：Aerospike-Edge 大点的冷 / 近线 / 在线三层存储**）；
-> 过程记录（要求原话 / 根因 / 被否掉的方案 / 复验命令）在 **`DAILY-2026-09-21.md`**（§1–9、§10、§11、§12、§13、§14 共六批）。**2026-09-20 是 §38–46**；**2026-09-18 是 §32–37**（含**类起点与扫描端口**）；2026-09-17 是 §21–31。
+> 详细设计与实测数据在 `CONTEXT.md`：**2026-09-21 新增 §47–§53**（§47 仪表盘七问；§48 四问（二）；§49 三问（三）；§50 五问（四）；§51 四问（五）；§52（六）：Aerospike-Edge 大点冷/近线/在线三层；**§53（七）：stale 写统一 / 结果面板复核 / 150 两跳扩展数据 + benchmark**）；
+> 过程记录在 **`DAILY-2026-09-21.md`**（§1–§15 共七批）。**2026-09-20 是 §38–46**；**2026-09-18 是 §32–37**（含**类起点与扫描端口**）；2026-09-17 是 §21–31。
 
 **最后一次会话：2026-09-21（周日）· 全量 `./mvnw test` 绿（gremlin 146 / http 69 / integration 88（4 skipped）/ schema 38 / gemini 21 / fuzzy 26 / hnsw 37 / …）**
 **本轮十四段（用户报的十四件事，CONTEXT §47+§48+§49）：(1) 边只写一个方向、边数不再翻倍；(2) 135/1001 同一对端点各补 5–8 笔 Payment；
@@ -10,7 +10,7 @@
 (8) 图例选中后左下角显示选中点数/边数；(9) 搜索改成“子串或字段缩写”；（两个服务加 `no-cache` 让浏览器不再拿旧 app.js）；(10) 同一对端点的多条边画成弧；(11) `filter`/`map` 换成表达式语言；
 (12) `toList` 等终结步（§49.1）；(13) 多边 `fill: none` + 弧距减半（§49.2）；(14) 闭包里的 `def tmp = it.get();` 与换行/分号语句（§49.3）。**【均在 §47/§48/§49 与 DAILY 里】**
 **现场已重启并对齐：8081（11 个图，payment-graph 指到 `http_demo_v3`）+ 8080（UI，含新搜索实现）+ Aerospike 容器；RocksDB 两个 payment 实例已按单向重新播种（`.rocksdb`，300 条边）。8083（hnsw-dynamic）本轮未起。**
-**下一次入口：提交本轮改动；§52.5 的后续（rewriteWindow 重写整条索引链 / 近线按天整读全部分区 / 在线逐出按 lastUpdatedTime 的口径）；§51.6 的未做（`vt` 塞进边读、命名类首跳按类型过滤）；display 属性 `$id`（§46.4）；UI 镜像边折叠（§47.8）；`map` 聚合/多列与字符串函数（§48.6）；`limit` 有序表示 / 摘要 bin / 跨查询 bin 缓存。**
+**下一次入口：提交本轮改动；§53.4 的优化空间（摘要 bin / limit 有序表示，即 §48.6/§50.5 的老待办）；RocksDB 侧同样的 stale 不一致（§53.1）；§52.5 的未做（rewriteWindow 全链重写 / 近线按天整读 / 在线逐出口径）；`vt` 塞进边读（§51.6）；display `$id`（§46.4）；UI 镜像边折叠（§47.8）；`map` 聚合/多列（§48.6）。**
 
 **工作树状态：本日四个批次共 9+ 个提交，全部已提交。**
 **第六批（Aerospike-Edge 大点三层）新增类：`EdgeTiering`（big 判定 + 分层路由）、`AerospikeNearline`（近线布局/分区数学）、`AerospikeNearlineStore`（TTL 7 天近线 KV + 索引）、`AerospikeVolumeStore`（按月/年 volume）、`AerospikeEdgeOfflineJob`（离线：volume + 预划分 + 冷 delta + big 判定）；`AerospikeEdgeChunks.buildLevels` + `AerospikeEdgeChunkStore.rewriteWindow`（冷 delta）；`AerospikeEdgeGraphQuery` 四参构造器启用分层读（三参旧构造器不变=兼容）。详见 `CONTEXT.md` §52 / `DAILY` §14。**
