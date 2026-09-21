@@ -1,9 +1,9 @@
 {
   "payment-graph" : [ {
     "id" : 0,
-    "name" : "email domain + country + ip/16 + name word",
-    "expression" : "emailDomain(email)+'_'+countryCode(phone)+'_'+ip2(ip)+'_'+regexValue(username, '^([a-z]+)')",
-    "description" : "Accounts that share an email provider, a country, a /16 network and the letters their user name starts with.",
+    "name" : "email domain + country + ip/16 + name shape",
+    "expression" : "emailDomain(email)+'_'+countryCode(phone)+'_'+ip2(ip)+'_'+regex(username, '^[a-z]+')",
+    "description" : "Accounts that share an email provider, a country, a /16 network and a user name of the same shape (letters before the digits). The regular expression contributes its formula, not what it matched, so zhang1988 and xia1999 are linked.",
     "enabled" : true,
     "example" : {
       "email" : "19880101@mail.ru",

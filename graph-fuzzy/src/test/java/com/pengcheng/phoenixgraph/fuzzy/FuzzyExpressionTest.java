@@ -240,8 +240,9 @@ class FuzzyExpressionTest {
 
     @Test
     void theDemoPatternsApplyToTheDemoContext() {
-        assertEquals("mail.ru_86_10.20_zhang", FuzzyDemo.SHARED_HABITS.key(FuzzyDemo.demoContext()),
-                "the word the value is reduced to is the fragment");
+        assertEquals("mail.ru_86_10.20_" + FuzzyDemo.NAME_SHAPE,
+                FuzzyDemo.SHARED_HABITS.key(FuzzyDemo.demoContext()),
+                "the regular expression contributes its own shape, so a name word of any letters links");
         assertTrue(FuzzyDemo.MACHINE_MAIL.key(FuzzyDemo.demoContext()).startsWith("10.20.31_621700_re_"),
                 "the machine-made email contributes its shape: "
                         + FuzzyDemo.MACHINE_MAIL.key(FuzzyDemo.demoContext()));

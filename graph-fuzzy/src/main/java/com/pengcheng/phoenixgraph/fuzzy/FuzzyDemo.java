@@ -16,14 +16,18 @@ public final class FuzzyDemo {
 
     /**
      * Pattern 0 - the "open a new account, keep the habits" pattern: the same email provider, the
-     * same country, the same network and the same word at the start of the user name
-     * ({@code regexValue} takes the letters out of {@code zhang1988}, so the word is the fragment).
+     * same country, the same network and a user name whose leading letters have the same shape.
+     *
+     * <p>The regular expression contributes <b>its own formula</b> to the key (not what it matched),
+     * so {@code zhang1988} and {@code xia1999} - two values of that shape - are on one node. Extracting
+     * the word instead would link the zhangs to each other and leave the xias out, which is not what
+     * "a name written as letters" asks for.
      */
     public static final FuzzyPattern SHARED_HABITS = withDemo(new FuzzyPattern(0,
-            "email domain + country + ip/16 + name word",
-            "emailDomain(email)+'_'+countryCode(phone)+'_'+ip2(ip)+'_'+regexValue(username, '^([a-z]+)')",
-            "Accounts that share an email provider, a country, a /16 network and the letters their "
-                    + "user name starts with.",
+            "email domain + country + ip/16 + name shape",
+            "emailDomain(email)+'_'+countryCode(phone)+'_'+ip2(ip)+'_'+regex(username, '^[a-z]+')",
+            "Accounts that share an email provider, a country, a /16 network and a user name of the "
+                    + "same shape (letters before the digits).",
             true));
 
     /**
@@ -41,6 +45,12 @@ public final class FuzzyDemo {
 
     /** The patterns the demo graphs start with. */
     public static final List<FuzzyPattern> DEMO_PATTERNS = List.of(SHARED_HABITS, MACHINE_MAIL);
+
+    /**
+     * The fragment the first demo pattern's regular expression contributes: the shape of
+     * {@code ^[a-z]+}, so any user name written as letters shares it.
+     */
+    public static final String NAME_SHAPE = FuzzyFunctions.shape("^[a-z]+");
 
     /** A context both demo patterns apply to. */
     public static FuzzyContext demoContext() {

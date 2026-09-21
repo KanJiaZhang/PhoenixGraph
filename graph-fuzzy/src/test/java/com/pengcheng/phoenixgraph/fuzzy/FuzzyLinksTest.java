@@ -36,8 +36,21 @@ class FuzzyLinksTest {
         String second = pattern.linkVertexId(FRAUD_B);
 
         assertEquals(first, second, "the same email provider, country, /16 and name word is the link");
-        assertEquals("fl_0_mail.ru_86_10.20_zhang", first);
+        assertEquals("fl_0_mail.ru_86_10.20_" + FuzzyDemo.NAME_SHAPE, first);
         assertNotEquals(first, pattern.linkVertexId(HONEST), "an unrelated account is on its own node");
+    }
+
+    @Test
+    void twoDifferentNameWordsOfOneShapeLinkUp() {
+        // the point of keeping the formula: zhang1988 and xia1999 are two values of '^[a-z]+', so
+        // extracting the word would link the zhangs to each other and leave the xias out
+        FuzzyPattern pattern = FuzzyDemo.SHARED_HABITS;
+        FuzzyContext xia = FuzzyContext.of(Map.of(
+                "email", "19990101@mail.ru", "phone", "+8613800138001", "ip", "10.20.77.9",
+                "username", "xia1999"));
+
+        assertEquals(pattern.linkVertexId(FRAUD_A), pattern.linkVertexId(xia),
+                "same provider, country, /16 and name shape: one node, whatever the letters are");
     }
 
     @Test
@@ -87,8 +100,9 @@ class FuzzyLinksTest {
 
         assertEquals(2, links.size(), "both demo patterns apply to this context");
         assertEquals(0, links.get(0).patternId());
-        assertEquals("fl_0_mail.ru_86_10.20_zhang", links.get(0).linkVertexId());
-        assertEquals(List.of("mail.ru", "_", "86", "_", "10.20", "_", "zhang"), links.get(0).fragments());
+        assertEquals("fl_0_mail.ru_86_10.20_" + FuzzyDemo.NAME_SHAPE, links.get(0).linkVertexId());
+        assertEquals(List.of("mail.ru", "_", "86", "_", "10.20", "_", FuzzyDemo.NAME_SHAPE),
+                links.get(0).fragments());
         assertTrue(links.get(0).complete());
         assertEquals(1, links.get(1).patternId());
         assertTrue(links.get(1).linkVertexId().startsWith("fl_1_10.20.31_621700_re_"),
@@ -160,7 +174,7 @@ class FuzzyLinksTest {
 
         patterns.save(FuzzyDemo.MACHINE_MAIL);
         assertEquals(2, patterns.patterns().size(), "the second pattern was added next to the first");
-        assertEquals("fl_0_mail.ru_86_10.20_zhang", patterns.require(0).linkVertexId(FRAUD_A));
+        assertEquals("fl_0_mail.ru_86_10.20_" + FuzzyDemo.NAME_SHAPE, patterns.require(0).linkVertexId(FRAUD_A));
 
         // a pattern added to the file by hand is picked up, and one removed disappears
         Files.writeString(file, new FuzzyPatterns().writeAll(Map.of("payment-graph",
@@ -191,8 +205,8 @@ class FuzzyLinksTest {
         assertFalse(pattern.example().isEmpty(), "the shipped patterns come with a context to try");
         FuzzyLink link = pattern.exampleLink();
         assertEquals(0, link.patternId());
-        assertEquals("mail.ru_86_10.20_zhang", link.key());
-        assertEquals("fl_0_mail.ru_86_10.20_zhang", link.linkVertexId());
+        assertEquals("mail.ru_86_10.20_" + FuzzyDemo.NAME_SHAPE, link.key());
+        assertEquals("fl_0_mail.ru_86_10.20_" + FuzzyDemo.NAME_SHAPE, link.linkVertexId());
         assertEquals(".out('FuzzyLinkedTo').outE('Payment').otherV()", pattern.demoStepsOrDefault(),
                 "the demo walks from the ring to where the money went");
         assertEquals("pattern -> ring -> payments -> receiver", pattern.demoTitle());
@@ -201,13 +215,14 @@ class FuzzyLinksTest {
 
     @Test
     void theDemoPatternsUseARegularExpressionThatKeepsItsBackslashes() {
-        // the shipped patterns reduce the value to a word and to a shape
-        assertTrue(FuzzyDemo.SHARED_HABITS.expression().contains("regexValue(username, '^([a-z]+)')"),
-                "the word is what the value is reduced to");
+        // both shipped patterns keep the formula: the letters of the user name and the digits the
+        // email local part starts with are shapes, so every value of that shape shares the fragment
+        assertTrue(FuzzyDemo.SHARED_HABITS.expression().contains("regex(username, '^[a-z]+')"),
+                "the name is reduced to the shape of its regular expression");
         assertTrue(FuzzyDemo.MACHINE_MAIL.expression().contains("regex(emailName(email), '^\\d{4}')"),
                 "the digits are a backslash class, so it has to survive as written");
 
-        assertEquals("mail.ru_86_10.20_zhang", FuzzyDemo.SHARED_HABITS.key(FuzzyDemo.demoContext()));
+        assertEquals("mail.ru_86_10.20_" + FuzzyDemo.NAME_SHAPE, FuzzyDemo.SHARED_HABITS.key(FuzzyDemo.demoContext()));
         assertTrue(FuzzyDemo.MACHINE_MAIL.key(FuzzyDemo.demoContext()).startsWith("10.20.31_621700_re_"),
                 FuzzyDemo.MACHINE_MAIL.key(FuzzyDemo.demoContext()));
     }
@@ -242,7 +257,7 @@ class FuzzyLinksTest {
         assertEquals(FuzzyDemo.exampleContext(), read.example(), "the context comes back as it was written");
         assertEquals("pattern -> ring -> payments -> receiver", read.demoTitle());
         assertEquals(".out('FuzzyLinkedTo').outE('Payment').otherV()", read.demoSteps());
-        assertEquals("mail.ru_86_10.20_zhang", read.exampleLink().key());
+        assertEquals("mail.ru_86_10.20_" + FuzzyDemo.NAME_SHAPE, read.exampleLink().key());
     }
 
     @Test
