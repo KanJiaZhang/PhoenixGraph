@@ -1,33 +1,18 @@
 package com.pengcheng.phoenixgraph.query.gremlin;
 
-import com.pengcheng.phoenixgraph.query.QueryException;
-
-import java.util.LinkedHashSet;
-import java.util.Set;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
-
 /**
- * Element accessors in the Groovy form a Gremlin client writes, inside the closure of
- * {@code filter { ... }} / {@code map { ... }} or as a plain argument.
+ * The Groovy element accessors a Gremlin client writes inside a {@code filter}/{@code map}
+ * closure, and the two pseudo property names they read.
  *
  * <pre>{@code
- * .filter(it.get().value('accountStatus').equals('ACTIVE'))
- * .filter { it.get().label() == 'Account' }
- * .map { it.get().value('accountStatus') }
+ * it.get().value('accountStatus')   -> the property value
+ * it.get().label()                  -> the element's label (schema name)
+ * it.get().id()                     -> the element's id
  * }</pre>
  *
- * <p>The engine's own grammar (see {@link GremlinFilterExpression}) compares <em>property keys</em>
- * directly ({@code filter(status.equals('SUCCESS'))}), so this class rewrites the Groovy accessors
- * into that form before the grammar sees them:
- * <ul>
- *   <li>{@code it.get().value('k')} / {@code it.value('k')} → {@code k}</li>
- *   <li>{@code it.get().label()} / {@code it.label()} → {@value #LABEL_KEY}</li>
- *   <li>{@code it.get().id()} / {@code it.id()} → {@value #ID_KEY}</li>
- * </ul>
- * The two pseudo keys are not properties: {@link #read(Object, String)} answers them from the
- * element itself, and callers must keep them out of the property projection they ask storage for
- * ({@link #isPseudo(String)}).
+ * <p>{@link #accessorAt(String, int)} recognises one of them at a position inside an expression,
+ * which is what {@link GremlinExpression} tokenises; {@link #read(GremlinElement, String)} answers
+ * the two pseudo keys from the element itself rather than from its properties.
  */
 final class GremlinElementExpression {
 
@@ -37,27 +22,40 @@ final class GremlinElementExpression {
     /** The pseudo key standing for the element's id. */
     static final String ID_KEY = "@id";
 
+    /** An accessor found at a position: the property (or pseudo) key it reads and where it ends. */
+    record Accessor(String key, int end) {
+    }
+
     // the optional '.get()' and the optional 's' make it.get().value('k'), it.value('k') and
     // it.values('k') one and the same accessor
-    private static final Pattern VALUE = Pattern.compile(
+    private static final java.util.regex.Pattern VALUE = java.util.regex.Pattern.compile(
             "it\\s*\\.\\s*(?:get\\s*\\(\\s*\\)\\s*\\.\\s*)?values?\\s*\\(\\s*(['\"])([^'\"]*)\\1\\s*\\)");
-    private static final Pattern LABEL = Pattern.compile(
+    private static final java.util.regex.Pattern LABEL = java.util.regex.Pattern.compile(
             "it\\s*\\.\\s*(?:get\\s*\\(\\s*\\)\\s*\\.\\s*)?label\\s*\\(\\s*\\)");
-    private static final Pattern ID = Pattern.compile(
+    private static final java.util.regex.Pattern ID = java.util.regex.Pattern.compile(
             "it\\s*\\.\\s*(?:get\\s*\\(\\s*\\)\\s*\\.\\s*)?id\\s*\\(\\s*\\)");
 
     private GremlinElementExpression() {
     }
 
-    /** Rewrites the Groovy element accessors of an expression into the engine's property-key form. */
-    static String normalize(String expression) {
-        if (expression == null || expression.indexOf("it") < 0) {
-            return expression;
+    /** The accessor that starts at {@code index}, or {@code null} when there is none. */
+    static Accessor accessorAt(String text, int index) {
+        java.util.regex.Matcher matcher = VALUE.matcher(text);
+        matcher.region(index, text.length());
+        if (matcher.lookingAt()) {
+            return new Accessor(matcher.group(2), matcher.end());
         }
-        String out = VALUE.matcher(expression)
-                .replaceAll(result -> Matcher.quoteReplacement(result.group(2)));
-        out = LABEL.matcher(out).replaceAll(Matcher.quoteReplacement(LABEL_KEY));
-        return ID.matcher(out).replaceAll(Matcher.quoteReplacement(ID_KEY));
+        matcher = LABEL.matcher(text);
+        matcher.region(index, text.length());
+        if (matcher.lookingAt()) {
+            return new Accessor(LABEL_KEY, matcher.end());
+        }
+        matcher = ID.matcher(text);
+        matcher.region(index, text.length());
+        if (matcher.lookingAt()) {
+            return new Accessor(ID_KEY, matcher.end());
+        }
+        return null;
     }
 
     /** Whether a key is one of the element accessors rather than a stored property. */
@@ -89,53 +87,5 @@ final class GremlinElementExpression {
             return id;
         }
         return properties.get(key);
-    }
-
-    /**
-     * The property names a single accessor reads (empty for the pseudo keys), which is what the
-     * projection planner asks storage for.
-     */
-    static Set<String> propertyKeys(String expression) {
-        String normalized = normalize(expression).trim();
-        if (isPseudo(normalized)) {
-            return Set.of();
-        }
-        Set<String> keys = new LinkedHashSet<>();
-        keys.add(normalized);
-        return keys;
-    }
-
-    /**
-     * The single accessor a {@code map { ... }} closure is: one property, the label or the id.
-     * Anything else (a comparison, a concatenation, ...) is rejected with the form to write instead.
-     */
-    static String pathKey(String expression) {
-        if (expression == null || expression.isBlank()) {
-            throw new QueryException("map expects a closure such as map { it.get().value('accountStatus') }");
-        }
-        String normalized = normalize(expression).trim();
-        if (normalized.indexOf('(') >= 0 || normalized.indexOf('=') >= 0 || normalized.indexOf('&') >= 0
-                || normalized.indexOf('|') >= 0 || normalized.indexOf('!') >= 0 || normalized.indexOf('<') >= 0
-                || normalized.indexOf('>') >= 0 || normalized.indexOf(',') >= 0
-                || normalized.indexOf(' ') >= 0) {
-            throw new QueryException("map expects a single element accessor such as"
-                    + " map { it.get().value('accountStatus') }, map { it.get().label() } or"
-                    + " map { it.get().id() }, got: " + expression);
-        }
-        if (normalized.isEmpty()) {
-            throw new QueryException("map expects a non-blank expression");
-        }
-        return normalized;
-    }
-
-    /** The property a {@code map { ... }} closure reads (empty for the pseudo keys). */
-    static Set<String> pathKeys(String expression) {
-        String key = pathKey(expression);
-        if (isPseudo(key)) {
-            return Set.of();
-        }
-        Set<String> keys = new LinkedHashSet<>();
-        keys.add(key);
-        return keys;
     }
 }

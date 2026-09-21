@@ -505,8 +505,17 @@ public class GremlinGraphQuery {
                 conditions.add(parsedSteps.get(next));
                 next++;
             }
+            if (conditions.isEmpty() || !GremlinSteps.canPushDown(conditions)) {
+                // nothing to fold, or a condition that reads the element's label/id: the search
+                // cannot answer it, so the steps stay where they are
+                plannedSteps.add(step);
+                pushedFilters.add(null);
+                plannedPushdowns.add(null);
+                plannedVertexCaps.add(null);
+                continue;
+            }
             plannedSteps.add(step);
-            pushedFilters.add(conditions.isEmpty() ? null : GremlinSteps.hnswFilter(conditions));
+            pushedFilters.add(GremlinSteps.hnswFilter(conditions));
             plannedPushdowns.add(null);
             plannedVertexCaps.add(null);
             i = next - 1; // the conditions became part of the nearest step
@@ -592,14 +601,21 @@ public class GremlinGraphQuery {
                 next++;
             }
             int cap = 0;
-            if (next < steps.size() && steps.get(next).name().equals("limit")) {
-                cap = (int) Math.min(Integer.MAX_VALUE, positiveLong(steps.get(next).args().get(0), "limit"));
-                next++;
-            }
             boolean nowCounted = edgeCount;
-            if (!nowCounted && cap == 0 && next < steps.size() && steps.get(next).name().equals("count")) {
-                nowCounted = true;
-                next++;
+            if (GremlinSteps.canPushDown(conditions)) {
+                if (next < steps.size() && steps.get(next).name().equals("limit")) {
+                    cap = (int) Math.min(Integer.MAX_VALUE, positiveLong(steps.get(next).args().get(0), "limit"));
+                    next++;
+                }
+                if (!nowCounted && cap == 0 && next < steps.size() && steps.get(next).name().equals("count")) {
+                    nowCounted = true;
+                    next++;
+                }
+            } else {
+                // the conditions read the element's label or id, which the store's decode cannot see:
+                // they stay steps, and nothing after them is folded into the read
+                conditions = new ArrayList<>();
+                next = i + 1;
             }
             String edgeName = optionalSingle(step.args(), step.name());
             boolean pushed = !conditions.isEmpty() || cap > 0 || (nowCounted && !edgeCount);
@@ -969,11 +985,11 @@ public class GremlinGraphQuery {
             } else if (name.equals("values")) {
                 keys.addAll(steps.get(j).args());
             } else if (name.equals("map")) {
-                // map { ... } reads one property (or the label/id) off the element and hands on the
-                // value, so nothing after it can read the element
+                // map { ... } reads the properties its expression names and hands on the value, so
+                // nothing after it can read the element
                 List<String> args = steps.get(j).args();
                 if (!args.isEmpty()) {
-                    keys.addAll(GremlinElementExpression.pathKeys(args.get(0)));
+                    keys.addAll(GremlinExpression.parse(args.get(0)).propertyKeys());
                 }
                 break;
             } else if (name.equals("count")) {

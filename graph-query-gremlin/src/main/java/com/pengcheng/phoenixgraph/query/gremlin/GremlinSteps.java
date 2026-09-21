@@ -596,13 +596,13 @@ final class GremlinSteps {
         };
     }
 
-    /** Projects each element to one value, the Groovy {@code map { ... }} way. */
+    /** Projects each element to the value of one expression, the Groovy {@code map { ... }} way. */
     static GremlinStep map(String expression) {
-        String key = GremlinElementExpression.pathKey(expression);
+        GremlinExpression compiled = GremlinExpression.parse(expression);
         return (ctx, in) -> {
             List<Object> out = new ArrayList<>(in.size());
             for (Object o : in) {
-                out.add(GremlinElementExpression.read(requireElement(o), key));
+                out.add(compiled.evaluate(requireElement(o)));
             }
             return out;
         };
@@ -671,6 +671,27 @@ final class GremlinSteps {
     }
 
     // --- internals ---
+
+    /**
+     * Whether the conditions following an edge hop can be evaluated by the store while it decodes.
+     *
+     * <p>That condition sees the decoded property bins only, so one that reads the element's label
+     * or id has to stay a step - otherwise the hop would answer with what the synthetic element
+     * (no label, no id) makes of it instead of what the traversal means.
+     */
+    static boolean canPushDown(List<GremlinQuery.Step> conditions) {
+        for (GremlinQuery.Step step : conditions) {
+            if (!step.name().equals("filter")) {
+                continue;
+            }
+            for (String arg : step.args()) {
+                if (GremlinFilterExpression.parse(arg).readsElementIdentity()) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
 
     /**
      * Builds the conditions an edge hop pushes into its read from the {@code has}/{@code filter}

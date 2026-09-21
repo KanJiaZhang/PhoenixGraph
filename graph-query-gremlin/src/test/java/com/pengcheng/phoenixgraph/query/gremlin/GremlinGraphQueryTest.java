@@ -1053,6 +1053,22 @@ class GremlinGraphQueryTest {
     }
 
     @Test
+    void filterClosureTakesAComparisonAndCanSpanSeveralLines() {
+        EdgeQueryResult keep = edge("e1", EdgeSide.OUT, "n1", Map.of("weight", 0.5));
+        EdgeQueryResult drop = edge("e2", EdgeSide.OUT, "n2", Map.of("weight", 0.25));
+        when(graphQuery.readEdges("v1", "person", "knows", EdgeSide.OUT, List.of("weight")))
+                .thenReturn(List.of(keep, drop));
+
+        List<Object> result = gremlin.execute("""
+                g.V('v1', 'person').outE('knows').filter {
+                    it.get().value('weight') > 0.3
+                }""");
+
+        assertEquals(1, result.size());
+        assertEquals("e1", ((GremlinEdge) result.get(0)).id());
+    }
+
+    @Test
     void mapClosureProjectsOnePropertyValue() {
         EdgeQueryResult e1 = edge("e1", EdgeSide.OUT, "n1", Map.of("weight", 0.5));
         EdgeQueryResult e2 = edge("e2", EdgeSide.OUT, "n2", Map.of("weight", 0.25));
@@ -1066,10 +1082,54 @@ class GremlinGraphQueryTest {
     }
 
     @Test
-    void mapRejectsAnExpressionThatIsNotASingleAccessor() {
+    void mapClosureTakesAnyExpressionIncludingATernaryOnManyLines() {
+        EdgeQueryResult ok = edge("e1", EdgeSide.OUT, "n1", Map.of("status", "SUCCESS"));
+        EdgeQueryResult pending = edge("e2", EdgeSide.OUT, "n2", Map.of("status", "PENDING"));
+        when(graphQuery.readEdges("v1", "person", "knows", EdgeSide.OUT, List.of("status")))
+                .thenReturn(List.of(ok, pending));
+
+        List<Object> result = gremlin.execute("""
+                g.V('v1', 'person').outE('knows').map {
+                    it.get().value('status') == 'SUCCESS' ? 'S' : 'P'
+                }""");
+
+        assertEquals(List.of("S", "P"), result);
+    }
+
+    @Test
+    void mapClosureCanBuildAValueOutOfSeveralProperties() {
+        EdgeQueryResult e1 = edge("e1", EdgeSide.OUT, "n1", Map.of("firstName", "Ada", "lastName", "Lovelace"));
+        when(graphQuery.readEdges("v1", "person", "knows", EdgeSide.OUT, List.of("firstName", "lastName")))
+                .thenReturn(List.of(e1));
+
+        List<Object> result = gremlin.execute("g.V('v1', 'person').outE('knows')"
+                + ".map { it.get().value('firstName') + ' ' + it.get().value('lastName') }");
+
+        assertEquals(List.of("Ada Lovelace"), result);
+    }
+
+    @Test
+    void mapRejectsAMalformedExpression() {
         QueryException failure = assertThrows(QueryException.class, () -> gremlin.execute(
-                "g.V('v1', 'person').outE('knows').map { it.get().value('weight') + 1 }"));
-        assertTrue(failure.getMessage().contains("single element accessor"), failure.getMessage());
+                "g.V('v1', 'person').outE('knows').map { it.get().value('weight') + }"));
+        assertTrue(failure.getMessage().contains("expected a value"), failure.getMessage());
+    }
+
+    @Test
+    void aConditionOnTheElementIdIsNotFoldedIntoTheEdgeRead() {
+        // the read pushes conditions into its decode, and that decode has no id: the condition has
+        // to stay a step, or the hop would answer with what the synthetic element makes of it
+        when(graphQuery.supportsEdgeReadPushdown()).thenReturn(true);
+        EdgeQueryResult e1 = edge("e1", EdgeSide.OUT, "n1", Map.of());
+        EdgeQueryResult e2 = edge("e2", EdgeSide.OUT, "n2", Map.of());
+        when(graphQuery.readEdges("v1", "person", "knows", EdgeSide.OUT, List.of()))
+                .thenReturn(List.of(e1, e2));
+
+        List<Object> result = gremlin.execute(
+                "g.V('v1', 'person').outE('knows').filter { it.get().id() == 'e1' }");
+
+        assertEquals(1, result.size());
+        assertEquals("e1", ((GremlinEdge) result.get(0)).id());
     }
 
     @Test
