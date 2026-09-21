@@ -3437,3 +3437,77 @@ S-150 bothE(IPToAccount) > otherV             6 kv / 201 e-items
   按类型过滤，得让 store 知道期望类型（同上一条）；
 * 「结果」面板对 Gremlin 是**一列**（值/对象）；聚合或多列要等 `map` 有聚合能力；
 * 47.8 / 48.6 / 50.7 的老遗留不变。
+
+---
+
+## 52. 第六批：Aerospike-Edge 的大点三层存储（冷 / 近线 / 在线）
+
+用户要求在 **Aerospike-Edge** 上继续改进大点方案（不是内联 Aerospike）。**兼容性约束**：schema 的存储改回
+`Aerospike`（内联）时，所有代码与逻辑退化为内联方式 —— 新加的类只在 `GraphStorageType.AEROSPIKE_EDGE` 下被
+`StorageConfig` 装配，`AerospikeGraphQuery` / `AerospikeEdgeStore`（内联）一行未动。
+
+### 52.1 模型：三个时间层 + 一个判定
+
+```
+cold     (-∞, now-24h]          离线 Edge_Out / Edge_In 多级表（已有 §51 之前的 AerospikeEdgeChunks）
+nearline (now-24h, now]         TTL 7 天的近线 KV（本次新增）
+online   [onlineEarliest, +∞)   内联 ve_<schema>_<dir> bin（已有，受 maxInDegree/maxOutDegree 限制）
+大点判定  离线出/入度 > schema 的 maxInDegree / maxOutDegree（本次新增 EdgeTiering.isBig）
+```
+
+一条读按它的时间窗与这三层覆盖区间的交集路由（`EdgeTiering.classify`），再把各层的答案按边 id 合并（后写者胜，
+与内联 bin 同一条规则）。这一条规则就得到用户读方案的六个情形：窗在在线层内→只读在线；窗全在过去→只读冷
+（忽略近线/在线）；跨冷+近线→两层；跨三层→三层。**兼容退化**：`AerospikeEdgeGraphQuery` 的三参构造器保持旧
+行为（冷+内联无条件合并），旧测试原样通过；带 nearline 的四参构造器才启用分层路由。
+
+### 52.2 逐条映射（用户 8 点 → 代码）
+
+| 用户要求 | 实现 |
+|---|---|
+| 1. 冷数据离线直接生成 KV（edge list / edge index），覆盖写入；每天更新最新一天 KV（所有 delta） | `AerospikeEdgeChunks.build`（level0 边表 + 上层索引）+ `AerospikeEdgeChunkStore.writeChunks`（批量覆盖写）；**delta** = `AerospikeEdgeChunkStore.rewriteWindow`（读最新一天的 level-0 chunk、按边 id 合并 delta、重分该天、重build 上层索引；其它天的 level-0 不动） |
+| 1b. 统计每个大点按月/按年的 volume | `AerospikeVolumeStore`（每条 (edgeClass,dir,vertex) 一个记录，bin `m_yyyyMM` / `y_yyyy`，离线算好绝对值写入，幂等） |
+| 2.1 近线按 volume 预划分：`月量/30/4000` → N 个 KV | `AerospikeNearline.partitionCount(monthlyVolume)`（1 亿/30/4000=833，cap 1000） |
+| 2.2 一个索引 KV 存 N 个数据 KV 的 key（bin 0..999） | `AerospikeNearlineStore.prePartition`（索引 KV bin 0..n-1 各存一个 data key + bin `n`=个数） |
+| 2.3 新近线边按索引写入相近 KV | `AerospikeNearlineStore.write`（`hash(edgeId) % N` 落分区，边按 id 覆盖） |
+| 2.4 近线 KV TTL 7 天 | `AerospikeNearline.TTL_SECONDS = 7*24*3600`，写时 `WritePolicy.expiration` |
+| 3. 在线数据存点邻接表，有出/入度限制 | 已有 `AerospikeEdgeStore`（`maxInDegree`/`maxOutDegree` 超限逐出最旧） |
+| 5. 大点判定 = 离线出/入度超 schema 上限 | `EdgeTiering.isBig(degree, maxDegree)`；`AerospikeEdgeOfflineJob.daily` 汇总 |
+| 读 1. 必须带时间范围 | 已有（hub 无窗报错）；新增：近线有数据也算 hub（`nearline.hasData`） |
+| 读 2–6. 在线→近线→冷、按窗合并 | `AerospikeEdgeGraphQuery.readEdgesWithin`（tiered 分支） |
+
+离线入口 `AerospikeEdgeOfflineJob.daily`：写 volume → 按最新月量预划分近线 → 把当天 delta 折进冷表 → 返回
+`big` 判定。
+
+### 52.3 关键决策
+
+* **近线 KV 键加 (edgeClass, direction)**：用户示例写的是 `1_NL_Index_Date`，但一个点的不同边类/方向不能混在
+  一个 KV（冷表就是按类+方向分 set 的同一理由）。键 `{vertexId}_NL_Index_{edgeSchemaId}_{dir}_{yyyyMMdd}` 与
+  数据 `{vertexId}_NL_{edgeSchemaId}_{dir}_{yyyyMMdd}_{i}`，`_NL_Index_/_NL_` 命名保留。
+* **时间边界**：cold = `(-∞, now-24h)`、nearline = `[now-24h, now]`，边界落在近线（24h 整不算冷）。`classify`
+  里 cold 上界用 `nearlineFrom-1`（毫秒分辨率）。
+* **近线只存索引、不预建数据 KV**：数据 KV 由普通近线写路径按需创建（`write` 读到 N 后落到分区、懒建 KV）；
+  离线只负责根据 volume 预划分写索引。
+* **在线层覆盖 = `[earliestCreatedTime, +∞)`**：在线 bin 里最旧边的 createdTime 是下界；窗全在冷区时不读它
+  （`window.toTime() <= now-24h` 短路），实现用户"忽略在线"且不白读一次。
+* **语义变化（有意）**：旧版"内联更新永远盖过冷副本"变成"冷只读冷、delta 由离线折进冷"（用户读方案第 4 条）。
+  旧三参构造器保留旧语义；`StorageConfig` 对新图用四参 tiered 构造器。近线 KV 保留 7 天但读路径只在最近 24h
+  用它们（用户两处数字照单全收）。
+
+### 52.4 测试与回归
+
+* 纯逻辑单测（无 Aerospike）：`EdgeTieringTest`（big 判定 + 6 种路由）、`AerospikeNearlineTest`（分区数、
+  稳定分区、键/TTL）、`AerospikeEdgeChunksTest.buildLevels`（父层重建 = build 的父层）。
+* 集成（`AerospikeEdgeTieringIntegrationTest`，实时 Aerospike）：近窗=在线+近线合并 43 条、冷窗=只冷、跨三
+  层合并、离线 job（volume / 预划分 / 冷 delta / big 判定）。`AerospikeEdgeIntegrationTest`（旧三参路径）9/9
+  原样通过 = 兼容性证明。
+* 全量 `./mvnw test`：**BUILD SUCCESS，0 失败 / 0 错误**（新增约 12 单测 + 4 集成）。
+
+### 52.5 未做 / 后续
+
+* 冷 delta 的 `rewriteWindow` 会重写整条索引链（读全宽度 level-1 拿所有 level-0 span 再 `buildLevels`），
+  `O(level0 数量)`；对每天更新的最新一天够用，全量重算时延未测。
+* 近线读当前按天整读该天所有分区（一次 batch get）；没有按"更细时间片"索引，1 亿边/天读全部 1000 个 KV 是
+  本方案固有代价（用户原样设计）。
+* 在线 bin 的逐出按 `lastUpdatedTime` 而非 `createdTime`，与"在线层=最新 createdTime"的口径有细微差别，
+  文档化即可。
+* 边写入 stale 返回 CONFLICT（点侧）/ SUCCESS（边侧批量）仍不一致（§50 遗留）。
