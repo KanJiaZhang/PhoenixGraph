@@ -2915,3 +2915,142 @@ g.V('+86-138-10008','Phone').in('PhoneToAccount')                               
 * `map` 只支持单个取值（不支持 `it.get().value('a') + ' ' + it.get().value('b')`）；
   `filter { }` 不支持 `!`、算术、`and`/`or` 以外的 Groovy 语法（`&&`/`||`/`and`/`or` 可用）。
 * 上一轮遗留仍未做：display 属性 `$id`、`limit` 有序表示、摘要 bin、跨查询 bin 缓存。
+
+---
+
+## 48. 仪表盘四问（二）：图例选中计数、搜索更严、平行边成弧、filter/map 表达式语言
+
+用户接着报了四件事：点图例（点类型 / 社区）后左下角要显示选了多少点多少边；搜索 Alan 仍会把 Ken Hopper
+一起点亮（以及 Ada、10018 的老毛病）；1001 和 135 之间有多条 Payment，UI 却只画一条线；`map`/`filter`
+写多行 + 三元表达式又被拒绝。逐条如下。
+
+### 48.1 图例选中：左下角的点数 / 边数（#8）
+
+`applyLegendFilter` 本来只是加 `legend-hit`/`legend-dim` 两个 class。现在它同时统计命中的点数与两端都命中的
+边数，交给新的 `showLegendCount()`：左下角出现一个 chip —— `图例选中 N 点 · M 边`（中英双语的
+`legendSelected` 键），没有选中就隐藏。那个角落原来是"结果值浮窗"（`#valuePanel`）的位置，所以 chip
+可见时给它加 `shifted` 类（CSS `bottom: 66px`），两者不重叠。
+
+### 48.2 搜索：逐字段之后，缩写还得从字段开头开始（#9）
+
+第 47.3 节把"整串拼接 + 子序列"改成"逐字段 + 子序列"，但**自由子序列**仍然太松：
+
+| 查询 | 误命中 | 为什么 |
+|---|---|---|
+| `ada` | Account 1014 (Radia) | r**a**d**ia** —— a-d-a 是 "radia" 的子序列 |
+| `10018` | 11 条 `pay_rep_1001_1008_*` | id 里的 1-0-0-1 加后面的 8，是子序列 |
+| `alan` | （第 47 节已修好；用户看到的还是旧页面，见 48.5） | 整串拼接 |
+
+现在的规则是：**字段包含 token**，或者 **token 是该字段的缩写** —— token 的第一个字符必须落在字段的第一个字符上，
+其余字符按顺序出现在后面（"pmt" → "payment" 仍然成立）。实测（1001 一跳子图，node 复算）：
+
+```
+alan   -> 1008(Alan),1044(Alan)                  （不含 1002 Ken Hopper）
+ada    -> -                                       （原来含 1014 Radia）
+10018  -> -                                       （原来含 11 条边）
+hopper -> 1001,135,1000,1002,1038                 （真命中）
+ken    -> 1002
+1001   -> 1001 + 与它相连的边
+pmt    -> 37 条 Payment 边                         （模糊缩写没丢）
+```
+
+### 48.3 同一对端点的多条边画成弧（#10）
+
+边原来是 `<line>`，同一对端点上的多条边完全重合，只看得到一条（用户：135 和 1001 之间有多条 Payment
+却只有一条线）。现在：
+
+* 边改成 `<path>`；画之前 `assignEdgeArcs(links)` 按**无序端点对**分组，组内按 label + id 稳定排序，
+  第 i 条的偏移 `arc = (i - (n-1)/2) * 26px`（1 条=直、3 条=-26/0/+26、5 条=-52/-26/0/+26/+52）；
+  同一条链的正反两个方向落在同一组，因此也不会互相压住。
+* `setEdgeGeometry` 写 `d`：`arc == 0` 时 `M..L..`（与原来的直线一致），否则用二次曲线
+  `M.. Q (中点 + 垂直偏移) ..`；箭头 marker 跟着曲线末端的切线，仍然指向目标点。
+* node 拖拽时照旧重算几何（`setEdgeGeometry(this, l)`），点击选中 / 图例 / 搜索 / 路径高亮的 class 逻辑不变
+  （`.edge` 上的 CSS 对 path 一样生效）。
+
+用 node 复算过：4 条同向 + 1 条反向的 5 条边得到 5 条互不相同的路径。
+
+### 48.4 `filter` / `map` 换成表达式语言（#11）
+
+用户要的是这个（多行 + 三元）：
+
+```groovy
+g.V(1001,'Account').bothE('Payment').map {
+    it.get().value('status') == 'SUCCESS' ? 'S' : 'P'
+}
+```
+
+原来的 `map` 只接受"单个取值"（`pathKey` 一看有空格就报 `map expects a single element accessor`），
+`filter` 的语法也只有"属性键 + 比较"。现在两者共用一个递归下降的表达式语言（新文件
+`GremlinExpression`，`GremlinFilterExpression` 变成它的薄封装）：
+
+```
+expression := conditional
+conditional:= or ( '?' expression ':' conditional )?     // 右结合、只算命中的一支
+or / and   :=  || / or 与 && / and（and 更紧）
+equality   := == = != 以及词形运算符 equals|eq|ne|notEquals|contains|startsWith|endsWith
+relational := < <= > >=
+additive   := +（数字相加，其余按字符串拼接）
+unary      := ! | not | -
+postfix    := primary ( '.' method '(' 参数 ')' )*
+primary    := '(' expr ')' | it.get().value('k') | it.get().label() | it.get().id()
+            | '...' | "..." | 数字 | true | false | null | 属性名
+```
+
+几点设计：
+
+* **向后兼容**：老写法（`relation.equals('a') || xrelation = 'b' && extra`、`relation equals r1`、
+  `relation EQ 'a'`、裸 `xrelation` 表示"存在"）全部照旧 —— 词形运算符的右侧是**裸 token 当字面量**
+  （老语法的语义），并且 `GremlinFilterExpressionTest` 的 10 条用例一条没改就全绿。
+* **比较语义**沿用 `GremlinSteps.matches`：数字按数值比、字符串大小写不敏感；属性缺失时 `!=` 成立。
+  作为条件时"真"的定义是"非 null 且非 false"，所以裸属性仍然是"存在"。
+* **属性键顺序**很重要（它就是读 bin 的顺序）：测试立刻抓到一个 bug —— 我一开始用 `Set.copyOf` 存键，
+  顺序变成哈希序，投影列表与预期不符，读到的属性对不上。改成 `LinkedHashSet` 的不可变视图。
+* **词形运算符**一开始也漏了映射：`wordOperator()` 返回 "equals"，而比较函数的 switch 只认 "=="，
+  于是 `relation equals r1` 恒为 false。现在统一在比较函数里规范化。
+* **下推的保护**：边读会把 `filter` 折进 store 的解码条件，而那个条件只看得见属性（没有 label/id）。
+  因此新增 `GremlinSteps.canPushDown(conditions)`：表达式读了 `@label`/`@id` 就不折（`nearest` 的
+  HNSW 过滤同理），条件留在计划里正常执行。`GremlinGraphQueryTest` 里加了一条 "id 条件不被折进边读"
+  的用例（mock 的 `supportsEdgeReadPushdown()` 返回 true，折进去就会多出一条答案）。
+* 实测（8081）：
+
+```
+g.V(1001,'Account').bothE('Payment').map { it.get().value('status') == 'SUCCESS' ? 'S' : 'P' }.dedup()  -> ["S","P"]
+g.V(1001,'Account').bothE('Payment').filter { it.get().value('status') == 'SUCCESS' }.count()           -> [24]
+g.V(1001,'Account').bothE('Payment').filter { !it.get().value('status').equals('SUCCESS') }.count()     -> [13]
+g.V(1001,'Account').bothE('Payment').filter { it.get().label() == 'Payment' && it.get().value('status') != 'FAILED' }.count() -> [37]
+g.V(1001,'Account').bothE('Payment').map { it.get().value('status') + '/' + it.get().id() }.limit(2)    -> ["SUCCESS/pay_c1","SUCCESS/pay_r0"]
+```
+
+### 48.5 一个容易被忽略的运维点：浏览器缓存
+
+#9 里"Alan 仍命中 Ken Hopper"在修好第 47 节之后**已经可以复现不了**（用 node 拿真实子图复算过：旧实现
+命中 8 个点，新实现只命中 2 个 Alan 账户）。原因是浏览器还拿着旧的 `app.js`：静态资源只带 `Last-Modified`，
+没有 `Cache-Control`，浏览器会按启发式规则在几分钟内直接用缓存。
+
+现在两个服务的 `application.yml` 都加了
+
+```yaml
+spring:
+  web:
+    resources:
+      cache:
+        cachecontrol:
+          no-cache: true
+```
+
+于是 `js/app.js` 响应带 `Cache-Control: no-cache`，浏览器每次都会带 `If-Modified-Since` 回来问一次
+（没变就是 304，几乎不花时间），改完 UI 刷新就能看到。注意 **UI 是 `graph-web`（8080）在发**，
+它的 `application.yml` 与 `graph-http` 是两个文件。
+
+### 48.6 回归与未做
+
+全量 `./mvnw test`：**BUILD SUCCESS**，逐模块与第 47 节相同，仅 `graph-query-gremlin` 从 146 涨到
+**150**（新增：多行三元 map、多行比较 filter、拼接 map、id 条件不下推、malformed 表达式）。
+
+未做：
+
+* `map` 仍是"一条表达式对一个元素一个值"：没有聚合（`sum`/`count`）、没有 `project`/`by` 那种多列形状；
+* 表达式没有字符串函数（`toUpperCase`/`substring`/`length`）与集合操作；
+* `value('id')` 仍被当作属性名（要用 `it.get().id()`），报错信息来自 schema，不是表达式；
+* 47.8 的遗留仍然在：UI 对"真的同时存了镜像边"的 store 不做折叠、display 属性 `$id`、
+  `limit` 有序表示、摘要 bin、跨查询 bin 缓存。
