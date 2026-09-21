@@ -164,7 +164,8 @@
       examples: '示例查询',
       fuzzyExample: '模糊关联示例（模式 → 团伙 → 出款 → 收款方）',
       rows: '结果',
-      rowsHint: 'Cypher 查询的行结果会显示在这里',
+      rowsHint: 'Gremlin 的结果值 / Cypher 的行结果会显示在这里',
+      rowsValue: '值',
       rowsEmpty: '查询没有返回任何行',
       cypherError: 'Cypher 查询失败',
       valueTitle: '查询结果值',
@@ -250,7 +251,8 @@
       examples: 'Example queries',
       fuzzyExample: 'Fuzzy linking example (pattern -> ring -> payments -> receiver)',
       rows: 'Rows',
-      rowsHint: 'Rows returned by a Cypher query show up here',
+      rowsHint: 'Gremlin answers and Cypher rows show up here',
+      rowsValue: 'Value',
       rowsEmpty: 'The query returned no rows',
       cypherError: 'Cypher query failed',
       valueTitle: 'Query result',
@@ -771,7 +773,7 @@
   // stop each line at the node edge so the arrow head stays visible above the node
   const EDGE_NODE_GAP = 13;
   // how far apart the arcs of one vertex pair are (px)
-  const EDGE_ARC_STEP = 13;
+  const EDGE_ARC_STEP = 7;
 
   /**
    * Gives every edge of the same vertex pair its own arc.
@@ -1596,15 +1598,18 @@
     const subgraph = responseSubgraph(result);
     resetGraph();
     const { addedV, addedE } = merge(subgraph);
-    // a Cypher answer brings rows, which is also what makes the result tab available
+    const value = responseValue(result);
     if (result && result.columns) {
       rowsReady = true;
       refreshRowsTab();
       showRows(result.columns, result.rows || []);
-  } else {
+    } else if (Array.isArray(value) && !elementValues(value)) {
+      // a Gremlin answer that is not graph elements - a count, values, an elementMap, a list of
+      // strings - has nothing to draw on the canvas, so it belongs in the result tab
+      showGremlinRows(value);
+    } else {
       clearRows();
     }
-    const value = responseValue(result);
     showValue(value, result);
     clearAlgo();
     render();
@@ -1718,6 +1723,18 @@
 
   function hideValue() {
     if (el.valuePanel) el.valuePanel.hidden = true;
+  }
+
+  /**
+   * Shows a Gremlin answer in the result tab: one row per returned value, the way a Cypher
+   * projection is shown. The answer to a traversal of vertices/edges is the subgraph on the canvas,
+   * so that one clears the tab instead (see showQueryResult).
+   */
+  function showGremlinRows(values) {
+    rowsReady = true;
+    refreshRowsTab();
+    const column = t('rowsValue');
+    showRows([column], values.map((value) => ({ [column]: value })));
   }
 
   /** Renders the rows of a Cypher result as a table in the "rows" tab. */
@@ -2157,7 +2174,7 @@
 
   /** Whether the result tab is available: only Cypher answers have rows to show. */
   function rowsAvailable() {
-    return currentLanguage() === 'cypher' && rowsReady;
+    return rowsReady;
   }
 
   /** Shows the side panel for the given tab ('stats' / 'props' / 'rows'). */
