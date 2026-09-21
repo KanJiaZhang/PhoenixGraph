@@ -1,8 +1,8 @@
 # Handover — resume here
 
 > 本文件是**断点续做手记**：今天做了什么（结论）、现场怎么恢复、明天从哪继续。
-> 详细设计与实测数据在 `CONTEXT.md`：**2026-09-21 新增 §47–§53**（§47 仪表盘七问；§48 四问（二）；§49 三问（三）；§50 五问（四）；§51 四问（五）；§52（六）：Aerospike-Edge 大点冷/近线/在线三层；**§53（七）：stale 写统一 / 结果面板复核 / 150 两跳扩展数据 + benchmark**）；
-> 过程记录在 **`DAILY-2026-09-21.md`**（§1–§15 共七批）。**2026-09-20 是 §38–46**；**2026-09-18 是 §32–37**（含**类起点与扫描端口**）；2026-09-17 是 §21–31。
+> 详细设计与实测数据在 `CONTEXT.md`：**2026-09-21 新增 §47–§54**（§47 仪表盘七问；§48 四问（二）；§49 三问（三）；§50 五问（四）；§51 四问（五）；§52（六）：Aerospike-Edge 大点冷/近线/在线三层；§53（七）：stale 写统一 / 结果面板复核 / 150 两跳扩展数据 + benchmark；**§54（八）：表达式字符串函数 / display `$id` / count 交给服务端**）；
+> 过程记录在 **`DAILY-2026-09-21.md`**（§1–§16 共八批）。**2026-09-20 是 §38–46**；**2026-09-18 是 §32–37**（含**类起点与扫描端口**）；2026-09-17 是 §21–31。
 
 **最后一次会话：2026-09-21（周日）· 全量 `./mvnw test` 绿（gremlin 146 / http 69 / integration 88（4 skipped）/ schema 38 / gemini 21 / fuzzy 26 / hnsw 37 / …）**
 **本轮十四段（用户报的十四件事，CONTEXT §47+§48+§49）：(1) 边只写一个方向、边数不再翻倍；(2) 135/1001 同一对端点各补 5–8 笔 Payment；
@@ -10,9 +10,10 @@
 (8) 图例选中后左下角显示选中点数/边数；(9) 搜索改成“子串或字段缩写”；（两个服务加 `no-cache` 让浏览器不再拿旧 app.js）；(10) 同一对端点的多条边画成弧；(11) `filter`/`map` 换成表达式语言；
 (12) `toList` 等终结步（§49.1）；(13) 多边 `fill: none` + 弧距减半（§49.2）；(14) 闭包里的 `def tmp = it.get();` 与换行/分号语句（§49.3）。**【均在 §47/§48/§49 与 DAILY 里】**
 **现场已重启并对齐：8081（11 个图，payment-graph 指到 `http_demo_v3`）+ 8080（UI，含新搜索实现）+ Aerospike 容器；RocksDB 两个 payment 实例已按单向重新播种（`.rocksdb`，300 条边）。8083（hnsw-dynamic）本轮未起。**
-**下一次入口：继续 §53.4 的优化空间（摘要 bin / limit 有序表示，即 §48.6/§50.5 的老待办）；RocksDB 侧同样的 stale 不一致（§53.1）；§52.5 的未做（rewriteWindow 全链重写 / 近线按天整读 / 在线逐出口径）；`vt` 塞进边读（§51.6）；display `$id`（§46.4）；UI 镜像边折叠（§47.8）；`map` 聚合/多列（§48.6）。**
+**下一次入口：§51.6 余下（`vt` 塞进边读 / 命名类首跳按类型过滤）；§53.4 余下（limit 有序表示）；RocksDB 侧同样的 stale 不一致（§53.1）；§52.5 的未做（rewriteWindow 全链重写 / 近线按天整读 / 在线逐出口径）；UI 镜像边折叠（§47.8）；`map` 聚合/多列（§48.6）。**
 
-**工作树状态：本日七个批次共 27 个提交，全部已提交并已 push 到 GitHub（`develop`，`origin` = github.com:KanJiaZhang/PhoenixGraph）。**
+**工作树状态：本日八个批次共 30+ 个提交，全部已提交并已 push 到 GitHub（`develop`，`origin` = github.com:KanJiaZhang/PhoenixGraph）。**
+**第八批（§51.6 / §53.4 的“明天要做”）新增/修改：`GremlinExpression`（`stringMethod`：字符串/数值函数）+ `GremlinElementExpression.resolveKey`（`value('id')`/`value('label')`）+ `GremlinStringFunctionTest`（7）；`VertexSchema.displayName`/`DISPLAY_ID` + `VertexSchemaDto.displayName` + `SchemaJsonCodec` + `DisplayPropertyTest`（+2）+ UI `displayLabel` 的 `$id`；`AerospikeOperations.mapSize`/`mapSizes`（服务端 `MapOperation.size`，记读）+ `AerospikeEdgeStore.countEdges/countEdgesBatch` 的短路径。详见 `CONTEXT.md` §54 / `DAILY` §16。**
 **第七批（#23/#25/#24/#26）新增：`WriteOutcome.SUCCESS_STALE`（stale 写统一）、`AerospikeTwoHopExpansion`（150 两跳扩展 loader，独立 set）+ `AerospikeTwoHopExpansionBenchmarkTest`（200→5000 五档 benchmark）+ `*LiveLoadTest`（种 `payment_twohop_exp`）。详见 `CONTEXT.md` §53 / `DAILY` §15。**
 **第六批（Aerospike-Edge 大点三层）新增类：`EdgeTiering`（big 判定 + 分层路由）、`AerospikeNearline`（近线布局/分区数学）、`AerospikeNearlineStore`（TTL 7 天近线 KV + 索引）、`AerospikeVolumeStore`（按月/年 volume）、`AerospikeEdgeOfflineJob`（离线：volume + 预划分 + 冷 delta + big 判定）；`AerospikeEdgeChunks.buildLevels` + `AerospikeEdgeChunkStore.rewriteWindow`（冷 delta）；`AerospikeEdgeGraphQuery` 四参构造器启用分层读（三参旧构造器不变=兼容）。详见 `CONTEXT.md` §52 / `DAILY` §14。**
 

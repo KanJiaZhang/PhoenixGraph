@@ -3594,3 +3594,74 @@ both>both>limit(100) 200→5000  4.37→12.62 ms  kv 5→6    （limit 仍读满
 
 全量 `./mvnw test` **BUILD SUCCESS，0 失败 / 0 错误**（新增：LWW 断言语义更新、两跳扩展 loader、
 两跳 benchmark、两跳 live-load）。
+
+---
+
+## 54. 第八批：表达式的字符串函数、display `$id`、count 交给服务端
+
+第八批做的是 §51.6 / §53.4 里"明天要做"的那组：表达式能力、display 属性、以及 count 的载荷优化。
+
+### 54.1 表达式里的字符串（与数值）函数
+
+`filter` / `map` 的表达式语言现在可以在**任何值**上调用：
+
+```
+length()  toUpperCase()  toLowerCase()  trim()  toString()  isEmpty()  abs()
+substring(from[, to])  replace(from, to)  indexOf(needle)
+```
+
+对 `it.get().value('k')`、裸属性、字面量、以及另一个调用的结果都成立（内部统一走 `String.valueOf`）。
+`substring`/`indexOf` 按 Groovy 语义：**负索引从尾部数、越界夹紧**（`substring(-2)` 是最后两个字符）。
+接收者是 null（属性缺失）→ 结果仍是 null，与比较运算"缺失值不等于任何值"的规则一致。
+
+顺手把 §48.6 点名的 `value('id')` 疙瘩修了：`value('id')`/`value('$id')` 就是 `id()`、
+`value('label')`/`value('$label')` 就是 `label()`——两种写法都认（`it.get().value('id')` 走访问器正则，
+`def t = it.get(); t.value('id')` 走元素方法）。这样报错不再来自 schema。
+
+实测/测试：新增 `GremlinStringFunctionTest` 7 条（变换、负索引/夹紧、链式、`abs` 保留整型/浮点、
+缺失值仍缺失、`value('id')`/`value('label')`、错误 arity/未知方法）。`graph-query-gremlin` 全绿。
+
+### 54.2 display 属性 `$id`（§46.4）
+
+`VertexSchema` 新增 `displayName`，值 `$id`（常量 `VertexSchema.DISPLAY_ID`）表示"用 id 标这个点"：
+
+* `displayPropertyNames()` 在 `displayName == "$id"` 时返回 `["$id"]`（优先于 property 上的 `display:true`）；
+* `displayProperties()` 不变（点自己的属性仍可被 `values()` 读）；
+* JSON 顶点新增 `displayName` 字段（`@JsonInclude(NON_NULL)`，没设就不落盘，schema 文件保持精简）；
+* UI `displayLabel` 遇到 `$id` 直接渲染 `d.id`。
+
+测试：`DisplayPropertyTest` +2（`$id` 覆盖 property 标记、JSON 往返 + 只出现一次 `displayName`）。
+**没有把 demo 的 IP/Phone 改成 `$id`**——那会改 demo 的显示名并动到既有断言；改成一行 JSON 即可（`"displayName": "$id"`）。
+
+### 54.3 count 交给服务端算（§53.4 的"摘要 bin"，换个更好的做法）
+
+§53.4 说 count 虽然不构边（`decoded=0`）但仍要把**整份 bin** 拉回来，建议存一个摘要计数 bin。更好的做法是
+**不存任何东西**：Aerospike 的 `MapOperation.size(bin)` 能在服务端把 CDT map 的条目数算出来，返回的是
+**一个数字**而不是那张 map。
+
+* `countEdges(vertex, class, dir)`（无 filter、无时间窗）→ `db.mapSize(key, bin)`（一次只读 CDT operate，按 bin 类别记读）；
+* `countEdgesBatch(vertices, …)`（同上）→ `db.mapSizes(keys, bin)`：**一次 `BatchRead` 批量 operate**（含 CDT op 的
+  批读必须用 `BatchRead`，`BatchWrite` 会报 "batch write operations do not contain a write"），一次往返，多把数字；
+* 有 filter / 有时间窗时仍走原来的"读 bin 再走一遍"（窗口/条件本来就要看每条的值），行为不变。
+
+**好处**：不用维护摘要 bin（不会与写入方漂移、不用改 upsert/delete/bulk-import 四处），但同样的效果——
+count 的**载荷**从"整张 map"降到"一个数"。缺失的 bin/记录返回 0（Aerospike 对缺 bin 的 CDT op 会回一个
+`bins == null` 的记录，要判空）。
+
+实测（`AerospikeTwoHopExpansionLiveLoadTest`，真实 Aerospike）：`150` 的一跳 count = **50**、
+`both` count = **50**、两跳 count = **4950**，与数据算出来的完全一致。
+
+> 注意口径：benchmark 的 `kv-calls`/`e-items` 数的是**记录条数**，不是字节，所以表里 count 行看着没变；
+> 省下的是线缆上的字节（一个 hub 的 bin 可能有上百条边）。这也是为什么这一条单列为"载荷优化"。
+
+### 54.4 仍然没做（§51.6 余下）
+
+* **把 `vt` 塞进边读**（消除无类名首跳的 +1 往返、并把命名类首跳也按类型过滤）——要动查询层的批读/邻居读
+  与 store 的一组方法，本轮未做；
+* UI 对"真的同时存了镜像边"的 store 折叠（§47.8）——没有数据需要它；
+* `limit` 的有序表示（cap 不读满 bin）——需要有序布局（如按时间排序的 CDT list + `ListOperation.getByIndexRange`），
+  是比 count 大得多的改动。
+
+### 54.5 回归
+
+全量 `./mvnw test` **BUILD SUCCESS，0 失败 / 0 错误**（新增 gremlin 7、schema 2，另有两跳 live-load 的 count 断言）。
