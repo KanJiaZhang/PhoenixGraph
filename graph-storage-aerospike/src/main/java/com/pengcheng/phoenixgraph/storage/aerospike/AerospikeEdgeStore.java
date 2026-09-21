@@ -987,6 +987,24 @@ public class AerospikeEdgeStore implements AdjacentEdgeStore {
         return matches;
     }
 
+    /**
+     * The creation time of the oldest edge still inline in a bin, or {@link Long#MAX_VALUE} when
+     * the bin is empty. This is the lower bound of the online tier's time coverage: the inline bin
+     * holds the newest edges, so a read older than this does not need to look at it.
+     */
+    public long earliestCreatedTime(Object vertexId, int edgeSchemaId, int directionCode) {
+        Record record = db.get(null, key(vertexId), edgeBin(edgeSchemaId, directionCode));
+        if (isMissing(record)) {
+            return Long.MAX_VALUE;
+        }
+        Map<String, Object> raw = readEdgeMap(record, edgeBin(edgeSchemaId, directionCode));
+        long earliest = Long.MAX_VALUE;
+        for (Object value : raw.values()) {
+            earliest = Math.min(earliest, rawCreatedTime(value));
+        }
+        return earliest;
+    }
+
     /** The creation time of a raw bin entry (the second field of the stored form). */
     private static long rawCreatedTime(Object raw) {
         if (raw instanceof List<?> list && list.size() >= 2 && list.get(1) instanceof Number created) {

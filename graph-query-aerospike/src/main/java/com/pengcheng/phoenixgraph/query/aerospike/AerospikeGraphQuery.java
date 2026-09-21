@@ -159,6 +159,15 @@ public class AerospikeGraphQuery implements GraphQuery {
         return true;
     }
 
+    /**
+     * The creation time of the oldest edge still inline in the requested bin, or
+     * {@link Long#MAX_VALUE} when the bin is empty. The tiered read uses this as the lower bound
+     * of the online tier's coverage.
+     */
+    public long earliestCreatedTime(Object vertexId, int edgeSchemaId, int directionCode) {
+        return edgeStore.earliestCreatedTime(vertexId, edgeSchemaId, directionCode);
+    }
+
     @Override
     public long countEdges(Object vertexId, String vertexName, String edgeName, EdgeSide direction) {
         EdgeSchema edgeSchema = schema.edgeSchema(edgeName);

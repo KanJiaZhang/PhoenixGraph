@@ -12,11 +12,15 @@ import com.pengcheng.phoenixgraph.schema.GraphSchema;
 import com.pengcheng.phoenixgraph.storage.TimeRange;
 import com.pengcheng.phoenixgraph.storage.aerospike.AerospikeEdgeChunkStore;
 import com.pengcheng.phoenixgraph.storage.aerospike.AerospikeEdgeStore;
+import com.pengcheng.phoenixgraph.storage.aerospike.AerospikeNearlineStore;
 import com.pengcheng.phoenixgraph.storage.aerospike.EdgePropertyValue;
+import com.pengcheng.phoenixgraph.storage.aerospike.EdgeTiering;
 import com.pengcheng.phoenixgraph.storage.aerospike.StoredEdgeValue;
 
+import java.time.Clock;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -39,12 +43,45 @@ public class AerospikeEdgeGraphQuery implements GraphQuery {
     private final AerospikeGraphQuery inline;
     private final AerospikeEdgeChunkStore chunks;
     private final GraphSchema schema;
+    /** The near-line tier; {@code null} keeps the legacy merge (inline + cold, always both). */
+    private final AerospikeNearlineStore nearline;
+    private final Clock clock;
+    private final long nearlineWindowMillis;
 
+    /**
+     * The original wiring: inline and cold are always both read and merged. Kept so the scheme as
+     * it was before the tiers keeps working unchanged (and its tests stay green).
+     */
     public AerospikeEdgeGraphQuery(AerospikeGraphQuery inline, AerospikeEdgeChunkStore chunks,
                                    GraphSchema schema) {
+        this(inline, chunks, schema, null, Clock.systemUTC(),
+                EdgeTiering.DEFAULT_NEARLINE_WINDOW_MILLIS);
+    }
+
+    /**
+     * The tiered wiring: a read consults the online (inline), near-line and cold tiers according
+     * to the creation-time spans its window overlaps, and merges what it finds by edge id (the
+     * newest copy wins). A {@code null} near-line store degrades to the legacy merge.
+     */
+    public AerospikeEdgeGraphQuery(AerospikeGraphQuery inline, AerospikeEdgeChunkStore chunks,
+                                   GraphSchema schema, AerospikeNearlineStore nearline,
+                                   Clock clock, long nearlineWindowMillis) {
         this.inline = Objects.requireNonNull(inline, "inline");
         this.chunks = Objects.requireNonNull(chunks, "chunks");
         this.schema = Objects.requireNonNull(schema, "schema");
+        this.nearline = nearline;
+        this.clock = Objects.requireNonNull(clock, "clock");
+        this.nearlineWindowMillis = nearlineWindowMillis;
+    }
+
+    /** Whether the tiered read (near-line and time-routed tiers) is enabled. */
+    public boolean tiered() {
+        return nearline != null;
+    }
+
+    /** The near-line tier, or {@code null} when the legacy merge is in effect. */
+    public AerospikeNearlineStore nearline() {
+        return nearline;
     }
 
     /** The inline read path (vertices, and edges of vertices without an aggregated table). */
@@ -85,6 +122,10 @@ public class AerospikeEdgeGraphQuery implements GraphQuery {
             if (isHub(vertexId, edgeSchema, side)) {
                 throw new QueryException(hubHint(vertexId, edgeSchema, side));
             }
+            if (tiered() && nearline.hasData(vertexId, edgeSchema.id(),
+                    directionCode(edgeSchema, side), clock.millis())) {
+                throw new QueryException(hubHint(vertexId, edgeSchema, side));
+            }
         }
         return inline.readEdges(vertexId, vertexName, edgeName, direction, propertyNames);
     }
@@ -107,17 +148,41 @@ public class AerospikeEdgeGraphQuery implements GraphQuery {
         TimeRange window = range == null ? TimeRange.ALL : range;
 
         Map<String, EdgeQueryResult> merged = new LinkedHashMap<>();
+        long now = clock.millis();
+        long nearlineFrom = now - nearlineWindowMillis;
         for (EdgeSide side : sides(edgeSchema, direction)) {
-            // 1. the aggregated tables: the chunks whose span overlaps the window, in time order,
-            //    stopping at the cap (what a UI expansion asks for)
-            for (StoredEdgeValue edge : chunks.readWindow(edgeSchema, directionCode(edgeSchema, side),
-                    vertexId, window, maxResults)) {
-                merge(merged, toResult(edgeName, edge, side, requested));
+            int dir = directionCode(edgeSchema, side);
+
+            // The tiers whose time coverage the window overlaps. The online tier's lower bound is
+            // the oldest edge still inline; a window entirely in the past never pays that read.
+            long onlineEarliest = Long.MAX_VALUE;
+            if (tiered() && window.toTime() > nearlineFrom) {
+                onlineEarliest = inline.earliestCreatedTime(vertexId, edgeSchema.id(), dir);
             }
-            // 2. the vertex record: the few edges that live (or were updated) there
-            for (EdgeQueryResult edge : inline.readEdges(vertexId, vertexName, edgeName, side,
-                    List.copyOf(requested.values()))) {
-                merge(merged, edge);
+            EnumSet<EdgeTiering.Tier> tiers = tiered()
+                    ? EdgeTiering.classify(window, now, nearlineWindowMillis, onlineEarliest)
+                    : EnumSet.of(EdgeTiering.Tier.ONLINE, EdgeTiering.Tier.COLD);
+
+            // 1. online: the edges (or updates) still inline in the vertex record
+            if (tiers.contains(EdgeTiering.Tier.ONLINE)) {
+                for (EdgeQueryResult edge : inline.readEdgesWithin(vertexId, vertexName, edgeName,
+                        side, window, List.copyOf(requested.values()))) {
+                    merge(merged, edge);
+                }
+            }
+            // 2. near-line: the last 24 hours, in the TTL'd near-line KVs
+            if (tiers.contains(EdgeTiering.Tier.NEARLINE)) {
+                for (StoredEdgeValue edge : nearline.readWindow(vertexId, edgeSchema.id(), dir,
+                        window)) {
+                    merge(merged, toResult(edgeName, edge, side, requested));
+                }
+            }
+            // 3. cold: the aggregated tables, the chunks whose span overlaps the window
+            if (tiers.contains(EdgeTiering.Tier.COLD)) {
+                for (StoredEdgeValue edge : chunks.readWindow(edgeSchema, dir, vertexId, window,
+                        maxResults)) {
+                    merge(merged, toResult(edgeName, edge, side, requested));
+                }
             }
         }
 

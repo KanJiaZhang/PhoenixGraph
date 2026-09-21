@@ -18,6 +18,7 @@ import com.pengcheng.phoenixgraph.query.aerospike.AerospikeGraphQuery;
 import com.pengcheng.phoenixgraph.query.storage.GraphQuery;
 import com.pengcheng.phoenixgraph.schema.GraphStorageType;
 import com.pengcheng.phoenixgraph.storage.aerospike.AerospikeEdgeChunkStore;
+import com.pengcheng.phoenixgraph.storage.aerospike.AerospikeNearlineStore;
 import com.pengcheng.phoenixgraph.schema.GraphSchema;
 import com.pengcheng.phoenixgraph.schema.GraphSchemaManagers;
 import com.pengcheng.phoenixgraph.schema.json.SchemaJsonCodec;
@@ -177,12 +178,17 @@ public class StorageConfig {
             // every Aerospike graph persists its metrics in the same cluster, in a system set
             metrics.bind(schema.name(), new AerospikeMetricsStore(client, properties.namespace()));
             if (schema.storage().type() == GraphStorageType.AEROSPIKE_EDGE) {
-                // big vertices live in the aggregated Edge_Out / Edge_In tables, written by a bulk
-                // import; the read path merges them with the edges still inline in the vertex record
+                // big vertices spread their edges over three tiers: online (the inline bin),
+                // near-line (TTL'd KVs, pre-partitioned by volume) and cold (the aggregated
+                // Edge_Out / Edge_In tables). A read is routed by which spans its window overlaps.
                 AerospikeEdgeChunkStore chunks = new AerospikeEdgeChunkStore(client, properties.namespace(),
                         definition.vertexSet()).metrics(graphMetrics);
+                AerospikeNearlineStore nearline = new AerospikeNearlineStore(client, properties.namespace(),
+                        definition.vertexSet()).metrics(graphMetrics);
                 GraphQuery query = new AerospikeEdgeGraphQuery(
-                        new AerospikeGraphQuery(vertexStore, edgeStore, schema), chunks, schema);
+                        new AerospikeGraphQuery(vertexStore, edgeStore, schema), chunks, schema,
+                        nearline, java.time.Clock.systemUTC(),
+                        com.pengcheng.phoenixgraph.storage.aerospike.EdgeTiering.DEFAULT_NEARLINE_WINDOW_MILLIS);
                 bindings.add(new GraphBinding(schema, vertexStore, edgeStore, client,
                         properties.namespace(), query));
                 continue;
