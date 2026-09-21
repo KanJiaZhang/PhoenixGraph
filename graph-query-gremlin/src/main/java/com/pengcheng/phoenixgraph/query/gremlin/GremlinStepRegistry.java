@@ -109,6 +109,38 @@ public class GremlinStepRegistry {
         });
         register("elementMap", args -> GremlinSteps.elementMap());
         register("map", args -> GremlinSteps.map(single(args, "map")));
+        // the terminal steps a client ends a traversal with: the answer is what the engine already
+        // returns, or the same answer collected differently
+        register("toList", args -> {
+            requireNoArgs(args, "toList");
+            return GremlinSteps.toList();
+        });
+        register("toIterator", args -> {
+            requireNoArgs(args, "toIterator");
+            return GremlinSteps.toList();
+        });
+        register("toSet", args -> {
+            requireNoArgs(args, "toSet");
+            return GremlinSteps.toSet();
+        });
+        register("toBulkSet", args -> {
+            requireNoArgs(args, "toBulkSet");
+            return GremlinSteps.toBulkSet();
+        });
+        register("next", args -> GremlinSteps.next(
+                args.isEmpty() ? 1 : positiveInt(single(args, "next"))));
+        register("iterate", args -> {
+            requireNoArgs(args, "iterate");
+            return GremlinSteps.nothing();
+        });
+        register("none", args -> {
+            requireNoArgs(args, "none");
+            return GremlinSteps.nothing();
+        });
+        register("discard", args -> {
+            requireNoArgs(args, "discard");
+            return GremlinSteps.nothing();
+        });
         register("count", args -> GremlinSteps.count());
         register("limit", args -> GremlinSteps.limit(parseLong(single(args, "limit"))));
         register("dedup", args -> GremlinSteps.dedup());
@@ -127,6 +159,13 @@ public class GremlinStepRegistry {
             throw new QueryException(stepName + " expects exactly 1 argument, got " + args.size());
         }
         return args.get(0);
+    }
+
+    /** A terminal step that takes no arguments. */
+    private static void requireNoArgs(List<String> args, String stepName) {
+        if (!args.isEmpty()) {
+            throw new QueryException(stepName + " expects no arguments, got " + args.size());
+        }
     }
 
     /** Hop steps accept zero args (all edge classes) or exactly one (a single edge class). */

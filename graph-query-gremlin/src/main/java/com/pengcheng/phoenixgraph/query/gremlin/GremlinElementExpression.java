@@ -8,11 +8,12 @@ package com.pengcheng.phoenixgraph.query.gremlin;
  * it.get().value('accountStatus')   -> the property value
  * it.get().label()                  -> the element's label (schema name)
  * it.get().id()                     -> the element's id
+ * it.get() / it                     -> the element itself (what a variable is bound to)
  * }</pre>
  *
  * <p>{@link #accessorAt(String, int)} recognises one of them at a position inside an expression,
  * which is what {@link GremlinExpression} tokenises; {@link #read(GremlinElement, String)} answers
- * the two pseudo keys from the element itself rather than from its properties.
+ * the pseudo keys from the element itself rather than from its properties.
  */
 final class GremlinElementExpression {
 
@@ -21,6 +22,9 @@ final class GremlinElementExpression {
 
     /** The pseudo key standing for the element's id. */
     static final String ID_KEY = "@id";
+
+    /** The pseudo key standing for the element itself (what {@code it.get()} reads). */
+    static final String ELEMENT_KEY = "@it";
 
     /** An accessor found at a position: the property (or pseudo) key it reads and where it ends. */
     record Accessor(String key, int end) {
@@ -34,6 +38,11 @@ final class GremlinElementExpression {
             "it\\s*\\.\\s*(?:get\\s*\\(\\s*\\)\\s*\\.\\s*)?label\\s*\\(\\s*\\)");
     private static final java.util.regex.Pattern ID = java.util.regex.Pattern.compile(
             "it\\s*\\.\\s*(?:get\\s*\\(\\s*\\)\\s*\\.\\s*)?id\\s*\\(\\s*\\)");
+    // it.get() and the bare it: the element itself, the value a closure binds to a variable
+    private static final java.util.regex.Pattern ELEMENT = java.util.regex.Pattern.compile(
+            "it\\s*\\.\\s*get\\s*\\(\\s*\\)");
+    private static final java.util.regex.Pattern BARE_IT = java.util.regex.Pattern.compile(
+            "it(?![A-Za-z0-9_])");
 
     private GremlinElementExpression() {
     }
@@ -55,21 +64,34 @@ final class GremlinElementExpression {
         if (matcher.lookingAt()) {
             return new Accessor(ID_KEY, matcher.end());
         }
+        matcher = ELEMENT.matcher(text);
+        matcher.region(index, text.length());
+        if (matcher.lookingAt()) {
+            return new Accessor(ELEMENT_KEY, matcher.end());
+        }
+        matcher = BARE_IT.matcher(text);
+        matcher.region(index, text.length());
+        if (matcher.lookingAt()) {
+            return new Accessor(ELEMENT_KEY, matcher.end());
+        }
         return null;
     }
 
     /** Whether a key is one of the element accessors rather than a stored property. */
     static boolean isPseudo(String key) {
-        return LABEL_KEY.equals(key) || ID_KEY.equals(key);
+        return LABEL_KEY.equals(key) || ID_KEY.equals(key) || ELEMENT_KEY.equals(key);
     }
 
-    /** Reads a (possibly pseudo) key off an element: a property value, its label or its id. */
+    /** Reads a (possibly pseudo) key off an element: a property value, its label, its id or itself. */
     static Object read(GremlinElement element, String key) {
         if (LABEL_KEY.equals(key)) {
             return element.label();
         }
         if (ID_KEY.equals(key)) {
             return element.id();
+        }
+        if (ELEMENT_KEY.equals(key)) {
+            return element;
         }
         return element.properties().get(key);
     }
@@ -85,6 +107,9 @@ final class GremlinElementExpression {
         }
         if (ID_KEY.equals(key)) {
             return id;
+        }
+        if (ELEMENT_KEY.equals(key)) {
+            return null; // and no element either
         }
         return properties.get(key);
     }

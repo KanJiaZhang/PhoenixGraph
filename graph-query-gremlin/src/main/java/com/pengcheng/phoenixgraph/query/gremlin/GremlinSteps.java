@@ -608,6 +608,59 @@ final class GremlinSteps {
         };
     }
 
+    // --- terminal steps (they end the traversal, the way TinkerPop's do) ---
+
+    /** {@code toList()}: the traversers as a list - which is what the engine already returns. */
+    static GremlinStep toList() {
+        return (ctx, in) -> new ArrayList<>(in);
+    }
+
+    /** {@code toSet()}: every traverser once, in first-seen order (element identity, then value). */
+    static GremlinStep toSet() {
+        return dedup();
+    }
+
+    /**
+     * {@code toBulkSet()}: every distinct traverser with the number of times the traversal produced
+     * it, as {@code {value, label?, count}} rows in first-seen order.
+     */
+    static GremlinStep toBulkSet() {
+        return (ctx, in) -> {
+            Map<Object, Object> first = new LinkedHashMap<>();
+            Map<Object, Long> counts = new LinkedHashMap<>();
+            for (Object element : in) {
+                Object key = element instanceof GremlinElement ge
+                        ? new ElementKey(ge.label(), ge.id())
+                        : element;
+                first.putIfAbsent(key, element);
+                counts.merge(key, 1L, Long::sum);
+            }
+            List<Object> out = new ArrayList<>(first.size());
+            for (Map.Entry<Object, Object> entry : first.entrySet()) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                if (entry.getValue() instanceof GremlinElement element) {
+                    row.put("value", element.id());
+                    row.put("label", element.label());
+                } else {
+                    row.put("value", entry.getValue());
+                }
+                row.put("count", counts.get(entry.getKey()));
+                out.add(row);
+            }
+            return out;
+        };
+    }
+
+    /** {@code next([n])}: the first traverser (or the first {@code n}), like TinkerPop's terminal. */
+    static GremlinStep next(int count) {
+        return (ctx, in) -> new ArrayList<>(in.subList(0, Math.min(count, in.size())));
+    }
+
+    /** {@code iterate()}/{@code none()}/{@code discard()}: the traversal runs and answers nothing. */
+    static GremlinStep nothing() {
+        return (ctx, in) -> List.of();
+    }
+
     /** Projects each element to {@code {id, label, property1, property2, ...}}. */
     static GremlinStep elementMap() {
         return (ctx, in) -> {

@@ -3,9 +3,11 @@ package com.pengcheng.phoenixgraph.query.gremlin;
 import com.pengcheng.phoenixgraph.query.QueryException;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -18,6 +20,11 @@ import java.util.Set;
  * .map    { it.get().value('status') == 'SUCCESS' ? 'S' : 'P' }
  * .map    { it.get().value('firstName') + ' ' + it.get().value('lastName') }
  * }</pre>
+ *
+ * <p>A closure body is a small program: statements separated by {@code ;} (or by a newline that is
+ * followed by another statement) whose value is the last one. A statement may bind a name -
+ * {@code def tmp = it.get()} - and the name then stands for its value in the statements after it,
+ * which is what makes {@code tmp.value('status')} read a property off the element.
  *
  * <p>Grammar (keywords are case-insensitive; whitespace - newlines included - is ignored):
  * <pre>
@@ -39,6 +46,15 @@ import java.util.Set;
  * ({@code relation equals directedBy}), where a bare right-hand token is the value itself - that is
  * the property-key grammar the filter step grew up with, and it keeps working.
  *
+ * <p>The element methods {@code value('key')}, {@code values('key')}, {@code label()}, {@code id()}
+ * and {@code key()} work on any receiver that turns out to be an element, so both spellings of an
+ * accessor are the same predicate:
+ *
+ * <pre>{@code
+ * def tmp = it.get();
+ * tmp.value('status') == 'SUCCESS' ? 'S' : 'P'
+ * }</pre>
+ *
  * <p>Comparisons follow {@link GremlinSteps#matches(Object, String)} (numeric-aware, string
  * comparison case-insensitive); a missing property is never equal to anything, so
  * {@code it.get().value('x') != 'y'} holds for an element that has no {@code x}. As a condition, an
@@ -51,6 +67,14 @@ public final class GremlinExpression {
     @FunctionalInterface
     private interface Value {
         Object evaluate(GremlinElement element);
+    }
+
+    /** A value that is the same for every element (a literal, a boolean, null). */
+    private record Const(Object value) implements Value {
+        @Override
+        public Object evaluate(GremlinElement element) {
+            return value;
+        }
     }
 
     private final Value value;
@@ -70,7 +94,7 @@ public final class GremlinExpression {
             throw new QueryException("filter/map expects a non-blank expression");
         }
         Parser parser = new Parser(expression);
-        Value value = parser.expression();
+        Value value = parser.program();
         parser.expectEnd();
         return new GremlinExpression(value, parser.keys, parser.elementIdentity);
     }
@@ -159,14 +183,106 @@ public final class GremlinExpression {
         private final String text;
         private int at;
         private final Set<String> keys = new LinkedHashSet<>();
+        private final Map<String, Value> variables = new LinkedHashMap<>();
         private boolean elementIdentity;
 
         Parser(String text) {
             this.text = text;
         }
 
-        Value expression() {
-            return conditional();
+        /**
+         * A closure body: statements separated by {@code ;} (or by a newline that is followed by a new
+         * statement), whose value is the last one.
+         *
+         * <pre>{@code
+         * def tmp = it.get();
+         * tmp.value('status') == 'SUCCESS' ? 'S' : 'P'
+         * }</pre>
+         */
+        Value program() {
+            Value last = null;
+            while (true) {
+                skipSpace();
+                if (at >= text.length()) {
+                    break;
+                }
+                Value statement = statement();
+                last = statement != null ? statement : expression();
+                // the expression parser skips the whitespace after its last token, so the end of the
+                // statement is the last non-blank character it read
+                int end = at;
+                while (end > 0 && Character.isWhitespace(text.charAt(end - 1))) {
+                    end--;
+                }
+                skipSpace();
+                if (at < text.length() && text.charAt(at) == ';') {
+                    at++;
+                    continue;
+                }
+                if (at < text.length() && newlineBetween(end, at)
+                        && canEndStatement(end) && canStartStatement()) {
+                    continue; // a newline can end a statement too, when the next line starts one
+                }
+                break;
+            }
+            if (last == null) {
+                throw error("expected an expression");
+            }
+            return last;
+        }
+
+        /**
+         * A {@code [def] name = expression} statement, or {@code null} when this is not one.
+         *
+         * <p>Without {@code def} the name has to be a variable an earlier statement bound: the
+         * property-key grammar spells equality {@code relation = 'r1'}, and that must stay a
+         * comparison rather than become an assignment.
+         */
+        private Value statement() {
+            int save = at;
+            boolean declared = eatWord("def");
+            skipSpace();
+            int start = at;
+            if (at < text.length() && isWordStart(text.charAt(at))) {
+                while (at < text.length() && isWordChar(text.charAt(at))) {
+                    at++;
+                }
+                String name = text.substring(start, at);
+                skipSpace();
+                if (at < text.length() && text.charAt(at) == '=' && !text.startsWith("==", at)
+                        && (declared || variables.containsKey(name))) {
+                    at++; // '='
+                    Value value = expression();
+                    variables.put(name, value);
+                    return value;
+                }
+            }
+            at = save; // not an assignment: parse it as an expression instead
+            return null;
+        }
+
+        /** Whether the character before a line break could end a statement. */
+        private boolean canEndStatement(int end) {
+            if (end <= 0) {
+                return false;
+            }
+            char c = text.charAt(end - 1);
+            return c == ')' || c == ']' || c == '}' || c == '\'' || c == '"'
+                    || Character.isLetterOrDigit(c) || c == '_';
+        }
+
+        /** Whether what follows a line break could start a statement (not an operator continuation). */
+        private boolean canStartStatement() {
+            if (at >= text.length()) {
+                return false;
+            }
+            char c = text.charAt(at);
+            return Character.isLetterOrDigit(c) || c == '_' || c == '\'' || c == '"'
+                    || c == '(';
+        }
+
+        private boolean newlineBetween(int from, int to) {
+            return text.substring(from, to).indexOf('\n') >= 0;
         }
 
         void expectEnd() {
@@ -174,6 +290,11 @@ public final class GremlinExpression {
             if (at < text.length()) {
                 throw error("unexpected '" + text.charAt(at) + "'");
             }
+        }
+
+        /** One expression, without the surrounding statement machinery. */
+        Value expression() {
+            return conditional();
         }
 
         private Value conditional() {
@@ -324,11 +445,16 @@ public final class GremlinExpression {
         }
 
         private Value method(Value receiver, String method, List<Value> args) {
+            String name = method.toLowerCase(Locale.ROOT);
+            if (name.equals("value") || name.equals("values") || name.equals("label")
+                    || name.equals("id") || name.equals("key")) {
+                return elementMethod(receiver, name, args);
+            }
             if (args.size() != 1) {
                 throw error("'" + method + "' takes one argument");
             }
             Value arg = args.get(0);
-            switch (method.toLowerCase(Locale.ROOT)) {
+            switch (name) {
                 case "equals", "eq", "is" -> {
                     return comparison(receiver, arg, "==");
                 }
@@ -353,6 +479,43 @@ public final class GremlinExpression {
                 }
                 default -> throw error("unknown method '" + method + "'");
             }
+        }
+
+        /**
+         * An accessor called on a receiver that turns out to be an element, the way a closure that
+         * bound one to a variable writes it: {@code def tmp = it.get(); tmp.value('status')}.
+         *
+         * <p>The key of {@code value('status')} is known while parsing, so it joins the property
+         * keys the read has to project - the same way {@code it.get().value('status')} does.
+         */
+        private Value elementMethod(Value receiver, String name, List<Value> args) {
+            boolean takesKey = name.equals("value") || name.equals("values");
+            if (takesKey ? args.size() != 1 : !args.isEmpty()) {
+                throw error("'" + name + "' takes " + (takesKey ? "one argument" : "no arguments"));
+            }
+            String key = takesKey && args.get(0) instanceof Const constant
+                    && constant.value() instanceof String text ? text : null;
+            if (key != null) {
+                if (GremlinElementExpression.isPseudo(key)) {
+                    elementIdentity = true;
+                } else {
+                    keys.add(key);
+                }
+            }
+            if (!takesKey) {
+                elementIdentity = true; // label()/id() read the element's identity, not a property
+            }
+            return element -> {
+                Object base = receiver.evaluate(element);
+                if (!(base instanceof GremlinElement target)) {
+                    return null;
+                }
+                return switch (name) {
+                    case "value", "values" -> key == null ? null : GremlinElementExpression.read(target, key);
+                    case "label" -> target.label();
+                    default -> target.id(); // id(), key()
+                };
+            };
         }
 
         private Value comparison(Value left, Value right, String operator) {
@@ -431,12 +594,16 @@ public final class GremlinExpression {
                 String word = text.substring(start, at);
                 switch (word.toLowerCase(Locale.ROOT)) {
                     case "true":
-                        return element -> Boolean.TRUE;
+                        return new Const(Boolean.TRUE);
                     case "false":
-                        return element -> Boolean.FALSE;
+                        return new Const(Boolean.FALSE);
                     case "null":
-                        return element -> null;
+                        return new Const(null);
                     default:
+                        Value variable = variables.get(word);
+                        if (variable != null) {
+                            return variable; // a name the closure bound earlier
+                        }
                         keys.add(word);
                         return element -> element.properties().get(word);
                 }
@@ -457,7 +624,7 @@ public final class GremlinExpression {
                 }
                 if (c == quote) {
                     String value = literal.toString();
-                    return element -> value;
+                    return new Const(value);
                 }
                 literal.append(c);
             }
@@ -481,11 +648,9 @@ public final class GremlinExpression {
             String raw = text.substring(start, at);
             try {
                 if (raw.indexOf('.') < 0 && raw.indexOf('e') < 0 && raw.indexOf('E') < 0) {
-                    long value = Long.parseLong(raw);
-                    return element -> value;
+                    return new Const(Long.parseLong(raw));
                 }
-                double value = Double.parseDouble(raw);
-                return element -> value;
+                return new Const(Double.parseDouble(raw));
             } catch (NumberFormatException e) {
                 throw error("'" + raw + "' is not a number");
             }
@@ -506,16 +671,14 @@ public final class GremlinExpression {
                 throw error("expected a value");
             }
             try {
-                long value = Long.parseLong(raw);
-                return element -> value;
+                return new Const(Long.parseLong(raw));
             } catch (NumberFormatException ignored) {
                 // not a whole number; try a decimal below
             }
             try {
-                double value = Double.parseDouble(raw);
-                return element -> value;
+                return new Const(Double.parseDouble(raw));
             } catch (NumberFormatException ignored) {
-                return element -> raw;
+                return new Const(raw);
             }
         }
 

@@ -62,6 +62,15 @@ public class GremlinGraphQuery {
     private final GraphQuery graphQuery;
     private final NeighborVertexResolver vertexResolver;
     private final GremlinStepRegistry registry;
+
+    /**
+     * The steps a client ends a traversal with ({@code toList()}, {@code toSet()}, {@code next()},
+     * {@code iterate()}, ...). They hand the traversers on as they are - the answer is collected
+     * differently, not computed differently - so property planning and the direction check look
+     * through them, and a traversal that does nothing else still reads the element it returns.
+     */
+    private static final Set<String> TERMINAL_STEPS = Set.of(
+            "toList", "toSet", "toBulkSet", "toIterator", "next", "iterate", "none", "discard");
     private final Map<String, String> logics = new LinkedHashMap<>();
     private final Map<String, HnswIndex> hnswIndexes = new LinkedHashMap<>();
     private Map<String, String> geoProperties = Map.of();
@@ -559,7 +568,8 @@ public class GremlinGraphQuery {
      * around it (empty).
      */
     private static boolean isSeedPassThrough(String name) {
-        return isMeta(name) || name.equals("count") || name.equals("limit") || name.equals("dedup");
+        return isMeta(name) || TERMINAL_STEPS.contains(name)
+                || name.equals("count") || name.equals("limit") || name.equals("dedup");
     }
 
     /** What an edge hop pushes into its read: the conditions and the cap of the following steps. */
@@ -959,6 +969,9 @@ public class GremlinGraphQuery {
             if (isMeta(name)) {
                 continue;
             }
+            if (TERMINAL_STEPS.contains(name)) {
+                continue; // the traversal ends here, but the elements are still the ones produced
+            }
             sawConsumer = true;
             if (name.equals("fuzzyLink")) {
                 // the step produces the link node and replaces its input: a context that is meant to
@@ -1036,8 +1049,8 @@ public class GremlinGraphQuery {
         }
         for (GremlinQuery.Step step : query.steps()) {
             String name = step.name();
-            if (isMeta(name) || name.equals("has") || name.equals("filter")
-                    || name.equals("limit") || name.equals("dedup")) {
+            if (isMeta(name) || TERMINAL_STEPS.contains(name) || name.equals("has")
+                    || name.equals("filter") || name.equals("limit") || name.equals("dedup")) {
                 continue; // the traverser goes through unchanged
             }
             boolean edgeHop = name.equals("outE") || name.equals("inE") || name.equals("bothE");

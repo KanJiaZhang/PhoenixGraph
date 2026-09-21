@@ -1109,6 +1109,87 @@ class GremlinGraphQueryTest {
     }
 
     @Test
+    void mapClosureCanBindTheElementToAVariable() {
+        EdgeQueryResult ok = edge("e1", EdgeSide.OUT, "n1", Map.of("status", "SUCCESS"));
+        EdgeQueryResult pending = edge("e2", EdgeSide.OUT, "n2", Map.of("status", "PENDING"));
+        when(graphQuery.readEdges("v1", "person", "knows", EdgeSide.OUT, List.of("status")))
+                .thenReturn(List.of(ok, pending));
+
+        List<Object> result = gremlin.execute("""
+                g.V('v1', 'person').outE('knows').map {
+                    def tmp = it.get();
+                    tmp.value('status') == 'SUCCESS' ? 'S' : 'P'
+                }""");
+
+        assertEquals(List.of("S", "P"), result);
+    }
+
+    @Test
+    void filterClosureCanBindTheElementToAVariableToo() {
+        EdgeQueryResult ok = edge("e1", EdgeSide.OUT, "n1", Map.of("status", "SUCCESS"));
+        EdgeQueryResult pending = edge("e2", EdgeSide.OUT, "n2", Map.of("status", "PENDING"));
+        when(graphQuery.readEdges("v1", "person", "knows", EdgeSide.OUT, List.of("status")))
+                .thenReturn(List.of(ok, pending));
+
+        List<Object> result = gremlin.execute("""
+                g.V('v1', 'person').outE('knows').filter {
+                    def tmp = it.get()
+                    tmp.value('status') == 'SUCCESS'
+                }""");
+
+        assertEquals(1, result.size());
+        assertEquals("e1", ((GremlinEdge) result.get(0)).id());
+    }
+
+    @Test
+    void terminalStepsCollectTheSameAnswer() {
+        EdgeQueryResult e1 = edge("e1", EdgeSide.OUT, "n1", Map.of("status", "SUCCESS"));
+        EdgeQueryResult e2 = edge("e2", EdgeSide.OUT, "n2", Map.of("status", "PENDING"));
+        // a terminal step hands the elements on as they are, so a hop that only feeds one reads
+        // every property (the same as a bare hop); values('status') in front narrows it
+        when(graphQuery.readEdges("v1", "person", "knows", EdgeSide.OUT, List.of()))
+                .thenReturn(List.of(e1, e2));
+        when(graphQuery.readEdges("v1", "person", "knows", EdgeSide.OUT, List.of("status")))
+                .thenReturn(List.of(e1, e2));
+
+        assertEquals(2, gremlin.execute("g.V('v1','person').outE('knows').toList()").size());
+        assertEquals(2, gremlin.execute("g.V('v1','person').outE('knows').toIterator()").size());
+        assertEquals(List.of("SUCCESS", "PENDING"), gremlin.execute(
+                "g.V('v1','person').outE('knows').values('status').toList()"));
+        assertEquals(List.of("SUCCESS", "PENDING"), gremlin.execute(
+                "g.V('v1','person').outE('knows').values('status').toSet()"));
+        assertEquals(List.of("SUCCESS"), gremlin.execute(
+                "g.V('v1','person').outE('knows').values('status').next()"));
+        assertEquals(List.of(), gremlin.execute("g.V('v1','person').outE('knows').iterate()"));
+        assertEquals(List.of(), gremlin.execute("g.V('v1','person').outE('knows').none()"));
+    }
+
+    @Test
+    void toBulkSetCountsHowOftenEachTraverserAppeared() {
+        EdgeQueryResult e1 = edge("e1", EdgeSide.OUT, "n1", Map.of("status", "SUCCESS"));
+        EdgeQueryResult e2 = edge("e2", EdgeSide.OUT, "n2", Map.of("status", "SUCCESS"));
+        when(graphQuery.readEdges("v1", "person", "knows", EdgeSide.OUT, List.of("status")))
+                .thenReturn(List.of(e1, e2));
+
+        List<Object> result = gremlin.execute(
+                "g.V('v1','person').outE('knows').values('status').toBulkSet()");
+
+        assertEquals(List.of(Map.of("value", "SUCCESS", "count", 2L)), result);
+    }
+
+    @Test
+    void aTerminalStepStillVerifiesTheSeed() {
+        // the seed does not exist, and toList() hands it on as it is: the answer is empty, not a phantom
+        assertEquals(List.of(), gremlin.execute("g.V('nope', 'person').toList()"));
+    }
+
+    @Test
+    void aTerminalStepTakesNoArguments() {
+        assertThrows(QueryException.class, () -> gremlin.execute("g.V('v1','person').toList(3)"));
+        assertThrows(QueryException.class, () -> gremlin.execute("g.V('v1','person').toSet(1)"));
+    }
+
+    @Test
     void mapRejectsAMalformedExpression() {
         QueryException failure = assertThrows(QueryException.class, () -> gremlin.execute(
                 "g.V('v1', 'person').outE('knows').map { it.get().value('weight') + }"));
