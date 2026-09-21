@@ -771,7 +771,7 @@
   // stop each line at the node edge so the arrow head stays visible above the node
   const EDGE_NODE_GAP = 13;
   // how far apart the arcs of one vertex pair are (px)
-  const EDGE_ARC_STEP = 26;
+  const EDGE_ARC_STEP = 13;
 
   /**
    * Gives every edge of the same vertex pair its own arc.

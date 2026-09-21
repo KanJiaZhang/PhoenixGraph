@@ -483,7 +483,7 @@ button.btn-primary:hover, #queryBtn:hover { filter: brightness(1.07); }
 .node.selected circle.ring { stroke: var(--danger); }
 .node.pr-highlight circle.ring { stroke: var(--warn); stroke-width: 3.5; stroke-dasharray: 3 2.5; }
 
-.edge { stroke: #a9b4c6; stroke-opacity: 0.5; stroke-width: 1.44; cursor: pointer; transition: stroke-opacity 0.12s, stroke 0.12s; marker-end: url(#arrow); }
+.edge { fill: none; stroke: #a9b4c6; stroke-opacity: 0.5; stroke-width: 1.44; cursor: pointer; transition: stroke-opacity 0.12s, stroke 0.12s; marker-end: url(#arrow); }
 .edge:hover { stroke-opacity: 0.85; }
 .edge.selected { stroke: var(--danger); stroke-opacity: 1; stroke-width: 2.88; }
 
