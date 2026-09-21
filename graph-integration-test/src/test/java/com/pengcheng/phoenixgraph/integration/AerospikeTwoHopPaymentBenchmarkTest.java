@@ -402,6 +402,35 @@ class AerospikeTwoHopPaymentBenchmarkTest {
         queries.add(star("out > in(IPToAccount) > values(ipAddress)",
                 "g.V('150','Account').out('Payment').in('IPToAccount').values('ipAddress')",
                 Check.SIZE, List.of(), (long) ips.size()));
+        // the terminal and expression steps a caller reaches for once the answer is the subgraph itself
+        queries.add(star("out > in(IPToAccount) > toList",
+                "g.V('150','Account').out('Payment').in('IPToAccount').toList()",
+                Check.IDS, peers(ips), null));
+        queries.add(star("out > in(IPToAccount) > map(ipAddress)",
+                "g.V('150','Account').out('Payment').in('IPToAccount')"
+                        + ".map { it.get().value('ipAddress') }",
+                Check.SIZE, List.of(), (long) ips.size()));
+        // both link classes in one hop, and an edge hop in between
+        queries.add(star("out > in(IPToAccount,PhoneToAccount) > count",
+                "g.V('150','Account').out('Payment').in('IPToAccount','PhoneToAccount').count()",
+                Check.COUNT, List.of(), (long) (ips.size() + phones.size())));
+        queries.add(star("out > bothE(IPToAccount) > otherV",
+                "g.V('150','Account').out('Payment').bothE('IPToAccount').otherV()",
+                Check.IDS, peers(ips), null));
+        queries.add(star("out > in(IPToAccount) > has(ipAddress) > count",
+                "g.V('150','Account').out('Payment').in('IPToAccount').has('ipAddress').count()",
+                Check.COUNT, List.of(), (long) ips.size()));
+        queries.add(star("out > in(IPToAccount) > limit(100)",
+                "g.V('150','Account').out('Payment').in('IPToAccount').limit(100)",
+                Check.SIZE, peers(ips), Math.min(100L, (long) ips.size())));
+        queries.add(star("out > in(IPToAccount) > dedup > limit(50)",
+                "g.V('150','Account').out('Payment').in('IPToAccount').dedup().limit(50)",
+                Check.SIZE, distinct(ips), Math.min(50L, (long) distinct(ips).size())));
+        // payment > payment from the star hub, for the shape the user asked about: the accounts it pays
+        // pay nobody in this demo, so the traversal is empty and the interesting cost is the first hop
+        queries.add(star("out > out(Payment) > count",
+                "g.V('150','Account').out('Payment').out('Payment').count()",
+                Check.COUNT, List.of(), (long) suite.hop2(hop1, "Payment", EdgeSide.OUT).size()));
         return queries;
     }
 
