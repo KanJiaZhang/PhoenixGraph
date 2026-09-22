@@ -1949,8 +1949,8 @@
   function showValue(value, result) {
     if (!el.valuePanel) return;
     if (value === undefined) { hideValue(); return; }
-    // vertices and edges are what the canvas is for: no floating window
-    if (Array.isArray(value) && elementValues(value)) { hideValue(); return; }
+    // vertices and edges are what the canvas is for: the window only counts them (the result tab
+    // lists them), which is the same rule every other answer follows
     if (value && value.columns && value.rows.length && elementValues(
       value.columns.map((column) => value.rows[value.rows.length - 1][column]))) {
       hideValue(); // a Cypher projection of vertices: the canvas shows them
@@ -1964,10 +1964,6 @@
     el.valueCopy.textContent = '⧉';
     el.valueCopy.title = t('valueCopy');
   }
-
-/** How many distinct values the window lists before it gives up and shows "…". */
-  const VALUE_PREVIEW = 8;
-
   /** A vertex/edge traverser is shown by its id; anything else by its text. */
   function valueLabel(v) {
     if (v === null || v === undefined) return '—';
@@ -1982,19 +1978,21 @@
    * with a multiplier (a `values('status')` over 50 edges reads "ACTIVE ×50"
    * rather than "50").
    */
+  /**
+   * The window's body for a list of traversers. One value is shown itself (a {@code count()}); more
+   * than one gets the **counts only** - "1620 项 · 111 个不同值" - because the result tab lists the
+   * values themselves, and repeating a preview here only competes with it.
+   */
   function summarizeValues(values, unit) {
     if (!values.length) return { body: `0 ${t(unit)}`, detail: '' };
     const labels = values.map(valueLabel);
     const distinct = [...new Set(labels)];
-    if (distinct.length === 1) {
-      const detail = values.length > 1 ? `${values.length} ${t(unit)}` : '';
-      return { body: `<span class="value-scalar">${distinct[0]}</span>`, detail };
+    if (labels.length === 1) {
+      return { body: `<span class="value-scalar">${labels[0]}</span>`, detail: '' };
     }
-    const shown = distinct.slice(0, VALUE_PREVIEW);
-    const suffix = distinct.length > VALUE_PREVIEW ? ' …' : '';
-    const body = `<span class="value-scalar value-small">${shown.join(' · ')}${suffix}</span>`;
-    const detail = `${values.length} ${t(unit)} · ${distinct.length} ${t('valueDistinct')}`;
-    return { body, detail };
+    const body = `<span class="value-scalar value-small">${values.length} ${t(unit)}`
+      + ` · ${distinct.length} ${t('valueDistinct')}</span>`;
+    return { body, detail: '' };
   }
 
   /** The window's content for one query answer (Gremlin traversers or Cypher rows). */
@@ -2003,11 +2001,13 @@
       const rows = value.rows;
       const columns = value.columns;
       if (!rows.length) return { body: `0 ${t('valueRows')}`, detail: '' };
-      // the first row's values are the value; the rows tab carries the rest
-      const first = rows[0];
-      const summary = summarizeValues(columns.map((c) => first[c]), 'valueItems');
       const detail = `${rows.length} ${t('valueRows')} · ${escapeHtml(columns.join(', '))}`;
-      return { body: summary.body, detail };
+      if (columns.length === 1) {
+        // one column: the answer is that column's values, so the window counts them
+        return { body: summarizeValues(rows.map((row) => row[columns[0]]), 'valueItems').body, detail };
+      }
+      // several columns: the rows are the answer and the result tab lists them
+      return { body: `<span class="value-scalar value-small">${rows.length} ${t('valueRows')}</span>`, detail };
     }
     return summarizeValues(Array.isArray(value) ? value : [value], 'valueItems');
   }
@@ -2021,6 +2021,19 @@
    * projection is shown. The answer to a traversal of vertices/edges is the subgraph on the canvas,
    * so that one clears the tab instead (see showQueryResult).
    */
+  /**
+   * The properties of one answer element. A traverser may carry none - a hop reads only the ids when
+   * nothing after it needs the properties - while the subgraph that was drawn for the same query read
+   * them in full. The table shows what the picture has, so the column is not empty for a query whose
+   * own answer was ids.
+   */
+  function propertiesOfElement(value) {
+    if (value.properties && Object.keys(value.properties).length) return value.properties;
+    const key = `${value.label || value.type}::${value.id}`;
+    const drawn = graph.vertices.get(key) || graph.edges.get(key);
+    return (drawn && drawn.properties) || value.properties || {};
+  }
+
   /**
    * Renders a Gremlin answer in the result tab. A list of graph elements gets one row per element
    * (its type, its id and its properties), so the answer of an {@code outE(...).toList()} is
@@ -2037,7 +2050,7 @@
       showRows([label, id, properties], values.map((value) => ({
         [label]: value.label || value.type || '',
         [id]: value.id,
-        [properties]: value.properties || {},
+        [properties]: propertiesOfElement(value),
       })));
       // an element that two traversers produced - an edge whose two endpoints are both in the answer
       // - is listed once per traverser: `count()` counts them, the rows show them, and `dedup()`
