@@ -3665,3 +3665,52 @@ count 的**载荷**从"整张 map"降到"一个数"。缺失的 bin/记录返回
 ### 54.5 回归
 
 全量 `./mvnw test` **BUILD SUCCESS，0 失败 / 0 错误**（新增 gremlin 7、schema 2，另有两跳 live-load 的 count 断言）。
+
+---
+
+## 55. 第九批：用户报的 12 件事（UI / 引擎 / 响应上限）
+
+用户一次报 12 条。下面按条目写**根因**（能复现的都实测复现了）、**改法**、以及**没能复现的怎么处理**。
+复现手段：`curl` 打 8081 + 用 headless Edge 驱动**真实 UI** 读 DOM（`.logs/investigate.js`、`.logs/search-check.js`、`.logs/verify-ui.js`）。
+
+### 55.1 逐条
+
+| # | 现象 | 根因 | 改法 |
+|---|---|---|---|
+| 2 | `g.V(135,'Account').both().both().both().both()` 报 `Unexpected end of JSON input` | 4 跳从 hub 出去命中**几百万**个 traverser，响应 **685 MB**，浏览器解析不了 | `QueryService` 给答案**设上限** `phoenixgraph.query.max-response-items`（默认 200000，0=不限；traverser 列表、subgraph 点/边都算），超限截断并在响应头 `X-PhoenixGraph-Truncated` 说明；UI 读到就提示"加 limit()"。实测同一条查询：685 MB → **45 MB**，头部 `X-PhoenixGraph-Truncated: 200000` |
+| 3 | `... .both() //.both()` 报 `Expected '.' before step` | 引擎不认 Groovy 注释 | `GremlinQuery.stripComments`：解析前剥掉 `//` 行注释与 `/* */` 块注释；**字符串字面量内的标记不算注释**（URL/正则安全），被注释掉的步就当没有 |
+| 12 | `...toList().size()` 报 `Unknown Gremlin step: size` | `size` 没注册 | 注册 `size` = `count`（Groovy 写法）；编译器里把 `count`/`size` 统一成 `isCountStep`（种子透传、下推合并、属性规划、边跳计数重写四处），所以 `outE('x').size()` 也会下推 |
+| 11 | `...outE('Payment').toList()` 结果集不显示 | `showQueryResult` 只在"**不是**元素列表"时才填「结果」页签——元素列表被当成"画布已经画了" | 只要答案是列表就填「结果」页签；**元素列表按 `类型 / ID / 属性` 三列**一行一个元素（`showGremlinRows`），`pay_r1` 这类 id 一眼可见 |
+| 4 | 统计页签只有总数 | 只有两个 `stat-card` | 增加**按类型明细**：顶点各类型 / 边各类型，三列对齐（名称 / 数量 / 占比），CSS grid + `tabular-nums` 对齐数字 |
+| 5 | 下拉里的 Cypher 先隐去 | — | `languageSelect` 的 cypher `option` 加 `hidden disabled`（保留在标记里，恢复只改一个属性）；`queryLanguage` 提示文案同步 |
+| 6.1 | 示例查询描述不随中英文切换 | 示例标题是**写死的中文**，只有查询语言（gremlin/cypher）分组 | 示例条目改成 `[中文标题, English title, query]`，`refreshExamples` 按界面语言取；`applyI18n` 里补调 `refreshExamples()`（切语言立刻换） |
+| 6.2 | Gremlin 前三个示例的 account id 查不到出边 | `g.V('1000','Account').out('AccountToPhone')` —— **v3 demo 的关联是单向 `Phone/IP → Account`**，`AccountToPhone` 根本不存在，返回空 | 改成 `in('PhoneToAccount')`；Cypher 里两条同类示例（`AccountToPhone` / `AccountToIP`）也把方向倒过来 |
+| 7 | Legend 只有点，没有边；点选/取消 | legend 只由点生成 | legend 追加**边条目**（线型色块 + `标签 · 条数`，带「边」小标题）；点一下高亮该类边**并保留其两端点**（否则高亮边吊在两个暗点之间），再点一下清除。实测：`边 27 条选中 → edgeHit 1 / edgeDim 27 / 点暗 3（两端点亮）`，再点 `edgeDim 0` |
+| 10 | 边在 UI 显示但"不在下载" | `exportCsv` **连续触发两个下载**，浏览器常把第二个（边）拦掉——于是只有点表到了 | 导出**一个文件** `phoenixgraph.csv`，首列 `kind`（vertex/edge）区分，点边**一定一起到** |
+| 9 | filter 之后画布上还多出 1002 和 Phone→1002 | **查询失败时画布保留上一次的结果**：用户先跑了一条出现 1002 的查询，接着 filter 那条**报错**（如注释/表达式问题），画布没变 → 看起来像 filter 没生效。实测复现：失败后 `v/e` 仍是上一次的 51/76 | 新增 `queryFailed()`：显式查询失败时**清空画布** + toast 说明（"避免把上一次的结果当成这次的结果"）。实测：失败后 `v=0, e=0` |
+| 1 | 搜 69999 只高亮 seed | **未能复现**：`g.V('1001','Account').both()` 后搜 69999 命中的就是 `+86 138-69999`（`phoneNumber=138-69999` 与 id 都含 69999）。可能的感受差异是"命中点周围全暗了" | 命中点的**邻居与相邻边保持可见**（与"命中边保留两端点"一致）；画布内**完全没命中**时 toast 提示"搜索只作用于画布内"，不再只是整屏变暗 |
+| 8 | 「结果」显示 49、stats 显示 46 条边，逻辑对吗 | **两个数数的不是一回事**：结果是**答案项数**（traverser，可重复），stats 是**画出的子图**（去重后）。实测同一条：`result=27`、`subgraph edges=28`（多出来的是遍历用的 `PhoneToAccount` 那条），而 `graph.edges` 与画布/导出/统计三者一致 | 不改口径（两者都对），而是**让两个数都看得见**：结果页签列出答案列表，「结果 N 项 · 子图 点 V / 边 E」写进状态行，统计页签给按类型明细。item 10 的"少了边"是导出被拦，已按上表修 |
+
+### 55.2 UI 其它一并修的
+
+* **超大答案不再卡死页签**：`showRows` 最多画 2000 行，并在提示条写"只显示前 N 行，共 M 行"；
+* **响应被截断/截断不完整**：`runQuery` 先 `text()` 再 `JSON.parse`，解析失败给出人话（"响应过大，未完整传回（已接收 X MB）"），而不是 `Unexpected end of JSON input`。
+
+### 55.3 只动到"没复现"的地方怎么算
+
+第 1 条实测是好的（搜索命中了那个 Phone）。但没有停在"我这能跑"，而是把它变成**更不容易被误读**：
+命中点的上下文（邻居 + 相邻边）保持可见、画布内无命中时明确提示。第 8 条同理——两个数字本来就不同含义，
+所以做的是**同屏可见 + 口径写清楚**，而不是把其中一个改成另一个。
+
+### 55.4 测试
+
+* 引擎：`GremlinQueryTest` +4（行注释 / 整行 + 块注释 / 字符串里的注释标记不算 / 只有注释则报错），
+  `GremlinGraphQueryTest` +1（`size()` 与 `toList().size()`）；
+* HTTP：`QueryControllerTest` 桩/校验改到 `queryCapped`，并新增 **截断头** 用例（11 条）；
+* 全量 `./mvnw test` **BUILD SUCCESS，0 失败 / 0 错误**。
+
+### 55.5 未做
+
+* 第 1 条若用户的意图是"**全库搜索**"（不在画布上的点也找出来）——那是新功能（需要按属性建索引或全扫），
+  本轮做的是把"画布内搜索"讲清楚；要做请确认。
+* 第 8 条若要"结果数与子图数严格一致"，只能让结果去重或把遍历边也算进结果——两种都会丢信息，故未改。
