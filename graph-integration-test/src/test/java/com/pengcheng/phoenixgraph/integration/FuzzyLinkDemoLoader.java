@@ -42,14 +42,24 @@ import java.util.Set;
  */
 public final class FuzzyLinkDemoLoader {
 
-    /** The accounts of the first ring: same provider, country, /16 and name word. */
+    /**
+     * The accounts of the first ring: same provider, country, /16 and name word.
+     *
+     * <p>{@code fz_a7} is the point of the first pattern's regular expression: its user name starts
+     * with a different word ({@code xia} instead of {@code zhang}) but has the same shape (letters
+     * before the digits), so it lands on the <em>same</em> link node as the zhangs. A node that only
+     * ever held zhangs would not show what "a name written as letters" links.
+     */
     private static final String[][] RING_SHARED_HABITS = {
             {"fz_a1", "zhang1988", "19880101@mail.ru", "+8613800138001", "6217000010001111", "10.20.31.7"},
             {"fz_a2", "zhang1979", "19790101@mail.ru", "+8613900139002", "6217000020002222", "10.20.88.4"},
             {"fz_a3", "zhang1990", "19900101@mail.ru", "+8613700137003", "6217000030003333", "10.20.45.9"},
             {"fz_a4", "zhang1972", "19720101@mail.ru", "+8613600136004", "6217000040004444", "10.20.12.1"},
             {"fz_a5", "zhang1995", "19950101@mail.ru", "+8613500135005", "6217000050005555", "10.20.77.2"},
-            {"fz_a6", "zhang1968", "19680101@mail.ru", "+8613400134006", "6217000060006666", "10.20.99.3"}};
+            {"fz_a6", "zhang1968", "19680101@mail.ru", "+8613400134006", "6217000060006666", "10.20.99.3"},
+            // a second name word of the same shape, so the node shows zhang and xia together; the
+            // email name is not four digits, so the second pattern does not apply to it
+            {"fz_a7", "xia1999", "xia1999@mail.ru", "+8613800138007", "6217000070007777", "10.20.66.8"}};
 
     /** The accounts of the second ring: one /24 network, one card BIN, digits-only email names. */
     private static final String[][] RING_MACHINE_MAIL = {
@@ -110,8 +120,8 @@ public final class FuzzyLinkDemoLoader {
         Map<Integer, Set<String>> nodesPerPattern = new LinkedHashMap<>();
         Map<Integer, Integer> perPatternEdges = new LinkedHashMap<>();
 
-        vertices.add(patternVertex(0, now));
-        vertices.add(patternVertex(1, now));
+        // the patterns come from the pattern file, not from a vertex type in the graph, so a graph
+        // only has to declare the link vertex and the edge class
         for (String[] row : allAccounts()) {
             FuzzyContext context = contextOf(row);
             vertices.add(accountVertex(row, now));
@@ -184,19 +194,6 @@ public final class FuzzyLinkDemoLoader {
         properties.put(property(account, "ipAddress"), new VertexPropertyValue(row[5], now));
         properties.put(property(account, "accountStatus"), new VertexPropertyValue("ACTIVE", now));
         return new VertexUpsert(row[0], account, properties, now, now);
-    }
-
-    private VertexUpsert patternVertex(int patternId, long now) {
-        VertexSchema pattern = schema.vertexSchema(FuzzySchema.PATTERN_VERTEX);
-        var declared = patterns.require(patternId);
-        Map<Integer, VertexPropertyValue> properties = new LinkedHashMap<>();
-        properties.put(property(pattern, FuzzySchema.PATTERN_ID_PROPERTY),
-                new VertexPropertyValue(patternId, now));
-        properties.put(property(pattern, "name"), new VertexPropertyValue(declared.name(), now));
-        properties.put(property(pattern, "expression"), new VertexPropertyValue(declared.expression(), now));
-        properties.put(property(pattern, "description"), new VertexPropertyValue(declared.description(), now));
-        properties.put(property(pattern, "enabled"), new VertexPropertyValue(true, now));
-        return new VertexUpsert(declared.vertexId(), pattern, properties, now, now);
     }
 
     private VertexUpsert linkVertex(FuzzyLink link, long now) {

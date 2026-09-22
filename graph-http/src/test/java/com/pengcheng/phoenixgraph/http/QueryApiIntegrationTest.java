@@ -690,7 +690,27 @@ class QueryApiIntegrationTest {
         props.put(5, new VertexPropertyValue(Map.of("174", "open", "175", "kyc"), t));
         props.put(6, new VertexPropertyValue(firstName(id), t)); // display property
         props.put(7, new VertexPropertyValue(lastName(id), t));  // display property
+        props.put(13, new VertexPropertyValue(accountVector(id), t)); // the HNSW-indexed profile
         return props;
+    }
+
+    /**
+     * The 8-dimensional behaviour profile of a demo account, in one of three spending clusters
+     * (cash-like, card-like, mixed) with a deterministic jitter per account - so
+     * {@code g.V(id,'Account').nearest(k)} returns the accounts of one cluster, and the same load
+     * twice gives the same answer. The RocksDB loader generates the same shape (see
+     * {@code AccountProfiles}).
+     */
+    private static List<Double> accountVector(String id) {
+        int hash = Math.floorMod(id.hashCode(), 100_000);
+        double even = switch (hash % 3) { case 0 -> 0.9; case 1 -> 0.1; default -> 0.5; };
+        double odd = switch (hash % 3) { case 0 -> 0.1; case 1 -> 0.9; default -> 0.5; };
+        List<Double> vector = new ArrayList<>(8);
+        for (int i = 0; i < 8; i++) {
+            double jitter = ((hash / (i + 1)) % 100) / 1000.0;
+            vector.add(Math.round(((i % 2 == 0 ? even : odd) + jitter) * 1000) / 1000.0);
+        }
+        return vector;
     }
 
     /** Deterministic first name derived from the vertex id, so the UI shows readable node labels. */

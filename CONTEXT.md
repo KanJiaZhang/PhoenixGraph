@@ -3961,3 +3961,120 @@ F `batch(1)` `113.71 ms`、**1205** kv；G `batch(100)` `56.74 ms`、17 kv；C2 
 * `barrier` 仍是"批量大小"的别名（真屏障＝分阶段执行，当前引擎没有阶段概念）；
 * `map { it.get().toString() }` 这类答案是字符串，Rows 只有一列"值"（值里含 toString 的内容）——
   如果要把"元素转字符串"也渲染成三列，需要另定义元素文本协议，未做。
+
+---
+
+## 58. 第十二批：fuzzy 节点的 xia 账号、图实例收敛到四个、payment-graph 的向量、RocksDB-Edge 的 GEO、去掉 FuzzyPattern
+
+### 58.1 `#1` FuzzyLink 节点现在同时挂着 zhang 和 xia
+
+`fl_0_mail.ru_86_10.20_re_a_z_6759fdcb` 之前只挂着 6 个 `zhangXXXX`。现在演示数据多了一个
+`fz_a7 / xia1999`（`xia1999@mail.ru`、`+8613800138007`、`10.20.66.8`）——pattern 0 的键里放的是正则的**公式**
+（`^[a-z]+` 的形状）而不是它匹配到的词，所以第二个名字词落在**同一个** link 节点上：
+
+```
+g.V('fl_0_mail.ru_86_10.20_re_a_z_6759fdcb','FuzzyLink').out('FuzzyLinkedTo')
+-> fz_a1..fz_a6 (zhang1988/1979/1990/1972/1995/1968) + fz_a7 (xia1999)
+```
+
+它的邮箱名前缀不是四位数字，所以 pattern 1（机器生成邮箱 + 卡 BIN）**不**把它算进去，第二个环仍是 4 个。
+
+### 58.2 `#5` 从 payment-graph 的 schema 去掉 FuzzyPattern
+
+`FuzzyPattern` 顶点类型是**遗留**：模式其实住在 `fuzzy-patterns.json`（分析师编辑的文件），
+链路的写入只写 `FuzzyLink` 顶点 + `FuzzyLinkedTo` 边（`FuzzyLinkingService` 从来不写 pattern 顶点）。
+
+* `payment-graph.json` 删掉 `FuzzyPattern` 顶点（`FuzzyLink` 保留）；
+* `FuzzySchema.isSupported` 相应放宽：只要求 **link 顶点 + link 边**（不要求 pattern 顶点），并在 javadoc 里写明原因；
+* `FuzzyLinkDemoLoader` 不再写 pattern 顶点（`patternVertex(...)` 删除）。
+
+实测：`payment-graph` 的顶点类型现在是 `Account, IP, Phone, FuzzyLink`；fuzzy 的 11 条集成测试全绿
+（环 0 = 7 个账户、环 1 = 4 个）。
+
+### 58.3 `#2` 图实例收敛到四个
+
+`application.yml` 的 `graphs:` 只留三个（加上 primary 的 `payment-graph` 共四个）：
+
+| 图 | 存储 |
+|---|---|
+| `payment-graph` | Aerospike（primary） |
+| `payment-graph-as-edge` | Aerospike-Edge（聚合边表） |
+| `payment-graph-rocksdb-edge` | RocksDB-Edge |
+| `kg-entity-graph` | Aerospike（知识图谱） |
+
+其余（`payment-graph-rocksdb-inline`、两个 geo-merchants、`hnsw-sift`、`hnsw-dynamic`、两个 smart）
+**注释保留**在同一文件里，想再服务它们只需取消注释 —— 没有删掉任何一个 schema。
+
+### 58.4 `#3` payment-graph：每个账户都有 `accountVector`，HNSW 可查、可扩展
+
+* schema：Account 新增 `accountVector`（id 13，8 维 `list DOUBLE`，`isVector`，COSINE，m 8/efConstruction 64/efSearch 32）；
+* 数据：演示播种给每个账户一个**确定性**的 8 维向量，落在 3 个消费画像（现金型/卡型/混合）之一 + 每账户的抖动 ——
+  所以 `nearest(k)` 返回的是同一簇的账户，重新加载两次答案不变；
+* 索引：`POST /api/v1/vector-index/rebuild {"graph":"payment-graph","vertexSchemaName":"Account","vectorProperty":"accountVector"}`
+  → 实测 `vertices=152, layers=9, links=2904, pruned=1472, 6.9s`；`GET /api/v1/vector-index` 显示 `size=152`。
+
+样本查询（**既有相似向量结果，又能继续扩展边和点**）：
+
+```groovy
+// 相似账户
+g.V('1001','Account').nearest(5)                                  -> 1004, 1007, 1010, 1013, 1016
+// 相似账户的出款（向量 → 边）
+g.V('1001','Account').nearest(5).outE('Payment')                  -> 15 条 Payment
+// 相似 → 收款方 → 再找相似（向量 → 点 → 向量）
+g.V('1001','Account').nearest(5).out('Payment').dedup().nearest(3) -> 6 个账户
+// 相似 → 双方 → 去重
+g.V('1001','Account').nearest(5).both('Payment').dedup().limit(10)
+```
+
+### 58.5 `#4` payment-graph-rocksdb-edge：账户带 `location`（GEO 可用）+ `accountVector`；GEO 样本
+
+* schema：Account 新增 `accountVector`（id 8，同参数）+ `location`（id 9，`map DOUBLE`，`isGeo`，S2）；
+* 数据：`PaymentGraphRocksDbLoader` 给每个账户写入**确定性**的 4 个片区之一（人民广场/徐家汇/陆家嘴/静安，
+  中心 ±1.5 km 抖动）—— 所以 5 km 搜索能捞出"一个街区"的账户。同一份 loader 仍能装 inline 方案
+  （只有 schema 声明了这两个属性的图才会写它们）；
+* 重载：`.rocksdb/payment-graph-rocksdb-edge` 重新播种（151 点 / 300 边，见 `RocksDbLiveLoadTest`；
+  RocksDB 目录被服务占用，重载前要先停服务）。
+
+实测（`node .logs/geo-vector-check.js payment-graph-rocksdb-edge`）：
+
+```
+g.V('1001','Account').circle('{"lat":31.2304,"lon":121.4737,"radius":5000}').limit(10)
+  -> 10 个账户：1030, 1041, 1023, 1012, 1034, 1001, 1005, 1045, ...
+g.V('1001','Account').circle(...).limit(10).outE('Payment')        -> 30 条 Payment（可继续扩展）
+g.V('1001','Account').circle(...).limit(10).out('Payment').dedup() -> 它们付给谁
+g.V('1001','Account').circle(...).limit(5).values('id','distanceMeters')
+  -> 1030, 488.2 米, 1041, 505.9 米, 1023, 660.9 米, ...
+```
+
+**向量那一半在这里不可用，且这是既有设计**：索引（HNSW 的层边 + 元数据）住在 Aerospike 的边 bin 里，
+`VectorIndexManager` 明确拒绝 RocksDB 图：
+
+```
+Graph 'payment-graph-rocksdb-edge' is served by RocksDB-*; a vector index lives in the
+Aerospike edge bins and is only available there
+```
+
+即 `GET /api/v1/vector-index` 会列出这个图的 `accountVector` 索引但 `size=0`，`nearest` 报
+`No HNSW index is configured for vertex type 'Account'`。数据、schema、属性都在，缺的是**索引后端**。
+（要真在这张图上做向量检索，需要一个新的索引后端：`HnswStore` + 元数据 + 向量读取都走 RocksDB，
+或者把索引托管到 Aerospike 而向量从 RocksDB 读 —— 两条路都要新代码，见 §58.7。）
+
+所以 UI 的示例查询里：`payment-graph` 给向量样本，`payment-graph-rocksdb-edge` 给 GEO 样本（各 3–4 条，双语标题）。
+
+### 58.6 实测与测试
+
+* fuzzy 集成测试 11 条：环 0 变 7 个账户（六个 zhang + 一个 xia），环 1 仍 4 个；去掉 pattern 顶点后
+  `isSupported` 仍为真、链路写入照常；
+* RocksDB 重载：`payment-graph-rocksdb-inline` / `-edge` 各 151 点 / 300 边 ✓；
+* 全量 `./mvnw test` **BUILD SUCCESS，0 失败 / 0 错误**；
+* UI（headless Edge 实测）：图下拉 = 4 个，两个图的示例查询分别列出向量 / GEO 样本。
+
+### 58.7 未做 / 待确认
+
+* **RocksDB 图的向量索引**：需要新的索引后端（RocksDB 的 `HnswStore`，或"索引在 Aerospike、向量在 RocksDB"
+  的托管方案 + 用查询路径枚举待索引的点）。本轮没做。
+* `location` 只加在 RocksDB-Edge 的 Account 上，`payment-graph`（Aerospike）**没有**加地理属性 ——
+  按 `#3` 的要求只加了向量。
+* 演示数据的两套来源仍不同：`http_demo_v3`（Aerospike，`QueryApiIntegrationTest#demoSharedGraphViaApi`）
+  与 `.rocksdb/payment-graph-rocksdb-edge`（`PaymentGraphRocksDbLoader`，135 + 50 账户）。两者是**同一个图的两种装量**
+  （同样的表形状、同样的 hub 135），但不是逐行相同。若要逐行一致，把 `seedSharedGraph` 抽成共享 loader 即可。

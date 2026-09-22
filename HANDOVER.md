@@ -1,8 +1,8 @@
 # Handover — resume here
 
 > 本文件是**断点续做手记**：今天做了什么（结论）、现场怎么恢复、明天从哪继续。
-> 详细设计与实测数据在 `CONTEXT.md`：**2026-09-21 新增 §47–§57**（§47 仪表盘七问；§48 四问（二）；§49 三问（三）；§50 五问（四）；§51 四问（五）；§52（六）：Aerospike-Edge 大点冷/近线/在线三层；§53（七）：stale 写统一 / 结果面板复核 / 150 两跳扩展 + benchmark；§54（八）：表达式字符串函数 / display `$id` / count 交给服务端；§55（九）：用户报的 12 件事；§56（十）：算法 / legend·页签·示例 / 子图把 filter 掉的边留下；**§57（十一）：闭包 if/else 与集合、`values()` 的元素自身列、空答案不画、面板只报数目 + 135·150 两跳 benchmark**）；
-> 过程记录在 **`DAILY-2026-09-21.md`**（§1–§19 共十一批）。**2026-09-20 是 §38–46**；**2026-09-18 是 §32–37**（含**类起点与扫描端口**）；2026-09-17 是 §21–31。
+> 详细设计与实测数据在 `CONTEXT.md`：**2026-09-21 新增 §47–§58**（§47 仪表盘七问；§48 四问（二）；§49 三问（三）；§50 五问（四）；§51 四问（五）；§52（六）：Aerospike-Edge 大点冷/近线/在线三层；§53（七）：stale 写统一 / 结果面板复核 / 150 两跳扩展 + benchmark；§54（八）：表达式字符串函数 / display `$id` / count 交给服务端；§55（九）：用户报的 12 件事；§56（十）：算法 / legend·页签·示例 / 子图把 filter 掉的边留下；**§57（十一）：闭包 if/else 与集合、`values()` 的元素自身列、空答案不画、面板只报数目 + 135·150 两跳 benchmark**；**§58（十二）：fuzzy 的 xia 账号 / 图实例收敛到四个 / payment-graph 向量 / RocksDB-Edge GEO / 去掉 FuzzyPattern**）；
+> 过程记录在 **`DAILY-2026-09-21.md`**（§1–§20 共十二批）。**2026-09-20 是 §38–46**；**2026-09-18 是 §32–37**（含**类起点与扫描端口**）；2026-09-17 是 §21–31。
 
 **最后一次会话：2026-09-21（周日）· 全量 `./mvnw test` 绿（gremlin 146 / http 69 / integration 88（4 skipped）/ schema 38 / gemini 21 / fuzzy 26 / hnsw 37 / …）**
 **本轮十四段（用户报的十四件事，CONTEXT §47+§48+§49）：(1) 边只写一个方向、边数不再翻倍；(2) 135/1001 同一对端点各补 5–8 笔 Payment；
@@ -10,9 +10,10 @@
 (8) 图例选中后左下角显示选中点数/边数；(9) 搜索改成“子串或字段缩写”；（两个服务加 `no-cache` 让浏览器不再拿旧 app.js）；(10) 同一对端点的多条边画成弧；(11) `filter`/`map` 换成表达式语言；
 (12) `toList` 等终结步（§49.1）；(13) 多边 `fill: none` + 弧距减半（§49.2）；(14) 闭包里的 `def tmp = it.get();` 与换行/分号语句（§49.3）。**【均在 §47/§48/§49 与 DAILY 里】**
 **现场已重启并对齐：8081（11 个图，payment-graph 指到 `http_demo_v3`）+ 8080（UI，含新搜索实现）+ Aerospike 容器；RocksDB 两个 payment 实例已按单向重新播种（`.rocksdb`，300 条边）。8083（hnsw-dynamic）本轮未起。**
-**下一次入口：§57.9（`new` 只支持三种集合；barrier 仍是批量大小别名）；§56.7（投影上限、平行边 “×N”）；§51.6 余下（`vt` 塞进边读 / 命名类首跳按类型过滤）；§53.4 余下（limit 有序表示）；RocksDB 侧 stale 不一致（§53.1）；§52.5 的未做；UI 镜像边折叠（§47.8）；`map` 聚合/多列（§48.6）。**
+**下一次入口：§58.7（RocksDB 图的向量索引后端：写 RocksDB 的 `HnswStore`，或把索引托管到 Aerospike 而向量从 RocksDB 读 + 用查询路径枚举待索引的点）；§57.9（`new` 只支持三种集合；barrier 仍是批量大小别名）；§56.7（投影上限、平行边 “×N”）；§51.6 余下（`vt` 塞进边读 / 命名类首跳按类型过滤）；§53.4 余下（limit 有序表示）；RocksDB 侧 stale 不一致（§53.1）；§52.5 的未做；UI 镜像边折叠（§47.8）；`map` 聚合/多列（§48.6）。**
 
-**工作树状态：本日十一个批次共 40+ 个提交，全部已提交并已 push 到 GitHub（`develop`，`origin` = github.com:KanJiaZhang/PhoenixGraph）。**
+**工作树状态：本日十二个批次共 43+ 个提交，全部已提交并已 push 到 GitHub（`develop`，`origin` = github.com:KanJiaZhang/PhoenixGraph）。**
+**第十二批（§58）：`FuzzyLinkDemoLoader` 加 `fz_a7/xia1999` 并停写 pattern 顶点；`FuzzySchema.isSupported` 放宽；`payment-graph.json` 删 `FuzzyPattern` 顶点 + Account 加 `accountVector`；`payment-graph-rocksdb-edge.json` 的 Account 加 `accountVector` + `location`；`application.yml` 的 graphs 收敛到三个（其余注释保留）；`QueryApiIntegrationTest.accountProps` 加向量；`PaymentGraphRocksDbLoader` + 新的 `AccountProfiles`（确定性向量 + 四片区坐标）；UI 示例查询加向量/GEO 样本。详见 `CONTEXT.md` §58 / `DAILY` §20。**
 **第十一批（§57）新增/修改：`GremlinQuery.indexOfLogicBrace` 深度判定；`GremlinExpression.program()` 改为按序执行 + `ifStatement`/`block`/`newCollection`/`collectionMethod` + `FRAME`（ThreadLocal per-element）；`GremlinElementExpression` 的伪键（`@createdTime`/`@lastUpdatedTime`/`@source`/`@target`）+ `value(...)`/`isPseudoName(...)`；`GremlinSteps.values` 用 `GremlinElementExpression.value`；`GremlinGraphQuery` 规划器跳过伪键 + 空答案→空子图；UI：面板只报数目 + 元素答案也报、`propertiesOfElement` 从子图补属性。测试：`GremlinClosureStatementTest`（11）+ `GremlinGraphQueryTest`（+2）。benchmark：`.logs/bench-two-hop.js`。详见 `CONTEXT.md` §57 / `DAILY` §19。**
 **第十批（§56）新增/修改：`GremlinContext.recordHopEdge` + `buildSubgraph` 的“顶点跳的边只随它到达的点存活”规则（+1 引擎用例）；UI：`largestTypeSubgraph`（异构图投影 + 提示 + `algo-out` 变灰）、初值坐标改稳定哈希、legend 计数与空行、结果页签小圆点（不再自动跳）、示例下拉默认隐藏、重复行提示。验证脚本：`.logs/verify-algorithms.js`（12 项）、`.logs/verify-ui2.js`。详见 `CONTEXT.md` §56 / `DAILY` §18。**
 **第九批（§55，用户报的 12 件）新增/修改：`GremlinQuery.stripComments` + `isCountStep`/`size` 注册；`QueryService.Answer`/`queryCapped`/`cap` + `phoenixgraph.query.max-response-items` + `QueryController` 的 `X-PhoenixGraph-Truncated`；UI：结果页签收元素列表（三列）、统计页签按类型明细、legend 边条目、搜索上下文/无命中提示、`queryFailed` 清画布、单文件 CSV、示例双语标题、Cypher 隐藏、表格 2000 行上限、截断响应提示。详见 `CONTEXT.md` §55 / `DAILY` §17。**

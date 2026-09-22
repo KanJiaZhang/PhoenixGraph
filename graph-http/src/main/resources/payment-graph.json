@@ -27,7 +27,8 @@
         { "id": 9, "name": "email", "description": "Email address", "type": "STRING" },
         { "id": 10, "name": "phoneNumber", "description": "Phone number in E.164 form, e.g. +8613800138000", "type": "STRING" },
         { "id": 11, "name": "cardNumber", "description": "Card number; its first digits are the BIN", "type": "STRING" },
-        { "id": 12, "name": "ipAddress", "description": "The address the account was last seen from", "type": "STRING" }
+        { "id": 12, "name": "ipAddress", "description": "The address the account was last seen from", "type": "STRING" },
+        { "id": 13, "name": "accountVector", "description": "The 8-dimensional behaviour profile (HNSW indexed)", "type": { "list": "DOUBLE" }, "isVector": true, "metric": "COSINE", "m": 8, "efConstruction": 64, "efSearch": 32 }
       ]
     },
     {
@@ -51,21 +52,6 @@
       "properties": [
         { "id": 1, "name": "cnCode", "description": "Country calling code, e.g. +86", "type": "STRING", "display": true },
         { "id": 2, "name": "phoneNumber", "description": "Phone number", "type": "STRING", "minLength": 3, "maxLength": 20, "display": true }
-      ]
-    },
-    {
-      "id": 4,
-      "name": "FuzzyPattern",
-      "description": "A fuzzy linking pattern: what a context is reduced to before it becomes a key",
-      "idSchema": { "id": 0, "name": "id", "description": "Pattern vertex id, pattern_<id>", "type": "STRING" },
-      "createdTime": { "id": -2, "name": "createdTime", "description": "Creation time", "type": "LONG" },
-      "lastUpdatedTime": { "id": -1, "name": "lastUpdatedTime", "description": "Last update time", "type": "LONG" },
-      "properties": [
-        { "id": 1, "name": "patternId", "description": "Pattern number", "type": "INT" },
-        { "id": 2, "name": "expression", "description": "The expression the pattern is", "type": "STRING", "display": true },
-        { "id": 3, "name": "name", "description": "Human readable name", "type": "STRING", "display": true },
-        { "id": 4, "name": "description", "description": "What the pattern looks for", "type": "STRING" },
-        { "id": 5, "name": "enabled", "description": "Whether queries use it", "type": "BOOLEAN" }
       ]
     },
     {

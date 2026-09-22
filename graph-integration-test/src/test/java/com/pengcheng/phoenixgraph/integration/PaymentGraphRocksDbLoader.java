@@ -174,14 +174,23 @@ public final class PaymentGraphRocksDbLoader {
     private static RocksDbVertexUpsert account(VertexSchema account, long id, int seed, long time) {
         String first = FIRST_NAMES[seed % FIRST_NAMES.length];
         String last = LAST_NAMES[(seed / FIRST_NAMES.length + seed) % LAST_NAMES.length];
-        Map<String, RocksDbPropertyValue> values = Map.of(
-                "accountStatus", new RocksDbPropertyValue(ACCOUNT_STATUS[seed % ACCOUNT_STATUS.length], time),
-                "accountType", new RocksDbPropertyValue(ACCOUNT_TYPE[seed % ACCOUNT_TYPE.length], time),
-                "primaryAddress", new RocksDbPropertyValue("addr-" + id, time),
-                "accountUsage", new RocksDbPropertyValue(List.of("Personal", "Business"), time),
-                "accountLimited", new RocksDbPropertyValue(Map.of("174", "open", "175", "kyc"), time),
-                "firstName", new RocksDbPropertyValue(first, time),
-                "lastName", new RocksDbPropertyValue(last, time));
+        Map<String, RocksDbPropertyValue> values = new LinkedHashMap<>();
+        values.put("accountStatus", new RocksDbPropertyValue(ACCOUNT_STATUS[seed % ACCOUNT_STATUS.length], time));
+        values.put("accountType", new RocksDbPropertyValue(ACCOUNT_TYPE[seed % ACCOUNT_TYPE.length], time));
+        values.put("primaryAddress", new RocksDbPropertyValue("addr-" + id, time));
+        values.put("accountUsage", new RocksDbPropertyValue(List.of("Personal", "Business"), time));
+        values.put("accountLimited", new RocksDbPropertyValue(Map.of("174", "open", "175", "kyc"), time));
+        values.put("firstName", new RocksDbPropertyValue(first, time));
+        values.put("lastName", new RocksDbPropertyValue(last, time));
+        // the behaviour profile (vector) and the home location (geo) of the account: only the
+        // schemas that declare them get them, so the same loader fills both RocksDB schemes. The
+        // numbers come from the account number, so a reload produces the same graph.
+        if (account.property("accountVector") != null) {
+            values.put("accountVector", new RocksDbPropertyValue(AccountProfiles.vectorOf(id), time));
+        }
+        if (account.property("location") != null) {
+            values.put("location", new RocksDbPropertyValue(AccountProfiles.locationOf(id), time));
+        }
         return vertex(account, id, values, time);
     }
 

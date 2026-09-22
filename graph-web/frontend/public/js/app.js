@@ -433,6 +433,15 @@
         ['大点 · 某周窗口的笔数', 'Hub - payments in a one-week window', "g.V('9000001','Account').createdBetween('2025-11-01','2025-11-07').inE('Payment').count()"],
         ['大点 · 不限时间会被提示加窗口', 'Hub - without a window it asks for one', "g.V('9000001','Account').inE('Payment').count()"],
       ],
+      // the same payment data in RocksDB-Edge: every account carries a location (an S2 geo index) and
+      // a behaviour profile. The geo step answers here; the vector step needs the HNSW index, which
+      // lives in the Aerospike edge bins, so the vector examples are on payment-graph.
+      'payment-graph-rocksdb-edge': [
+        ['GEO · 人民广场 5km 内最近 10 个账户', 'GEO - the 10 nearest accounts within 5 km of People\'s Square', "g.V('1001','Account').circle('{\"lat\":31.2304,\"lon\":121.4737,\"radius\":5000}').limit(10)"],
+        ['GEO · 这 10 个账户的出款', 'GEO - the outgoing payments of those 10 accounts', "g.V('1001','Account').circle('{\"lat\":31.2304,\"lon\":121.4737,\"radius\":5000}').limit(10).outE('Payment')"],
+        ['GEO · 这 10 个账户的收款方', 'GEO - the receivers those 10 accounts pay', "g.V('1001','Account').circle('{\"lat\":31.2304,\"lon\":121.4737,\"radius\":5000}').limit(10).out('Payment').dedup().limit(10)"],
+        ['GEO · 带距离（米）', 'GEO - with the distance in metres', "g.V('1001','Account').circle('{\"lat\":31.2304,\"lon\":121.4737,\"radius\":5000}').limit(5).values('id','distanceMeters')"],
+      ],
       'geo-merchants-rocksdb-inline': [
         ['GEO · 1km 内最近的 10 家商户', 'GEO - 10 nearest merchants within 1 km', "g.V('1','Merchant').circle('{\"lat\":31.2304,\"lon\":121.4737,\"radius\":1000}').limit(10)"],
         ['GEO · 500m 内的咖啡店 + 距离(米)', 'GEO - coffee shops within 500 m + distance (m)', "g.V('1','Merchant').circle('{\"lat\":31.2304,\"lon\":121.4737}', 500).has('category','coffee').values('name','distanceMeters')"],
@@ -445,6 +454,9 @@
       'payment-graph': [
         ['135 的出账（一跳）', '135\'s outgoing payments (one hop)', "g.V('135','Account').outE('Payment').limit(10)"],
         ['135 双向两跳', '135, two hops over Payment (both directions)', "g.V('135','Account').both('Payment').both('Payment').dedup().limit(50)"],
+        ['相似账户：向量最近 5 个', 'Similar accounts: the 5 nearest by vector', "g.V('1001','Account').nearest(5)"],
+        ['相似账户 → 它们的出款', 'Similar accounts -> their outgoing payments', "g.V('1001','Account').nearest(5).outE('Payment')"],
+        ['相似 → 收款方 → 再找相似', 'Similar -> receivers -> their lookalikes', "g.V('1001','Account').nearest(5).out('Payment').dedup().nearest(3)"],
         ['账户的手机号', 'an account\'s phone', "g.V('1000','Account').in('PhoneToAccount')"],
         ['模糊关联①：同邮箱域名+国家+/16+名字词根', 'Fuzzy link 1: same mail domain + country + /16 + name stem', "g.V().fuzzyLink(0, '{\"email\":\"19880101@mail.ru\",\"phone\":\"+8613800138001\",\"ip\":\"10.20.31.7\",\"username\":\"zhang1988\"}')"],
         ['模糊关联①→账户→出款→收款方', 'Fuzzy link 1 -> account -> payment -> receiver', "g.V().fuzzyLink(0, '{\"email\":\"19880101@mail.ru\",\"phone\":\"+8613800138001\",\"ip\":\"10.20.31.7\",\"username\":\"zhang1988\"}').out('FuzzyLinkedTo').outE('Payment').otherV()"],

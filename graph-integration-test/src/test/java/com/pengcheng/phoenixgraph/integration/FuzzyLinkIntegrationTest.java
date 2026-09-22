@@ -94,7 +94,8 @@ class FuzzyLinkIntegrationTest {
 
     @Test
     void theSeedPlantedTwoRings() {
-        assertEquals(6, summary.largestNodePerPattern().get(0), "the first ring is six accounts");
+        assertEquals(7, summary.largestNodePerPattern().get(0),
+                "the first ring is seven accounts: six zhangs and one xia of the same name shape");
         assertEquals(4, summary.largestNodePerPattern().get(1), "the second ring is four accounts");
         assertTrue(summary.nodes() >= 2, "the rings have their own nodes: " + summary);
         assertEquals((summary.accounts() - 1) * 2, summary.payments(),
@@ -107,8 +108,8 @@ class FuzzyLinkIntegrationTest {
                 + contextJson(FuzzyLinkDemoLoader.firstRingContext()) + "').out('FuzzyLinkedTo')");
 
         Set<String> ids = idsOf(accounts);
-        assertEquals(Set.of("fz_a1", "fz_a2", "fz_a3", "fz_a4", "fz_a5", "fz_a6"), ids,
-                "the first ring, and nobody else");
+        assertEquals(Set.of("fz_a1", "fz_a2", "fz_a3", "fz_a4", "fz_a5", "fz_a6", "fz_a7"), ids,
+                "the first ring (zhangs and the xia), and nobody else");
         assertFalse(ids.contains("fz_b1"), "the other ring shares no fragment of this pattern");
         assertFalse(ids.contains("fz_c1"), "an honest account shares nothing");
     }
@@ -122,7 +123,7 @@ class FuzzyLinkIntegrationTest {
 
         List<Object> accounts = gremlin.execute("g.V().fuzzyLink(0, '" + xia + "').out('FuzzyLinkedTo')");
 
-        assertEquals(Set.of("fz_a1", "fz_a2", "fz_a3", "fz_a4", "fz_a5", "fz_a6"), idsOf(accounts),
+        assertEquals(Set.of("fz_a1", "fz_a2", "fz_a3", "fz_a4", "fz_a5", "fz_a6", "fz_a7"), idsOf(accounts),
                 "the ring, reached by a name word of the same shape");
     }
 
@@ -152,14 +153,14 @@ class FuzzyLinkIntegrationTest {
 
         List<Object> fromTheLink = gremlin.execute("g.V('" + linkId + "','FuzzyLink').out('FuzzyLinkedTo')");
         List<Object> fromEachAccount = new ArrayList<>();
-        for (String account : List.of("fz_a1", "fz_a2", "fz_a3", "fz_a4", "fz_a5", "fz_a6")) {
+        for (String account : List.of("fz_a1", "fz_a2", "fz_a3", "fz_a4", "fz_a5", "fz_a6", "fz_a7")) {
             fromEachAccount.addAll(gremlin.execute("g.V('" + account + "','Account').fuzzyLink(0)"));
         }
 
-        assertEquals(6, fromTheLink.size(), "the node knows its members");
-        assertEquals(Set.of("fz_a1", "fz_a2", "fz_a3", "fz_a4", "fz_a5", "fz_a6"), idsOf(fromTheLink));
-        assertEquals(6, fromEachAccount.size(), "and every member finds the node");
-        assertEquals(Set.of(linkId), idsOf(fromEachAccount), "all six land on the same node");
+        assertEquals(7, fromTheLink.size(), "the node knows its members: six zhangs and one xia");
+        assertEquals(Set.of("fz_a1", "fz_a2", "fz_a3", "fz_a4", "fz_a5", "fz_a6", "fz_a7"), idsOf(fromTheLink));
+        assertEquals(7, fromEachAccount.size(), "and every member finds the node");
+        assertEquals(Set.of(linkId), idsOf(fromEachAccount), "all seven land on the same node");
     }
 
     @Test
@@ -168,12 +169,12 @@ class FuzzyLinkIntegrationTest {
                 + contextJson(FuzzyLinkDemoLoader.firstRingContext())
                 + "').out('FuzzyLinkedTo').outE('Payment').otherV()");
 
-        assertEquals(12, result.values().size(), "six members, two payments each");
+        assertEquals(14, result.values().size(), "seven members, two payments each");
         assertTrue(result.values().stream().allMatch(v -> RECEIVER.equals(((GremlinVertex) v).id())),
                 "every payment ends at the collection account");
-        assertEquals(6, result.subgraph().edges().stream()
+        assertEquals(7, result.subgraph().edges().stream()
                 .filter(edge -> edge.label().equals("FuzzyLinkedTo")).count(), "the drawn graph shows the ring");
-        assertEquals(12, result.subgraph().edges().stream()
+        assertEquals(14, result.subgraph().edges().stream()
                 .filter(edge -> edge.label().equals("Payment")).count());
     }
 

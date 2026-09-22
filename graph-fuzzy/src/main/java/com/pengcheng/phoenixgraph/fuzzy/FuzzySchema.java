@@ -59,10 +59,17 @@ public final class FuzzySchema {
         return linkVertexId + "|" + linkedVertexId;
     }
 
-    /** Whether a schema declares what fuzzy linking needs (both vertex types and the edge class). */
+    /**
+     * Whether a schema declares what fuzzy linking needs: the link vertex type and the edge class
+     * from a link to the vertex it links.
+     *
+     * <p>The <em>patterns</em> are not part of the schema: they live in the pattern file an analyst
+     * edits ({@code fuzzy-patterns.json}), so a graph does not have to carry a pattern vertex to
+     * support linking - which is why {@code FuzzyPattern} was removed from the demo schema. The
+     * constant stays for the graphs (and fixtures) that still keep one.
+     */
     public static boolean isSupported(GraphSchema schema) {
         return schema != null
-                && schema.vertexSchema(PATTERN_VERTEX) != null
                 && schema.vertexSchema(LINK_VERTEX) != null
                 && schema.edgeSchema(LINK_EDGE) != null;
     }

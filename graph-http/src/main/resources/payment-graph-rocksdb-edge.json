@@ -84,6 +84,28 @@
           "description": "Account holder last name",
           "type": "STRING",
           "display": true
+        },
+        {
+          "id": 8,
+          "name": "accountVector",
+          "description": "The 8-dimensional behaviour profile (HNSW indexed)",
+          "type": {
+            "list": "DOUBLE"
+          },
+          "isVector": true,
+          "metric": "COSINE",
+          "m": 8,
+          "efConstruction": 64,
+          "efSearch": 32
+        },
+        {
+          "id": 9,
+          "name": "location",
+          "description": "Where the account lives, as {lat, lon}; indexed with Google S2 cells",
+          "type": {
+            "map": "DOUBLE"
+          },
+          "isGeo": true
         }
       ]
     },
