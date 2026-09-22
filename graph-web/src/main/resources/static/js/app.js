@@ -102,6 +102,7 @@
       algorithm: '算法',
       cc: '连通分量',
       searchPlaceholder: '搜索点 / 边关键词',
+      searchNoMatch: '当前画布上没有匹配「{q}」的点或边（搜索只作用于画布内）',
       clearSearch: '清除搜索',
       stats: '统计',
       props: '属性',
@@ -160,13 +161,21 @@
       noPath: '两点之间没有路径',
       emptyResult: '查询结果为空（未找到该点）',
       displayName: '显示名',
-      queryLanguage: '查询语言（Gremlin / Cypher）',
+      queryLanguage: '查询语言（当前只有 Gremlin；Cypher 暂时隐藏）',
       examples: '示例查询',
       fuzzyExample: '模糊关联示例（模式 → 团伙 → 出款 → 收款方）',
       rows: '结果',
-      rowsHint: 'Gremlin 的结果值 / Cypher 的行结果会显示在这里',
+      rowsHint: '查询结果（元素列表 / 值 / 行）会显示在这里',
       rowsValue: '值',
+      rowsType: '类型',
+      rowsId: 'ID',
+      rowsProperties: '属性',
+      typeCount: '数量',
       rowsEmpty: '查询没有返回任何行',
+      rowsTruncated: '表格只显示前 {shown} 行，共 {total} 行（用 limit() 缩小结果）',
+      responseTooLarge: '响应过大，未完整传回（已接收 {size}）。请加 limit() 或缩小查询范围。',
+      responseCapped: '结果超过 {n} 项，已截断；请用 limit() 或更小的范围。',
+      canvasCleared: '查询失败，画布已清空（避免把上一次的结果当成这次的结果）',
       cypherError: 'Cypher 查询失败',
       valueTitle: '查询结果值',
       valueRows: '行',
@@ -189,6 +198,7 @@
       algorithm: 'Algorithm',
       cc: 'Components',
       searchPlaceholder: 'Search vertices / edges',
+      searchNoMatch: 'Nothing on the canvas matches "{q}" (the search only covers what is drawn)',
       clearSearch: 'Clear search',
       stats: 'Stats',
       props: 'Properties',
@@ -247,13 +257,21 @@
       noPath: 'No path between the two vertices',
       emptyResult: 'No result (vertex not found)',
       displayName: 'Display name',
-      queryLanguage: 'Query language (Gremlin / Cypher)',
+      queryLanguage: 'Query language (Gremlin only for now; Cypher is hidden)',
       examples: 'Example queries',
       fuzzyExample: 'Fuzzy linking example (pattern -> ring -> payments -> receiver)',
       rows: 'Rows',
-      rowsHint: 'Gremlin answers and Cypher rows show up here',
+      rowsHint: 'The answer - a list of elements, values or rows - shows up here',
       rowsValue: 'Value',
+      rowsType: 'Type',
+      rowsId: 'ID',
+      rowsProperties: 'Properties',
+      typeCount: 'Count',
       rowsEmpty: 'The query returned no rows',
+      rowsTruncated: 'The table shows the first {shown} of {total} rows - add a limit() to narrow it',
+      responseTooLarge: 'The response was too large to transfer intact (received {size}). Add a limit() or narrow the query.',
+      responseCapped: 'The answer was capped at {n} items - add a limit() or narrow the query.',
+      canvasCleared: 'The query failed, so the canvas was cleared (the previous answer is not this one)',
       cypherError: 'Cypher query failed',
       valueTitle: 'Query result',
       valueRows: 'row(s)',
@@ -275,6 +293,7 @@
     document.querySelectorAll('[data-i18n-placeholder]').forEach((n) => { n.placeholder = t(n.dataset.i18nPlaceholder); });
     document.querySelectorAll('.lang-opt').forEach((n) => n.classList.toggle('active', n.dataset.lang === lang));
     renderLegend();
+    refreshExamples(); // the example titles are per language too
   }
 
   // merged graph model, keyed by "label::id"
@@ -315,6 +334,7 @@
     canvas: document.getElementById('canvas'),
     vertexCount: document.getElementById('vertexCount'),
     edgeCount: document.getElementById('edgeCount'),
+    typeBreakdown: document.getElementById('typeBreakdown'),
     propsHint: document.getElementById('propsHint'),
     propsContent: document.getElementById('propsContent'),
     errorModal: document.getElementById('errorModal'),
@@ -356,73 +376,73 @@
   const EXAMPLES = {
     cypher: {
       'payment-graph': [
-        ['135 账户本体', "MATCH (a:Account {id:'135'}) RETURN a.id, a.accountType, a.accountStatus, a.firstName, a.lastName"],
-        ['135 的出账（一跳）', "MATCH (a:Account {id:'135'})-[p:Payment]->(b:Account) RETURN b.id AS receiver, p.status ORDER BY receiver LIMIT 10"],
-        ['按状态聚合出账', "MATCH (a:Account {id:'135'})-[p:Payment]->(b:Account) RETURN p.status AS status, count(*) AS n ORDER BY n DESC"],
-        ['135 的双向支付关系', "MATCH (a:Account {id:'135'})-[p:Payment]-(b:Account) RETURN b.id, p.status LIMIT 10"],
-        ['两跳：135 → 中间账户 → 目标', "MATCH (a:Account {id:'135'})-[:Payment]->(:Account)-[:Payment]->(c:Account) RETURN DISTINCT c.id LIMIT 10"],
-        ['变长路径 1..3 跳', "MATCH (a:Account {id:'135'})-[:Payment*1..3]->(c:Account) RETURN DISTINCT c.id LIMIT 20"],
-        ['过滤：活跃对手 + 状态', "MATCH (a:Account {id:'135'})-[p:Payment]->(b:Account) WHERE b.accountStatus = 'ACTIVE' AND p.status = 'SUCCESS' RETURN b.id, b.accountType LIMIT 10"],
-        ['参数化模板（${id}）', "MATCH (a:Account {id: '${id}'}) RETURN a.id, a.accountType, a.accountStatus"],
-        ['参数化模板（$id）', "MATCH (a:Account {id: $id})-[p:Payment]->(b:Account) RETURN b.id, p.status LIMIT 5"],
-        ['聚合：每个账户的入账数', "MATCH (b:Account {id:'1035'})<-[p:Payment]-(a:Account) RETURN a.id AS payer, count(*) AS n ORDER BY n DESC LIMIT 10"],
-        ['跨 schema：账户的手机号', "MATCH (a:Account {id:'1000'})-[:AccountToPhone]->(ph:Phone) RETURN ph.cnCode, ph.phoneNumber"],
-        ['两段路径的连接（join）', "MATCH (a:Account {id:'1000'})-[:AccountToIP]->(ip:IP), (ip)-[:IPToAccount]->(b:Account) RETURN ip.id AS ip, b.id AS account LIMIT 10"],
+        ['135 账户本体', 'Account 135 itself', "MATCH (a:Account {id:'135'}) RETURN a.id, a.accountType, a.accountStatus, a.firstName, a.lastName"],
+        ['135 的出账（一跳）', '135\'s outgoing payments (one hop)', "MATCH (a:Account {id:'135'})-[p:Payment]->(b:Account) RETURN b.id AS receiver, p.status ORDER BY receiver LIMIT 10"],
+        ['按状态聚合出账', 'Outgoing payments by status', "MATCH (a:Account {id:'135'})-[p:Payment]->(b:Account) RETURN p.status AS status, count(*) AS n ORDER BY n DESC"],
+        ['135 的双向支付关系', '135 and its payment partners (both directions)', "MATCH (a:Account {id:'135'})-[p:Payment]-(b:Account) RETURN b.id, p.status LIMIT 10"],
+        ['两跳：135 → 中间账户 → 目标', 'Two hops: 135 -> middle account -> target', "MATCH (a:Account {id:'135'})-[:Payment]->(:Account)-[:Payment]->(c:Account) RETURN DISTINCT c.id LIMIT 10"],
+        ['变长路径 1..3 跳', 'Variable-length path, 1..3 hops', "MATCH (a:Account {id:'135'})-[:Payment*1..3]->(c:Account) RETURN DISTINCT c.id LIMIT 20"],
+        ['过滤：活跃对手 + 状态', 'Filter: active counterparty + status', "MATCH (a:Account {id:'135'})-[p:Payment]->(b:Account) WHERE b.accountStatus = 'ACTIVE' AND p.status = 'SUCCESS' RETURN b.id, b.accountType LIMIT 10"],
+        ['参数化模板（${id}）', 'Parameterised template (${id})', "MATCH (a:Account {id: '${id}'}) RETURN a.id, a.accountType, a.accountStatus"],
+        ['参数化模板（$id）', 'Parameterised template ($id)', "MATCH (a:Account {id: $id})-[p:Payment]->(b:Account) RETURN b.id, p.status LIMIT 5"],
+        ['聚合：每个账户的入账数', 'Aggregate: incoming payments per account', "MATCH (b:Account {id:'1035'})<-[p:Payment]-(a:Account) RETURN a.id AS payer, count(*) AS n ORDER BY n DESC LIMIT 10"],
+        ['跨 schema：账户的手机号', 'Cross-schema: an account\'s phone', "MATCH (ph:Phone)-[:PhoneToAccount]->(a:Account {id:'1000'}) RETURN ph.cnCode, ph.phoneNumber"],
+        ['两段路径的连接（join）', 'Joining two paths', "MATCH (a:Account {id:'1000'})<-[:IPToAccount]-(ip:IP), (ip)-[:IPToAccount]->(b:Account) RETURN ip.id AS ip, b.id AS account LIMIT 10"],
       ],
       'kg-entity-graph': [
-        ['实体概念书本体', "MATCH (e:Entity {id:'concept_book_new_9'}) RETURN e.name, e.shard"],
-        ['按 shard 聚合', "MATCH (e:Entity {id:'concept_book_new_9'})-[r:Entity_Entity]->(x:Entity) RETURN x.shard AS shard, count(*) AS n ORDER BY n DESC"],
-        ['关系与反向关系', "MATCH (e:Entity {id:'concept_book_new_9'})-[r:Entity_Entity]->(x:Entity) RETURN r.relation AS relation, r.xrelation AS inverse, x.id LIMIT 10"],
-        ['过滤某个关系', "MATCH (e:Entity {id:'concept_mammal_animals_2'})-[r:Entity_Entity]->(x:Entity) WHERE r.relation = 'concept:specializationof' RETURN x.id LIMIT 20"],
-        ['两跳同 shard 关系', "MATCH (e:Entity {id:'concept_mammal_animals_2'})-[:Entity_Entity]->(:Entity)-[:Entity_Entity]->(y:Entity) RETURN DISTINCT y.id LIMIT 20"],
+        ['实体概念书本体', 'Entity concept_book_new_9 itself', "MATCH (e:Entity {id:'concept_book_new_9'}) RETURN e.name, e.shard"],
+        ['按 shard 聚合', 'Neighbours by shard', "MATCH (e:Entity {id:'concept_book_new_9'})-[r:Entity_Entity]->(x:Entity) RETURN x.shard AS shard, count(*) AS n ORDER BY n DESC"],
+        ['关系与反向关系', 'Relation and its inverse', "MATCH (e:Entity {id:'concept_book_new_9'})-[r:Entity_Entity]->(x:Entity) RETURN r.relation AS relation, r.xrelation AS inverse, x.id LIMIT 10"],
+        ['过滤某个关系', 'Filter by one relation', "MATCH (e:Entity {id:'concept_mammal_animals_2'})-[r:Entity_Entity]->(x:Entity) WHERE r.relation = 'concept:specializationof' RETURN x.id LIMIT 20"],
+        ['两跳同 shard 关系', 'Two hops within shards', "MATCH (e:Entity {id:'concept_mammal_animals_2'})-[:Entity_Entity]->(:Entity)-[:Entity_Entity]->(y:Entity) RETURN DISTINCT y.id LIMIT 20"],
       ],
       'hnsw-sift': [
-        ['4242 向量本体', "MATCH (v:Vector {id:'4242'}) RETURN v.name, v.bucket, v.category"],
-        ['同 bucket 的邻居（属性过滤）', "MATCH (v:Vector {id:'4242'})-[r:vector_0]->(w:Vector) WHERE w.bucket = 3 RETURN w.id, w.name LIMIT 20"],
-        ['按 bucket 聚合邻居', "MATCH (v:Vector {id:'4242'})-[r:vector_0]->(w:Vector) RETURN w.bucket AS bucket, count(*) AS n ORDER BY n DESC"],
-        ['按 category 聚合邻居', "MATCH (v:Vector {id:'4242'})-[r:vector_0]->(w:Vector) RETURN w.category AS category, count(*) AS n ORDER BY n DESC"],
-        ['层 0 的邻居数（计数）', "MATCH (v:Vector {id:'4242'})-[r:vector_0]->(w:Vector) RETURN count(*) AS neighbours"],
+        ['4242 向量本体', 'Vector 4242 itself', "MATCH (v:Vector {id:'4242'}) RETURN v.name, v.bucket, v.category"],
+        ['同 bucket 的邻居（属性过滤）', 'Neighbours in one bucket (property filter)', "MATCH (v:Vector {id:'4242'})-[r:vector_0]->(w:Vector) WHERE w.bucket = 3 RETURN w.id, w.name LIMIT 20"],
+        ['按 bucket 聚合邻居', 'Neighbours by bucket', "MATCH (v:Vector {id:'4242'})-[r:vector_0]->(w:Vector) RETURN w.bucket AS bucket, count(*) AS n ORDER BY n DESC"],
+        ['按 category 聚合邻居', 'Neighbours by category', "MATCH (v:Vector {id:'4242'})-[r:vector_0]->(w:Vector) RETURN w.category AS category, count(*) AS n ORDER BY n DESC"],
+        ['层 0 的邻居数（计数）', 'Layer-0 neighbour count', "MATCH (v:Vector {id:'4242'})-[r:vector_0]->(w:Vector) RETURN count(*) AS neighbours"],
       ],
       'hnsw-dynamic': [
-        ['300 文档本体', "MATCH (d:Doc {id:'300'}) RETURN d.name"],
-        ['300 的层 0 邻居', "MATCH (d:Doc {id:'300'})-[r:embedding_0]->(n:Doc) RETURN n.id, n.name LIMIT 10"],
+        ['300 文档本体', 'Document 300 itself', "MATCH (d:Doc {id:'300'}) RETURN d.name"],
+        ['300 的层 0 邻居', '300\'s layer-0 neighbours', "MATCH (d:Doc {id:'300'})-[r:embedding_0]->(n:Doc) RETURN n.id, n.name LIMIT 10"],
       ],
     },
     gremlin: {
       // a hub with 300k payments lives in the aggregated Aerospike Edge_Out/Edge_In tables:
       // such a vertex can only be read inside a creation-time window
       'payment-graph-as-edge': [
-        ['大点 · 一天窗口内的前 500 笔支付（Aerospike-Edge）', "g.V('9000001','Account').createdBetween('2025-06-01','2025-06-02').inE('Payment').limit(500)"],
-        ['大点 · 某周窗口的笔数', "g.V('9000001','Account').createdBetween('2025-11-01','2025-11-07').inE('Payment').count()"],
-        ['大点 · 不限时间会被提示加窗口', "g.V('9000001','Account').inE('Payment').count()"],
+        ['大点 · 一天窗口内的前 500 笔支付（Aerospike-Edge）', 'Hub - first 500 payments in a one-day window (Aerospike-Edge)', "g.V('9000001','Account').createdBetween('2025-06-01','2025-06-02').inE('Payment').limit(500)"],
+        ['大点 · 某周窗口的笔数', 'Hub - payments in a one-week window', "g.V('9000001','Account').createdBetween('2025-11-01','2025-11-07').inE('Payment').count()"],
+        ['大点 · 不限时间会被提示加窗口', 'Hub - without a window it asks for one', "g.V('9000001','Account').inE('Payment').count()"],
       ],
       'geo-merchants-rocksdb-inline': [
-        ['GEO · 1km 内最近的 10 家商户', "g.V('1','Merchant').circle('{\"lat\":31.2304,\"lon\":121.4737,\"radius\":1000}').limit(10)"],
-        ['GEO · 500m 内的咖啡店 + 距离(米)', "g.V('1','Merchant').circle('{\"lat\":31.2304,\"lon\":121.4737}', 500).has('category','coffee').values('name','distanceMeters')"],
-        ['GEO · 2km 内有多少商户', "g.V('1','Merchant').circle('{\"lat\":31.2304,\"lon\":121.4737,\"radius\":2000}').count()"],
+        ['GEO · 1km 内最近的 10 家商户', 'GEO - 10 nearest merchants within 1 km', "g.V('1','Merchant').circle('{\"lat\":31.2304,\"lon\":121.4737,\"radius\":1000}').limit(10)"],
+        ['GEO · 500m 内的咖啡店 + 距离(米)', 'GEO - coffee shops within 500 m + distance (m)', "g.V('1','Merchant').circle('{\"lat\":31.2304,\"lon\":121.4737}', 500).has('category','coffee').values('name','distanceMeters')"],
+        ['GEO · 2km 内有多少商户', 'GEO - how many merchants within 2 km', "g.V('1','Merchant').circle('{\"lat\":31.2304,\"lon\":121.4737,\"radius\":2000}').count()"],
       ],
       'geo-merchants-rocksdb-edge': [
-        ['GEO · 1km 内最近的 10 家商户（RocksDB-Edge）', "g.V('1','Merchant').circle('{\"lat\":31.2304,\"lon\":121.4737,\"radius\":1000}').limit(10)"],
-        ['GEO · 300m 内全部商户的距离(米)', "g.V('1','Merchant').circle('{\"lat\":31.2304,\"lon\":121.4737}', 300).values('distanceMeters')"],
+        ['GEO · 1km 内最近的 10 家商户（RocksDB-Edge）', 'GEO - 10 nearest merchants within 1 km (RocksDB-Edge)', "g.V('1','Merchant').circle('{\"lat\":31.2304,\"lon\":121.4737,\"radius\":1000}').limit(10)"],
+        ['GEO · 300m 内全部商户的距离(米)', 'GEO - distance (m) of every merchant within 300 m', "g.V('1','Merchant').circle('{\"lat\":31.2304,\"lon\":121.4737}', 300).values('distanceMeters')"],
       ],
       'payment-graph': [
-        ['135 的出账（一跳）', "g.V('135','Account').outE('Payment').limit(10)"],
-        ['135 双向两跳', "g.V('135','Account').both('Payment').both('Payment').dedup().limit(50)"],
-        ['账户的手机号', "g.V('1000','Account').out('AccountToPhone')"],
-        ['模糊关联①：同邮箱域名+国家+/16+名字词根', "g.V().fuzzyLink(0, '{\"email\":\"19880101@mail.ru\",\"phone\":\"+8613800138001\",\"ip\":\"10.20.31.7\",\"username\":\"zhang1988\"}')"],
-        ['模糊关联①→账户→出款→收款方', "g.V().fuzzyLink(0, '{\"email\":\"19880101@mail.ru\",\"phone\":\"+8613800138001\",\"ip\":\"10.20.31.7\",\"username\":\"zhang1988\"}').out('FuzzyLinkedTo').outE('Payment').otherV()"],
-        ['模糊关联②：同/24+卡BIN+邮箱前四位', "g.V().fuzzyLink(1, '{\"email\":\"44100101@qq.com\",\"ip\":\"10.30.40.11\",\"cardNumber\":\"6217000090009001\"}').out('FuzzyLinkedTo')"],
+        ['135 的出账（一跳）', '135\'s outgoing payments (one hop)', "g.V('135','Account').outE('Payment').limit(10)"],
+        ['135 双向两跳', '135, two hops over Payment (both directions)', "g.V('135','Account').both('Payment').both('Payment').dedup().limit(50)"],
+        ['账户的手机号', 'an account\'s phone', "g.V('1000','Account').in('PhoneToAccount')"],
+        ['模糊关联①：同邮箱域名+国家+/16+名字词根', 'Fuzzy link 1: same mail domain + country + /16 + name stem', "g.V().fuzzyLink(0, '{\"email\":\"19880101@mail.ru\",\"phone\":\"+8613800138001\",\"ip\":\"10.20.31.7\",\"username\":\"zhang1988\"}')"],
+        ['模糊关联①→账户→出款→收款方', 'Fuzzy link 1 -> account -> payment -> receiver', "g.V().fuzzyLink(0, '{\"email\":\"19880101@mail.ru\",\"phone\":\"+8613800138001\",\"ip\":\"10.20.31.7\",\"username\":\"zhang1988\"}').out('FuzzyLinkedTo').outE('Payment').otherV()"],
+        ['模糊关联②：同/24+卡BIN+邮箱前四位', 'Fuzzy link 2: same /24 + card BIN + first four mail characters', "g.V().fuzzyLink(1, '{\"email\":\"44100101@qq.com\",\"ip\":\"10.30.40.11\",\"cardNumber\":\"6217000090009001\"}').out('FuzzyLinkedTo')"],
       ],
       'kg-entity-graph': [
-        ['概念书的全部关系', "g.V('concept_book_new_9','Entity').bothE().limit(20)"],
-        ['按关系过滤再跳一跳', "g.V('concept_mammal_animals_2','Entity').bothE().filter(relation.equals('concept:specializationof') || xrelation.equals('concept:specializationof')).otherV()"],
+        ['概念书的全部关系', 'All relations of concept_book_new_9', "g.V('concept_book_new_9','Entity').bothE().limit(20)"],
+        ['按关系过滤再跳一跳', 'Filter by relation, then one hop', "g.V('concept_mammal_animals_2','Entity').bothE().filter(relation.equals('concept:specializationof') || xrelation.equals('concept:specializationof')).otherV()"],
       ],
       'hnsw-sift': [
-        ['4242 最近的 20 个向量', "g.V('4242','Vector').nearest(20)"],
-        ['带属性过滤的向量检索', "g.V('4242','Vector').nearest(20).has('bucket', 3)"],
+        ['4242 最近的 20 个向量', '20 nearest vectors to 4242', "g.V('4242','Vector').nearest(20)"],
+        ['带属性过滤的向量检索', 'Vector search with a property filter', "g.V('4242','Vector').nearest(20).has('bucket', 3)"],
       ],
       'hnsw-dynamic': [
-        ['300 最近的 5 个向量', "g.V('300','Doc').nearest(5)"],
+        ['300 最近的 5 个向量', '5 nearest vectors to 300', "g.V('300','Doc').nearest(5)"],
       ],
     },
   };
@@ -476,7 +496,24 @@
       }),
     });
     if (!res.ok) throw await queryError(res, query);
-    return res.json();
+    const body = await res.text();
+    let result;
+    try {
+      result = body ? JSON.parse(body) : null;
+    } catch (ignored) {
+      // the body was cut off before it was complete: the answer was too big to transfer intact
+      throw new Error(t('responseTooLarge').replace('{size}', sizeText(body.length)));
+    }
+    const capped = res.headers.get('X-PhoenixGraph-Truncated');
+    if (capped) toast(t('responseCapped').replace('{n}', capped));
+    return result;
+  }
+
+  /** A byte count as a short human string (used when a response was too large). */
+  function sizeText(bytes) {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+    return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
   }
 
   /** The selected query language (the picker next to the query box). */
@@ -763,6 +800,7 @@
 
     el.vertexCount.textContent = nodes.length;
     el.edgeCount.textContent = links.length;
+    renderTypeCounts(nodes, links);
     highlight();
     applySearch();
     applyLegendFilter();
@@ -785,6 +823,38 @@
    * one edge stays straight, three give -1/0/+1 and so on. The pair is unordered, so a direction
    * and its reverse are fanned too instead of overlapping.
    */
+  /**
+   * The per-type breakdown under the two totals: one aligned row per vertex type and per edge type,
+   * with its count and its share of what is drawn. The totals say how big the picture is; these rows
+   * say what it is made of - a query that only walked Accounts looks very different from one that
+   * also touched IPs and Phones.
+   */
+  function renderTypeCounts(nodes, links) {
+    if (!el.typeBreakdown) return;
+    const byType = (items) => {
+      const counts = new Map();
+      for (const item of items) counts.set(item.label, (counts.get(item.label) || 0) + 1);
+      return [...counts.entries()]
+        .sort((a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0])));
+    };
+    const section = (title, entries, total) => {
+      if (!entries.length) return '';
+      const rows = entries.map(([label, n]) => `<div class="type-row">
+          <span class="type-name" title="${escapeHtml(String(label))}">${escapeHtml(String(label))}</span>
+          <span class="type-count">${n}</span>
+          <span class="type-share">${total ? Math.round((n / total) * 100) : 0}%</span>
+        </div>`).join('');
+      return `<div class="type-section">
+        <div class="type-row type-head">
+          <span>${escapeHtml(title)}</span><span class="type-count">${t('typeCount')}</span><span class="type-share">%</span>
+        </div>${rows}
+      </div>`;
+    };
+    el.typeBreakdown.innerHTML = nodes.length || links.length
+      ? section(t('vertices'), byType(nodes), nodes.length) + section(t('edges'), byType(links), links.length)
+      : '';
+  }
+
   function assignEdgeArcs(links) {
     const keyOf = (endpoint) => (endpoint && typeof endpoint === 'object' ? endpoint.key : endpoint);
     const groups = new Map();
@@ -828,7 +898,7 @@
     el.setAttribute('d', `M ${sx} ${sy} Q ${cx} ${cy} ${ex} ${ey}`);
   }
 
-  // ---- legend filter (vertex type or community) ----
+  // ---- legend filter (vertex type, edge type or community) ----
   function toggleLegendFilter(mode, value) {
     const key = String(value);
     if (!legendFilter || legendFilter.mode !== mode) legendFilter = { mode, values: new Set() };
@@ -851,23 +921,37 @@
 
   function applyLegendFilter() {
     if (!root) return;
-    const nodes = root.selectAll('.node');
+    const rows = root.selectAll('.node');
     const edges = root.selectAll('.edge');
     if (!legendFilter) {
-      nodes.classed('legend-hit', false).classed('legend-dim', false);
+      rows.classed('legend-hit', false).classed('legend-dim', false);
       edges.classed('legend-hit', false).classed('legend-dim', false);
       showLegendCount(null);
       return;
     }
     const communityOf = algoState && algoState.type === 'community' ? algoState.communityOf : null;
-    const hit = (d) => (legendFilter.mode === 'label'
+    // an edge selection keeps the endpoints of those edges visible, so a highlighted edge is not
+    // left hanging between two dimmed nodes
+    const highlightedEndpoints = new Set();
+    if (legendFilter.mode === 'edge') {
+      edges.each(function (d) {
+        if (!legendFilter.values.has(String(d.label))) return;
+        highlightedEndpoints.add(endpointKey(d.source));
+        highlightedEndpoints.add(endpointKey(d.target));
+      });
+    }
+    const nodeHit = (d) => (legendFilter.mode === 'label'
       ? legendFilter.values.has(legendKey(d))
-      : !!communityOf && legendFilter.values.has(String(communityOf.get(d.key))));
-    const keepEdge = (d) => hit(d.source) && hit(d.target);
-    nodes.classed('legend-hit', hit).classed('legend-dim', (d) => !hit(d));
+      : legendFilter.mode === 'edge'
+        ? highlightedEndpoints.has(d.key) // the endpoints of a highlighted edge stay visible
+        : !!communityOf && legendFilter.values.has(String(communityOf.get(d.key))));
+    const keepEdge = (d) => (legendFilter.mode === 'edge'
+      ? legendFilter.values.has(String(d.label))
+      : nodeHit(d.source) && nodeHit(d.target));
+    rows.classed('legend-hit', nodeHit).classed('legend-dim', (d) => !nodeHit(d));
     edges.classed('legend-hit', keepEdge).classed('legend-dim', (d) => !keepEdge(d));
     // how much the selection actually covers, in the bottom-left corner
-    showLegendCount({ vertices: nodes.filter(hit).size(), edges: edges.filter(keepEdge).size() });
+    showLegendCount({ vertices: rows.filter(nodeHit).size(), edges: edges.filter(keepEdge).size() });
   }
 
   /** The bottom-left chip that says what the legend selection covers (null hides it). */
@@ -1035,18 +1119,23 @@
     return typeof endpoint === 'string' && endpoint.includes('::') ? endpoint.split('::')[1] : endpoint;
   }
 
+  /**
+   * Exports everything that is drawn as one CSV: a {@code kind} column says whether a row is a
+   * vertex or an edge, so both always arrive together. (Two files at once were blocked by the
+   * browser often enough that the edges never showed up - which read as "the edge is missing".)
+   */
   function exportCsv() {
-    const vRows = [['id', 'label', 'displayName', 'createdTime', 'lastUpdatedTime', 'properties']];
+    const rows = [['kind', 'id', 'label', 'displayName', 'source', 'target',
+      'createdTime', 'lastUpdatedTime', 'properties']];
     for (const n of currentNodes) {
-      vRows.push([n.id, n.label, displayLabel(n), n.createdTime, n.lastUpdatedTime, n.properties || {}]);
+      rows.push(['vertex', n.id, n.label, displayLabel(n), '', '',
+        n.createdTime, n.lastUpdatedTime, n.properties || {}]);
     }
-    const eRows = [['id', 'label', 'source', 'target', 'createdTime', 'lastUpdatedTime', 'properties']];
     for (const l of currentLinks) {
-      eRows.push([l.id, l.label, endpointId(l.source), endpointId(l.target),
+      rows.push(['edge', l.id, l.label, '', endpointId(l.source), endpointId(l.target),
         l.createdTime, l.lastUpdatedTime, l.properties || {}]);
     }
-    downloadCsv('phoenixgraph-vertices.csv', toCsv(vRows));
-    downloadCsv('phoenixgraph-edges.csv', toCsv(eRows));
+    downloadCsv('phoenixgraph.csv', toCsv(rows));
     toast(`${t('exported')}: ${currentNodes.length} ${t('vertices')} · ${currentLinks.length} ${t('edges')}`);
   }
 
@@ -1081,29 +1170,64 @@
         label: truncate(g.key, 20),
         mode: 'label',
         value: g.key,
+        kind: 'vertex',
       }));
+    }
+    // then one entry per edge type: selecting it highlights those edges (and keeps their
+    // endpoints), selecting it again clears the selection
+    const edgeGroups = new Map();
+    for (const l of currentLinks) edgeGroups.set(l.label, (edgeGroups.get(l.label) || 0) + 1);
+    if (edgeGroups.size) {
+      items.push({ heading: t('edges') });
+      for (const [label, n] of [...edgeGroups.entries()]
+        .sort((a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0])))) {
+        items.push({
+          color: colorFor(label, String(label)),
+          label: truncate(`${label} · ${n}`, 20),
+          mode: 'edge',
+          value: String(label),
+          kind: 'edge',
+        });
+      }
     }
     if (!items.length) return;
     const legend = svg.append('g').attr('class', 'legend').attr('transform', 'translate(14, 60)');
+    const ROW = 24;
     legend.append('rect')
       .attr('width', 158)
-      .attr('height', items.length * 26 + 14)
+      .attr('height', items.length * ROW + 14)
       .attr('rx', 11)
       .attr('fill', '#ffffff').attr('fill-opacity', 0.95)
       .attr('stroke', '#e4e9f2');
     items.forEach((item, i) => {
+      if (item.heading) {
+        // a small heading that separates the vertex entries from the edge ones
+        legend.append('text')
+          .attr('class', 'legend-heading')
+          .attr('x', 9).attr('y', 9 + i * ROW + 11)
+          .text(item.heading);
+        return;
+      }
       const active = !!legendFilter && legendFilter.mode === item.mode
         && legendFilter.values.has(String(item.value));
       const g = legend.append('g')
         .attr('class', 'legend-item')
-        .attr('transform', `translate(9, ${9 + i * 26})`)
+        .attr('transform', `translate(9, ${8 + i * ROW})`)
         .classed('active', active);
       g.on('click', (event) => { event.stopPropagation(); toggleLegendFilter(item.mode, item.value); });
       g.on('mousedown', (event) => event.stopPropagation()); // don't start a canvas pan
-      g.append('rect').attr('class', 'bg').attr('width', 140).attr('height', 22).attr('rx', 7);
+      g.append('rect').attr('class', 'bg').attr('width', 140).attr('height', 20).attr('rx', 7);
+      if (item.kind === 'edge') {
+        // an edge swatch is a line, so the legend says at a glance that it is one
+        g.append('line').attr('class', 'swatch')
+          .attr('x1', 3).attr('y1', 10).attr('x2', 17).attr('y2', 10)
+          .attr('stroke', item.color).attr('stroke-width', 2.6).attr('stroke-linecap', 'round');
+        g.append('text').attr('x', 25).attr('y', 14).text(item.label);
+        return;
+      }
       g.append('rect').attr('class', 'swatch')
-        .attr('x', 3).attr('y', 4).attr('width', 14).attr('height', 14).attr('rx', 5).attr('fill', item.color);
-      g.append('text').attr('x', 25).attr('y', 15).text(item.label);
+        .attr('x', 3).attr('y', 3).attr('width', 14).attr('height', 14).attr('rx', 5).attr('fill', item.color);
+      g.append('text').attr('x', 25).attr('y', 14).text(item.label);
     });
   }
 
@@ -1421,6 +1545,9 @@
     return tokens.every((token) => fields.some((field) => fieldMatches(field, token)));
   }
 
+  /** The search term the "nothing matches" hint was last shown for, so typing does not repeat it. */
+  let lastNoMatch = null;
+
   function applySearch() {
     const query = el.searchInput.value.trim().toLowerCase();
     el.searchClear.hidden = !query;
@@ -1429,6 +1556,7 @@
     if (!query) {
       nodes.classed('search-hit', false).classed('search-dim', false);
       edges.classed('search-hit', false).classed('search-dim', false);
+      lastNoMatch = null;
       return;
     }
     const tokens = query.split(/\s+/).filter(Boolean);
@@ -1437,16 +1565,28 @@
     nodes.each(function (d) { if (elementMatches(d, [], tokens)) hitNodes.add(d.key); });
 
     const hitEdges = new Set();
-    const adjacent = new Set(); // endpoints of matched edges stay visible
+    const adjacent = new Set(); // endpoints of a matched edge, and neighbours of a matched vertex
+    const contextEdges = new Set(); // edges that touch a matched vertex stay visible
     edges.each(function (d) {
       const key = d.label + '::' + d.id;
-      if (elementMatches(d, [endpointKey(d.source), endpointKey(d.target)], tokens)) {
+      const s = endpointKey(d.source);
+      const t = endpointKey(d.target);
+      if (elementMatches(d, [s, t], tokens)) {
         hitEdges.add(key);
-        const s = endpointKey(d.source);
-        const t = endpointKey(d.target);
         if (s) adjacent.add(s);
         if (t) adjacent.add(t);
       }
+      if (hitNodes.has(s) || hitNodes.has(t)) contextEdges.add(key);
+    });
+    // a matched vertex keeps its neighbours - and the edges to them - visible, so the hit is read in
+    // context instead of floating alone (the same courtesy a matched edge already gets)
+    edges.each(function (d) {
+      const key = d.label + '::' + d.id;
+      if (!contextEdges.has(key)) return;
+      const s = endpointKey(d.source);
+      const t = endpointKey(d.target);
+      if (s) adjacent.add(s);
+      if (t) adjacent.add(t);
     });
 
     nodes
@@ -1454,7 +1594,19 @@
       .classed('search-dim', (d) => !hitNodes.has(d.key) && !adjacent.has(d.key));
     edges
       .classed('search-hit', (d) => hitEdges.has(d.label + '::' + d.id))
-      .classed('search-dim', (d) => !hitEdges.has(d.label + '::' + d.id));
+      .classed('search-dim', (d) => !hitEdges.has(d.label + '::' + d.id)
+        && !contextEdges.has(d.label + '::' + d.id));
+
+    // the search only looks at what is drawn: say so when nothing here matches, rather than
+    // leaving the user with a canvas that merely went dim
+    if (!hitNodes.size && !hitEdges.size) {
+      if (query.length >= 2 && lastNoMatch !== query) {
+        lastNoMatch = query;
+        toast(t('searchNoMatch').replace('{q}', query));
+      }
+    } else {
+      lastNoMatch = null;
+    }
   }
 
   function showProps(rows) {
@@ -1577,8 +1729,7 @@
       showQueryResult(result, query);
       setStatus(`查询完成（大点，仅读取前 ${HUB_EDGE_LIMIT} 条）`);
     } catch (err) {
-      setStatus(err.message);
-      showQueryError(err);
+      queryFailed(err);
     }
   }
 
@@ -1587,9 +1738,23 @@
     try {
       showQueryResult(await runQuery(query), query);
     } catch (err) {
-      setStatus(err.message);
-      showQueryError(err);
+      queryFailed(err);
     }
+  }
+
+  /**
+   * A query that failed has no answer, so the canvas must not keep showing the previous one: that is
+   * how a filter that errored looked like it had matched the vertices of the query before it. The
+   * canvas is emptied (the error modal carries the details).
+   */
+  function queryFailed(err) {
+    setStatus('查询失败: ' + err.message);
+    if (graph.vertices.size || graph.edges.size) {
+      resetGraph();
+      render();
+      toast(t('canvasCleared'));
+    }
+    showQueryError(err);
   }
 
   /** Puts one answer on the canvas: the subgraph, the rows tab and the value window. */
@@ -1604,9 +1769,9 @@
       rowsReady = true;
       refreshRowsTab();
       showRows(result.columns, result.rows || []);
-    } else if (Array.isArray(value) && !elementValues(value)) {
-      // a Gremlin answer that is not graph elements - a count, values, an elementMap, a list of
-      // strings - has nothing to draw on the canvas, so it belongs in the result tab
+    } else if (Array.isArray(value)) {
+      // the answer is a list - of elements, of values, of elementMaps: the canvas already shows
+      // the elements it touched, so the result tab is where the list itself is read
       showGremlinRows(value);
     } else {
       clearRows();
@@ -1617,7 +1782,8 @@
     const empty = !graph.vertices.size && !(result && result.rows && result.rows.length);
     if (empty) toast(t('emptyResult'));
     const rows = result && result.rows ? `、行 ${result.rows.length}` : '';
-    setStatus(`查询完成：共点 ${graph.vertices.size}、边 ${graph.edges.size}${rows}（新增点 ${addedV}、边 ${addedE}）`);
+    const answer = Array.isArray(value) ? `结果 ${value.length} 项、` : '';
+    setStatus(`查询完成：${answer}子图 点 ${graph.vertices.size}、边 ${graph.edges.size}${rows}（新增点 ${addedV}、边 ${addedE}）`);
   }
 
   /** The subgraph part of a response (the response itself is one for a plain Gremlin query). */
@@ -1731,14 +1897,34 @@
    * projection is shown. The answer to a traversal of vertices/edges is the subgraph on the canvas,
    * so that one clears the tab instead (see showQueryResult).
    */
+  /**
+   * Renders a Gremlin answer in the result tab. A list of graph elements gets one row per element
+   * (its type, its id and its properties), so the answer of an {@code outE(...).toList()} is
+   * readable next to the picture; anything else gets a single value column. A {@code count()} shows
+   * up as one row, which is what makes the number comparable with the totals in the stats tab.
+   */
   function showGremlinRows(values) {
     rowsReady = true;
     refreshRowsTab();
+    if (elementValues(values)) {
+      const label = t('rowsType');
+      const id = t('rowsId');
+      const properties = t('rowsProperties');
+      showRows([label, id, properties], values.map((value) => ({
+        [label]: value.label || value.type || '',
+        [id]: value.id,
+        [properties]: value.properties || {},
+      })));
+      return;
+    }
     const column = t('rowsValue');
     showRows([column], values.map((value) => ({ [column]: value })));
   }
 
-  /** Renders the rows of a Cypher result as a table in the "rows" tab. */
+  /** How many rows the result table renders before it stops and says how many were left. */
+  const ROWS_RENDER_MAX = 2000;
+
+  /** Renders the rows of a Cypher result - or of a Gremlin answer - as a table in the "rows" tab. */
   function showRows(columns, rows) {
     if (!el.rowsTable) return;
     el.rowsTable.innerHTML = '';
@@ -1755,7 +1941,10 @@
       head.appendChild(th);
     }
     el.rowsTable.appendChild(head);
-    for (const row of rows) {
+    // a capped answer can be hundreds of thousands of rows: drawing them all would freeze the tab,
+    // so draw a readable prefix and say how many there are in total
+    const shown = rows.length > ROWS_RENDER_MAX ? rows.slice(0, ROWS_RENDER_MAX) : rows;
+    for (const row of shown) {
       const tr = document.createElement('tr');
       for (const column of columns) {
         const td = document.createElement('td');
@@ -1764,7 +1953,10 @@
       }
       el.rowsTable.appendChild(tr);
     }
-    el.rowsHint.style.display = 'none';
+    el.rowsHint.style.display = '';
+    el.rowsHint.textContent = rows.length > shown.length
+      ? t('rowsTruncated').replace('{shown}', String(shown.length)).replace('{total}', String(rows.length))
+      : t('rowsHint');
     el.rowsTableWrap.hidden = false;
     activateTab('rows');
   }
@@ -1810,21 +2002,29 @@
   }
 
   /** Fills the query box with an example query of the selected language and graph. */
+  /**
+   * Fills the example picker for the selected graph. An example is
+   * {@code [titleZh, titleEn, query]} - the title follows the interface language, the query is the
+   * same in both (and is what the picker hands to the query box).
+   */
   function refreshExamples() {
     if (!el.exampleSelect) return;
     const language = currentLanguage();
     const byGraph = (EXAMPLES[language] || {})[currentGraph ? currentGraph.name : ''] || [];
+    const keep = el.exampleSelect.value;
     el.exampleSelect.innerHTML = '';
     const placeholder = document.createElement('option');
     placeholder.value = '';
     placeholder.textContent = t('examples');
     el.exampleSelect.appendChild(placeholder);
-    for (const [title, query] of byGraph) {
+    for (const entry of byGraph) {
+      const [titleZh, titleEn, query] = entry.length === 3 ? entry : [entry[0], entry[0], entry[1]];
       const option = document.createElement('option');
       option.value = query;
-      option.textContent = title;
+      option.textContent = lang === 'en' ? titleEn : titleZh;
       el.exampleSelect.appendChild(option);
     }
+    if (byGraph.some((e) => e[e.length - 1] === keep)) el.exampleSelect.value = keep;
     el.exampleSelect.hidden = byGraph.length === 0;
   }
 

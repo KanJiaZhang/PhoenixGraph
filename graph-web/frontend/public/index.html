@@ -73,7 +73,9 @@
       </label>
       <select id="languageSelect" class="lang-select" data-i18n-title="queryLanguage" title="查询语言">
         <option value="gremlin">Gremlin</option>
-        <option value="cypher">Cypher</option>
+        <!-- Cypher is hidden for now: the examples and the result tab are Gremlin-first. The option
+             stays in the markup (hidden and disabled) so bringing it back is one attribute. -->
+        <option value="cypher" hidden disabled>Cypher</option>
       </select>
       <a id="builderBtn" class="icon-btn" href="builder.html" title="图管理 · 建模" aria-label="graph builder"
          data-i18n-title="builder" data-i18n-aria-label="builder">
@@ -189,6 +191,7 @@
             <span class="stat-label" data-i18n="edges">边</span>
           </div>
         </div>
+        <div id="typeBreakdown" class="type-breakdown"></div>
         <button id="exportBtn" class="export-btn" type="button">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/>

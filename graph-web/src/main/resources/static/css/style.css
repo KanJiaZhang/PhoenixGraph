@@ -403,6 +403,30 @@ button.btn-primary:hover, #queryBtn:hover { filter: brightness(1.07); }
 .stat-value { font-size: 26px; font-weight: 750; letter-spacing: -0.6px; color: #1e1b4b; font-variant-numeric: tabular-nums; }
 .stat-label { font-size: 12px; font-weight: 600; color: var(--muted); }
 
+/* the per-type breakdown: three aligned columns, so the numbers line up down the panel */
+.type-breakdown { display: flex; flex-direction: column; gap: 14px; margin-top: 16px; }
+.type-section { display: flex; flex-direction: column; }
+.type-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 56px 44px;
+  align-items: baseline;
+  gap: 6px;
+  padding: 3px 2px;
+  font-size: 12px;
+  border-bottom: 1px solid #f1f4fa;
+}
+.type-head {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+}
+.type-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #2b3648; font-weight: 600; }
+.type-count { text-align: right; font-variant-numeric: tabular-nums; font-weight: 650; color: #1e1b4b; }
+.type-share { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
+
 .prop-table { width: 100%; border-collapse: collapse; }
 .prop-table td, .prop-table th {
   border-bottom: 1px solid #eef1f7;
@@ -496,6 +520,7 @@ button.btn-primary:hover, #queryBtn:hover { filter: brightness(1.07); }
 
 .legend { pointer-events: none; }
 .legend text { font-size: 12px; font-weight: 550; fill: #3b4759; }
+.legend-heading { font-size: 10px; font-weight: 750; letter-spacing: 0.07em; text-transform: uppercase; fill: var(--muted); }
 .legend-item { pointer-events: all; cursor: pointer; }
 .legend-item .bg { fill: transparent; transition: fill 0.15s; }
 .legend-item:hover .bg { fill: rgba(79, 70, 229, 0.08); }
