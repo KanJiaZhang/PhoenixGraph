@@ -123,7 +123,10 @@ public final class GremlinQuery {
         if (query == null || query.isBlank()) {
             throw new QueryException("Gremlin query must not be blank");
         }
-        String s = query.trim();
+        String s = stripComments(query).trim();
+        if (s.isEmpty()) {
+            throw new QueryException("Gremlin query must not be blank"); // the query was all comment
+        }
 
         Matcher head = HEADER.matcher(s);
         if (!head.find()) {
@@ -146,6 +149,55 @@ public final class GremlinQuery {
             return new GremlinQuery(edgeSource(parts, args), steps, logic);
         }
         return new GremlinQuery(vertexSource(parts, args), steps, logic);
+    }
+
+    /**
+     * Removes the comments a Gremlin client writes - {@code //} to the end of the line and
+     * {@code /* ... *}{@code /} - as Groovy does.
+     *
+     * <p>String literals are respected, so an address like {@code 'http://host/path'} and a regular
+     * expression inside a closure keep their markers: only a marker outside a string (and outside a
+     * quoted key) starts a comment. A comment becomes one space, so the tokens around it stay apart.
+     * A commented-out step therefore removes itself - {@code .both() //.both()} is one hop.
+     */
+    static String stripComments(String query) {
+        StringBuilder out = new StringBuilder(query.length());
+        char quote = 0;
+        for (int i = 0; i < query.length(); i++) {
+            char c = query.charAt(i);
+            if (quote != 0) {
+                out.append(c);
+                if (c == '\\' && i + 1 < query.length()) {
+                    out.append(query.charAt(++i)); // an escaped character inside the literal
+                } else if (c == quote) {
+                    quote = 0;
+                }
+                continue;
+            }
+            if (c == '\'' || c == '"') {
+                quote = c;
+                out.append(c);
+                continue;
+            }
+            if (c == '/' && i + 1 < query.length() && query.charAt(i + 1) == '/') {
+                while (i < query.length() && query.charAt(i) != '\n') {
+                    i++;
+                }
+                out.append(' ');
+                if (i < query.length()) {
+                    out.append('\n'); // keep the line break so statements stay separated
+                }
+                continue;
+            }
+            if (c == '/' && i + 1 < query.length() && query.charAt(i + 1) == '*') {
+                int end = query.indexOf("*/", i + 2);
+                i = end < 0 ? query.length() - 1 : end + 1;
+                out.append(' ');
+                continue;
+            }
+            out.append(c);
+        }
+        return out.toString();
     }
 
     /**

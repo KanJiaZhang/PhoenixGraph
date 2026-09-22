@@ -593,7 +593,7 @@ public class GremlinGraphQuery {
 
     private static boolean isSeedPassThrough(String name) {
         return isMeta(name) || TERMINAL_STEPS.contains(name)
-                || name.equals("count") || name.equals("limit") || name.equals("dedup");
+                || isCountStep(name) || name.equals("limit") || name.equals("dedup");
     }
 
     /** What an edge hop pushes into its read: the conditions and the cap of the following steps. */
@@ -641,7 +641,7 @@ public class GremlinGraphQuery {
                     cap = (int) Math.min(Integer.MAX_VALUE, positiveLong(steps.get(next).args().get(0), "limit"));
                     next++;
                 }
-                if (!nowCounted && cap == 0 && next < steps.size() && steps.get(next).name().equals("count")) {
+                if (!nowCounted && cap == 0 && next < steps.size() && isCountStep(steps.get(next).name())) {
                     nowCounted = true;
                     next++;
                 }
@@ -817,7 +817,7 @@ public class GremlinGraphQuery {
             while (next < result.size() && isMeta(result.get(next).name())) {
                 next++;
             }
-            if (next < result.size() && result.get(next).name().equals("count")) {
+            if (next < result.size() && isCountStep(result.get(next).name())) {
                 // an edge hop that is only counted can be counted by the store: no decoding, and
                 // no vertex reads (executed by GremlinSteps.countEdges, which falls back to the
                 // edge hop when a subgraph is being collected)
@@ -1029,7 +1029,7 @@ public class GremlinGraphQuery {
                     keys.addAll(GremlinExpression.parse(args.get(0)).propertyKeys());
                 }
                 break;
-            } else if (name.equals("count")) {
+            } else if (isCountStep(name)) {
                 // count() consumes the elements, so nothing after it needs properties
                 break;
             }
@@ -1168,6 +1168,11 @@ public class GremlinGraphQuery {
 
     private static boolean isMeta(String name) {
         return name.equals("batch") || name.equals("barrier");
+    }
+
+    /** The steps that reduce the traversers to their number: {@code count()} and Groovy's {@code size()}. */
+    private static boolean isCountStep(String name) {
+        return name.equals("count") || name.equals("size");
     }
 
     private static List<Object> start(GremlinContext context, GremlinQuery.Source source,

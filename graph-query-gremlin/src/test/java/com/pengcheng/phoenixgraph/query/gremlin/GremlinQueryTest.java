@@ -210,4 +210,40 @@ class GremlinQueryTest {
         assertEquals(List.of(new GremlinQuery.Step("filter",
                 List.of("it.get().value('a(b)').equals('c,d')"))), query.steps());
     }
+
+    @Test
+    void ignoresALineCommentSoAStepCanBeCommentedOut() {
+        GremlinQuery query = GremlinQuery.parse("g.V(1018,'Account').both() //.both()");
+
+        assertEquals(List.of(new GremlinQuery.Step("both", List.of())), query.steps());
+    }
+
+    @Test
+    void ignoresAWholeLineAndABlockComment() {
+        GremlinQuery query = GremlinQuery.parse("""
+                // the seed, then one hop
+                g.V('135','Account')
+                  /* the hop that matters */
+                  .out('Payment')
+                // and nothing else
+                """);
+
+        assertEquals(List.of("135"), query.vertexIds());
+        assertEquals(List.of(new GremlinQuery.Step("out", List.of("Payment"))), query.steps());
+    }
+
+    @Test
+    void aCommentMarkerInsideAStringIsNotAComment() {
+        GremlinQuery query = GremlinQuery.parse(
+                "g.V('http://host/path//x','URL').filter { it.get().value('link') == 'http://a/b' } /*c*/");
+
+        assertEquals(List.of("http://host/path//x"), query.vertexIds());
+        assertEquals(List.of(new GremlinQuery.Step("filter",
+                List.of("it.get().value('link') == 'http://a/b'"))), query.steps());
+    }
+
+    @Test
+    void rejectsAQueryThatIsOnlyAComment() {
+        assertThrows(QueryException.class, () -> GremlinQuery.parse("// nothing to see here"));
+    }
 }

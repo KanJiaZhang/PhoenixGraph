@@ -142,6 +142,8 @@ public class GremlinStepRegistry {
             return GremlinSteps.nothing();
         });
         register("count", args -> GremlinSteps.count());
+        // size() is the Groovy spelling of the same reduction, so `toList().size()` works
+        register("size", args -> GremlinSteps.count());
         register("limit", args -> GremlinSteps.limit(parseLong(single(args, "limit"))));
         register("dedup", args -> GremlinSteps.dedup());
         register("pagerank", args -> GremlinAlgorithms.pagerank());

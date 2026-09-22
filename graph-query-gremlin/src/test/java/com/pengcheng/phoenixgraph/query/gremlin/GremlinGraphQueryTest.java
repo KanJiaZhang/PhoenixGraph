@@ -176,6 +176,18 @@ class GremlinGraphQueryTest {
     }
 
     @Test
+    void sizeIsTheGroovySpellingOfCount() {
+        EdgeQueryResult e1 = edge("e1", EdgeSide.OUT, "n1", Map.of());
+        EdgeQueryResult e2 = edge("e2", EdgeSide.OUT, "n2", Map.of());
+        when(graphQuery.readEdges("v1", "person", "knows", EdgeSide.OUT, List.of()))
+                .thenReturn(List.of(e1, e2));
+
+        // `toList().size()` is what a Groovy client writes for "how many did I get"
+        assertEquals(List.of(2L), gremlin.execute("g.V('v1', 'person').outE('knows').toList().size()"));
+        assertEquals(List.of(2L), gremlin.execute("g.V('v1', 'person').outE('knows').size()"));
+    }
+
+    @Test
     void limitTruncatesAndDedupRemovesDuplicates() {
         EdgeQueryResult e1 = edge("e1", EdgeSide.OUT, "n1", Map.of());
         when(graphQuery.readEdges("v1", "person", "knows", EdgeSide.OUT, List.of()))
