@@ -3844,3 +3844,120 @@ PASS  the projection is a clique per bridge (C(40,2) + C(3,2))  edges=783 skippe
   "按相似度/权重只连前 k 个"，但那需要定义权重，未做。
 * `#16` 的平行边仍靠弧线区分（10 条同对端点的边在缩小时确实难数）；如果要"一眼看出几条"，
   需要在小节/边上显示"×10"，本轮未做。
+
+---
+
+## 57. 第十一批：闭包语句（if/else、集合）（28）、`values()` 的元素自身列（27/29）、空答案不画（24）、
+## 结果面板只报数目（26/23）、Rows 的属性列（25），以及 135/150 两跳 benchmark
+
+### 57.1 `#28` 两个真 bug：`if (...) { }` 被当成"尾部 logic 块"，闭包语句从不按序执行
+
+**bug 1 —— 解析器**：`indexOfLogicBrace` 找"尾部的 `{ $logic }`"，判据是"`{` 前面是 `)` 或 `}`"。
+`map { ...; if (cond) { a } else { b } }` 里 `if (cond)` 后面的 `{` 前面正好是 `)` → 被误判为 logic 块，
+于是 `rest` 被截断到那里、子句 `{ a } else { b } }` 被丢弃 → `Unbalanced braces`。
+修法：扫描时**记深度**（括号/花括号），只有**深度 0** 的 `{` 才可能是 logic 块。括号内的 `if (cond) {` 不再被误认。
+
+**bug 2 —— 求值顺序**：`program()` 只把语句建成一棵 Value 树并返回**最后一条**语句的值，
+所以中间语句（`def list = new ArrayList(); list.add(x)`）**从来没被执行**：
+`def l = new ArrayList(); l.add(1); l.size()` 返回 0。修法：`program()` 返回一个**按序执行**的复合值
+（每条语句依次求值，返回最后一条的值）。这对"`def` 绑定 + 后续修改"是必须的。
+
+**新增的闭包语句能力**：
+
+* `if (cond) { ... } else { ... }`、`else if` 链、单语句分支（不带花括号）；`if` 的值是**分支的值**，
+  没有 `else` 且条件为假时为 null（Groovy 语义）；
+* `new ArrayList()` / `new LinkedHashMap()` / `new HashSet()`（全限定名也行；只支持这三种，其它类型明确报错）；
+* 集合方法：`add`/`addAll`/`put`/`get`/`size`/`isEmpty`/`contains`/`containsKey`/`join(sep)`。
+  集合是**每个元素一份**（每次 `evaluate` 清空一帧），但同一次求值内多次引用共享同一个实例 ——
+  `def list = new ArrayList(); list.add(x); list.join('/')` 是**一个**列表。实现是 `ThreadLocal` 的
+  per-element frame（编译后的表达式会被并发复用，所以不能用一个可变字段缓存）。
+
+### 57.2 `#27` / `#29`：`values('createdTime'/'lastUpdatedTime'/'source'/'target'/'id')`
+
+`schema` 把 `createdTime`/`lastUpdatedTime` 声明为**元属性**、把 `source`/`target` 声明为**有向边的两端**，
+它们都不在 `properties()` 里，所以 `values('lastUpdatedTime')`/`values('target')` 以前报 `Unknown property`。
+
+修法：这些名字成为**元素自身的列**（伪键 `@createdTime`/`@lastUpdatedTime`/`@source`/`@target`，`@id`/`@label` 早已支持）：
+
+* 属性规划器**不再**把这些名字当属性去问 schema（所以不会报未知属性，也不会白读）；
+* `values(...)` 步在元素**没有**这个属性时，用元素自身回答：`values('id')`、`values('createdTime')`、
+  `values('source')`（有向边按 side 判断：OUT 边从读取点出发，IN 边反向）；
+* 表达式里两条路径都通（`it.get().values('createdTime')` 走访问器正则，`def v = it.get(); v.values(...)` 走元素方法——
+  后者原来只认 id/label，现在统一走同一个 `resolveKey`）；
+* **有同名真实属性时真实属性优先**（`properties.get(key)` 非空就返回它），所以不破坏已有 schema。
+
+### 57.3 `#24`：空答案不画任何东西
+
+`g.V('+86-138-60006','Phone').out('PhoneToAccount').filter{...}.both('Payment')` 返回 0 项，
+但子图里还留着 seed 那个点。修法：`executeWithSubgraph` 里**答案为空 → 子图为空**。
+理由：seed 只是"路过的"，把它画出来配上"0 项"会让人以为它就是答案，而它恰恰是被排除的那个。
+
+### 57.4 `#23` / `#26`：`toList`/`toSet` 的语义，和"面板只报数目"
+
+* `toList()` → 列表（有序、可重复）：`map{...}.toList()` 实测 **37 项** `["S","S",...,"P"]`；
+  `toSet()` → 去重：**2 项** `["S","P"]` —— `toX` 就是把迭代器里的元素收进集合 X，两者语义已一致；
+* 面板**只报数目**：多于一项时显示 `2365 项 · 137 个不同值`（`toList` 是 `37 项 · 2 个不同值`），
+  不再预览具体值（Rows 页签列具体值）；一项时仍显示它本身（`count()` → `76`）；
+  元素答案的面板也**不再隐藏**（现在只报数目，不占地方）。
+
+### 57.5 `#25`：Rows 的"属性"列不再为空
+
+`g.V(1001,'Account').both('Payment').both().dedup()` 的 111 个 traverser 只带 id（跳步在"后面没人要属性"时不投影），
+而**子图**为了画图读了完整属性。修法：`propertiesOfElement(value)` —— traverser 自己有属性就用它，
+否则从**已画的子图**里取同一个元素（`label::id`）。实测 111 行、0 个空属性列。
+（`map { it.get().toString() }` 那种答案是**字符串**列表，落在一列"值"里，值本身就是元素的 toString，没有属性列可言。）
+
+### 57.6 `#30`：输入框接受"正确的 gremlin 片段"
+
+本批的 27/28/29 正是这条的具体内容：`values('lastUpdatedTime')`、`if/else` 闭包、`values('target')`
+以前都不是"正确的 gremlin 片段却被拒绝"。现在这些都能跑，结果照常进 Rows 页签（元素三列 / 标量一列）。
+
+### 57.7 135 / 150 两跳 benchmark
+
+`node .logs/bench-two-hop.js 30`（30 次测量、5 次预热、计数器取**查询前后差值**）。查询形状取自本批要求：
+`g.V($id,'Account').both('Payment').both().map { it.get() }`，以及若干对照。
+
+**hub 135（一跳 76 笔支付 → 两跳 2365 个 traverser）**
+
+```
+query                mean    median   p95     p99     max     kv  vRead  eRead  eDecoded   answer   subgraph   size
+A  map { it.get() }  48.56   48.74   55.64   58.89   58.89    29    137    914      2441     2365   137v/1135e   423 KB
+B  (no consumer)     61.35   62.23   72.41   77.21   77.21    34    274    914      2441     2365   137v/1135e   705 KB
+C  count()           43.12   44.94   47.91   48.68   48.68    29    137    914      2441        1   137v/1135e   227 KB
+C2 typed count()     22.69   24.69   28.20   28.60   28.60     5     51    102       500        1    51v/250e     55 KB
+D  values(id)        45.12   47.05   48.33   49.08   49.08    29    137    914      2441     2365   137v/1135e   251 KB
+E  one property      22.67   25.90   28.02   28.18   28.18     7    102    102       500      987    51v/250e     64 KB
+F  batch(1)         102.68   95.22  110.30  341.41  341.41   917    137    914      2441     2365   137v/1135e   423 KB
+G  batch(100)        53.50   53.64   62.84   68.43   68.43    17    137    914      2441     2365   137v/1135e   423 KB
+H  barrier(40)       46.84   48.42   52.56   58.10   58.10    29    137    914      2441     2365   137v/1135e   423 KB
+```
+
+**hub 150（一跳 100 笔 → 两跳 1857 个 traverser）**：同一形状，A `50.11/51.91/56.24/56.79 ms`、29 kv；
+F `batch(1)` `113.71 ms`、**1205** kv；G `batch(100)` `56.74 ms`、17 kv；C2 `17.76 ms`、5 kv、200 边。
+
+**优化逐项核对**
+
+| 优化 | 结论 | 证据 |
+|---|---|---|
+| **批大小** | ✅ 应用的，而且是**最大杠杆** | `batch(1)` 917~1205 次调用、95~114 ms；`batch(100)` 17 次；默认（自适应）**29** 次。往返数降 50 倍，时延降约一半 |
+| **自适应批大小** | ✅ 生效但**略保守** | 默认 29 次 vs 显式 `batch(100)` 17 次（默认的块比 100 小）——想更快可以显式 `batch(100)` |
+| **按需加载属性** | ✅ 应用的（省的是**载荷**，不是读次数） | `map{it.get()}` → 计划要全部属性，响应 423 KB（135）/529 KB（150）；`values('id')`（伪键，不需要任何属性）→ 251 KB/398 KB；`values('accountStatus')`（一个属性）→ 64 KB。**注意**：顶点记录本身仍要读一次（一个 key 一条记录），所以 `vRead` 不变，省的是线上字节 |
+| **count 下推** | ⚠️ **类型化才下推** | `both('Payment').both('Payment').count()` → **500 条边被构造**（其余由 store 数 bin 形状），5 次调用、22.7 ms；而未命名类的 `both().both().count()` → **2441 条边照建**（未命名跳要读每一类，无法下推），43.1 ms |
+| **缓存/往返** | ✅ 应用的 | 2365（135）/1857（150）个 traverser，只用了 **29** 次存储调用 → 每次调用摊到 **64~82** 个 traverser；同一顶点同一条边的重复读取由"每次执行一份"的读缓存兜住 |
+| **barrier** | ⚠️ **不是真 barrier** | 这个引擎是内存列表式的，`barrier(n)` 与 `batch(n)` 一样只设**批量大小**：`barrier(40)` 与默认同为 29 次（135）；150 上是 41 次（40 < 自适应的块）。要"屏障语义"在当前架构里没有意义 |
+
+### 57.8 测试
+
+* 引擎：新增 `GremlinClosureStatementTest`（11 条：if/else、无 else、else-if 链、`new` + `add`/`join`、
+  每个元素一份集合、map 集合、contains/isEmpty、不支持的类型报错、元属性与端点、票据原样的形状、
+  带 `if` 的 `map` 不被当成 logic 块），`GremlinGraphQueryTest` +2（`values` 的元素自身列、空答案不画）；
+* 全量 `./mvnw test` **BUILD SUCCESS，0 失败 / 0 错误**（gremlin 183）；
+* 验证脚本：`.logs/verify-ui3.js`（headless Edge：空答案 0 点、111 行属性非空、面板只报数目）、
+  `.logs/bench-two-hop.js`（本节的表）。
+
+### 57.9 未做
+
+* `new` 只支持 ArrayList/HashMap/HashSet（`new TreeMap(cmp)` 之类明确报错不装作支持）；
+* `barrier` 仍是"批量大小"的别名（真屏障＝分阶段执行，当前引擎没有阶段概念）；
+* `map { it.get().toString() }` 这类答案是字符串，Rows 只有一列"值"（值里含 toString 的内容）——
+  如果要把"元素转字符串"也渲染成三列，需要另定义元素文本协议，未做。
