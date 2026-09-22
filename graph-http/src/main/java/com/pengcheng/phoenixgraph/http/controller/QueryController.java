@@ -2,6 +2,7 @@ package com.pengcheng.phoenixgraph.http.controller;
 
 import com.pengcheng.phoenixgraph.http.dto.QueryRequest;
 import com.pengcheng.phoenixgraph.http.service.QueryService;
+import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -24,9 +25,15 @@ public class QueryController {
     }
 
     @PostMapping("/query")
-    public Object query(@RequestBody QueryRequest request) {
-        return service.query(request.graphName(), request.query(), request.params(),
-                request.languageOrDefault(), request.returnSubgraph(), request.includeResultOrDefault(),
-                request.sourceOrDefault());
+    public Object query(@RequestBody QueryRequest request, HttpServletResponse response) {
+        QueryService.Answer answer = service.queryCapped(request.graphName(), request.query(),
+                request.params(), request.languageOrDefault(), request.returnSubgraph(),
+                request.includeResultOrDefault(), request.sourceOrDefault());
+        if (answer.truncated()) {
+            // the answer is capped so the response stays parseable: tell the client, which can say
+            // "narrow the query" instead of silently showing a partial graph
+            response.setHeader("X-PhoenixGraph-Truncated", String.valueOf(answer.limit()));
+        }
+        return answer.body();
     }
 }

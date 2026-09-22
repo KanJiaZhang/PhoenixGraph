@@ -20,6 +20,7 @@ import com.pengcheng.phoenixgraph.schema.GraphSchemaManagers;
 import com.pengcheng.phoenixgraph.storage.aerospike.AerospikeEdgeStore;
 import com.pengcheng.phoenixgraph.storage.aerospike.AerospikeVertexStore;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Service;
 
@@ -52,6 +53,9 @@ public class QueryService {
     public static final String GREMLIN = "gremlin";
     public static final String CYPHER = "cypher";
 
+    /** The most elements one answer carries unless {@code phoenixgraph.query.max-response-items} says otherwise. */
+    public static final int DEFAULT_MAX_RESPONSE_ITEMS = 200_000;
+
     private static final Pattern PARAMETER = Pattern.compile("\\$\\{([^}]+)}");
 
     private final GraphResolver graphs;
@@ -70,6 +74,9 @@ public class QueryService {
     /** The cluster the DIST algorithm steps run on (null when this instance has none). */
     private GeminiCluster geminiCluster;
 
+    /** The most elements one answer may carry (see {@link #cap}); {@code 0} disables the cap. */
+    private int maxResponseItems = DEFAULT_MAX_RESPONSE_ITEMS;
+
     /** Wires the patterns fuzzy linking reads ({@code fuzzyLink(patternId, context)}). */
     @Autowired(required = false)
     public void fuzzyPatterns(FuzzyPatternStore fuzzyPatterns) {
@@ -83,6 +90,13 @@ public class QueryService {
         this.geminiCluster = geminiCluster;
         engines.clear();
     }
+
+    /** Wires the cap on how much one answer may carry ({@code phoenixgraph.query.max-response-items}). */
+    @Value("${phoenixgraph.query.max-response-items:" + DEFAULT_MAX_RESPONSE_ITEMS + "}")
+    public void maxResponseItems(int maxResponseItems) {
+        this.maxResponseItems = maxResponseItems;
+    }
+
     private final Map<String, CypherGraphQuery> cypherEngines = new ConcurrentHashMap<>();
 
     public QueryService(GraphResolver graphs, @Nullable VectorIndexManager vectorIndexes) {
@@ -219,10 +233,71 @@ public class QueryService {
     /** Runs a query, recording it under the given source (the UI says {@code ui}). */
     public Object query(String graphName, String query, Map<String, String> params, String language,
                         boolean returnSubgraph, boolean includeResult, String source) {
+        return queryCapped(graphName, query, params, language, returnSubgraph, includeResult, source).body();
+    }
+
+    /**
+     * The answer of a query together with whether it had to be capped to
+     * {@link #maxResponseItems}.
+     *
+     * <p>The cap exists because an unbounded traversal over a dense graph can build a response no
+     * client can read: four hops from a hub of the demo graph reach millions of traversers and
+     * hundreds of megabytes of JSON, which a browser fails to parse (it reports it as "unexpected end
+     * of JSON input"). Capping keeps the response finite and lets the caller say so - the HTTP
+     * endpoint turns it into an {@code X-PhoenixGraph-Truncated} header and the UI into a hint to
+     * narrow the query.
+     */
+    public record Answer(Object body, boolean truncated, int limit) {
+    }
+
+    /** Runs a query and caps its answer (see {@link Answer}). */
+    public Answer queryCapped(String graphName, String query, Map<String, String> params, String language,
+                              boolean returnSubgraph, boolean includeResult, String source) {
         String selected = language == null || language.isBlank() ? GREMLIN : language.trim().toLowerCase();
         String caller = source == null || source.isBlank() ? Metrics.SOURCE_HTTP : source.trim().toLowerCase();
-        return measured(graphName, selected, caller, () -> execute(graphName, query, params, selected,
+        Object body = measured(graphName, selected, caller, () -> execute(graphName, query, params, selected,
                 returnSubgraph, includeResult));
+        return cap(body);
+    }
+
+    /**
+     * Caps an answer to {@link #maxResponseItems} elements (traversers, or subgraph vertices plus
+     * edges), remembering that it happened. {@code 0} disables the cap.
+     */
+    private Answer cap(Object body) {
+        if (maxResponseItems <= 0) {
+            return new Answer(body, false, maxResponseItems);
+        }
+        boolean[] truncated = {false};
+        Object capped = capValue(body, truncated);
+        return new Answer(capped, truncated[0], maxResponseItems);
+    }
+
+    private Object capValue(Object body, boolean[] truncated) {
+        if (body instanceof Subgraph subgraph) {
+            List<Subgraph.Vertex> vertices = capList(subgraph.vertices(), truncated);
+            List<Subgraph.Edge> edges = capList(subgraph.edges(), truncated);
+            return vertices == subgraph.vertices() && edges == subgraph.edges()
+                    ? subgraph : new Subgraph(vertices, edges);
+        }
+        if (body instanceof QueryResponse response) {
+            Object result = capValue(response.result(), truncated);
+            Subgraph subgraph = (Subgraph) capValue(response.subgraph(), truncated);
+            return result == response.result() && subgraph == response.subgraph()
+                    ? response : new QueryResponse(result, subgraph);
+        }
+        if (body instanceof List<?> list) {
+            return capList(list, truncated);
+        }
+        return body;
+    }
+
+    private <T> List<T> capList(List<T> list, boolean[] truncated) {
+        if (list == null || list.size() <= maxResponseItems) {
+            return list;
+        }
+        truncated[0] = true;
+        return List.copyOf(list.subList(0, maxResponseItems));
     }
 
     private Object execute(String graphName, String query, Map<String, String> params, String selected,
