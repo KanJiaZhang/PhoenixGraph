@@ -416,3 +416,26 @@ mvnw.cmd clean package
 ```
 
 Then open <http://localhost:8080/api/v1/graph/health>.
+
+## Start and stop everything with one script
+
+```bash
+tools/start-phoenixgraph.sh                    # build, then start graph-http (8081) + graph-web (8080)
+tools/start-phoenixgraph.sh --no-build         # skip the build, start what is already built
+tools/start-phoenixgraph.sh --with-hnsw        # also start the hnsw-dynamic instance (8083)
+tools/stop-phoenixgraph.sh                     # stop the running instances
+```
+
+What the start script does, in order: stop any running instance (a live service holds its jar
+open, so the build would fail otherwise), build `graph-http` + `graph-web` and their dependencies
+(`clean package`, tests skipped), start the Aerospike container if it is not running, launch the
+services detached, and wait until each answers before reporting the URLs.
+
+- it checks that the jar really is a **fat jar** (has `BOOT-INF/lib`) and stops with a hint if a
+  build ever ran with `-Dspring-boot.repackage.skip=true`, which leaves a thin jar that cannot be
+  started with `java -jar`;
+- 8083 always gets its own Gemini ports (`--phoenixgraph.gemini.first-port=19110`), otherwise its
+  workers collide with the ones of 8081 and that instance fails to start;
+- it needs a JDK on `JAVA_HOME` (falling back to the newest `/c/Program Files/Java/jdk-*`), and
+  `curl`, `unzip`, `docker` and `powershell` on PATH;
+- logs are written to `.logs/<service>.out`, and the services outlive the script (`nohup`).

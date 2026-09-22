@@ -134,10 +134,20 @@
 | **8080** | `graph-web` | UI（`/api/graphs` 列图、`/api/query` 代理到 8081） |
 | **8083** | `graph-http --spring.profiles.active=hnsw-dynamic`（本轮未起） | 写入即索引的向量 demo（REST 写点 → 立即可 `nearest`）；**必须加 `--phoenixgraph.gemini.first-port=19110`**，否则 Gemini worker 的 19100–19103 与 8081 冲突而启动失败 |
 
-起停（`jps -l | grep graph-` 看 PID；Windows 下 `taskkill /F /PID <pid>`）：
+起停（**首选脚本**：建包 → 杀旧进程 → 起 Aerospike → 起服务 → 健康检查，日志在 `.logs/<服务>.out`）：
 
 ```bash
-./mvnw -q -pl graph-http,graph-web -am -DskipTests package
+tools/start-phoenixgraph.sh                 # 建包后起 8081 + 8080
+tools/start-phoenixgraph.sh --no-build      # 跳过建包，直接起
+tools/start-phoenixgraph.sh --with-hnsw     # 同时起 8083（脚本已带 --phoenixgraph.gemini.first-port=19110）
+tools/stop-phoenixgraph.sh                  # 停掉
+```
+
+手工等价命令（脚本就是这套，供排查参照）：
+
+```bash
+jps -l | grep graph-          # 找 PID；Windows 下 taskkill /F /PID <pid>
+./mvnw -q -pl graph-http,graph-web -am -DskipTests clean package
 java -jar graph-http/target/graph-http-0.1.0-SNAPSHOT.jar
 java -jar graph-web/target/graph-web-0.1.0-SNAPSHOT.jar
 java -jar graph-http/target/graph-http-0.1.0-SNAPSHOT.jar --spring.profiles.active=hnsw-dynamic --server.port=8083 \
