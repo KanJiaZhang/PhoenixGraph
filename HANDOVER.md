@@ -4,13 +4,40 @@
 > 详细设计与实测数据在 `CONTEXT.md`：**2026-09-21 新增 §47–§58**（§47 仪表盘七问；§48 四问（二）；§49 三问（三）；§50 五问（四）；§51 四问（五）；§52（六）：Aerospike-Edge 大点冷/近线/在线三层；§53（七）：stale 写统一 / 结果面板复核 / 150 两跳扩展 + benchmark；§54（八）：表达式字符串函数 / display `$id` / count 交给服务端；§55（九）：用户报的 12 件事；§56（十）：算法 / legend·页签·示例 / 子图把 filter 掉的边留下；**§57（十一）：闭包 if/else 与集合、`values()` 的元素自身列、空答案不画、面板只报数目 + 135·150 两跳 benchmark**；**§58（十二）：fuzzy 的 xia 账号 / 图实例收敛到四个 / payment-graph 向量 / RocksDB-Edge GEO / 去掉 FuzzyPattern**）；
 > 过程记录在 **`DAILY-2026-09-21.md`**（§1–§20 共十二批）。**2026-09-20 是 §38–46**；**2026-09-18 是 §32–37**（含**类起点与扫描端口**）；2026-09-17 是 §21–31。
 
-**最后一次会话：2026-09-21（周日）· 全量 `./mvnw test` 绿（gremlin 146 / http 69 / integration 88（4 skipped）/ schema 38 / gemini 21 / fuzzy 26 / hnsw 37 / …）**
-**本轮十四段（用户报的十四件事，CONTEXT §47+§48+§49）：(1) 边只写一个方向、边数不再翻倍；(2) 135/1001 同一对端点各补 5–8 笔 Payment；
-(3) 搜索高亮逐字段；(4) IP/Phone 边 id 改成 `<端点>:<端点>`；(5) 方向写错给出 out/in 提示；(6) `filter { … }` 闭包 + `it.get().value(…)`；(7) `map { … }` 步；
-(8) 图例选中后左下角显示选中点数/边数；(9) 搜索改成“子串或字段缩写”；（两个服务加 `no-cache` 让浏览器不再拿旧 app.js）；(10) 同一对端点的多条边画成弧；(11) `filter`/`map` 换成表达式语言；
-(12) `toList` 等终结步（§49.1）；(13) 多边 `fill: none` + 弧距减半（§49.2）；(14) 闭包里的 `def tmp = it.get();` 与换行/分号语句（§49.3）。**【均在 §47/§48/§49 与 DAILY 里】**
-**现场已重启并对齐：8081（11 个图，payment-graph 指到 `http_demo_v3`）+ 8080（UI，含新搜索实现）+ Aerospike 容器；RocksDB 两个 payment 实例已按单向重新播种（`.rocksdb`，300 条边）。8083（hnsw-dynamic）本轮未起。**
+**最后一次会话：2026-09-21（周日）· 一天十二批（用户共报 ~60 件事）· 全量 `./mvnw test` 绿（gremlin 183（新增 ClosureStatement 11）/ http 71 / integration / schema / gemini / fuzzy / hnsw / …，0 失败 0 错误）**
+**十二批一句话：一 边方向/多笔支付/搜索/闭包（§47）· 二 图例/平行边弧/表达式语言（§48）· 三 终结步/弧距/带变量闭包（§49）· 四 顶点类型 `vt`/LWW/regex/两跳压测（§50）· 五 结果面板/类型当过滤/regex 公式（§51）· 六 Aerospike-Edge 冷·近线·在线三层（§52）· 七 stale 写统一 + 150 两跳扩展 + benchmark（§53）· 八 字符串函数/display `$id`/count 服务端（§54）· 九 用户报的 12 件（§55）· 十 算法 CC·Louvain/legend/页签/示例/子图 bug（§56）· 十一 闭包 `if/else`+集合/元素自身列/空答案/面板只报数目 + 两跳 benchmark（§57）· 十二 xia 账号/四个图实例/向量/GEO/去 FuzzyPattern（§58）。详见 `DAILY-2026-09-21.md` §1–§21（§21 是跨批思考主线）。**
+**第一批（§47–§49，14 件事）的逐条细节在 `DAILY-2026-09-21.md` §1–§13，那里有用户原话、被否掉的方案与实测数字。**
+**现场（2026-09-21 收工时，可直接续做）：8081 `graph-http` + 8080 `graph-web` + 8083 `graph-http --profile hnsw-dynamic` 三个 JVM 都在跑，Aerospike 容器在跑。**
+**8081 只服务 4 个图：`payment-graph`（Aerospike，`http_demo_v3`）、`payment-graph-as-edge`（`payment_as_edge_v1`）、`payment-graph-rocksdb-edge`（`.rocksdb/payment-graph-rocksdb-edge`）、`kg-entity-graph`（`kg_nell995_v2`）；其余 7 个图在 `application.yml` 里**注释保留**（schema 一个没删）。**
+**数据与索引状态：`http_demo_v3` 已含 `accountVector`（每账户 8 维）与 fuzzy 的 `fz_a7/xia1999`；`payment-graph` 的 HNSW 索引已建（`GET /api/v1/vector-index` 显示 `payment-graph Account.accountVector size=152`）；`.rocksdb/payment-graph-rocksdb-edge` 已按新的 `accountVector`+`location` 重新播种（151 点/300 边），GEO 可用、向量索引不可用（设计限制，见 §58.7）。**
+**起停一条命令：`tools/start-phoenixgraph.sh [--no-build] [--with-hnsw]`；日志 `.logs/<服务>.out`；停 `tools/stop-phoenixgraph.sh`。改了 UI/资源/引擎一定要**重新建包**（服务读的是 jar 里的 `static/**`）。**
 **下一次入口：§58.7（RocksDB 图的向量索引后端：写 RocksDB 的 `HnswStore`，或把索引托管到 Aerospike 而向量从 RocksDB 读 + 用查询路径枚举待索引的点）；§57.9（`new` 只支持三种集合；barrier 仍是批量大小别名）；§56.7（投影上限、平行边 “×N”）；§51.6 余下（`vt` 塞进边读 / 命名类首跳按类型过滤）；§53.4 余下（limit 有序表示）；RocksDB 侧 stale 不一致（§53.1）；§52.5 的未做；UI 镜像边折叠（§47.8）；`map` 聚合/多列（§48.6）。**
+
+**明天开机（照抄三条命令）**
+
+```bash
+tools/start-phoenixgraph.sh --no-build --with-hnsw   # Aerospike 容器 + 8081/8080/8083；改过代码去掉 --no-build
+curl -s localhost:8081/api/v1/graphs | head -c 200   # 应看到 4 个图
+curl -s localhost:8081/api/v1/vector-index           # 应看到 payment-graph Account.accountVector size=152
+```
+
+**数据/索引丢了的恢复顺序**（缺哪步补哪步；RocksDB 必须先停服务，服务占着目录）：
+
+```bash
+# 1. Aerospike 演示集 http_demo_v3（含 accountVector）
+./mvnw -pl graph-http test -Dtest=QueryApiIntegrationTest#demoSharedGraphViaApi -Dsurefire.failIfNoSpecifiedTests=false
+# 2. fuzzy 环（含 fz_a7 / xia1999）—— 会覆盖 http_demo_v3 里的这些点
+./mvnw -pl graph-integration-test test -Dtest=FuzzyLinkIntegrationTest -Dsurefire.failIfNoSpecifiedTests=false
+# 3. RocksDB-Edge（含 accountVector + location）
+tools/stop-phoenixgraph.sh
+./mvnw -pl graph-integration-test test -Dtest=RocksDbLiveLoadTest#loadBothInstancesIntoTheConfiguredDirectory \
+       -Drocksdb.live.dir=D:/workspace/eclipse/PhoenixGraph/.rocksdb -Dsurefire.failIfNoSpecifiedTests=false
+tools/start-phoenixgraph.sh --no-build --with-hnsw
+# 4. 向量索引（服务起来后跑一次）
+curl -s -X POST localhost:8081/api/v1/vector-index/rebuild -H "content-type: application/json" \
+     -d "{\"graph\":\"payment-graph\",\"vertexSchemaName\":\"Account\",\"vectorProperty\":\"accountVector\"}"
+```
+
 
 **工作树状态：本日十二个批次共 43+ 个提交，全部已提交并已 push 到 GitHub（`develop`，`origin` = github.com:KanJiaZhang/PhoenixGraph）。**
 **第十二批（§58）：`FuzzyLinkDemoLoader` 加 `fz_a7/xia1999` 并停写 pattern 顶点；`FuzzySchema.isSupported` 放宽；`payment-graph.json` 删 `FuzzyPattern` 顶点 + Account 加 `accountVector`；`payment-graph-rocksdb-edge.json` 的 Account 加 `accountVector` + `location`；`application.yml` 的 graphs 收敛到三个（其余注释保留）；`QueryApiIntegrationTest.accountProps` 加向量；`PaymentGraphRocksDbLoader` + 新的 `AccountProfiles`（确定性向量 + 四片区坐标）；UI 示例查询加向量/GEO 样本。详见 `CONTEXT.md` §58 / `DAILY` §20。**
