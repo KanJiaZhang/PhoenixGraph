@@ -589,7 +589,10 @@ final class GremlinSteps {
             for (Object o : in) {
                 GremlinElement element = requireElement(o);
                 for (String key : keys) {
-                    out.add(element.properties().get(key));
+                    // a stored property, or the element own accessor when the schema declares the name
+                    // as a meta property / an edge endpoint (values("id"), values("createdTime"),
+                    // values("source"))
+                    out.add(GremlinElementExpression.value(element, key));
                 }
             }
             return out;

@@ -864,7 +864,10 @@ public class GremlinGraphQuery {
         GremlinContext context = newContext();
         context.collectSubgraph(true);
         List<Object> values = runCompiled(context, compiled);
-        return new Result(values, context.buildSubgraph());
+        // An empty answer draws nothing: a traversal stopped by a filter touched the seed on its way
+        // in, and drawing that lone vertex next to "0 items" reads as "this is the answer" when it is
+        // precisely what the query excluded.
+        return new Result(values, values.isEmpty() ? Subgraph.EMPTY : context.buildSubgraph());
     }
 
     /** The answer of a query and the subgraph it visited. */
@@ -1020,7 +1023,14 @@ public class GremlinGraphQuery {
                     keys.addAll(GremlinFilterExpression.parse(arg).propertyKeys());
                 }
             } else if (name.equals("values")) {
-                keys.addAll(steps.get(j).args());
+                // the element's own accessors (id, label, createdTime, lastUpdatedTime, an edge's
+                // source/target) are not stored properties: the values() step answers them from the
+                // element, so the store must not be asked to project them
+                for (String key : steps.get(j).args()) {
+                    if (!GremlinElementExpression.isPseudoName(key)) {
+                        keys.add(key);
+                    }
+                }
             } else if (name.equals("map")) {
                 // map { ... } reads the properties its expression names and hands on the value, so
                 // nothing after it can read the element

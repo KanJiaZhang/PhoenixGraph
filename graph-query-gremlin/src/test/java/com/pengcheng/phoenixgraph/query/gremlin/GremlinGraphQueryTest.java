@@ -666,6 +666,43 @@ class GremlinGraphQueryTest {
     }
 
     @Test
+    void valuesAnswerTheElementsOwnAccessorsAndTheMetaProperties() {
+        when(graphQuery.readEdges("v1", "person", "knows", EdgeSide.OUT, List.of()))
+                .thenReturn(List.of(new EdgeQueryResult("knows", "e1", EdgeSide.OUT, "n1",
+                        Map.of("weight", 3L), 111L, 222L)));
+        when(graphQuery.readEdges("v1", "person", "knows", EdgeSide.OUT, List.of("weight")))
+                .thenReturn(List.of(new EdgeQueryResult("knows", "e1", EdgeSide.OUT, "n1",
+                        Map.of("weight", 3L), 111L, 222L)));
+
+        // id and label are not stored properties, and createdTime/lastUpdatedTime are meta properties
+        // the schema declares but does not keep among the regular ones: all four must answer
+        assertEquals(List.of("e1"), gremlin.execute("g.V('v1','person').outE('knows').values('id')"));
+        assertEquals(List.of("knows"), gremlin.execute("g.V('v1','person').outE('knows').values('label')"));
+        assertEquals(List.of(111L), gremlin.execute("g.V('v1','person').outE('knows').values('createdTime')"));
+        assertEquals(List.of(222L), gremlin.execute("g.V('v1','person').outE('knows').values('lastUpdatedTime')"));
+        // ... and a directed edge answers with the endpoints the traversal knows
+        assertEquals(List.of("v1"), gremlin.execute("g.V('v1','person').outE('knows').values('source')"));
+        assertEquals(List.of("n1"), gremlin.execute("g.V('v1','person').outE('knows').values('target')"));
+        // a stored property still wins over the accessor of the same name
+        assertEquals(List.of(3L), gremlin.execute("g.V('v1','person').outE('knows').values('weight')"));
+    }
+
+    @Test
+    void anEmptyAnswerDrawsNothing() {
+        when(graphQuery.readEdges("v1", "person", "knows", EdgeSide.OUT, List.of()))
+                .thenReturn(List.of(edge("e1", EdgeSide.OUT, "n1", Map.of())));
+        when(graphQuery.readVertex(eq("n1"), eq("person"), anyList())).thenReturn(null);
+
+        GremlinGraphQuery.Result result = gremlin.executeWithSubgraph(
+                "g.V('v1','person').out('knows').has('name','nobody')");
+
+        // the seed was touched on the way in, but the query excluded everything: nothing is drawn
+        assertEquals(List.of(), result.values());
+        assertEquals(0, result.subgraph().vertices().size());
+        assertEquals(0, result.subgraph().edges().size());
+    }
+
+    @Test
     void nearestStepReturnsTheIndexesNearestVertices() {
         HeapHnswVectorSource source = new HeapHnswVectorSource();
         source.put("v1", new float[] {0f, 0f});

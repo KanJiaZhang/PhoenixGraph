@@ -319,6 +319,9 @@ public final class GremlinQuery {
      */
     private static int indexOfLogicBrace(String s) {
         char quote = 0;
+        // a brace inside a step's parentheses or closure belongs to that step
+        // (`map { ... if (x) { a } else { b } }`), only one at depth 0 is the trailing logic block
+        int depth = 0;
         for (int i = 0; i < s.length(); i++) {
             char c = s.charAt(i);
             if (quote != 0) {
@@ -329,8 +332,17 @@ public final class GremlinQuery {
             }
             if (c == '\'' || c == '"') {
                 quote = c;
-            } else if (c == '{' && followsStepCall(s, i)) {
-                return i;
+            } else if (c == '(') {
+                depth++;
+            } else if (c == ')') {
+                depth--;
+            } else if (c == '{') {
+                if (depth == 0 && followsStepCall(s, i)) {
+                    return i;
+                }
+                depth++;
+            } else if (c == '}') {
+                depth--;
             }
         }
         return -1;

@@ -41,4 +41,24 @@ public record GremlinEdge(String label, Object id, EdgeSide side, Object otherVe
         }
         return new Object[] { sourceVertexId, otherVertexId };
     }
+
+    /**
+     * The edge's source endpoint as far as the traversal knows it ({@code values('source')}).
+     *
+     * <p>The side says which way the edge runs from the vertex it was read at: an {@code OUT} edge
+     * leaves that vertex, so it is the source; an {@code IN} edge arrives at it, so the far vertex is
+     * the source. When the side is unknown ({@code bothE}) the vertex it was read at is taken as the
+     * source, which is the only thing the traversal can say without re-reading the edge.
+     */
+    public Object sourceEndpoint() {
+        if (sourceVertexId == null) {
+            return otherVertexId; // an edge from a class scan: only the far endpoint is known
+        }
+        return side == EdgeSide.IN ? otherVertexId : sourceVertexId;
+    }
+
+    /** The edge's target endpoint as far as the traversal knows it ({@code values('target')}). */
+    public Object targetEndpoint() {
+        return side == EdgeSide.IN ? sourceVertexId : otherVertexId;
+    }
 }

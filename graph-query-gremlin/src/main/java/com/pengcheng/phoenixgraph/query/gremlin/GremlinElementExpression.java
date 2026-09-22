@@ -26,6 +26,17 @@ final class GremlinElementExpression {
     /** The pseudo key standing for the element itself (what {@code it.get()} reads). */
     static final String ELEMENT_KEY = "@it";
 
+    /** The pseudo key standing for the element's creation timestamp ({@code values('createdTime')}). */
+    static final String CREATED_KEY = "@createdTime";
+
+    /** The pseudo key standing for the element's last-update timestamp. */
+    static final String UPDATED_KEY = "@lastUpdatedTime";
+
+    /** The pseudo keys standing for an edge's two endpoints ({@code values('source')}). */
+    static final String SOURCE_KEY = "@source";
+
+    static final String TARGET_KEY = "@target";
+
     /** An accessor found at a position: the property (or pseudo) key it reads and where it ends. */
     record Accessor(String key, int end) {
     }
@@ -79,20 +90,53 @@ final class GremlinElementExpression {
 
     /** Whether a key is one of the element accessors rather than a stored property. */
     static boolean isPseudo(String key) {
-        return LABEL_KEY.equals(key) || ID_KEY.equals(key) || ELEMENT_KEY.equals(key);
+        return LABEL_KEY.equals(key) || ID_KEY.equals(key) || ELEMENT_KEY.equals(key)
+                || CREATED_KEY.equals(key) || UPDATED_KEY.equals(key)
+                || SOURCE_KEY.equals(key) || TARGET_KEY.equals(key);
     }
 
     /**
      * The Gremlin spellings of the element accessors: {@code value('id')}/{@code value('$id')} mean
      * {@code id()} and {@code value('label')}/{@code value('$label')} mean {@code label()}, so they
      * resolve to the pseudo keys instead of looking for a property of that name.
+     *
+     * <p>The meta properties and an edge's endpoints are nameable the same way: a schema declares
+     * {@code createdTime} and {@code lastUpdatedTime} as meta properties (not as regular ones), and
+     * {@code source}/{@code target} as the endpoints of a directed edge, so {@code values('source')}
+     * reads what the traversal knows rather than failing with "unknown property".
      */
-    private static String resolveKey(String key) {
-        return switch (key.toLowerCase(java.util.Locale.ROOT)) {
-            case "id", "$id" -> ID_KEY;
+    static String resolveKey(String key) {
+        return switch (key.toLowerCase(java.util.Locale.ROOT)) {            case "id", "$id" -> ID_KEY;
             case "label", "$label" -> LABEL_KEY;
+            case "createdtime", "$createdtime" -> CREATED_KEY;
+            case "lastupdatedtime", "$lastupdatedtime" -> UPDATED_KEY;
+            case "source", "$source" -> SOURCE_KEY;
+            case "target", "$target" -> TARGET_KEY;
             default -> key;
         };
+    }
+
+    /**
+     * The value of a (possibly pseudo) key for one element, which is what the {@code values(...)} step
+     * answers.
+     *
+     * <p>A stored property wins; when the element has no such property, the element's own accessors
+     * answer instead - {@code values('id')}, {@code values('createdTime')}, {@code values('source')} - so
+     * a schema that declares those names as meta properties or as an edge's endpoints does not read as
+     * "unknown property".
+     */
+    static Object value(GremlinElement element, String key) {
+        Object property = element.properties().get(key);
+        if (property != null) {
+            return property;
+        }
+        String resolved = resolveKey(key);
+        return isPseudo(resolved) ? read(element, resolved) : null;
+    }
+
+    /** Whether a key names one of the element accessors rather than a stored property. */
+    static boolean isPseudoName(String key) {
+        return isPseudo(resolveKey(key));
     }
 
     /** Reads a (possibly pseudo) key off an element: a property value, its label, its id or itself. */
@@ -105,6 +149,18 @@ final class GremlinElementExpression {
         }
         if (ELEMENT_KEY.equals(key)) {
             return element;
+        }
+        if (CREATED_KEY.equals(key)) {
+            return element.createdTime();
+        }
+        if (UPDATED_KEY.equals(key)) {
+            return element.lastUpdatedTime();
+        }
+        if (SOURCE_KEY.equals(key)) {
+            return element instanceof GremlinEdge edge ? edge.sourceEndpoint() : null;
+        }
+        if (TARGET_KEY.equals(key)) {
+            return element instanceof GremlinEdge edge ? edge.targetEndpoint() : null;
         }
         return element.properties().get(key);
     }

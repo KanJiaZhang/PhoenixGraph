@@ -81,6 +81,17 @@ public final class GremlinExpression {
     private final Set<String> keys;
     private final boolean elementIdentity;
 
+    /**
+     * The values a statement built for the element being evaluated right now ({@code def list = new
+     * ArrayList(); list.add(x); list}), cleared at the start of every element so two elements never
+     * share a collection - and so the statements of one element do share it.
+     *
+     * <p>Thread-local because a compiled expression is cached and may be evaluated by several queries
+     * at once; each evaluation is one element's.
+     */
+    private static final ThreadLocal<Map<Object, Object>> FRAME =
+            ThreadLocal.withInitial(java.util.IdentityHashMap::new);
+
     private GremlinExpression(Value value, Set<String> keys, boolean elementIdentity) {
         this.value = value;
         // declaration order matters: it is the order the property bins are read in
@@ -101,12 +112,13 @@ public final class GremlinExpression {
 
     /** Evaluates the expression against one element. */
     public Object evaluate(GremlinElement element) {
+        FRAME.get().clear(); // one frame per element: `new ArrayList()` starts empty for each of them
         return value.evaluate(element);
     }
 
     /** Whether the expression holds for one element (see the truthiness rule above). */
     public boolean test(GremlinElement element) {
-        return truthy(value.evaluate(element));
+        return truthy(evaluate(element));
     }
 
     /** The property names the expression reads, in the order they appear (pseudo keys excluded). */
@@ -200,14 +212,20 @@ public final class GremlinExpression {
          * }</pre>
          */
         Value program() {
-            Value last = null;
+            // the statements are kept as a sequence and run in order, because an earlier one may bind a
+            // value a later one mutates: `def list = new ArrayList(); list.add(x); list.size()` only
+            // works if the first two actually ran before the last one is evaluated
+            List<Value> statements = new ArrayList<>();
             while (true) {
                 skipSpace();
                 if (at >= text.length()) {
                     break;
                 }
-                Value statement = statement();
-                last = statement != null ? statement : expression();
+                Value statement = ifStatement();
+                if (statement == null) {
+                    statement = statement();
+                }
+                statements.add(statement != null ? statement : expression());
                 // the expression parser skips the whitespace after its last token, so the end of the
                 // statement is the last non-blank character it read
                 int end = at;
@@ -225,8 +243,105 @@ public final class GremlinExpression {
                 }
                 break;
             }
-            if (last == null) {
+            if (statements.isEmpty()) {
                 throw error("expected an expression");
+            }
+            List<Value> body = List.copyOf(statements);
+            return element -> {
+                Object result = null;
+                for (Value statement : body) {
+                    result = statement.evaluate(element);
+                }
+                return result;
+            };
+        }
+
+        /**
+         * An {@code if (condition) { ... } else { ... }} statement, or {@code null} when this is not
+         * one. It is the Groovy form an analyst writes for a two-way choice, and its value is the
+         * value of the branch that ran (so a closure ending in an {@code if} answers with it).
+         *
+         * <p>{@code else if} chains recurse; a branch may be a single expression without braces;
+         * and a false condition with no {@code else} yields null, like Groovy.
+         */
+        private Value ifStatement() {
+            int save = at;
+            if (!eatWord("if")) {
+                at = save;
+                return null;
+            }
+            skipSpace();
+            if (at >= text.length() || text.charAt(at) != '(') {
+                at = save; // a property or a variable called 'if...': not a statement
+                return null;
+            }
+            at++; // '('
+            Value condition = expression();
+            skipSpace();
+            if (at >= text.length() || text.charAt(at) != ')') {
+                throw error("expected ')' after the if condition");
+            }
+            at++;
+            Value thenBranch = block();
+            skipSpace();
+            Value elseBranch = null;
+            int afterThen = at;
+            if (eatWord("else")) {
+                skipSpace();
+                elseBranch = ifStatement();
+                if (elseBranch == null) {
+                    elseBranch = block();
+                }
+            } else {
+                at = afterThen;
+            }
+            Value taken = elseBranch;
+            return element -> {
+                Object value = condition.evaluate(element);
+                return truthy(value) ? thenBranch.evaluate(element)
+                        : (taken == null ? null : taken.evaluate(element));
+            };
+        }
+
+        /**
+         * A branch: {@code { statements }}, or one statement without braces. Its value is the last
+         * statement it ran, which is what makes {@code map { if (x) { 'a' } else { 'b' } }} answer
+         * with {@code 'a'} or {@code 'b'}.
+         */
+        private Value block() {
+            skipSpace();
+            boolean braced = at < text.length() && text.charAt(at) == '{';
+            if (!braced) {
+                Value single = ifStatement();
+                if (single != null) {
+                    return single;
+                }
+                Value assignment = statement();
+                return assignment != null ? assignment : expression();
+            }
+            at++; // '{'
+            Value last = null;
+            while (true) {
+                skipSpace();
+                if (at >= text.length()) {
+                    throw error("the if branch is missing its closing '}'");
+                }
+                if (text.charAt(at) == '}') {
+                    at++;
+                    break;
+                }
+                Value statement = ifStatement();
+                if (statement == null) {
+                    statement = statement();
+                }
+                last = statement != null ? statement : expression();
+                skipSpace();
+                if (at < text.length() && text.charAt(at) == ';') {
+                    at++;
+                }
+            }
+            if (last == null) {
+                throw error("an if branch must have a value");
             }
             return last;
         }
@@ -444,11 +559,79 @@ public final class GremlinExpression {
             }
         }
 
+        /**
+         * A {@code new Type(...)} expression: the Groovy way to start a collection inside a closure
+         * ({@code def list = new ArrayList(); list.add(v.value('status')); list}).
+         *
+         * <p>The collection is created **per element**, so a closure that builds a list builds a fresh
+         * one for every element it sees instead of sharing (and mutating) one across the traversal.
+         * Lists, maps and sets are supported; anything else says so rather than pretending.
+         */
+        private Value newCollection() {
+            skipSpace();
+            int start = at;
+            while (at < text.length() && (isWordChar(text.charAt(at)) || text.charAt(at) == '.')) {
+                at++;
+            }
+            String type = text.substring(start, at);
+            if (type.isEmpty()) {
+                throw error("expected a type name after 'new'");
+            }
+            String simple = type.contains(".") ? type.substring(type.lastIndexOf('.') + 1) : type;
+            skipSpace();
+            if (at < text.length() && text.charAt(at) == '(') {
+                at = matchingParenInText(at) + 1;
+            }
+            Value factory;
+            switch (simple) {
+                case "ArrayList", "LinkedList", "Vector" -> factory = element -> new java.util.ArrayList<>();
+                case "HashMap", "LinkedHashMap", "TreeMap", "Hashtable", "Properties" ->
+                        factory = element -> new LinkedHashMap<>();
+                case "HashSet", "LinkedHashSet", "TreeSet" -> factory = element -> new LinkedHashSet<>();
+                default -> throw error("the expression language can only build ArrayList, HashMap and"
+                        + " HashSet (got 'new " + type + "')");
+            }
+            // one instance per element evaluation, shared by every reference to the same `new` within
+            // it: `def list = new ArrayList(); list.add(x); list` is one list, and the next element
+            // gets its own
+            return element -> FRAME.get().computeIfAbsent(factory, k -> factory.evaluate(element));
+        }
+
+        /** The index of the {@code )} closing the {@code (} at {@code open}. */
+        private int matchingParenInText(int open) {
+            int depth = 0;
+            char quote = 0;
+            for (int i = open; i < text.length(); i++) {
+                char c = text.charAt(i);
+                if (quote != 0) {
+                    if (c == quote) {
+                        quote = 0;
+                    }
+                    continue;
+                }
+                if (c == '\'' || c == '"') {
+                    quote = c;
+                } else if (c == '(') {
+                    depth++;
+                } else if (c == ')') {
+                    depth--;
+                    if (depth == 0) {
+                        return i;
+                    }
+                }
+            }
+            throw error("expected a ')' in the 'new' expression");
+        }
+
         private Value method(Value receiver, String method, List<Value> args) {
             String name = method.toLowerCase(Locale.ROOT);
             if (name.equals("value") || name.equals("values") || name.equals("label")
                     || name.equals("id") || name.equals("key")) {
                 return elementMethod(receiver, name, args);
+            }
+            Value collection = collectionMethod(receiver, name, args, method);
+            if (collection != null) {
+                return collection;
             }
             Value builtin = stringMethod(receiver, name, args, method);
             if (builtin != null) {
@@ -482,6 +665,151 @@ public final class GremlinExpression {
                     return comparison(receiver, arg, "endsWith");
                 }
                 default -> throw error("unknown method '" + method + "'");
+            }
+        }
+
+        /**
+         * The methods a collection answers: {@code add}/{@code addAll}, {@code put}, {@code get},
+         * {@code contains}, {@code containsKey}, {@code size}, {@code isEmpty} and
+         * {@code join(separator)}. They are checked at run time, so {@code name.contains('x')} keeps
+         * its string meaning when the receiver is a string.
+         *
+         * @return the method as a value, or {@code null} when the name is not one of them
+         */
+        @SuppressWarnings("unchecked")
+        private Value collectionMethod(Value receiver, String name, List<Value> args, String written) {
+            switch (name) {
+                case "add" -> {
+                    requireArity(args, 1, written);
+                    Value item = args.get(0);
+                    return element -> {
+                        Object target = receiver.evaluate(element);
+                        Object value = item.evaluate(element);
+                        if (target instanceof java.util.Collection<?> collection) {
+                            ((java.util.Collection<Object>) collection).add(value);
+                            return collection;
+                        }
+                        return target;
+                    };
+                }
+                case "addall" -> {
+                    requireArity(args, 1, written);
+                    Value items = args.get(0);
+                    return element -> {
+                        Object target = receiver.evaluate(element);
+                        Object value = items.evaluate(element);
+                        if (target instanceof java.util.Collection<?> collection
+                                && value instanceof java.util.Collection<?> more) {
+                            ((java.util.Collection<Object>) collection).addAll(more);
+                        }
+                        return target;
+                    };
+                }
+                case "put" -> {
+                    requireArity(args, 2, written);
+                    Value key = args.get(0);
+                    Value value = args.get(1);
+                    return element -> {
+                        Object target = receiver.evaluate(element);
+                        if (target instanceof java.util.Map<?, ?> map) {
+                            ((java.util.Map<Object, Object>) map).put(key.evaluate(element), value.evaluate(element));
+                        }
+                        return target;
+                    };
+                }
+                case "get" -> {
+                    requireArity(args, 1, written);
+                    Value key = args.get(0);
+                    return element -> {
+                        Object target = receiver.evaluate(element);
+                        Object at = key.evaluate(element);
+                        if (target instanceof java.util.Map<?, ?> map) {
+                            return map.get(at);
+                        }
+                        if (at instanceof Number number) {
+                            if (target instanceof java.util.List<?> list && number.intValue() >= 0
+                                    && number.intValue() < list.size()) {
+                                return list.get(number.intValue());
+                            }
+                            if (target instanceof CharSequence text && number.intValue() >= 0
+                                    && number.intValue() < text.length()) {
+                                return String.valueOf(text.charAt(number.intValue()));
+                            }
+                        }
+                        return null;
+                    };
+                }
+                case "size" -> {
+                    requireArity(args, 0, written);
+                    return element -> {
+                        Object target = receiver.evaluate(element);
+                        if (target instanceof java.util.Collection<?> collection) {
+                            return (long) collection.size();
+                        }
+                        if (target instanceof java.util.Map<?, ?> map) {
+                            return (long) map.size();
+                        }
+                        if (target instanceof CharSequence text) {
+                            return (long) text.length();
+                        }
+                        return null;
+                    };
+                }
+                case "isempty" -> {
+                    requireArity(args, 0, written);
+                    return element -> {
+                        Object target = receiver.evaluate(element);
+                        if (target instanceof java.util.Collection<?> collection) {
+                            return collection.isEmpty();
+                        }
+                        if (target instanceof java.util.Map<?, ?> map) {
+                            return map.isEmpty();
+                        }
+                        if (target instanceof CharSequence text) {
+                            return text.isEmpty();
+                        }
+                        return null;
+                    };
+                }
+                case "containskey" -> {
+                    requireArity(args, 1, written);
+                    Value key = args.get(0);
+                    return element -> {
+                        Object target = receiver.evaluate(element);
+                        return target instanceof java.util.Map<?, ?> map && map.containsKey(key.evaluate(element));
+                    };
+                }
+                case "join" -> {
+                    requireArity(args, 1, written);
+                    Value separator = args.get(0);
+                    return element -> {
+                        Object target = receiver.evaluate(element);
+                        if (!(target instanceof java.util.Collection<?> collection)) {
+                            return null;
+                        }
+                        String sep = String.valueOf(separator.evaluate(element));
+                        return collection.stream().map(String::valueOf)
+                                .collect(java.util.stream.Collectors.joining(sep));
+                    };
+                }
+                case "contains" -> {
+                    requireArity(args, 1, written);
+                    Value needle = args.get(0);
+                    return element -> {
+                        Object target = receiver.evaluate(element);
+                        Object value = needle.evaluate(element);
+                        if (target instanceof java.util.Collection<?> collection) {
+                            return collection.contains(value);
+                        }
+                        if (target instanceof java.util.Map<?, ?> map) {
+                            return map.containsKey(value);
+                        }
+                        return target != null && String.valueOf(target).contains(String.valueOf(value));
+                    };
+                }
+                default -> {
+                    return null;
+                }
             }
         }
 
@@ -609,12 +937,9 @@ public final class GremlinExpression {
                     && constant.value() instanceof String text ? text : null;
             // value('id')/value('label') are the Gremlin spellings of id()/label(): resolve them to the
             // pseudo keys rather than looking for a property of that name
-            String key = written == null ? null
-                    : switch (written.toLowerCase(Locale.ROOT)) {
-                        case "id" -> GremlinElementExpression.ID_KEY;
-                        case "label" -> GremlinElementExpression.LABEL_KEY;
-                        default -> written;
-                    };
+            // the same resolution the accessor regex uses, so a variable receiver (v.values("id"))
+            // answers the element accessors and the meta properties too
+            String key = written == null ? null : GremlinElementExpression.resolveKey(written);
             if (key != null) {
                 if (GremlinElementExpression.isPseudo(key)) {
                     elementIdentity = true;
@@ -712,6 +1037,9 @@ public final class GremlinExpression {
                     at++;
                 }
                 String word = text.substring(start, at);
+                if (word.equalsIgnoreCase("new")) {
+                    return newCollection();
+                }
                 switch (word.toLowerCase(Locale.ROOT)) {
                     case "true":
                         return new Const(Boolean.TRUE);
