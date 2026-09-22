@@ -82,6 +82,9 @@ public final class GremlinContext {
     private final Map<String, VertexRef> edgeEndpointVertices = new LinkedHashMap<>();
     private final Map<String, Subgraph.Edge> subgraphEdges = new LinkedHashMap<>();
 
+    /** For every edge a vertex hop read, the ids of the vertices it reached (see {@link #recordHopEdge}). */
+    private final Map<String, Set<String>> hopEdgeVertices = new LinkedHashMap<>();
+
     private record EdgeCacheKey(Object vertexId, String edgeName, EdgeSide direction) {
     }
 
@@ -371,6 +374,24 @@ public final class GremlinContext {
                 new Subgraph.Edge(label, text, source, target, properties, createdTime, lastUpdatedTime));
     }
 
+    /**
+     * Records that a vertex hop reached {@code vertexId} through the edge {@code edgeId}.
+     *
+     * <p>A vertex hop's edges are only the way to the vertex at their far end, so such an edge belongs
+     * to the answer while that vertex is still part of the traversal. Without this, an edge the
+     * traversal walked past stays in the drawn graph whenever a later step dropped the vertex it led
+     * to but some other path happened to keep that vertex alive: filtering
+     * {@code out('PhoneToAccount')} down to account 1002 still drew the phone -> 1003 edge, because
+     * 1003 was also the target of a payment of 1002.
+     */
+    public void recordHopEdge(String edgeLabel, Object edgeId, Object vertexId) {
+        if (!collectSubgraph) {
+            return;
+        }
+        hopEdgeVertices.computeIfAbsent(key(edgeLabel, String.valueOf(edgeId)), k -> new LinkedHashSet<>())
+                .add(String.valueOf(vertexId));
+    }
+
     /** Reads full vertex properties for every recorded vertex and returns the induced subgraph. */
     public Subgraph buildSubgraph() {
         if (!collectSubgraph) {
@@ -385,7 +406,13 @@ public final class GremlinContext {
         Set<String> pendingIds = endpointIds(edgeEndpointVertices.values());
         List<Subgraph.Edge> edges = new ArrayList<>(subgraphEdges.size());
         for (Subgraph.Edge edge : subgraphEdges.values()) {
-            if (belongsToTraversal(edge, liveIds, pendingIds)) {
+            // an edge of a vertex hop is kept while a vertex it reached is still in the traversal; an
+            // edge traverser (or an edge of a class nothing else claims) keeps the endpoint rule
+            Set<String> reached = hopEdgeVertices.get(key(edge.label(), edge.id()));
+            boolean keep = reached == null
+                    ? belongsToTraversal(edge, liveIds, pendingIds)
+                    : reached.stream().anyMatch(liveIds::contains);
+            if (keep) {
                 edges.add(edge);
             }
         }

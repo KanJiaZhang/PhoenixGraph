@@ -1019,6 +1019,7 @@ final class GremlinSteps {
                 // Only the id/label are needed for the next hop — skip the vertex read.
                 for (int idx : indices) {
                     ctx.recordVertex(name, ids[idx]);
+                    ctx.recordHopEdge(edges.get(idx).edgeName(), edges.get(idx).edgeId(), ids[idx]);
                     result[idx] = new GremlinVertex(name, ids[idx], Map.of(), 0L, 0L);
                 }
                 continue;
@@ -1033,6 +1034,9 @@ final class GremlinSteps {
                 int idx = indices.get(k);
                 VertexQueryResult vertex = vertices.get(k);
                 ctx.recordVertex(name, ids[idx]);
+                // the edge that reached this vertex: the drawn graph may only keep it while the
+                // vertex is still part of the traversal (see GremlinContext#recordHopEdge)
+                ctx.recordHopEdge(edges.get(idx).edgeName(), edges.get(idx).edgeId(), ids[idx]);
                 result[idx] = vertex == null
                         ? new GremlinVertex(name, ids[idx], Map.of(), 0L, 0L)
                         : new GremlinVertex(vertex.vertexName(), vertex.vertexId(), vertex.properties(),

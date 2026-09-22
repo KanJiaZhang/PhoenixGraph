@@ -644,6 +644,28 @@ class GremlinGraphQueryTest {
     }
 
     @Test
+    void aDroppedVertexTakesItsEdgeWithItEvenWhenAnotherPathKeepsItAlive() {
+        // v1 -e1-> n1 (filtered out), v1 -e2-> n2 (kept), and n2 -e3-> n1: n1 is still part of the
+        // answer as the far end of e3, which used to be enough for e1 to survive too
+        when(graphQuery.readEdges("v1", "person", "knows", EdgeSide.OUT, List.of()))
+                .thenReturn(List.of(edge("e1", EdgeSide.OUT, "n1", Map.of()),
+                        edge("e2", EdgeSide.OUT, "n2", Map.of())));
+        when(graphQuery.readEdges("n2", "person", "knows", EdgeSide.OUT, List.of()))
+                .thenReturn(List.of(edge("e3", EdgeSide.OUT, "n1", Map.of())));
+        when(graphQuery.readVertex("n2", "person", List.of("name")))
+                .thenReturn(new VertexQueryResult("person", "n2", Map.of("name", "bob"), 5L, 6L));
+        when(graphQuery.readVertex("n2", "person", List.of()))
+                .thenReturn(new VertexQueryResult("person", "n2", Map.of("name", "bob"), 5L, 6L));
+
+        GremlinGraphQuery.Result filtered = gremlin.executeWithSubgraph(
+                "g.V('v1','person').out('knows').has('name','bob').outE('knows')");
+
+        List<Object> ids = filtered.subgraph().edges().stream().map(Subgraph.Edge::id).toList();
+        assertEquals(List.of("e2", "e3"), ids,
+                "only the edges on a surviving path are drawn: " + filtered.subgraph().edges());
+    }
+
+    @Test
     void nearestStepReturnsTheIndexesNearestVertices() {
         HeapHnswVectorSource source = new HeapHnswVectorSource();
         source.put("v1", new float[] {0f, 0f});
