@@ -3714,3 +3714,133 @@ count 的**载荷**从"整张 map"降到"一个数"。缺失的 bin/记录返回
 * 第 1 条若用户的意图是"**全库搜索**"（不在画布上的点也找出来）——那是新功能（需要按属性建索引或全扫），
   本轮做的是把"画布内搜索"讲清楚；要做请确认。
 * 第 8 条若要"结果数与子图数严格一致"，只能让结果去重或把遍历边也算进结果——两种都会丢信息，故未改。
+
+---
+
+## 56. 第十批：算法（13–15）、legend / 页签 / 示例（17–21）、子图把 filter 掉的边留下（22）
+
+### 56.1 `#22`：**真 bug** —— filter 掉的点，它那条"走过"的边还在子图上
+
+用户给的完整语句：
+
+```groovy
+g.V('+86-138-69999','Phone').out('PhoneToAccount').filter {it.get().values('id') == 1002}.outE('Payment')
+```
+
+实测（修前）子图里有 **两条** `PhoneToAccount`：
+
+```
+PhoneToAccount:+86-138-69999:1002   ← 遍历路径上，应该留
+PhoneToAccount:+86-138-69999:1003   ← filter 已把 1003 去掉，却还在！
+```
+
+**根因**：子图收集是"读到即记"，`filter` 丢掉的是**那个点自己**（`dropElement(vertex)`），而"通向它的那条边"没被丢。
+`buildSubgraph` 的裁剪规则是"边的两端都还在遍历里就留"——而 1003 恰好又是 `pay_r2`（1002→1003）的**目标点**，
+所以它仍然是"活"的，于是 `Phone→1003` 被这条**太宽松的规则**留了下来。这也是 `#9`（用户上一批报的同一现象）的**真正根因**，
+上一批我只做了"失败清空画布"，这次找到并修掉了。
+
+**修法**：顶点跳（`out/in/both`）读的边，本来只是"到对端点的路"。给 `GremlinContext` 加
+`recordHopEdge(边, 到达的点)`（`GremlinSteps.readNeighbourVertices` 两处调用），`buildSubgraph` 里：
+
+```
+顶点跳的边：只要它到达的某个点还在遍历里 → 留；否则丢
+边跳（outE/inE/bothE）的边 / 没记过来源的边：仍用原来的"两端都在"规则
+```
+
+这样 `Phone→1003` 的来源只有 1003，而 1003 已不是遍历点 → 丢掉 ✓；`pay_r2` 来自边跳（`.outE('Payment')`）→ 原规则 ✓。
+
+修后实测子图正好是路径：`Phone→1002`、`pay_r2`、`pay_x2`、`pay_y2`。新增引擎用例
+`aDroppedVertexTakesItsEdgeWithItEvenWhenAnotherPathKeepsItAlive`（专门构造"被丢的点又被另一条路保活"的形状）。
+
+### 56.2 `#16`：不是非确定性，是**随机初值布局**骗了眼睛
+
+把那条语句在 API 上连跑 **20 次**：`accounts=1001,1002,1003,...`、`1001:27 1002:3`、边集逐条一致 —— **STABLE**。
+所以引擎没有非确定性。看起来"一次多边、一次一条边"是因为：
+
+* 初值坐标用了 `Math.random()`，同一查询每次布局不同；
+* 1001↔1002 之间有 **10 条平行边**（`pay_r1` + 9 条 `pay_rep_*`），画成弧线；节点位置一变，弧的可见程度差别很大，
+  远处看就像"一条边"。
+
+**改法**：初值坐标改成按节点 key 的**稳定哈希**（`hashOf`），同一查询两次画出**完全相同**的图（实测两次 `transform` 逐点相同），
+从此"两次看不一样"不会再发生。平行边本身用弧线区分（`EDGE_ARC_STEP`），点选一条边可在「属性」里看它是哪一条。
+
+### 56.3 `#20`：75 是**答案项数**，67 是**去重后的边数**，两个都对
+
+`g.V('+86-138-69999','Phone').out('PhoneToAccount').bothE('Payment')`：
+
+| 数 | 值 | 含义 |
+|---|---|---|
+| `count()` / 结果项数 | **75** | traverser 数（同一条边被它**两个端点**各输出一次） |
+| 结果里的不同边 | **64** | 去重后 |
+| 重复项 | **11** | 两端点都在答案里的那些边 |
+| 子图边 | **67** | 画出来的（64 + 3 条遍历用的 `PhoneToAccount`） |
+
+Gremlin 语义就是如此（`bothE` 不去重，`dedup()` 才去重）。**行数也是 75**（结果页签照实列）。
+改法不是改口径，而是**把它讲明白**：结果页签在元素列表有重复时，提示条直接写
+"75 行，其中 11 行与前面的行是同一个元素（同一条边被两个端点各输出一次；用 dedup() 去重）"。
+
+### 56.4 `#13` + `#14` + `#15`：CC / Louvain / PageRank
+
+**#13 异构图**：`cc`/`louvain` 只对"同一种点"有意义（异构图里的"连通分量"其实是"通过地址可达的一切"）。
+现在它们：
+
+1. 取**点最多的那一类**运算；
+2. 把**其它类型投影成该类点之间的边**（一个 IP 连到的账户两两相连 —— 也就是"共用这个 IP 的账户"），
+   否则（只留同类点、不留边）每个点都会各自成一个分量，等于什么都没算；
+3. 在 toast + 状态里说明：`该图混了多种点（另有 Account），Louvain 只在最多的 IP（17 个点）上运算；其它类型的点被投影成 IP 之间的 136 条边`；
+4. 不在运算范围内的点**变灰 + 变暗**（`algo-out`），legend 的社区条目也只数被运算的点。
+
+投影有上限：一个桥点连接的同类点超过 `PROJECTION_MAX = 40` 就跳过它（否则一个 80 邻居的 IP 会变成 3160 条边）。
+
+**#14 正确性复核**：把 `app.js` 里的 `connectedComponents` / `louvain` / `pagerank` / `buildAdjacency`
+**按大括号配对抽出来**在 node 里跑（跑的就是浏览器执行的同一份代码），与独立实现对比：
+
+```
+PASS  CC: two components {a,b,c} and {d,e}
+PASS  CC: agrees with union-find
+PASS  PageRank: the star centre ranks first            hub=0.4757 leaf=0.1311
+PASS  PageRank: ranks sum to 1                         sum=1.0000000000000002
+PASS  PageRank: agrees with a matrix iteration         maxDiff=1.99e-07
+PASS  CC on live data agrees with union-find           UI=[105] UF=[105] (nodes=105)
+PASS  Louvain on live data: modularity > 0 and beats one community   Q=0.1713 vs single=0.0000 communities=23 nodes=51
+PASS  Louvain assignments are within the graph and partition it      51/51
+PASS  Louvain on live data is locally optimal (no single move gains modularity)  best gain = 0.00e+0
+PASS  PageRank on live data agrees with a matrix iteration           maxDiff=2.47e-08
+PASS  the projection keeps the groups of the raw graph  raw=[40,3] projected=[40,3]
+PASS  the projection is a clique per bridge (C(40,2) + C(3,2))  edges=783 skipped=IP
+```
+
+独立实现：并查集（CC）、矩阵幂迭代（PageRank）、按定义算模块度 Q（Louvain）。Louvain 除了 Q 更高，还验证了
+**局部最优**（任一点挪到邻社区都不增加 Q）—— 这是 Louvain 局部阶段的定义性质，比"跑出了东西"强得多。
+
+**#15 例子**（已在 UI 实测）：
+
+| 算法 | 查询 | 结果 |
+|---|---|---|
+| **CC** | `g.V('10.99.0.0','10.99.0.1','IP').out('IPToAccount')` | 45 点 / 43 边 → **2 个连通分量（40 + 3 个账户）**：两个 IP 的账户集合**不相交**（`10.99.0.0` 连 40 个、`10.99.0.1` 连 3 个）。因为 CC 只对同类点运算，IP 被投影成账户之间的边，所以分量落在 IP 各自的账户集合上 |
+| **Louvain** | `g.V('135','Account').both('Payment').both('Payment').dedup().limit(300)` | 51 个账户 / 250 边 → **23 个社区**，Q=0.1713（单社区 Q=0） |
+
+（顺带一个反例：`g.V('10.99.0.6','10.99.0.8','IP').out('IPToAccount')` 的 105 个点全在**一个**分量里 —— 这两个 IP 的账户集合有交集。）
+
+### 56.5 UI 细节（17 / 18 / 19 / 21）
+
+| # | 改法 |
+|---|---|
+| **17** | legend 去掉「边」标题；点、边两组之间**空一行**（12px gap）；`legend-heading` 样式删除 |
+| **18** | 查询**不再自动跳到「结果」页签**：默认留在「统计」，新的答案给「结果」页签加一个**小圆点**（`unread`），点进去就消掉 |
+| **19** | 示例下拉**默认不显示**，只有点图标才展开/收起；某图没有示例时连图标也隐藏 |
+| **21** | 点条目也带数量（`Account · 8`），和边条目（`Payment · 7`）一致 |
+
+### 56.6 测试
+
+* 引擎：`GremlinGraphQueryTest` +1（被丢的点带走它的边，即使该点被另一条路保活）；
+* 算法正确性：`.logs/verify-algorithms.js`（抽取 + 独立实现对比，12 项全 PASS）；
+* UI：`.logs/verify-ui2.js`（headless Edge 读真实 DOM：页签、示例、legend 计数、异构提示、确定性布局）；
+* 全量 `./mvnw test` **BUILD SUCCESS，0 失败 / 0 错误**。
+
+### 56.7 未做
+
+* 投影上限 40 是拍的值：桥点邻居更多时**跳过**（宁可少边，也不让浏览器画 3000 条边）。要更准确的语义可以改成
+  "按相似度/权重只连前 k 个"，但那需要定义权重，未做。
+* `#16` 的平行边仍靠弧线区分（10 条同对端点的边在缩小时确实难数）；如果要"一眼看出几条"，
+  需要在小节/边上显示"×10"，本轮未做。
