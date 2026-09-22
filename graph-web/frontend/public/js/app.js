@@ -77,6 +77,13 @@
     const match = /_(\d)$/.exec(String(id == null ? '' : id));
     return match ? Number(match[1]) : null;
   }
+
+  /** A stable hash of a string, for the places a value must not jump between renders. */
+  function hashOf(text) {
+    let hash = 0;
+    for (let i = 0; i < text.length; i += 1) hash = (hash * 31 + text.charCodeAt(i)) | 0;
+    return Math.abs(hash) % 100000;
+  }
   const iconHref = (label) => (ICONS[label] ? `#icon-${label}` : '#icon-default');
 
   function appendIcon(parent, elements) {
@@ -101,6 +108,10 @@
       showAll: '显示全部',
       algorithm: '算法',
       cc: '连通分量',
+      louvain: 'Louvain',
+      pagerank: 'PageRank',
+      algoHomogeneous: '该图混了多种点（另有 {others}），{algo} 只在最多的 {type}（{n} 个点）上运算；其它类型的点被投影成 {type} 之间的 {links} 条边',
+      projectedEdge: '投影边',
       searchPlaceholder: '搜索点 / 边关键词',
       searchNoMatch: '当前画布上没有匹配「{q}」的点或边（搜索只作用于画布内）',
       clearSearch: '清除搜索',
@@ -173,6 +184,7 @@
       typeCount: '数量',
       rowsEmpty: '查询没有返回任何行',
       rowsTruncated: '表格只显示前 {shown} 行，共 {total} 行（用 limit() 缩小结果）',
+      rowsDuplicates: '{n} 行，其中 {d} 行与前面的行是同一个元素（同一条边被两个端点各输出一次；用 dedup() 去重）',
       responseTooLarge: '响应过大，未完整传回（已接收 {size}）。请加 limit() 或缩小查询范围。',
       responseCapped: '结果超过 {n} 项，已截断；请用 limit() 或更小的范围。',
       canvasCleared: '查询失败，画布已清空（避免把上一次的结果当成这次的结果）',
@@ -197,6 +209,10 @@
       showAll: 'Show all',
       algorithm: 'Algorithm',
       cc: 'Components',
+      louvain: 'Louvain',
+      pagerank: 'PageRank',
+      algoHomogeneous: 'The graph mixes vertex types ({others}), so {algo} ran on the largest type only - {type} ({n} vertices) - with the other types projected into {links} edges between them',
+      projectedEdge: 'projected edge',
       searchPlaceholder: 'Search vertices / edges',
       searchNoMatch: 'Nothing on the canvas matches "{q}" (the search only covers what is drawn)',
       clearSearch: 'Clear search',
@@ -269,6 +285,7 @@
       typeCount: 'Count',
       rowsEmpty: 'The query returned no rows',
       rowsTruncated: 'The table shows the first {shown} of {total} rows - add a limit() to narrow it',
+      rowsDuplicates: '{n} rows, {d} of which repeat an element listed above (an edge both of its endpoints produced: add dedup() to collapse them)',
       responseTooLarge: 'The response was too large to transfer intact (received {size}). Add a limit() or narrow the query.',
       responseCapped: 'The answer was capped at {n} items - add a limit() or narrow the query.',
       canvasCleared: 'The query failed, so the canvas was cleared (the previous answer is not this one)',
@@ -691,11 +708,15 @@
     let nodes = [...graph.vertices.values()].map((v) => {
       const key = `${v.label}::${v.id}`;
       const p = positions.get(key);
+      // a deterministic starting position: the same query twice draws the same picture, which is
+      // what makes two runs comparable (and parallel edges land on the same arcs)
+      const jitterX = (hashOf(key) % 1000) / 1000;
+      const jitterY = (hashOf(key + '|y') % 1000) / 1000;
       return {
         ...v,
         key,
-        x: p ? p.x : width / 2 + (Math.random() - 0.5) * 100,
-        y: p ? p.y : height / 2 + (Math.random() - 0.5) * 100,
+        x: p ? p.x : width / 2 + (jitterX - 0.5) * 100,
+        y: p ? p.y : height / 2 + (jitterY - 0.5) * 100,
       };
     });
     const idToKey = new Map();
@@ -813,6 +834,13 @@
   const EDGE_NODE_GAP = 13;
   // how far apart the arcs of one vertex pair are (px)
   const EDGE_ARC_STEP = 7;
+
+  /**
+   * The most neighbours one vertex of another type may contribute to a projection. Projecting a
+   * vertex means connecting all its kept neighbours pairwise, so a hub of 80 accounts would add 3160
+   * edges: beyond this the vertex is skipped instead (the result stays readable and finite).
+   */
+  const PROJECTION_MAX = 40;
 
   /**
    * Gives every edge of the same vertex pair its own arc.
@@ -1148,7 +1176,8 @@
     if (communityOf) {
       const counts = new Map();
       for (const n of nodes) {
-        const cid = communityOf.get(n.key) ?? 0;
+        if (!communityOf.has(n.key)) continue; // not part of the analysed subset (a mixed-type graph)
+        const cid = communityOf.get(n.key);
         counts.set(cid, (counts.get(cid) || 0) + 1);
       }
       items = [...counts.entries()].sort((a, b) => a[0] - b[0]).map(([cid, cnt]) => ({
@@ -1156,64 +1185,65 @@
         label: truncate(`${t('community')} ${cid} · ${cnt} ${t('count')}`, 20),
         mode: 'community',
         value: cid,
+        kind: 'vertex',
       }));
     } else {
       // one entry per legend group: the vertex type, split further by relation shard
-      // when the id carries a "_<n>" suffix (so a sharded graph shows its shards)
+      // when the id carries a "_<n>" suffix (so a sharded graph shows its shards), with how many
+      // vertices it has - the edge entries below count theirs the same way
       const groups = new Map();
       for (const n of nodes) {
         const key = legendKey(n);
-        if (!groups.has(key)) groups.set(key, { key, node: n });
+        if (!groups.has(key)) groups.set(key, { key, node: n, count: 0 });
+        groups.get(key).count += 1;
       }
       items = [...groups.values()].map((g) => ({
         color: colorFor(g.node.label, g.node.id),
-        label: truncate(g.key, 20),
+        label: truncate(`${g.key} · ${g.count}`, 20),
         mode: 'label',
         value: g.key,
         kind: 'vertex',
       }));
     }
     // then one entry per edge type: selecting it highlights those edges (and keeps their
-    // endpoints), selecting it again clears the selection
+    // endpoints), selecting it again clears the selection. No heading - a blank row separates the
+    // two groups instead.
     const edgeGroups = new Map();
     for (const l of currentLinks) edgeGroups.set(l.label, (edgeGroups.get(l.label) || 0) + 1);
-    if (edgeGroups.size) {
-      items.push({ heading: t('edges') });
-      for (const [label, n] of [...edgeGroups.entries()]
-        .sort((a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0])))) {
-        items.push({
-          color: colorFor(label, String(label)),
-          label: truncate(`${label} · ${n}`, 20),
-          mode: 'edge',
-          value: String(label),
-          kind: 'edge',
-        });
-      }
+    let firstEdge = true;
+    for (const [label, n] of [...edgeGroups.entries()]
+      .sort((a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0])))) {
+      items.push({
+        color: colorFor(label, String(label)),
+        label: truncate(`${label} · ${n}`, 20),
+        mode: 'edge',
+        value: String(label),
+        kind: 'edge',
+        gap: firstEdge,
+      });
+      firstEdge = false;
     }
     if (!items.length) return;
     const legend = svg.append('g').attr('class', 'legend').attr('transform', 'translate(14, 60)');
     const ROW = 24;
+    const GAP = 12;
+    const height = items.length * ROW + 14 + (firstEdge ? 0 : GAP);
     legend.append('rect')
       .attr('width', 158)
-      .attr('height', items.length * ROW + 14)
+      .attr('height', height)
       .attr('rx', 11)
       .attr('fill', '#ffffff').attr('fill-opacity', 0.95)
       .attr('stroke', '#e4e9f2');
-    items.forEach((item, i) => {
-      if (item.heading) {
-        // a small heading that separates the vertex entries from the edge ones
-        legend.append('text')
-          .attr('class', 'legend-heading')
-          .attr('x', 9).attr('y', 9 + i * ROW + 11)
-          .text(item.heading);
-        return;
-      }
+    let y = 8;
+    items.forEach((item) => {
+      if (item.gap) y += GAP;
       const active = !!legendFilter && legendFilter.mode === item.mode
         && legendFilter.values.has(String(item.value));
       const g = legend.append('g')
         .attr('class', 'legend-item')
-        .attr('transform', `translate(9, ${8 + i * ROW})`)
+        .attr('transform', `translate(9, ${y})`)
         .classed('active', active);
+      y += ROW;
       g.on('click', (event) => { event.stopPropagation(); toggleLegendFilter(item.mode, item.value); });
       g.on('mousedown', (event) => event.stopPropagation()); // don't start a canvas pan
       g.append('rect').attr('class', 'bg').attr('width', 140).attr('height', 20).attr('rx', 7);
@@ -1239,8 +1269,10 @@
 
   function nodeColor(d) {
     if (algoState && algoState.type === 'community') {
-      const cid = algoState.communityOf.get(d.key);
-      return communityColor(cid == null ? 0 : cid);
+      if (!algoState.communityOf.has(d.key)) {
+        return '#c9d1e0'; // not part of the analysed subset (another vertex type)
+      }
+      return communityColor(algoState.communityOf.get(d.key));
     }
     return colorFor(d.label, d.id);
   }
@@ -1373,7 +1405,24 @@
     } else {
       const adj = buildAdjacency(currentNodes, currentLinks);
       if (name === 'cc' || name === 'louvain') {
-        const communityOf = name === 'cc' ? connectedComponents(currentNodes, adj) : louvain(currentNodes, adj);
+        // A component, or a community, is a group of one kind of vertex: on a graph that mixes
+        // Account, IP and Phone a "component" would just be everything reachable through an
+        // address, which is not what either algorithm promises. So they run on the largest single
+        // type, and the UI says which one and dims the rest.
+        const subset = largestTypeSubgraph(currentNodes, currentLinks);
+        if (subset.skippedTypes.length) {
+          const message = t('algoHomogeneous')
+            .replaceAll('{algo}', t(name === 'cc' ? 'cc' : 'louvain'))
+            .replaceAll('{type}', String(subset.label))
+            .replaceAll('{n}', String(subset.nodes.length))
+            .replaceAll('{others}', subset.skippedTypes.join(' / '))
+            .replaceAll('{links}', String(subset.projected));
+          toast(message, 5200);
+          setStatus(message);
+        }
+        const communityOf = name === 'cc'
+          ? connectedComponents(subset.nodes, subset.adj)
+          : louvain(subset.nodes, subset.adj);
         algoState = { type: 'community', communityOf };
       } else if (name === 'pagerank') {
         const rank = pagerank(currentNodes, adj);
@@ -1385,12 +1434,87 @@
     refreshAlgoView();
   }
 
+  /**
+   * The largest single vertex type, with the other types folded away, and the types that were left
+   * out. Connected components and Louvain only mean something within one kind of vertex, so a mixed
+   * graph is narrowed to the type with the most vertices - and the vertices of the other types are
+   * *projected* into edges between the kept ones: two accounts that share an IP address become
+   * neighbours, which is what an analyst means by "accounts linked through this address". Without the
+   * projection every account would be a component of its own, because no edge joins two accounts
+   * directly. A graph of one type comes back unchanged, with nothing skipped and nothing projected.
+   */
+  function largestTypeSubgraph(nodes, links) {
+    const byType = new Map();
+    for (const n of nodes) {
+      if (!byType.has(n.label)) byType.set(n.label, []);
+      byType.get(n.label).push(n);
+    }
+    let best = null;
+    for (const [label, group] of byType) {
+      if (!best || group.length > best.nodes.length) best = { label, nodes: group };
+    }
+    if (!best) {
+      return { nodes, links, adj: buildAdjacency(nodes, links), label: null, skippedTypes: [], projected: 0 };
+    }
+    if (byType.size === 1) {
+      return { nodes, links, adj: buildAdjacency(nodes, links), label: best.label, skippedTypes: [], projected: 0 };
+    }
+
+    const keep = new Set(best.nodes.map((n) => n.key));
+    const keptLinks = [];
+    const through = new Map(); // a vertex of another type -> the kept vertices it reaches
+    for (const l of links) {
+      const source = endpointKey(l.source);
+      const target = endpointKey(l.target);
+      const sourceKept = keep.has(source);
+      const targetKept = keep.has(target);
+      if (sourceKept && targetKept) {
+        keptLinks.push({ id: l.id, label: l.label, source, target });
+      } else if (sourceKept !== targetKept) {
+        const bridge = sourceKept ? target : source;
+        const reached = sourceKept ? source : target;
+        if (!through.has(bridge)) through.set(bridge, new Set());
+        through.get(bridge).add(reached);
+      }
+    }
+    let projected = 0;
+    for (const [bridge, reached] of through) {
+      const group = [...reached];
+      if (group.length < 2 || group.length > PROJECTION_MAX) {
+        continue; // a hub of another type would turn into a clique: skip it rather than explode
+      }
+      for (let i = 0; i < group.length; i += 1) {
+        for (let j = i + 1; j < group.length; j += 1) {
+          keptLinks.push({
+            id: `projected:${bridge}:${group[i]}:${group[j]}`,
+            label: t('projectedEdge'),
+            source: group[i],
+            target: group[j],
+          });
+          projected += 1;
+        }
+      }
+    }
+    return {
+      nodes: best.nodes,
+      links: keptLinks,
+      adj: buildAdjacency(best.nodes, keptLinks),
+      label: best.label,
+      skippedTypes: [...byType.keys()].filter((label) => label !== best.label),
+      projected,
+    };
+  }
+
   function refreshAlgoView() {
     if (!root) return;
     root.selectAll('.node').select('circle.body')
       .attr('fill', (d) => nodeColor(d));
     root.selectAll('.node')
-      .classed('pr-highlight', (d) => algoState && algoState.type === 'pagerank' && algoState.topKeys.has(d.key));
+      .classed('pr-highlight', (d) => algoState && algoState.type === 'pagerank' && algoState.topKeys.has(d.key))
+      // a vertex outside the analysed subset (community detection on a mixed graph) is dimmed, so
+      // the picture says which vertices the colours are about
+      .classed('algo-out', (d) => !!algoState && algoState.type === 'community'
+        && !algoState.communityOf.has(d.key));
     applyLegendFilter();
     applyPathFilter();
     applyPickedHighlight();
@@ -1915,6 +2039,14 @@
         [id]: value.id,
         [properties]: value.properties || {},
       })));
+      // an element that two traversers produced - an edge whose two endpoints are both in the answer
+      // - is listed once per traverser: `count()` counts them, the rows show them, and `dedup()`
+      // collapses them. Saying so is the difference between "a duplicate bug" and a stated rule.
+      const distinct = new Set(values.map((value) => `${value.label || value.type}::${value.id}`)).size;
+      if (distinct < values.length) {
+        el.rowsHint.textContent = t('rowsDuplicates')
+          .replace('{n}', String(values.length)).replace('{d}', String(values.length - distinct));
+      }
       return;
     }
     const column = t('rowsValue');
@@ -1958,7 +2090,17 @@
       ? t('rowsTruncated').replace('{shown}', String(shown.length)).replace('{total}', String(rows.length))
       : t('rowsHint');
     el.rowsTableWrap.hidden = false;
-    activateTab('rows');
+    // do not steal the tab: the query's tab choice belongs to the user (stats by default), so the
+    // result tab only gets a marker that there is something to read
+    if (!document.querySelector('.tab[data-tab="rows"]').classList.contains('active')) {
+      markRowsUnread(true);
+    }
+  }
+
+  /** Marks the result tab as holding an unread answer (a dot next to its label). */
+  function markRowsUnread(unread) {
+    const tab = document.querySelector('.tab[data-tab="rows"]');
+    if (tab) tab.classList.toggle('unread', unread);
   }
 
   /** Empties the rows table (a new query, or a Gremlin one). */
@@ -2006,6 +2148,9 @@
    * Fills the example picker for the selected graph. An example is
    * {@code [titleZh, titleEn, query]} - the title follows the interface language, the query is the
    * same in both (and is what the picker hands to the query box).
+   *
+   * <p>The picker is not shown until its button asks for it: it is a helper, not a thing to trip
+   * over, so a query change (a different graph, a different language) only refills it.
    */
   function refreshExamples() {
     if (!el.exampleSelect) return;
@@ -2025,7 +2170,12 @@
       el.exampleSelect.appendChild(option);
     }
     if (byGraph.some((e) => e[e.length - 1] === keep)) el.exampleSelect.value = keep;
-    el.exampleSelect.hidden = byGraph.length === 0;
+    if (byGraph.length === 0) {
+      el.exampleSelect.hidden = true;
+      el.examplesBtn.hidden = true; // no examples for this graph: no button to open them either
+    } else {
+      el.examplesBtn.hidden = false; // only the button shows; toggleExamples() opens the picker
+    }
   }
 
   /**
@@ -2381,6 +2531,7 @@
   /** Shows the side panel for the given tab ('stats' / 'props' / 'rows'). */
   function activateTab(tab) {
     const wanted = tab === 'rows' && !rowsAvailable() ? 'stats' : tab;
+    if (wanted === 'rows') markRowsUnread(false);
     document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === wanted));
     document.getElementById('statsPanel').hidden = wanted !== 'stats';
     document.getElementById('propsPanel').hidden = wanted !== 'props';

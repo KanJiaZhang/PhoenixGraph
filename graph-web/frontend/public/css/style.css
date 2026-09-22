@@ -378,7 +378,18 @@ button.btn-primary:hover, #queryBtn:hover { filter: brightness(1.07); }
   box-shadow: none;
 }
 .tab:hover { color: var(--text-2); background: rgba(79, 70, 229, 0.05); }
-.tab[hidden] { display: none; } /* the result tab only exists for Cypher answers */
+.tab[hidden] { display: none; }
+/* a dot: there is an answer in the result tab that has not been looked at yet */
+.tab.unread::after {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-left: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  vertical-align: middle;
+}
 .tab.active {
   color: var(--accent);
   background: #fff;
@@ -520,7 +531,6 @@ button.btn-primary:hover, #queryBtn:hover { filter: brightness(1.07); }
 
 .legend { pointer-events: none; }
 .legend text { font-size: 12px; font-weight: 550; fill: #3b4759; }
-.legend-heading { font-size: 10px; font-weight: 750; letter-spacing: 0.07em; text-transform: uppercase; fill: var(--muted); }
 .legend-item { pointer-events: all; cursor: pointer; }
 .legend-item .bg { fill: transparent; transition: fill 0.15s; }
 .legend-item:hover .bg { fill: rgba(79, 70, 229, 0.08); }
@@ -541,6 +551,8 @@ button.btn-primary:hover, #queryBtn:hover { filter: brightness(1.07); }
 
 /* two picked vertices (source / target for shortest path) */
 .node.picked circle.ring { stroke: #8b5cf6; stroke-width: 3.6; }
+/* a vertex the running algorithm did not analyse (community detection on a mixed graph) */
+.node.algo-out { opacity: 0.3; }
 
 /* shortest path: all found paths in violet, the shortest one in green */
 .node.path-dim { opacity: 0.1; }
