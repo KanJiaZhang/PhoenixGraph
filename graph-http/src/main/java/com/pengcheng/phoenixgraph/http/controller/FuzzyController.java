@@ -5,6 +5,7 @@ import com.pengcheng.phoenixgraph.fuzzy.FuzzyContexts;
 import com.pengcheng.phoenixgraph.fuzzy.FuzzyExpression;
 import com.pengcheng.phoenixgraph.fuzzy.FuzzyFunctions;
 import com.pengcheng.phoenixgraph.fuzzy.FuzzyKey;
+import com.pengcheng.phoenixgraph.fuzzy.FuzzySequence;
 import com.pengcheng.phoenixgraph.fuzzy.FuzzyLink;
 import com.pengcheng.phoenixgraph.fuzzy.FuzzyPattern;
 import com.pengcheng.phoenixgraph.fuzzy.FuzzyPatternException;
@@ -89,9 +90,17 @@ public class FuzzyController {
     @PostMapping("/validate")
     public Map<String, Object> validate(@RequestBody FuzzyPreviewRequest request) {
         Map<String, Object> out = new LinkedHashMap<>();
-        FuzzyExpression expression;
+        // an expression is either the flat form or a sequence of events: whichever it is, it is parsed
+        // here, so the editor answers with the message instead of failing later
+        boolean sequence = FuzzySequence.looksLikeSequence(request.expression());
+        FuzzyExpression expression = null;
+        FuzzySequence parsedSequence = null;
         try {
-            expression = FuzzyExpression.parse(request.expression());
+            if (sequence) {
+                parsedSequence = FuzzySequence.parse(request.expression());
+            } else {
+                expression = FuzzyExpression.parse(request.expression());
+            }
         } catch (FuzzyPatternException e) {
             out.put("valid", false);
             out.put("errors", List.of(e.getMessage()));
@@ -99,8 +108,9 @@ public class FuzzyController {
         }
         out.put("valid", true);
         out.put("errors", List.of());
-        out.put("partCount", expression.partCount());
-        out.put("fields", expression.fields());
+        out.put("partCount", sequence ? parsedSequence.steps().size() : expression.partCount());
+        out.put("fields", sequence ? parsedSequence.fieldsByStep().values().stream().flatMap(List::stream).toList()
+                : expression.fields());
         FuzzyContext context = FuzzyContexts.fromJson(request.context());
         if (request.patternId() != null && !request.context().isEmpty()) {
             FuzzyPattern pattern = new FuzzyPattern(request.patternId(), request.name(), request.expression(),
@@ -108,10 +118,12 @@ public class FuzzyController {
             out.put("key", pattern.key(context));
             out.put("linkVertexId", pattern.linkVertexId(context));
         } else if (!request.context().isEmpty()) {
-            String key = expression.key(context);
+            String key = sequence ? parsedSequence.key(context) : expression.key(context);
             out.put("key", key == null ? null : FuzzyKey.of(key));
         }
-        out.put("steps", expression.explain(context).stream().map(step -> {
+        List<FuzzyExpression.Step> explained = sequence ? parsedSequence.explain(context)
+                : expression.explain(context);
+        out.put("steps", explained.stream().map(step -> {
             Map<String, Object> view = new LinkedHashMap<>();
             view.put("index", step.index());
             view.put("part", step.part());
@@ -228,7 +240,8 @@ public class FuzzyController {
         view.put("expression", pattern.expression());
         view.put("description", pattern.description());
         view.put("enabled", pattern.enabled());
-        view.put("fields", pattern.parsed().fields());
+        // a sequence pattern has no flat expression: the pattern itself knows the fields either way
+        view.put("fields", pattern.fields());
         view.put("vertexId", pattern.vertexId());
         view.put("example", pattern.example());
         view.put("demoTitle", pattern.demoTitle());

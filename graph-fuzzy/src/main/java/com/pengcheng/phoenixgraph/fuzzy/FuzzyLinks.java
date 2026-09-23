@@ -37,14 +37,13 @@ public final class FuzzyLinks {
         if (!pattern.enabled()) {
             return Optional.empty();
         }
-        FuzzyExpression expression = pattern.parsed();
-        String raw = expression.key(context);
+        String raw = pattern.key(context);
         if (raw == null || raw.isBlank()) {
             return Optional.empty();
         }
         String key = FuzzyKey.of(raw);
-        return Optional.of(new FuzzyLink(pattern.id(), expression.text(), key,
-                expression.fragments(context), FuzzySchema.linkVertexId(pattern.id(), key)));
+        return Optional.of(new FuzzyLink(pattern.id(), pattern.expression(), key,
+                pattern.fragments(context), FuzzySchema.linkVertexId(pattern.id(), key)));
     }
 
     /** The link vertex id a context produces for a pattern, or {@code null} when it does not apply. */

@@ -380,7 +380,9 @@ public final class FuzzyExpression {
             int start = pos;
             while (pos < text.length()) {
                 char c = text.charAt(pos);
-                if (Character.isLetterOrDigit(c) || c == '_') {
+                // a dotted path reads inside a nested value (a sequence pattern says Login.IP), so a name
+                // may carry dots and the digits of a list index
+                if (Character.isLetterOrDigit(c) || c == '_' || c == '.') {
                     pos++;
                 } else {
                     break;

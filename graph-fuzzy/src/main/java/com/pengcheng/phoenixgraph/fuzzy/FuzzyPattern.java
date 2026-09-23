@@ -39,8 +39,18 @@ public record FuzzyPattern(int id, String name, String expression, String descri
         if (expression.isEmpty()) {
             throw new FuzzyPatternException("Pattern " + id + " has no expression");
         }
-        // parse once, here: a pattern that cannot be read never reaches a query
-        FuzzyExpression.parse(expression);
+        // parse once, here: a pattern that cannot be read never reaches a query. A sequence (events in
+        // order, with the time between them) is a pattern of its own kind, and which one it is is read
+        // from the expression itself.
+        if (FuzzySequence.looksLikeSequence(expression)) {
+            FuzzySequence parsed = FuzzySequence.parse(expression);
+            if (parsed.declaredPatternId() >= 0 && parsed.declaredPatternId() != id) {
+                throw new FuzzyPatternException("The expression names pattern " + parsed.declaredPatternId()
+                        + " (fl_" + parsed.declaredPatternId() + "_) but this pattern is " + id);
+            }
+        } else {
+            FuzzyExpression.parse(expression);
+        }
         name = name == null || name.isBlank() ? "pattern " + id : name.trim();
         description = description == null ? "" : description.trim();
         example = example == null ? Map.of() : Map.copyOf(example);
@@ -63,6 +73,31 @@ public record FuzzyPattern(int id, String name, String expression, String descri
         return FuzzyExpression.parse(expression);
     }
 
+    /** Whether this pattern is a sequence of events rather than parts joined by {@code +}. */
+    public boolean sequence() {
+        return FuzzySequence.looksLikeSequence(expression);
+    }
+
+    /** The parsed sequence, or {@code null} when this is a flat pattern. */
+    public FuzzySequence parsedSequence() {
+        return sequence() ? FuzzySequence.parse(expression) : null;
+    }
+
+    /** The fields the key reads, whether the pattern is flat or a sequence. */
+    public java.util.List<String> fields() {
+        if (!sequence()) {
+            return parsed().fields();
+        }
+        java.util.List<String> out = new java.util.ArrayList<>();
+        parsedSequence().fieldsByStep().values().forEach(out::addAll);
+        return java.util.List.copyOf(out);
+    }
+
+    /** The fragments a context produces, one per value the pattern reads. */
+    public java.util.List<String> fragments(FuzzyContext context) {
+        return sequence() ? parsedSequence().fragments(context) : parsed().fragments(context);
+    }
+
     /** The vertex id of this pattern in the registry. */
     public String vertexId() {
         return FuzzySchema.patternVertexId(id);
@@ -73,7 +108,7 @@ public record FuzzyPattern(int id, String name, String expression, String descri
      * (a part of it has no value in this context).
      */
     public String key(FuzzyContext context) {
-        String raw = parsed().key(context);
+        String raw = sequence() ? parsedSequence().key(context) : parsed().key(context);
         return raw == null ? null : FuzzyKey.of(raw);
     }
 
@@ -98,7 +133,7 @@ public record FuzzyPattern(int id, String name, String expression, String descri
 
     /** The steps the editor shows for a context. */
     public List<FuzzyExpression.Step> explain(FuzzyContext context) {
-        return parsed().explain(context);
+        return sequence() ? parsedSequence().explain(context) : parsed().explain(context);
     }
 
     /** This pattern switched off, for a registry that keeps disabled patterns visible. */

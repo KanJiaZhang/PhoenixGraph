@@ -4854,3 +4854,79 @@ node .logs/rocksdb-edge-caps4.js           # 用户这四条语句
 node .logs/rocksdb-edge-caps5.js           # 报错信息、typed start + outE/inE、otherV 回归
 node .logs/fuzzy-empty-start.js            # g.V() 仍是空起点（fuzzyLink 未受影响）
 ```
+
+---
+
+## 68. 事件序列模式（fuzzy sequence）：按 EventTime 排的事件列表 → 一个 pattern id
+
+用户给了一个账户的事件列表（Login / BalanceCheck / Payment / Dispute，各带 EventTime），要一个**序列**形状的模糊模式：
+
+```
+fl_<pattern_id>_L0(ip2(Login.IP))_[<100s]_B1_[<100s]_P2_[<100s]_D3(Dispute.DisputeReason)
+```
+
+### 68.1 语义（与用户四条要求一一对应）
+
+| 要求 | 实现 |
+|---|---|
+| ① 事件按 EventTime 排序；列表可多可少，但这四个都在且顺序不变 | 取 `context.events()` 按 `EventTime` 升序，然后**按步骤贪心匹配**（从最早能对上的事件开始）；未命名的事件被忽略；任一必需步骤缺失或顺序不成立 → 模式**不适用**（不是空 key） |
+| ② 相邻事件相差 100 s 以内 | 两个步骤之间的 `_[<100s]_` 就是窗口：`间隔 > 100s` 立即失败（事件已按时间排序，后面的只会更远）。等号成立算通过（`>100000ms` 才算超） |
+| ③ Dispute 的 reason 都是 NotMyCard | 步骤值可以是**条件**：`D3(Dispute.DisputeReason)=='NotMyCard'`。带条件时该值只做判断、不进 key（这组人共享同一个常量，放进 key 只会让 id 变长）；不带条件时值进 key → 不同 reason 各自成组 |
+| ④ 行为相同的账号关联在一起 | key 由各步骤的**值**拼成（`ip2(Login.IP)+'_'+Dispute.DisputeReason` → `10.122_notmycard`），link 节点 id = `fl_<patternId>_<key>`（`FuzzyKey` 会把 key 小写），所以同一 /16 + 同一 reason 的账号落在同一个节点上 ✓ |
+
+**表达式语法**（`FuzzySequence`）：可选前缀 `fl_<id>_`（写了就要和 pattern id 一致，否则报错）；步骤 `<事件名首字母><序号>`，可带 `(<值表达式>)` 和 `=='字面量'`；步骤之间 `_[<N s]_`。
+值表达式沿用平面模式的表达式语言（`ip2(...)`、`raw(...)`、`regex(...)`…），字段可以是**点号路径**（`Login.IP`、`Dispute.DisputeReason`）——为此把 `FuzzyExpression` 的名字词法放宽到允许 `.`，并让 `FuzzyContext.value()` 支持路径查找（找不到路径时退回最后一段，这样"事件列表形状"和"每个事件一个 key 的形状"都能读）。
+
+### 68.2 上下文从哪来（三种形状都认）
+
+1. 用户给的形状：`{"Login": {...}, "BalanceCheck": {...}, ...}`（键=事件名，值里有 `EventTime`）；
+2. `{"events": [{"name":"Login","EventTime":...}, ...]}`（ingest 常见）；
+3. 上面任一形状作为**一个字符串属性**（如账号的 `eventLog`）——`FuzzyContexts.fromJson` 现在保留嵌套 map/list（以前会被拍平成文本），`parseJson` 遇到 JSON 文本会当文档解析。
+
+时间字段认 `EventTime`/`eventTime`/`time`/`timestamp`/`ts`，数值按毫秒（`> 1e11`）否则按秒，也接受 ISO 字符串；事件名认 `name`/`eventName`/`eventType`/`type`。
+
+### 68.3 演示 pattern（写进 `fuzzy-patterns.json`，payment-graph）
+
+* **#2** `fl_2_L0(ip2(Login.IP))_[<100s]_B1_[<100s]_P2_[<100s]_D3(Dispute.DisputeReason)`
+  —— 四步都在、相邻 ≤100 s，key = `/16 + reason`；
+* **#3** `fl_3_L0(ip3(Login.IP))_[<300s]_P1_[<300s]_D2(Dispute.DisputeReason)=='NotMyCard'`
+  —— 三步版（Login → Payment → Dispute）、窗口 300 s、key = `/24`、reason 作为条件。
+
+两个 pattern 都带 `example`（就是用户那份事件列表），所以 UI 的"示例"按钮与 `/api/fuzzy/demo` 直接能用。
+
+### 68.4 实测（payment-graph，服务在跑）
+
+```
+事件列表按 EventTime 排序（用户给的原始时间）：
+  Payment@1790147114881 -> Dispute@1790147128881 -> Login@1790147176281 -> BalanceCheck@1790147177881
+  g.V().fuzzyLink(2, <原始>)  -> []            ← 顺序与 pattern 不符（见下）
+把四个事件的时间改成 pattern 读的顺序（Login -> BalanceCheck -> Payment -> Dispute）：
+  g.V().fuzzyLink(2, <有序>)  -> ["fl_2_10.122_notmycard"]
+  g.V().fuzzyLink(3, <有序>)  -> ["fl_3_10.122.13"]
+/api/fuzzy/validate（pattern 2 + 有序列表）:
+  key=10.122_notmycard  link=fl_2_10.122_notmycard
+    0. L0(ip2(Login.IP)) -> Login @1790147176281 (+0s) -> 10.122
+    1. B1               -> BalanceCheck @1790147176881 (+0s)
+    2. P2               -> Payment @1790147177281 (+0s)
+    3. D3(...)          -> Dispute @1790147177881 (+0s) -> NotMyCard
+    4. key              -> 10.122_NotMyCard
+关联 5 个账号后每个账号的组：
+  ev_a1 (10.122.13.14, NotMyCard, 正常间隔) -> [fl_3_10.122.13, fl_2_10.122_notmycard]
+  ev_a2 (10.122.13.99, NotMyCard, 正常间隔) -> [fl_3_10.122.13, fl_2_10.122_notmycard]   ← 同组
+  ev_a3 (10.130.7.14, NotMyCard)           -> [fl_3_10.130.7,  fl_2_10.130_notmycard]   ← 换网段就换组
+  ev_a4 (10.122.13.50, 间隔 101s)          -> [fl_3_10.122.13]                            ← 超过 100s，#2 不适用；#3 窗口 300s 仍然命中
+  ev_a5 (10.122.13.51, Fraud)              -> [fl_2_10.122_fraud]                          ← reason 不同：#2 另成一组；#3 因 =='NotMyCard' 不命中
+g.V('fl_2_10.122_notmycard','FuzzyLink').out('FuzzyLinkedTo').values('id') -> ["ev_a2","ev_a1"]
+```
+
+**一个重要发现（要告诉用户）**：**用户给的那份事件列表，按 EventTime 排序后是 Payment → Dispute → Login → BalanceCheck**，
+与他们自己的 pattern（Login → BalanceCheck → Payment → Dispute）**顺序不符**，所以原始列表 evaluate 出来是"不适用"（空结果），
+不是 bug。间隔本身都合规（14.0s / 47.4s / 1.6s）。要命中就把时间改成 pattern 的顺序（或把 pattern 的步骤顺序改成 P→D→L→B）。
+
+### 68.5 复现与测试
+
+```bash
+./mvnw -o -pl graph-fuzzy test -Dtest=FuzzySequenceTest   # 11 用例（解析/顺序/窗口边界/条件/三形状上下文/两种不同的分组）
+node .logs/verify-sequence-final.js                        # 上面那张表（原始 vs 有序、每账号的组、组成员）
+node .logs/verify-sequence-pattern.js                      # 关联过程（写 5 个账号 + links 接口）
+```

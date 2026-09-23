@@ -4,7 +4,9 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.util.Iterator;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -44,11 +46,42 @@ public final class FuzzyContexts {
         Iterator<Map.Entry<String, JsonNode>> fields = root.fields();
         while (fields.hasNext()) {
             Map.Entry<String, JsonNode> entry = fields.next();
-            JsonNode value = entry.getValue();
-            values.put(entry.getKey(), value.isNumber() ? value.numberValue()
-                    : value.isBoolean() ? value.booleanValue() : value.isNull() ? null : value.asText());
+            values.put(entry.getKey(), value(entry.getValue()));
         }
         return FuzzyContext.of(values);
+    }
+
+    /**
+     * One value as it is: a nested object stays a map and an array stays a list, because a sequence
+     * pattern reads an event list ({@code {"Login": {"IP": ..., "EventTime": ...}}}) rather than a field.
+     */
+    private static Object value(JsonNode node) {
+        if (node == null || node.isNull()) {
+            return null;
+        }
+        if (node.isNumber()) {
+            return node.numberValue();
+        }
+        if (node.isBoolean()) {
+            return node.booleanValue();
+        }
+        if (node.isObject()) {
+            Map<String, Object> nested = new LinkedHashMap<>();
+            Iterator<Map.Entry<String, JsonNode>> fields = node.fields();
+            while (fields.hasNext()) {
+                Map.Entry<String, JsonNode> entry = fields.next();
+                nested.put(entry.getKey(), value(entry.getValue()));
+            }
+            return nested;
+        }
+        if (node.isArray()) {
+            List<Object> items = new ArrayList<>(node.size());
+            for (JsonNode item : node) {
+                items.add(value(item));
+            }
+            return items;
+        }
+        return node.asText();
     }
 
     /** A context from the properties of a vertex (values are read as text by a pattern). */
