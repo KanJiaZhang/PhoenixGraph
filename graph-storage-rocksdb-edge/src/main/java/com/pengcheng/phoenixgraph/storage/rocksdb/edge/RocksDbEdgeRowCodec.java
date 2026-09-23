@@ -65,6 +65,26 @@ final class RocksDbEdgeRowCodec {
     }
 
     /**
+     * The header of a stored edge: the far endpoint and the timestamps, without decoding a single property.
+     *
+     * <p>A vertex hop walks an edge to arrive somewhere and never looks at the edge itself, so the property
+     * values - each with its own two timestamps - are skipped rather than decoded. The row is still read
+     * (the endpoint lives in it), which is what makes this cheaper than building the edge: no property
+     * object, no value decoding, no map.
+     */
+    static NeighbourHeader decodeHeader(String edgeId, byte[] value) {
+        RocksDbBytes.Reader reader = new RocksDbBytes.Reader(value);
+        Object otherVertexId = RocksDbIdCodec.read(reader);
+        long createdTime = reader.readLong();
+        long lastUpdatedTime = reader.readLong();
+        return new NeighbourHeader(edgeId, otherVertexId, createdTime, lastUpdatedTime);
+    }
+
+    /** The far endpoint of a stored edge with its timestamps (see {@link #decodeHeader}). */
+    record NeighbourHeader(String edgeId, Object otherVertexId, long createdTime, long lastUpdatedTime) {
+    }
+
+    /**
      * Merges the properties of an incoming row into the stored one: a property is replaced
      * only by a newer timestamp, the peer and the creation time are kept.
      */

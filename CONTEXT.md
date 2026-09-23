@@ -4591,3 +4591,70 @@ B 跑在后面，JIT 更热。改成 **A、B、A、B… 交错**（各自 100 �
 （空 = 全部），所以这是**下一步该给 RocksDB-Edge 补的能力**：一个小接口 + 一个只回端点的批量读。
 
 B 的最后一步比 A 多一次顶点读（`readVertices(50)` 物化答案 + `readVertices(51)` 子图对端），A 只有后者。
+
+---
+
+## 64. 优化：把中间步骤里没人要的点/边属性读掉
+
+§62/§63 的读轨迹指出两处"读了没人要的属性"：
+
+1. **geo 步**：`circle(...)` 对**每个命中单独读一次顶点**（10 个命中 = 10 次往返），而且投影计划是 `null`（后面没有任何步骤要这些点的属性）时，旧代码把 `null` 当成"全部属性"读回来；
+2. **RocksDB-Edge 的顶点跳没有"邻居读"**：`out()`/`both()` 这类顶点跳只需要"边通向哪里"，但存储层只能按 A 的口径返回整条边（空属性列表 = 读该边类声明的**全部**属性），于是中间被丢掉的那些 `Payment.status/type/amount/currency` 每次都被解码。
+
+### 64.1 geo 步：一次批量读，不需要就不读
+
+`GremlinSteps.readHits(ctx, vertexName, hits)`（替代原来的 `readVertex(ctx, hit)` 逐个读）：
+
+* 先按 `search.maxResults()` 收齐命中（去重、保序，语义与原来一致）；
+* **`readProperties()` 为 `null` 时一次记录都不读**：id + label + 距离就是下一步要的全部（距离来自索引，不从记录来）——这和 hop 对"到达的点"的规则一致；
+* 否则**一次 `readVertices(name, ids, plan)` 读完所有命中**，再按命中顺序把距离附上。
+
+日志与用例（`GremlinGraphQueryTest`，85 个用例全绿，其中 2 个更新/新增）：
+
+```
+修前：verify(readVertices).times(3)   // 三个命中三次读
+修后：verify(readVertices).times(1)   // 一次读三个 id
+新增：circleDoesNotReadTheHitsWhenNothingNeedsTheirProperties
+      g.V('v1','person').circle(...).count()        -> 0 次顶点读
+      g.V('v1','person').circle(...).values('distanceMeters') -> 1 次批量读，距离仍是 100/200
+```
+
+### 64.2 RocksDB-Edge：邻居读（只读行的头部）
+
+新增三处，仿 Aerospike 的 `readNeighbours(Batch)`：
+
+| 位置 | 内容 |
+|---|---|
+| `RocksDbEdgeRowCodec.decodeHeader` | 只读行的前三个字段（对端 id + 两个时间），**跳过属性区**，返回 `NeighbourHeader` |
+| `RocksDbEdgeStore.readNeighbours(edgeName, vertexId, direction, side)` | 一次范围扫描 → `List<NeighbourRef>`；**与边列表用同一套 LRU 缓存**（缓存键用哨兵属性集 `{-1}`，避免与"整条边"的缓存串味） |
+| `RocksDbEdgeGraphQuery.readNeighbours/readNeighboursBatch/supportsNeighbourRead` | 按 `sides(...)` 展开方向、排序（与边读同样的 lastUpdatedTime 倒序） |
+
+引擎侧本来就有这条路（`hopVertices`：`!ctx.collectsSubgraph() && graphQuery.supportsNeighbourRead()` 时走邻居读），所以只需存储层支持。
+
+**一个踩到的坑**：第一版邻居读**绕过了存储的边缓存** → 两跳 benchmark 的 `kv.read.call` 从 2.00 涨到 **19.69**（每次扫描都真读盘）。把邻居列表也缓存进同一个 LRU（独立缓存键）后回到 **2.00**，而属性解码仍然省掉了。
+
+### 64.3 实测效果
+
+**geo + 向量 + 边（100 次，§62 的语句）**：
+
+```
+                kv 读/次   记录/次   顶点读/次   结果      子图          geo 步
+修前               127       595        111      203 项   51 点/241 边    0.303 ms
+修后               117       585        101      203 项   51 点/241 边    0.184 ms
+```
+
+省掉的就是那 10 次逐点读（-10 次往返、-10 条记录、-10 次顶点读调用），**答案一个字节没变**（203 项 / 51 点 / 241 边 ✓）。
+
+**两跳投影（816 次，§61 的语句）**：流量与修前**逐项一致**（2.00 次往返 / 51 条记录 / `edge.read = 0`，因为存储缓存照旧命中），
+但两次顶点跳现在读的是**行的头部**：`Payment` 的 `status/type/amount/currency` 一次都不再解码。p50 0.54 ms（修前 0.42）
+在这个量级上属于抖动（`max` 17 ms 的离群值把均值抬到 0.70）——**结构性收益是"少了属性解码"，不是往返数**。
+
+### 64.4 复现
+
+```bash
+./mvnw -o -pl graph-query-gremlin test          # 85 用例（2 个更新/新增）
+./mvnw -o -pl graph-storage-rocksdb-edge test   # 21 用例
+./mvnw -o -pl graph-integration-test test -Dtest=RocksDbGeoVectorPaymentBenchmarkTest
+./mvnw -o -pl graph-integration-test test -Dtest=RocksDbEdgeSeededValuesBenchmarkTest
+```
+输出：`.logs/bench-after-opt2.log`（geo+向量+边）、`.logs/bench-twohop-after-opt2.log`（两跳）。

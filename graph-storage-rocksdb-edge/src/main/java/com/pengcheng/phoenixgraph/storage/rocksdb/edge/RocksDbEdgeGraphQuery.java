@@ -3,6 +3,7 @@ package com.pengcheng.phoenixgraph.storage.rocksdb.edge;
 import com.pengcheng.phoenixgraph.query.QueryException;
 import com.pengcheng.phoenixgraph.query.storage.EdgeQueryResult;
 import com.pengcheng.phoenixgraph.query.storage.EdgeSide;
+import com.pengcheng.phoenixgraph.query.storage.NeighbourRef;
 import com.pengcheng.phoenixgraph.query.storage.GraphQuery;
 import com.pengcheng.phoenixgraph.storage.TimeRange;
 import com.pengcheng.phoenixgraph.query.storage.SchemaProjections;
@@ -87,6 +88,63 @@ public class RocksDbEdgeGraphQuery implements GraphQuery {
      * {@code g.V('Account')}, {@code g.E('Payment').pagerank(DIST)} - is answered by walking the
      * table, and the walk can be capped or narrowed to a prefix.
      */
+    /**
+     * The neighbours of a vertex over one edge class, read from the header of each stored row: a vertex hop
+     * walks an edge to arrive somewhere and never looks at the edge itself, so no edge is built and no
+     * property is decoded. This is the read {@code supportsNeighbourRead} promises the engine.
+     */
+    @Override
+    public List<NeighbourRef> readNeighbours(Object vertexId, String vertexName, String edgeName,
+                                             EdgeSide direction) {
+        Objects.requireNonNull(vertexId, "vertexId");
+        Objects.requireNonNull(direction, "direction");
+        if (vertexName != null) {
+            SchemaProjections.requireVertex(schema, vertexName);
+        }
+        EdgeSchema edgeSchema = SchemaProjections.requireEdge(schema, edgeName);
+
+        List<NeighbourRef> out = new ArrayList<>();
+        for (EdgeSide side : sides(edgeSchema, direction)) {
+            out.addAll(store.readNeighbours(edgeName, vertexId,
+                    RocksDbEdgeStore.directionCode(side, edgeSchema.direction()), side));
+        }
+        out.sort(Comparator.comparingLong(NeighbourRef::lastUpdatedTime).reversed()
+                .thenComparing(ref -> String.valueOf(ref.edgeId())));
+        return out;
+    }
+
+    /** Batched neighbour read: one header scan per vertex and direction, no edge decoded. */
+    @Override
+    public List<List<NeighbourRef>> readNeighboursBatch(String edgeName, EdgeSide direction,
+                                                       List<Object> vertexIds) {
+        Objects.requireNonNull(vertexIds, "vertexIds");
+        Objects.requireNonNull(direction, "direction");
+        if (vertexIds.isEmpty()) {
+            return List.of();
+        }
+        EdgeSchema edgeSchema = SchemaProjections.requireEdge(schema, edgeName);
+        List<List<NeighbourRef>> perVertex = new ArrayList<>(vertexIds.size());
+        for (int i = 0; i < vertexIds.size(); i++) {
+            perVertex.add(new ArrayList<>());
+        }
+        for (EdgeSide side : sides(edgeSchema, direction)) {
+            byte directionCode = RocksDbEdgeStore.directionCode(side, edgeSchema.direction());
+            for (int i = 0; i < vertexIds.size(); i++) {
+                perVertex.get(i).addAll(store.readNeighbours(edgeName, vertexIds.get(i), directionCode, side));
+            }
+        }
+        for (List<NeighbourRef> neighbours : perVertex) {
+            neighbours.sort(Comparator.comparingLong(NeighbourRef::lastUpdatedTime).reversed()
+                    .thenComparing(ref -> String.valueOf(ref.edgeId())));
+        }
+        return perVertex;
+    }
+
+    @Override
+    public boolean supportsNeighbourRead() {
+        return true;
+    }
+
     @Override
     public boolean supportsScan() {
         return true;

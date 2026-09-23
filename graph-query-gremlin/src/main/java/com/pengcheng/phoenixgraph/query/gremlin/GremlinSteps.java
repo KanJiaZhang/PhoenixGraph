@@ -385,6 +385,7 @@ final class GremlinSteps {
                 if (!graphQuery.supportsGeoSearch()) {
                     throw new QueryException("The storage behind this graph does not support geo search");
                 }
+                List<GeoHit> hits = new ArrayList<>();
                 for (GeoHit hit : graphQuery.geoNear(vertex.label(), property, search)) {
                     if (search.maxResults() > 0 && seen.size() >= search.maxResults()) {
                         break;
@@ -392,33 +393,58 @@ final class GremlinSteps {
                     if (!seen.add(hit.vertexId())) {
                         continue;
                     }
-                    GremlinVertex found = readVertex(ctx, hit);
-                    if (found != null) {
-                        out.add(found);
-                    }
+                    hits.add(hit);
                 }
+                out.addAll(readHits(ctx, vertex.label(), hits));
             }
             return out;
         };
     }
 
     /**
-     * Reads one geo hit and attaches the distance, so a query can print it
-     * ({@code values('distanceKm')}) or see it in {@code elementMap()}.
+     * Reads the vertices behind one geo search, in the order the index returned them, each carrying its
+     * distance.
+     *
+     * <p><b>One read for all of them</b>, not one per hit: the hits came out of one search, so they are one
+     * batch (and the store answers a batch in one round trip).
+     *
+     * <p>When nothing after the step needs a property ({@link GremlinContext#readProperties()} is
+     * {@code null}) the records are not read at all: the id, the label and the distance are everything the
+     * next step works with, which is the same rule a hop follows for the vertices it reaches. The distance
+     * comes from the index, so skipping the read does not lose it.
      */
-    private static GremlinVertex readVertex(GremlinContext ctx, GeoHit hit) {
-        List<String> plan = ctx.readProperties();
-        List<VertexQueryResult> found = ctx.graphQuery().readVertices(hit.vertexName(),
-                List.of(hit.vertexId()), plan == null ? List.of() : plan);
-        VertexQueryResult vertex = found.isEmpty() ? null : found.get(0);
-        if (vertex == null) {
-            return null; // the point is indexed but its vertex is gone: skip it
+    private static List<GremlinVertex> readHits(GremlinContext ctx, String vertexName, List<GeoHit> hits) {
+        if (hits.isEmpty()) {
+            return List.of();
         }
-        ctx.recordVertex(vertex.vertexName(), vertex.vertexId());
-        Map<String, Object> properties = new LinkedHashMap<>(vertex.properties());
-        properties.put(GeoIndexSchemas.DISTANCE_PROPERTY, hit.distanceMeters());
-        return new GremlinVertex(vertex.vertexName(), vertex.vertexId(), properties,
-                vertex.createdTime(), vertex.lastUpdatedTime());
+        List<String> plan = ctx.readProperties();
+        if (plan == null) {
+            List<GremlinVertex> out = new ArrayList<>(hits.size());
+            for (GeoHit hit : hits) {
+                ctx.recordVertex(vertexName, hit.vertexId());
+                out.add(new GremlinVertex(vertexName, hit.vertexId(),
+                        Map.of(GeoIndexSchemas.DISTANCE_PROPERTY, hit.distanceMeters()), 0L, 0L));
+            }
+            return out;
+        }
+        List<Object> ids = new ArrayList<>(hits.size());
+        for (GeoHit hit : hits) {
+            ids.add(hit.vertexId());
+        }
+        List<VertexQueryResult> found = ctx.graphQuery().readVertices(vertexName, ids, plan);
+        List<GremlinVertex> out = new ArrayList<>(hits.size());
+        for (int i = 0; i < hits.size(); i++) {
+            VertexQueryResult vertex = i < found.size() ? found.get(i) : null;
+            if (vertex == null) {
+                continue; // the point is indexed but its vertex is gone: skip it
+            }
+            ctx.recordVertex(vertex.vertexName(), vertex.vertexId());
+            Map<String, Object> properties = new LinkedHashMap<>(vertex.properties());
+            properties.put(GeoIndexSchemas.DISTANCE_PROPERTY, hits.get(i).distanceMeters());
+            out.add(new GremlinVertex(vertex.vertexName(), vertex.vertexId(), properties,
+                    vertex.createdTime(), vertex.lastUpdatedTime()));
+        }
+        return out;
     }
 
     /**

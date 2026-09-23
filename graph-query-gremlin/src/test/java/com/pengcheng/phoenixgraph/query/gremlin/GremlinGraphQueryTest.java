@@ -503,21 +503,62 @@ class GremlinGraphQueryTest {
                 "g.V('v1','person').circle('{\"lat\":31.23,\"lon\":121.47,\"radius\":5000}')"
                         + ".limit(3).values('name')");
         assertEquals(List.of("shop-n0", "shop-n1", "shop-n2"), names);
-        // ... so the storage was asked for three hits and only three vertices were read
+        // ... so the storage was asked for three hits, and the three of them are one read of three ids
         org.mockito.ArgumentCaptor<com.pengcheng.phoenixgraph.schema.geo.GeoSearch> searches =
                 org.mockito.ArgumentCaptor.forClass(com.pengcheng.phoenixgraph.schema.geo.GeoSearch.class);
         verify(graphQuery, org.mockito.Mockito.atLeastOnce()).geoNear(eq("person"), eq("location"),
                 searches.capture());
         assertEquals(3, searches.getValue().maxResults(), "the limit reached the storage");
-        verify(graphQuery, org.mockito.Mockito.times(3)).readVertices(eq("person"), anyList(), anyList());
+        @SuppressWarnings("unchecked")
+        org.mockito.ArgumentCaptor<List<Object>> readIds =
+                org.mockito.ArgumentCaptor.forClass(List.class);
+        verify(graphQuery, org.mockito.Mockito.times(1)).readVertices(eq("person"), readIds.capture(),
+                anyList());
+        assertEquals(List.of("n0", "n1", "n2"), readIds.getValue(),
+                "the hits of one search are one batch, not one read per hit");
 
-        // without a limit every hit is read (the previous behaviour, still correct)
+        // without a limit every hit is read as well, and still as one batch
         org.mockito.Mockito.clearInvocations(graphQuery);
         List<Object> all = engine.execute(
                 "g.V('v1','person').circle('{\"lat\":31.23,\"lon\":121.47,\"radius\":5000}')"
                         + ".values('name')");
         assertEquals(20, all.size());
-        verify(graphQuery, org.mockito.Mockito.times(20)).readVertices(eq("person"), anyList(), anyList());
+        verify(graphQuery, org.mockito.Mockito.times(1)).readVertices(eq("person"), anyList(), anyList());
+    }
+
+    /**
+     * A geo search whose hits nothing needs properties of: the records are not read at all, and the id, the
+     * label and the distance are the whole answer. One read per hit becomes none.
+     */
+    @Test
+    void circleDoesNotReadTheHitsWhenNothingNeedsTheirProperties() {
+        when(graphQuery.supportsGeoSearch()).thenReturn(true);
+        when(graphQuery.geoNear(anyString(), anyString(), any())).thenReturn(
+                List.of(new GeoHit("person", "n1", new GeoPoint(31.23d, 121.47d), 100d),
+                        new GeoHit("person", "n2", new GeoPoint(31.23d, 121.47d), 200d)));
+        GremlinGraphQuery engine = new GremlinGraphQuery(graphQuery, resolver)
+                .geoProperties(Map.of("person", "location"));
+
+        // the hits feed count(): nothing reads a property of them, so their records are not read at all
+        List<Object> counted = engine.execute("g.V('v1','person')"
+                + ".circle('{\"lat\":31.23,\"lon\":121.47,\"radius\":1000}').count()");
+        assertEquals(2L, ((Number) counted.get(0)).longValue(), "both hits are counted");
+        org.mockito.Mockito.verify(graphQuery, org.mockito.Mockito.never())
+                .readVertices(eq("person"), anyList(), anyList());
+
+        // asking for the distance reads them once, as one batch; the distance itself is the index'
+        org.mockito.Mockito.clearInvocations(graphQuery);
+        when(graphQuery.readVertices(eq("person"), anyList(), anyList())).thenAnswer(inv -> {
+            List<Object> ids = inv.getArgument(1);
+            List<VertexQueryResult> out = new ArrayList<>(ids.size());
+            for (Object id : ids) {
+                out.add(new VertexQueryResult("person", id, Map.of(), 1L, 2L));
+            }
+            return out;
+        });
+        assertEquals(List.of(100d, 200d), engine.execute("g.V('v1','person')"
+                + ".circle('{\"lat\":31.23,\"lon\":121.47,\"radius\":1000}').values('distanceMeters')"));
+        verify(graphQuery, org.mockito.Mockito.times(1)).readVertices(eq("person"), anyList(), anyList());
     }
 
     @Test

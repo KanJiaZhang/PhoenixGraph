@@ -2,6 +2,7 @@ package com.pengcheng.phoenixgraph.storage.rocksdb.edge;
 
 import com.pengcheng.phoenixgraph.query.storage.EdgeQueryResult;
 import com.pengcheng.phoenixgraph.query.storage.EdgeSide;
+import com.pengcheng.phoenixgraph.query.storage.NeighbourRef;
 import com.pengcheng.phoenixgraph.schema.EdgeDirection;
 import com.pengcheng.phoenixgraph.schema.PropertyType;
 import com.pengcheng.phoenixgraph.schema.EdgeSchema;
@@ -356,16 +357,72 @@ public final class RocksDbEdgeStore implements AutoCloseable {
         return edges;
     }
 
+    /**
+     * A property set no read can ask for, so the neighbours of a vertex are cached apart from its edges: a
+     * neighbour list is a subset of what a full edge read returns, and handing one out for the other would
+     * lose the properties.
+     */
+    private static final Set<Integer> NEIGHBOURS_ONLY = Set.of(-1);
+
+    /**
+     * The neighbours of one edge class of a vertex, in one direction, read from the <b>headers</b> of the
+     * rows: no property is decoded and no edge is built, because a vertex hop only needs to know where each
+     * edge leads ({@link RocksDbEdgeGraphQuery#readNeighbours} is what the engine asks for).
+     *
+     * <p>Cached like the edge lists are, under a key of its own: the whole point is that repeating a
+     * traversal reads the same headers again, and a query engine's own cache only covers one execution.
+     */
+    public List<NeighbourRef> readNeighbours(String edgeName, Object vertexId, byte direction, EdgeSide side) {
+        Objects.requireNonNull(vertexId, "vertexId");
+        EdgeSchema edgeSchema = requireEdge(edgeName);
+        String family = familyOf(edgeSchema);
+        String cacheKey = cacheKey(family, vertexId, direction, TimeRange.ALL, NEIGHBOURS_ONLY);
+        if (config.cacheEdgeLists()) {
+            List<RocksDbStoredEdge> cached = edgeCache.get(cacheKey);
+            if (cached != null) {
+                return toNeighbours(edgeName, cached, side);
+            }
+        }
+        List<RocksDbStoredEdge> headers = scanNeighbours(family, vertexId, direction);
+        if (config.cacheEdgeLists()) {
+            edgeCache.put(cacheKey, headers);
+        }
+        return toNeighbours(edgeName, headers, side);
+    }
+
+    /** The headers of one direction of a vertex, as edge rows without their properties. */
+    private List<RocksDbStoredEdge> scanNeighbours(String family, Object vertexId, byte direction) {
+        List<RocksDbStoredEdge> out = new ArrayList<>();
+        try (RocksDbHandle.RocksDbRange iterator = range(family, vertexId, direction, TimeRange.ALL)) {
+            while (iterator.isValid()) {
+                byte[] key = iterator.key();
+                String edgeId = RocksDbKeys.edgeIdOf(key, RocksDbKeys.edgePrefix(vertexId, direction));
+                RocksDbEdgeRowCodec.NeighbourHeader header =
+                        RocksDbEdgeRowCodec.decodeHeader(edgeId, iterator.value());
+                out.add(new RocksDbStoredEdge(header.edgeId(), header.otherVertexId(), header.createdTime(),
+                        header.lastUpdatedTime(), Map.of()));
+                iterator.next();
+            }
+        }
+        return out;
+    }
+
+    private static List<NeighbourRef> toNeighbours(String edgeName, List<RocksDbStoredEdge> headers,
+                                                   EdgeSide side) {
+        List<NeighbourRef> out = new ArrayList<>(headers.size());
+        for (RocksDbStoredEdge header : headers) {
+            out.add(new NeighbourRef(edgeName, header.edgeId(), side, header.otherVertexId(),
+                    header.createdTime(), header.lastUpdatedTime()));
+        }
+        return out;
+    }
+
     /** The range scan behind {@link #readEdges}: one ordered iterator over the key prefix. */
     private List<RocksDbStoredEdge> scan(String family, Object vertexId, byte direction,
                                          TimeRange window, Set<Integer> requested) {
-        byte[] prefix = RocksDbKeys.edgePrefix(vertexId, direction);
-        byte[] from = window.fromTime() == Long.MIN_VALUE ? prefix
-                : RocksDbKeys.edgeKeyFrom(prefix, window.fromTime());
-        byte[] to = window.toTime() == Long.MAX_VALUE ? RocksDbKeys.prefixEnd(prefix)
-                : RocksDbKeys.edgeKeyFrom(prefix, window.toTime() + 1);
         List<RocksDbStoredEdge> edges = new ArrayList<>();
-        try (RocksDbHandle.RocksDbRange iterator = handle.iterator(family, from, to)) {
+        try (RocksDbHandle.RocksDbRange iterator = range(family, vertexId, direction, window)) {
+            byte[] prefix = RocksDbKeys.edgePrefix(vertexId, direction);
             while (iterator.isValid()) {
                 byte[] key = iterator.key();
                 long createdTime = RocksDbKeys.createdTimeOf(key, prefix);
@@ -377,6 +434,16 @@ public final class RocksDbEdgeStore implements AutoCloseable {
             }
         }
         return edges;
+    }
+
+    /** The rows of one direction of a vertex inside a time window, as one ordered range. */
+    private RocksDbHandle.RocksDbRange range(String family, Object vertexId, byte direction, TimeRange window) {
+        byte[] prefix = RocksDbKeys.edgePrefix(vertexId, direction);
+        byte[] from = window.fromTime() == Long.MIN_VALUE ? prefix
+                : RocksDbKeys.edgeKeyFrom(prefix, window.fromTime());
+        byte[] to = window.toTime() == Long.MAX_VALUE ? RocksDbKeys.prefixEnd(prefix)
+                : RocksDbKeys.edgeKeyFrom(prefix, window.toTime() + 1);
+        return handle.iterator(family, from, to);
     }
 
     /**
