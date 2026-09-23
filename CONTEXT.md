@@ -4801,3 +4801,56 @@ node .logs/rocksdb-edge-final.js                # 上表 13 条语句（含耗�
 node .logs/rocksdb-edge-has.js                  # has / filter 两种写法一致
 node .logs/aerospike-edge-id.js                 # Aerospike 上的两条明确报错
 ```
+
+---
+
+## 67. RocksDB-Edge：`g.V()` / `g.E()` 空起点 + 带类型的 `has` + 从边继续跳（用 payment-graph-rocksdb-edge 验证）
+
+用户要的四条语句（这次是"TinkerPop 写法"）：
+
+```groovy
+g.V('Account').has('accountStatus', 'FROZEN')                                    // 本来就能用 → 17
+g.V().has('Account', 'accountStatus', 'FROZEN').outE('Payment')                  // 空起点 + 带类型的 has → 51
+g.E('Payment').has('status', 'SUCCESS').outE('Payment')                          // 从边继续跳 → 195
+g.E().has('Payment', 'status', 'SUCCESS')                                        // 空起点 + 带类型的 has → 65
+```
+
+### 67.1 带类型的 `has(label, key, value)`
+
+`has` 原来只接受 1–2 个参数（`has(key)` / `has(key,value)`），三个参数直接报错。现在：
+
+* **语义**：`has('Account','accountStatus','FROZEN')` = TinkerPop 的"标签 + 属性"形式，等价于
+  `hasLabel('Account').has('accountStatus','FROZEN')`，任何位置都能用（`GremlinSteps.hasLabel(label,key,value)`）；
+* **起点**：`g.V()` / `g.E()` 是**空起点**（原来 `g.V()` 是 `NONE`、`g.E()` 直接报错；现在分别是
+  `Source.Kind.NO_VERTICES` / `NO_EDGES`，执行时仍然是"不产生任何 traverser"，所以
+  `g.V().fuzzyLink(...)` 这条路一点没变——实测两个 fuzzy 例子仍返回链接节点）；
+* **编译期解析**：空起点 + 第一个步骤是带类型的 `has` 时，那个类型**就是起点**，步骤只留条件：
+  `g.V().has('Account','k','v')` ≡ `g.V('Account').has('k','v')`（实测两条写法结果一致，`SchemaDraft`/引擎都按同一
+  规则处理）。类型不存在时明确报出图里有哪些（`... names no vertex type of this graph: Account, IP, Phone`）。
+  没有 schema 的存储（内存图/测试）跳过这个校验，与方向校验的处理一致。
+* **空起点 + 不带类型的 `has`** → 明确报错，因为"没有任何东西可过滤"，并给出两种写法：
+  `g.V() starts nothing: name the type it walks, either g.V().has('Account', 'key', 'value') or g.V('Account').has('key', 'value')`。
+
+### 67.2 从边继续跳：`g.E(...).outE('Payment')`
+
+顶点跳（`out/in/both(E)`）以前遇到边 traverser 直接抛
+`Step expects vertices but got: GremlinEdge[...]`。现在 hop 的入口统一走 `standOn(ctx, in, dir)`：
+
+* 边被**穿过**到它**指向的端点**（`out*`）或它**来自的端点**（`in*`）——正好是资金流动的方向；
+  `both*` 也取"指向的端点"（边本身已经写明两端，换边用 `otherV()`）；
+* 穿过时那个端点的**类型从 schema 取**（该边类在那一侧的对端类型），所以后续 `outE()`（不带类名）也知道自己站在什么上，
+  并把端点记进子图；
+* 端点未知（只从一端见过这条边）或边类不在 schema 里时，报明确错误并提示 `otherV()`；
+* `GremlinEdge` 早就有 `sourceEndpoint()`/`targetEndpoint()`，这次正好用上。
+
+实测：`g.E('Payment').has('status','SUCCESS').outE('Payment').count()` = **195**、`.inE('Payment').count()` = **192**、
+`.out('Payment').limit(3).values('id')` = 1005/1049/1043、`otherV()` 照旧 ✓。
+
+### 67.3 测试与复现
+
+```bash
+./mvnw -o -pl graph-query-gremlin test     # 194 用例（新增 5：带类型起点 ×2、空起点报错、按 schema 校验类型、从边跳）
+node .logs/rocksdb-edge-caps4.js           # 用户这四条语句
+node .logs/rocksdb-edge-caps5.js           # 报错信息、typed start + outE/inE、otherV 回归
+node .logs/fuzzy-empty-start.js            # g.V() 仍是空起点（fuzzyLink 未受影响）
+```

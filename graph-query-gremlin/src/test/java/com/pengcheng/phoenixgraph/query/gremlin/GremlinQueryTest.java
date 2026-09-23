@@ -196,8 +196,10 @@ class GremlinQueryTest {
         assertEquals(List.of("pay_1", "pay_2"), two.source().ids());
         assertEquals("Payment", two.edgeName());
 
-        // what is missing is said, not guessed: no class, no class after a comma, a blank class
-        assertThrows(QueryException.class, () -> GremlinQuery.parse("g.E()"));
+        // g.E() names no class yet: the first step that names one says which (see the typed-start tests)
+        assertEquals(GremlinQuery.Source.Kind.NO_EDGES, GremlinQuery.parse("g.E()").source().kind());
+        assertEquals(GremlinQuery.Source.Kind.NO_VERTICES, GremlinQuery.parse("g.V()").source().kind());
+        // what is missing is said, not guessed: no class after a comma, a blank class
         QueryException trailing = assertThrows(QueryException.class, () -> GremlinQuery.parse("g.E('pay_1',)"));
         assertTrue(trailing.getMessage().contains("edge class is missing"), trailing.getMessage());
         assertThrows(QueryException.class, () -> GremlinQuery.parse("g.E('pay_1',' ')"));

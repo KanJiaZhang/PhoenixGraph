@@ -51,7 +51,11 @@ public final class GremlinQuery {
             /** Named edge ids of one class. */
             EDGES,
             /** No starting point (a step produces them). */
-            NONE
+            NONE,
+            /** {@code g.V()}: no ids and no type yet - a first step naming a vertex type says which. */
+            NO_VERTICES,
+            /** {@code g.E()}: no ids and no class yet - a first step naming an edge class says which. */
+            NO_EDGES
         }
 
         public Source {
@@ -76,6 +80,14 @@ public final class GremlinQuery {
 
         static Source none() {
             return new Source(Kind.NONE, List.of(), null);
+        }
+
+        static Source noVertices() {
+            return new Source(Kind.NO_VERTICES, List.of(), null);
+        }
+
+        static Source noEdges() {
+            return new Source(Kind.NO_EDGES, List.of(), null);
         }
 
         /** Whether this source walks a whole type (and therefore needs a store that can scan). */
@@ -215,7 +227,7 @@ public final class GremlinQuery {
         if (parts.isEmpty()) {
             // 'g.V()' starts from nothing: a step that produces its own vertices (fuzzyLink) then
             // decides what the traversal walks, so the prefix carries neither an id nor a name
-            return Source.none();
+            return Source.noVertices();
         }
         if (parts.size() == 1) {
             // one argument is a vertex type, not an id: without a name there is nothing to read the id
@@ -256,7 +268,8 @@ public final class GremlinQuery {
      */
     private static Source edgeSource(List<String> parts, String args) {
         if (parts.isEmpty()) {
-            throw new QueryException("g.E(...) needs an edge class name, e.g. g.E('payment')");
+            // 'g.E()' starts from nothing, like 'g.V()': a first step naming an edge class says which
+            return Source.noEdges();
         }
         if (parts.size() == 1) {
             String edgeName = parts.get(0);

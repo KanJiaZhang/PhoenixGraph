@@ -78,7 +78,11 @@ public class GremlinStepRegistry {
             if (args.size() == 2) {
                 return GremlinSteps.has(args.get(0), args.get(1));
             }
-            throw new QueryException("has expects 1 or 2 arguments, got " + args.size());
+            if (args.size() == 3) {
+                // the TinkerPop form: the label first, then the property
+                return GremlinSteps.hasLabel(args.get(0), args.get(1), args.get(2));
+            }
+            throw new QueryException("has expects 1, 2 or 3 arguments, got " + args.size());
         });
         register("filter", args -> {
             if (args.isEmpty()) {

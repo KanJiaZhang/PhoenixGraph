@@ -91,7 +91,8 @@ class GremlinScanStepsTest {
                         return out;
                     }
                     EdgeQueryResult edge = new EdgeQueryResult(edgeName, entry.getKey() + "->" + target,
-                            EdgeSide.BOTH, target, Map.of("amount", 1.0), 1L, 2L);
+                            EdgeSide.BOTH, target,
+                            Map.of("amount", 1.0, "status", STATUS.get(entry.getKey())), 1L, 2L);
                     out.add(new ScannedEdge(entry.getKey(), target, edge));
                 }
             }
@@ -142,6 +143,69 @@ class GremlinScanStepsTest {
                 () -> new GremlinGraphQuery(keyedStore(), NeighborVertexResolver.of(Map.of(), Map.of()))
                         .execute("g.E('a1->a2','payment')"));
         assertTrue(error.getMessage().contains("edge id index"), error.getMessage());
+    }
+
+    /**
+     * A traversal that names no type takes it from the first step that does: {@code g.V().has('Account', k, v)}
+     * is {@code g.V('Account').has(k, v)}, and {@code g.E().has('payment', k, v)} is the same over the class.
+     */
+    @Test
+    void aTypedFirstStepIsTheStartOfAnEmptyTraversal() {
+        GremlinGraphQuery engine = engineWithPayments();
+
+        List<Object> byStep = engine.execute("g.V().has('Account','status','FROZEN').values('id')");
+        assertEquals(List.of("a2", "a5"), byStep);
+        assertEquals(engine.execute("g.V('Account').has('status','FROZEN').values('id')"), byStep,
+                "the two spellings are the same query");
+
+        // the edge form: the class is what the traversal walks, the step keeps the condition
+        assertEquals(5, ((Number) engine.execute("g.E().has('payment','amount',1.0).count()").get(0))
+                .intValue());
+        assertEquals(engine.execute("g.E('payment').has('amount',1.0).values('id')"),
+                engine.execute("g.E().has('payment','amount',1.0).values('id')"));
+    }
+
+    /** A filter with no type to filter says the two spellings that do name one. */
+    @Test
+    void aFilterOnAnEmptyStartSaysWhatIsMissing() {
+        QueryException onVertex = assertThrows(QueryException.class,
+                () -> engineWithPayments().execute("g.V().has('status','FROZEN')"));
+        assertTrue(onVertex.getMessage().contains("has('Account', 'key', 'value')"), onVertex.getMessage());
+        assertTrue(onVertex.getMessage().contains("g.V('Account')"), onVertex.getMessage());
+
+        QueryException onEdge = assertThrows(QueryException.class,
+                () -> engineWithPayments().execute("g.E().has('amount',1.0)"));
+        assertTrue(onEdge.getMessage().contains("g.E('Payment')"), onEdge.getMessage());
+    }
+
+    /**
+     * A hop from an edge crosses to the endpoint the edge points at: the receivers of the successful
+     * payments, and what they pay next ({@code outE}) or what arrived at the senders ({@code inE}).
+     */
+    @Test
+    void aHopFromAnEdgeStandsOnTheEndpointItPointsAt() {
+        GremlinGraphQuery engine = engineWithPayments();
+        // the ACTIVE payments are a1->a2, a3->a4, a4->a1, a4->a5: they point at a2, a4, a1, a5, whose
+        // own out-edges are a2->a3, a4->a1 + a4->a5, a1->a2 and none
+        List<Object> next = engine.execute("g.E('payment').has('status','ACTIVE')"
+                + ".outE('payment').values('id')");
+        assertEquals(List.of("a1->a2", "a2->a3", "a4->a1", "a4->a5"),
+                next.stream().map(String::valueOf).sorted().toList(),
+                "the payments those receivers make: " + next);
+        // inE crosses the other way: the senders of those payments and what arrives at them
+        assertEquals(4, ((Number) engine.execute(
+                "g.E('payment').has('status','ACTIVE').inE('payment').count()").get(0)).intValue());
+        // the vertex hop crosses the same way and answers where those edges lead: a2->a3, a4->a1,
+        // a4->a5, a1->a2
+        assertEquals(List.of("a1", "a2", "a3", "a5"),
+                engine.execute("g.E('payment').has('status','ACTIVE').out('payment').values('id')")
+                        .stream().map(String::valueOf).sorted().toList());
+    }
+
+    /** The engine the typed-start and crossing tests use: a scan store that knows what payment reaches. */
+    private static GremlinGraphQuery engineWithPayments() {
+        return new GremlinGraphQuery(store(), NeighborVertexResolver.of(
+                Map.of("payment", "Account"), Map.of("payment", "Account")));
     }
 
     private static GraphQuery store() {

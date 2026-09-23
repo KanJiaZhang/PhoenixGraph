@@ -1380,6 +1380,23 @@ class GremlinGraphQueryTest {
                                 PropertyType.ScalarType.LONG, "Account")));
     }
 
+    /**
+     * The type an empty start takes from its first step has to be a type the graph has, and the error
+     * lists the ones it does - a query that walks a type nobody has would otherwise answer nothing.
+     */
+    @Test
+    void aTypedFirstStepIsCheckedAgainstTheSchema() {
+        GremlinGraphQuery engine = new GremlinGraphQuery(graphQuery, resolver).schema(phoneGraph());
+
+        QueryException onVertex = assertThrows(QueryException.class,
+                () -> engine.execute("g.V().has('Nope','name','x')"));
+        assertTrue(onVertex.getMessage().contains("Account"), onVertex.getMessage());
+
+        QueryException onEdge = assertThrows(QueryException.class,
+                () -> engine.execute("g.E().has('Nope','key','value')"));
+        assertTrue(onEdge.getMessage().contains("PhoneToAccount"), onEdge.getMessage());
+    }
+
     @Test
     void filterOverAllEdgeClassesProjectsOnlyTheFilteredProperties() {
         when(graphQuery.readAllEdgesBatch(anyList(), any(), anyList()))

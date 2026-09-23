@@ -487,7 +487,8 @@ public class GremlinGraphQuery {
 
     private CompiledQuery compile(GremlinQuery query) {
         checkHopDirections(query);
-        List<GremlinQuery.Step> parsedSteps = new ArrayList<>(query.steps());
+        GremlinQuery.Source source = typedStart(query).source();
+        List<GremlinQuery.Step> parsedSteps = new ArrayList<>(typedStart(query).steps());
         if (query.logic() != null && !query.logic().isBlank()) {
             parsedSteps.addAll(expandLogic(query.logic()));
         }
@@ -587,7 +588,7 @@ public class GremlinGraphQuery {
         boolean verifySeeds = startProperties == null
                 && (untypedFirstHop(plannedSteps) || plannedSteps.stream()
                         .allMatch(step -> isSeedPassThrough(step.name())));
-        return new CompiledQuery(query.source(), properties, startProperties, verifySeeds, stepNames, steps);
+        return new CompiledQuery(source, properties, startProperties, verifySeeds, stepNames, steps);
     }
 
     /**
@@ -1211,7 +1212,7 @@ public class GremlinGraphQuery {
     private static List<Object> start(GremlinContext context, GremlinQuery.Source source,
                                       List<String> properties, boolean verifySeeds) {
         return switch (source.kind()) {
-            case NONE -> List.of();
+            case NONE, NO_VERTICES, NO_EDGES -> List.of();
             case VERTICES -> startVertices(context, source.ids(), source.name(), properties, verifySeeds);
             case VERTEX_TYPE -> startVertexScan(context, source.name(), properties);
             case EDGE_TYPE -> startEdgeScan(context, source.name(), properties);
@@ -1241,6 +1242,66 @@ public class GremlinGraphQuery {
                     edge.properties(), edge.createdTime(), edge.lastUpdatedTime(), scanned.source()));
         }
         return out;
+    }
+
+    /**
+     * A traversal whose start names no type, resolved against the first step that does.
+     *
+     * <p>{@code g.V()} and {@code g.E()} start from nothing - a step can produce its own elements (as
+     * {@code fuzzyLink} does) - so when the first step is the TinkerPop form that names a type
+     * ({@code has('Account', 'accountStatus', 'FROZEN')}) or only a type, that name is what the traversal
+     * walks and the step keeps just its condition:
+     *
+     * <pre>
+     * g.V().has('Account', 'accountStatus', 'FROZEN')   ==   g.V('Account').has('accountStatus', 'FROZEN')
+     * g.E().has('Payment', 'status', 'SUCCESS')      ==   g.E('Payment').has('status', 'SUCCESS')
+     * </pre>
+     *
+     * <p>A filter with no type to filter ({@code g.V().has('k', 'v')}) is refused with both spellings that
+     * do name one: an empty start answers nothing, so saying what is missing beats an answer of zero rows.
+     */
+    private TypedStart typedStart(GremlinQuery query) {
+        GremlinQuery.Source source = query.source();
+        List<GremlinQuery.Step> steps = query.steps();
+        boolean vertices = source.kind() == GremlinQuery.Source.Kind.NO_VERTICES;
+        boolean edges = source.kind() == GremlinQuery.Source.Kind.NO_EDGES;
+        if (!vertices && !edges || steps.isEmpty()) {
+            return new TypedStart(source, steps);
+        }
+        GremlinQuery.Step first = steps.get(0);
+        String kind = vertices ? "g.V()" : "g.E()";
+        if (!first.name().equals("has") || first.args().size() < 3) {
+            if (first.name().equals("has")) {
+                throw new QueryException(kind + " starts nothing: name the type it walks, either"
+                        + " " + kind + ".has('Account', 'key', 'value') or " + (vertices
+                        ? "g.V('Account')" : "g.E('Payment')") + ".has('key', 'value')");
+            }
+            return new TypedStart(source, steps);
+        }
+        String type = first.args().get(0);
+        if (vertices && schema != null && schema.vertexSchema(type) == null) {
+            throw new QueryException(kind + ".has('" + type + "', ...) names no vertex type of this graph: "
+                    + (schema == null ? "the graph has no schema"
+                            : String.join(", ", schema.vertexSchemas().stream()
+                                    .map(VertexSchema::name).toList())));
+        }
+        if (edges && schema != null && schema.edgeSchema(type) == null) {
+            throw new QueryException(kind + ".has('" + type + "', ...) names no edge class of this graph: "
+                    + (schema == null ? "the graph has no schema"
+                            : String.join(", ", schema.edgeSchemas().stream()
+                                    .map(EdgeSchema::name).toList())));
+        }
+        List<GremlinQuery.Step> rest = new ArrayList<>(steps.size());
+        // the type became the start; what is left of the step is the property condition
+        rest.add(new GremlinQuery.Step("has",
+                List.of(first.args().get(1), first.args().get(2))));
+        rest.addAll(steps.subList(1, steps.size()));
+        return new TypedStart(vertices ? GremlinQuery.Source.vertexType(type)
+                : GremlinQuery.Source.edgeType(type), List.copyOf(rest));
+    }
+
+    /** A start and its steps after a type named by the first step became the start. */
+    private record TypedStart(GremlinQuery.Source source, List<GremlinQuery.Step> steps) {
     }
 
     /**

@@ -833,7 +833,7 @@ final class GremlinSteps {
      */
     private static List<Object> hopEdges(GremlinContext ctx, List<Object> in, String edgeName, EdgeSide dir,
                                          List<EdgePropertyFilter> filters, int maxResults) {
-        List<GremlinVertex> vertices = toVertices(in);
+        List<GremlinVertex> vertices = standOn(ctx, in, dir);
         List<List<EdgeQueryResult>> perVertex = readEdgesByVertex(ctx, vertices, edgeName, dir,
                 edgeReadProperties(ctx), filters, maxResults);
         List<Object> out = new ArrayList<>();
@@ -902,7 +902,7 @@ final class GremlinSteps {
 
     private static List<Object> hopVertices(GremlinContext ctx, List<Object> in, String edgeName, EdgeSide dir,
                                             int maxResults) {
-        List<GremlinVertex> vertices = toVertices(in);
+        List<GremlinVertex> vertices = standOn(ctx, in, dir);
         if (vertices.isEmpty()) {
             return List.of();
         }
@@ -1081,6 +1081,70 @@ final class GremlinSteps {
             vertices.add(requireVertex(o));
         }
         return vertices;
+    }
+
+    /**
+     * The vertices a hop starts from.
+     *
+     * <p>A hop is a vertex step, but a traversal can be standing on an <b>edge</b> -
+     * {@code g.E('Payment').has('status','SUCCESS').outE('Payment')} asks what the receivers of the successful
+     * payments pay. The edge is crossed to the endpoint it <b>points at</b> for an out hop and to the one it
+     * <b>came from</b> for an in hop, which is the direction the money flows; {@code both} crosses to the
+     * endpoint it points at as well, because an edge already names both of its ends and {@code otherV()} is
+     * the step for switching sides.
+     *
+     * <p>The type of the crossed endpoint comes from the schema (the neighbour of that edge class on the side
+     * read), so a hop over a whole class still knows what it stands on. When the traversal does not know that
+     * endpoint - an edge it only met one end of - the error says so and names {@code otherV()}.
+     */
+    private static List<GremlinVertex> standOn(GremlinContext ctx, List<Object> in, EdgeSide dir) {
+        List<GremlinVertex> out = new ArrayList<>(in.size());
+        for (Object o : in) {
+            if (!(o instanceof GremlinEdge edge)) {
+                out.add(requireVertex(o));
+                continue;
+            }
+            boolean outgoing = dir != EdgeSide.IN;
+            Object id = outgoing ? edge.targetEndpoint() : edge.sourceEndpoint();
+            if (id == null) {
+                throw new QueryException("Cannot walk " + (outgoing ? "out of" : "in to") + " edge "
+                        + edge.id() + " ('" + edge.label() + "'): the traversal does not know that endpoint."
+                        + " Read the edge from a vertex, or use otherV().");
+            }
+            String label = ctx.vertexResolver().neighborVertexName(edge.label(),
+                    outgoing ? EdgeSide.OUT : EdgeSide.IN);
+            if (label == null) {
+                throw new QueryException("Cannot walk " + (outgoing ? "out of" : "in to") + " edge "
+                        + edge.id() + ": the schema does not describe edge class '" + edge.label()
+                        + "' far enough to know which vertex it reaches");
+            }
+            ctx.recordVertex(label, id);
+            out.add(new GremlinVertex(label, id, Map.of(), 0L, 0L));
+        }
+        return out;
+    }
+
+    /**
+     * {@code has('Account', 'accountStatus', 'FROZEN')}: the TinkerPop form that names the element's label as
+     * well as its property, i.e. the same as {@code hasLabel('Account').has('accountStatus','FROZEN')}.
+     *
+     * <p>At the start of a traversal ({@code g.V().has('Account', ...)}) the label is what the traversal walks,
+     * and the compiler turns it into the type scan there.
+     */
+    static GremlinStep hasLabel(String label, String key, String rawValue) {
+        return (ctx, in) -> {
+            List<Object> out = new ArrayList<>();
+            for (Object o : in) {
+                GremlinElement element = requireElement(o);
+                Object value = label.equals(element.label()) ? element.properties().get(key) : null;
+                if (value != null && (rawValue == null || matches(value, rawValue))) {
+                    out.add(o);
+                } else {
+                    ctx.dropElement(element);
+                }
+            }
+            return out;
+        };
     }
 
     /**

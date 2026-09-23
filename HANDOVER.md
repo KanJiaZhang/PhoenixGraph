@@ -1,8 +1,8 @@
 # Handover — resume here
 
 > 本文件是**断点续做手记**：今天做了什么（结论）、现场怎么恢复、明天从哪继续。
-> 详细设计与实测数据在 `CONTEXT.md`：**2026-09-21 新增 §47–§66**（§47 仪表盘七问；§48 四问（二）；§49 三问（三）；§50 五问（四）；§51 四问（五）；§52（六）：Aerospike-Edge 大点冷/近线/在线三层；§53（七）：stale 写统一 / 结果面板复核 / 150 两跳扩展 + benchmark；§54（八）：表达式字符串函数 / display `$id` / count 交给服务端；§55（九）：用户报的 12 件事；§56（十）：算法 / legend·页签·示例 / 子图把 filter 掉的边留下；**§57（十一）：闭包 if/else 与集合、`values()` 的元素自身列、空答案不画、面板只报数目 + 135·150 两跳 benchmark**；**§58（十二）：fuzzy 的 xia 账号 / 图实例收敛到四个 / payment-graph 向量 / RocksDB-Edge GEO / 去掉 FuzzyPattern**）；
-> 过程记录在 **`DAILY-2026-09-21.md`**（§1–§22 共十三批（09-21）＋ `DAILY-2026-09-23.md`（第十四批 §1–§5：面板/索引一致性/编译缓存/RocksDB 向量索引）、§6（第十五批：RocksDB 上的两跳 benchmark）、§7（第十六批：geo+向量+边组合查询 100 次运行）、§8（第十七批：outE vs out 交错对比）、§9（第十八批：属性读优化）、§10（第十九批：图管理页七项改进）与 §11（第二十批：RocksDB-Edge 查询能力））。**2026-09-20 是 §38–46**；**2026-09-18 是 §32–37**（含**类起点与扫描端口**）；2026-09-17 是 §21–31。
+> 详细设计与实测数据在 `CONTEXT.md`：**2026-09-21 新增 §47–§67**（§47 仪表盘七问；§48 四问（二）；§49 三问（三）；§50 五问（四）；§51 四问（五）；§52（六）：Aerospike-Edge 大点冷/近线/在线三层；§53（七）：stale 写统一 / 结果面板复核 / 150 两跳扩展 + benchmark；§54（八）：表达式字符串函数 / display `$id` / count 交给服务端；§55（九）：用户报的 12 件事；§56（十）：算法 / legend·页签·示例 / 子图把 filter 掉的边留下；**§57（十一）：闭包 if/else 与集合、`values()` 的元素自身列、空答案不画、面板只报数目 + 135·150 两跳 benchmark**；**§58（十二）：fuzzy 的 xia 账号 / 图实例收敛到四个 / payment-graph 向量 / RocksDB-Edge GEO / 去掉 FuzzyPattern**）；
+> 过程记录在 **`DAILY-2026-09-21.md`**（§1–§22 共十三批（09-21）＋ `DAILY-2026-09-23.md`（第十四批 §1–§5：面板/索引一致性/编译缓存/RocksDB 向量索引）、§6（第十五批：RocksDB 上的两跳 benchmark）、§7（第十六批：geo+向量+边组合查询 100 次运行）、§8（第十七批：outE vs out 交错对比）、§9（第十八批：属性读优化）、§10（第十九批：图管理页七项改进）、§11（第二十批：RocksDB-Edge 查询能力）与 §12（第二十一批：TinkerPop 写法））。**2026-09-20 是 §38–46**；**2026-09-18 是 §32–37**（含**类起点与扫描端口**）；2026-09-17 是 §21–31。
 
 **最后一次会话：2026-09-21（周日）· 一天十二批（用户共报 ~60 件事）· 全量 `./mvnw test` 绿（gremlin 183（新增 ClosureStatement 11）/ http 71 / integration / schema / gemini / fuzzy / hnsw / …，0 失败 0 错误）**
 **十二批一句话：一 边方向/多笔支付/搜索/闭包（§47）· 二 图例/平行边弧/表达式语言（§48）· 三 终结步/弧距/带变量闭包（§49）· 四 顶点类型 `vt`/LWW/regex/两跳压测（§50）· 五 结果面板/类型当过滤/regex 公式（§51）· 六 Aerospike-Edge 冷·近线·在线三层（§52）· 七 stale 写统一 + 150 两跳扩展 + benchmark（§53）· 八 字符串函数/display `$id`/count 服务端（§54）· 九 用户报的 12 件（§55）· 十 算法 CC·Louvain/legend/页签/示例/子图 bug（§56）· 十一 闭包 `if/else`+集合/元素自身列/空答案/面板只报数目 + 两跳 benchmark（§57）· 十二 xia 账号/四个图实例/向量/GEO/去 FuzzyPattern（§58）。**十三 两跳投影查询的 100 id x 8 轮性能测试（§59：缓存省 15.7% / 批大小落在拐点 / 边与中间点的属性零加载；§59.7-59.8 三个"拿值或名字猜语义"的坑按声明类型根修，产品侧 `AerospikeReadKind` 硬化）**。详见 `DAILY-2026-09-21.md` §1–§22（§21 是跨批思考主线）。**
@@ -39,7 +39,8 @@ curl -s -X POST localhost:8081/api/v1/vector-index/rebuild -H "content-type: app
 ```
 
 
-**工作树状态：2026-09-23 第十四至二十批已提交（面板单元素、索引坏掉的响亮报错、编译缓存上限、RocksDB-Edge 的 HNSW），`develop` 与 `origin` 同步。**
+**工作树状态：2026-09-23 第十四至二十一批已提交（面板单元素、索引坏掉的响亮报错、编译缓存上限、RocksDB-Edge 的 HNSW），`develop` 与 `origin` 同步。**
+**第二十一批（§67）：`GremlinStepRegistry` 支持 3 参 `has`；`GremlinSteps.hasLabel(label,key,value)` + `standOn(ctx,in,dir)`（边 → 指向/来自的端点）；`GremlinQuery` 新增 `NO_VERTICES`/`NO_EDGES` kind；`GremlinGraphQuery.typedStart` 把"空起点 + 带类型 has"解析成类型扫描 + 条件（类型按 schema 校验、无 schema 跳过、缺类型时给出两种写法）。gremlin 194 用例。脚本：`.logs/rocksdb-edge-caps4.js`、`caps5.js`、`fuzzy-empty-start.js`。**
 **第二十批（§66，查询能力）：`GraphQuery.readEdgesByIds`（默认走一遍类、保持顺序、返回两端点；非扫描存储明确报错）+ `GremlinQuery.Source.Kind.EDGES` 与 `GremlinGraphQuery.startEdges`（`g.E($id,类)`，多 id 亦可；`g.E(类)` 仍是扫描）+ 2 个新用例与 1 个改写用例（gremlin 共 190）。验证脚本：`.logs/rocksdb-edge-final.js`、`rocksdb-edge-has.js`、`aerospike-edge-id.js`。**
 **第十九批（§65，图管理页）：`SchemaDraft.EdgeDraft` 补出入度（toSchema/toDraft 往返）+ 保留名校验；`GraphWriteController` 新增按图批量写；`ProxyController` 新增批量写与两条删除路由；`builder.html`/`builder.js`/`builder.css` 重写（description 列与输入、id 固定行、出入度置灰说明、重复 id 确认、保存后刷新写入表单、删除后果确认、CSV 导入+模板）。验证脚本：`.logs/verify-builder2.js`、`.logs/verify-csv2.js`。**
 **第十八批（§64，优化）：`GremlinSteps.readHits`（geo 命中一次批量读；`readProperties()==null` 时一次都不读）+ 新增 `RocksDbEdgeRowCodec.decodeHeader` / `RocksDbEdgeStore.readNeighbours`（带独立缓存键的 LRU）/ `RocksDbEdgeGraphQuery.readNeighbours(Batch)` + `supportsNeighbourRead`。实测：geo+向量+边 100 次的 kv 读 127→117、geo 步 0.303→0.184 ms、答案不变；两跳流量不变但不再解码 Payment 属性。**
