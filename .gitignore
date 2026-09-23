@@ -42,3 +42,6 @@ target/
 
 # exported session transcripts (regenerate with tools/session-export.mjs)
 .sessions/
+
+# a schema file the codec round-trip tests write into the working directory
+/Test-Graph.json
