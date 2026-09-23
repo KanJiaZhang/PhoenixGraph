@@ -4078,3 +4078,142 @@ Aerospike edge bins and is only available there
 * 演示数据的两套来源仍不同：`http_demo_v3`（Aerospike，`QueryApiIntegrationTest#demoSharedGraphViaApi`）
   与 `.rocksdb/payment-graph-rocksdb-edge`（`PaymentGraphRocksDbLoader`，135 + 50 账户）。两者是**同一个图的两种装量**
   （同样的表形状、同样的 hub 135），但不是逐行相同。若要逐行一致，把 `seedSharedGraph` 抽成共享 loader 即可。
+
+---
+
+## 59. 第十三批：`both('Payment')` 两跳 + `values(3 个属性)` 的性能测试（100 个 id × 8 轮 = 800 次）
+
+被测查询（用户给的形状，`$id` 是 100 个有效账户 id）：
+
+```groovy
+g.V($id,'Account').both('Payment').both('Payment').values('accountUsage','firstName','accountStatus')
+```
+
+测试：`graph-integration-test/.../AerospikeHundredSeedsValuesBenchmarkTest`（6 个用例，全部通过；活测试，
+Aerospike 不可用或数据没装时自己跳过）。id 的取法：先试 `135/1001/2017/9000001/150/11`，再 `scanAll` 扫
+`http_demo_v3` 里 `vt == 'Account'` 的记录（172 条），逐个跑一次查询丢掉空答案的（2 个），取满 100 个。
+
+### 59.1 测量方法（为什么这些数字可信）
+
+* **一条查询一次执行**：`metrics.snapshot()` 前后取差得到这次执行的计数器增量，所以每行都是"每次查询"的量；
+* **每次存储调用都记下来**：给 `GraphQuery` 套一层 `Proxy`，按方法名取参数位置（`readVertices(name, ids, props)` 的
+  ids 在 1、props 在 2；`readVertices` 与 `readVertex` 只差第 9 个字母，前缀匹配要小心）——得到每次读的
+  **批大小**和**属性名列表**，这就是回答第 2、3 问的证据；
+* **计数器语义**：`storage.kv.read.call` = 往返次数（一个 batch = 1 次），`vertex.read` / `edge.read` = 命中的记录数
+  （`readBatch` 里每个 key 记一次），`edge.decoded` = 真正解码的边数；
+* **响应字节**用 Jackson 序列化结果算（`values()` 的结果是纯值，可以序列化；整顶点那组只是参照，字节数仅供参考）。
+
+### 59.2 总览（800 次执行，2026-09-21 收工时实测）
+
+```
+延迟     mean 4.96 ms  min 2.52  p50 4.82  p90 6.47  p95 6.96  p99 8.32  max 11.27
+吞吐     202 查询/秒        墙钟 3.97 秒
+结果     416 项/查询        响应 5.5 KB/查询
+流量     kv.read.call 5.90 /查询（max 6）   记录 85.4   顶点 74.4   边 11.0   解码边 0
+```
+
+**一次查询只有 ~6 次往返**，因为它不需要"边"：两跳都是**顶点跳**，中间那步只读**邻居引用**（id + 对端 id），
+所以 `edge.decoded = 0`，没有任何 `Payment` 边被解码。最慢的种子是 135（7.2 ms）和 150（6.7 ms），最快的几个
+`fz_*`（3.5 ms）——差的就是扇出。
+
+### 59.3 问题 1：缓存有效吗？
+
+有效，但**收益有限且要说清楚边界**（同一 workload，缓存开/关各跑 100 个 id）：
+
+```
+缓存开   590 次往返   5.15 ms/id
+缓存关   700 次往返   5.90 ms/id
+省 15.7% 的往返（1.10 次/查询），延迟省约 13%
+最忙的种子 150：5 次往返（开）vs 6 次（关）
+```
+
+* **作用域是一次执行**：`GremlinContext` 每次 `execute` 新建（`newContext()`），里面的
+  `vertexCache`/`edgeCache`/`neighbourCache` 随之作废。有一个用例专门断言"同一 id 连续两次执行的往返次数完全相同"
+  ——**这正是写后读不会读到旧值的原因**（没有跨查询缓存，所以也就没有失效问题）。
+* **省在哪**：省在"同一执行内重复读到同一个顶点/同一对 (顶点,边类,方向)"。单种子两跳的遍历树几乎是一棵树，
+  重复不多，所以整体只有 ~16%；扇出大、回边多的种子（150）省 1/6。
+* **它撑住了什么**：一次查询 416 项结果只读了 74 个顶点记录（`readVertices(1) + readVertices(50)` 覆盖 51 个去重
+  顶点、`readNeighboursBatch` 覆盖 100 个）——扇出大的时候缓存与批读一起把"每条边一次读"压成"每批一次读"。
+* **没做**：跨查询缓存（要处理失效，`vt`/`lastUpdatedTime` 已具备条件，但本轮没做）。所以仪表盘反复刷新同一个
+  查询会付全价——这是拿正确性换的，不是遗漏。
+
+### 59.4 问题 2：batch size / barrier size 自适应到合适的值了吗？
+
+自适应规则（`GremlinContext.adaptBatchSize`）：`batch = clamp(上一跳扇出 / 2, 当前值, 100)`，默认 50、
+上限 100；`batch(n)` / `barrier(n)` 显式给值时**不再调**（`explicitBatchSize`）；`has/filter` 之后也不调。
+
+实测（每种子一次执行，记录每次读带了多少 id）：
+
+```
+189 次读带 2..100 个 id，200 次读只带 1 个 id
+  ids <= 10    34 次 (18%)      ← 小扇出，本来就没得批
+  ids <= 25     9 次 ( 5%)
+  ids <= 50   145 次 (77%)      ← 默认 50 是绝大多数
+  ids <= 100    1 次 ( 1%)      ← 扇出最大的种子，规则把它顶到上限
+种子 150：hop-1 有 100 个对端 → 下一跳的读带了 100 个 id（唯一的 100）
+种子 135：76  → 50
+种子 1001：37 → 7（只有 7 个要读）
+```
+
+显式 batch/barrier 扫描（20 个 id，每个 2 轮预热）：
+
+```
+auto          3.91 ms/query   3.85 reads/query
+barrier(1)   11.08 ms/query  70.15 reads/query
+batch(1)     10.74 ms/query  70.50 reads/query
+batch(10)     4.73 ms/query   9.15 reads/query
+batch(25)     3.82 ms/query   5.20 reads/query
+batch(50)     4.21 ms/query   3.85 reads/query
+batch(100)    3.99 ms/query   3.00 reads/query
+batch(200)    4.13 ms/query   3.00 reads/query
+```
+
+结论：**自适应落在拐点上，但几乎没动**。
+
+* 默认 50 已经在拐点：25→50 把往返从 5.2 降到 3.85，50→100 再降到 3.0 但延迟没改善（这批数据太小，
+  往返已经不是瓶颈，延迟由记录解码与结果构造决定）；batch(1) 往返 70 次、延迟 2.8 倍，说明**批读/并行是最大的杠杆**；
+* 上限 100 合理（`batch(200)` 不再省往返，只是把 100 的两次并成一次）；
+* **"barrier" 就是 batch 的别名**（`barrier(1)` ≈ `batch(1)`、`barrier(50)` ≈ auto），这点在 §57 已经说过，
+  这里再次实测确认；
+* 自适应用的是**上一跳的 traverser 数**（平行边算多条），所以种子的"对端数"可能小于它——这正是 150 能把批顶到
+  100 而 135（76 个对端）停在 50 的原因。要更激进的话调 `maxBatchSize`，而不是改规则。
+
+### 59.5 问题 3：无关属性有没有被加载？点和边各读了什么属性？
+
+**没有**——而且比"只读三个属性"更省：中间一跳的点**一个属性都不读**，边**一个属性都不读**。
+
+```
+被测查询 values('accountUsage','firstName','accountStatus')（种子 135，Account 声明 13 个属性）
+  readNeighboursBatch  ids 1  -> 76     none (identity only)       ← hop 1：只读邻居引用
+  readNeighboursBatch  ids 50 -> 424    none (identity only)       ← hop 2：同上
+  readVertices         ids 1  -> 1      accountUsage, firstName, accountStatus
+  readVertices         ids 50 -> 50     accountUsage, firstName, accountStatus
+  共读 153 个属性值，返回 2961 个值（39.5 KB）
+
+同一查询去掉 values()（答案是整顶点）
+  ... 同上两行邻居读 ...
+  readVertices         ids 1  -> 1      all declared properties
+  readVertices         ids 50 -> 50     all declared properties
+  共读 663 个属性值，返回 987 个顶点（359.0 KB）
+```
+
+* **顶点属性投影下推**：最后一跳只读 3 个属性（13 个里），中间一跳因为只用来继续跳，连顶点读都省了
+  （`readProperties() == null` → 跳过整读，只记 id/label）；
+* **边属性零加载**：`readNeighboursBatch` 只回邻居引用，`edge.decoded = 0`；
+  `Payment [status, type, amount, currency]` 四个属性**一次都没被点名**（`edge.read` 只是被计数成"边记录命中"，
+  与解码无关）。这解释了 §57 里"按需属性让 payload 423→251→64 KB"的那个结论；
+* **省的形态**：往返数不变（4 次），省的是**属性值与响应体积**——属性值 153 vs 663（4.3×），响应 39.5 KB vs
+  359.0 KB（9.1×）。所以"属性没被加载"这个检查应该看**属性值数/字节**，而不是 kv 调用次数（§53 的老结论再次成立）；
+* 图里声明但本轮**从没被读过**的属性在报告里逐条列出（`Account` 的另 10 个、`FuzzyLink` 的 3 个、
+  6 个边类各自的属性），方便对照。
+
+### 59.6 复现
+
+```bash
+JAVA_HOME="/c/Program Files/Java/jdk-26.0.2.1" ./mvnw -o -pl graph-integration-test test \
+  -Dtest=AerospikeHundredSeedsValuesBenchmarkTest -Dsurefire.failIfNoSpecifiedTests=false
+# 输出在 target/surefire-reports 与控制台；本次运行的完整输出留在 .logs/bench-final2.log
+```
+
+参数：`-Dpayment.vertexSet=`（默认 `http_demo_v3`）、`AEROSPIKE_HOST/PORT/NAMESPACE`。用例里**没有时间断言**
+（只有"缓存不改变答案""两次执行读一样多""顶点读只点三个属性"这类不变量），所以在负载下也不会假失败。
