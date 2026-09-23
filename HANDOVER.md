@@ -1,24 +1,26 @@
 # Handover — resume here
 
 > 本文件是**断点续做手记**：今天做了什么（结论）、现场怎么恢复、明天从哪继续。
-> 详细设计与实测数据在 `CONTEXT.md`：**2026-09-21 新增 §47–§68**（§47 仪表盘七问；§48 四问（二）；§49 三问（三）；§50 五问（四）；§51 四问（五）；§52（六）：Aerospike-Edge 大点冷/近线/在线三层；§53（七）：stale 写统一 / 结果面板复核 / 150 两跳扩展 + benchmark；§54（八）：表达式字符串函数 / display `$id` / count 交给服务端；§55（九）：用户报的 12 件事；§56（十）：算法 / legend·页签·示例 / 子图把 filter 掉的边留下；**§57（十一）：闭包 if/else 与集合、`values()` 的元素自身列、空答案不画、面板只报数目 + 135·150 两跳 benchmark**；**§58（十二）：fuzzy 的 xia 账号 / 图实例收敛到四个 / payment-graph 向量 / RocksDB-Edge GEO / 去掉 FuzzyPattern**）；
-> 过程记录在 **`DAILY-2026-09-21.md`**（§1–§22 共十三批（09-21）＋ `DAILY-2026-09-23.md`（第十四批 §1–§5：面板/索引一致性/编译缓存/RocksDB 向量索引）、§6（第十五批：RocksDB 上的两跳 benchmark）、§7（第十六批：geo+向量+边组合查询 100 次运行）、§8（第十七批：outE vs out 交错对比）、§9（第十八批：属性读优化）、§10（第十九批：图管理页七项改进）、§11（第二十批：RocksDB-Edge 查询能力）、§12（第二十一批：TinkerPop 写法）与 §13（第二十二批：事件序列模式））。**2026-09-20 是 §38–46**；**2026-09-18 是 §32–37**（含**类起点与扫描端口**）；2026-09-17 是 §21–31。
+> 详细设计与实测数据在 `CONTEXT.md`：**2026-09-21 新增 §47–§59，2026-09-23 新增 §60–§68**（§47 仪表盘七问；§48 四问（二）；§49 三问（三）；§50 五问（四）；§51 四问（五）；§52（六）：Aerospike-Edge 大点冷/近线/在线三层；§53（七）：stale 写统一 / 结果面板复核 / 150 两跳扩展 + benchmark；§54（八）：表达式字符串函数 / display `$id` / count 交给服务端；§55（九）：用户报的 12 件事；§56（十）：算法 / legend·页签·示例 / 子图把 filter 掉的边留下；**§57（十一）：闭包 if/else 与集合、`values()` 的元素自身列、空答案不画、面板只报数目 + 135·150 两跳 benchmark**；**§58（十二）：fuzzy 的 xia 账号 / 图实例收敛到四个 / payment-graph 向量 / RocksDB-Edge GEO / 去掉 FuzzyPattern**）；
+> 过程记录：**`DAILY-2026-09-21.md`**（§1–§22，09-21 的十三批）与 **`DAILY-2026-09-23.md`**（§1–§14，09-23 的九批；**§14 是这一天跨批的思考主线**：测量要交错、先怀疑观测、静默错答案比报错糟、改依赖模块先 install、从声明类型推断、数据可复现、报告自解释、用户语法即需求、一次一个变量）。
 
-**最后一次会话：2026-09-21（周日）· 一天十二批（用户共报 ~60 件事）· 全量 `./mvnw test` 绿（gremlin 183（新增 ClosureStatement 11）/ http 71 / integration / schema / gemini / fuzzy / hnsw / …，0 失败 0 错误）**
-**十二批一句话：一 边方向/多笔支付/搜索/闭包（§47）· 二 图例/平行边弧/表达式语言（§48）· 三 终结步/弧距/带变量闭包（§49）· 四 顶点类型 `vt`/LWW/regex/两跳压测（§50）· 五 结果面板/类型当过滤/regex 公式（§51）· 六 Aerospike-Edge 冷·近线·在线三层（§52）· 七 stale 写统一 + 150 两跳扩展 + benchmark（§53）· 八 字符串函数/display `$id`/count 服务端（§54）· 九 用户报的 12 件（§55）· 十 算法 CC·Louvain/legend/页签/示例/子图 bug（§56）· 十一 闭包 `if/else`+集合/元素自身列/空答案/面板只报数目 + 两跳 benchmark（§57）· 十二 xia 账号/四个图实例/向量/GEO/去 FuzzyPattern（§58）。**十三 两跳投影查询的 100 id x 8 轮性能测试（§59：缓存省 15.7% / 批大小落在拐点 / 边与中间点的属性零加载；§59.7-59.8 三个"拿值或名字猜语义"的坑按声明类型根修，产品侧 `AerospikeReadKind` 硬化）**。详见 `DAILY-2026-09-21.md` §1–§22（§21 是跨批思考主线）。**
-**第一批（§47–§49，14 件事）的逐条细节在 `DAILY-2026-09-21.md` §1–§13，那里有用户原话、被否掉的方案与实测数字。**
-**现场（2026-09-21 收工时，可直接续做）：8081 `graph-http` + 8080 `graph-web` + 8083 `graph-http --profile hnsw-dynamic` 三个 JVM 都在跑，Aerospike 容器在跑。**
-**8081 只服务 4 个图：`payment-graph`（Aerospike，`http_demo_v3`）、`payment-graph-as-edge`（`payment_as_edge_v1`）、`payment-graph-rocksdb-edge`（`.rocksdb/payment-graph-rocksdb-edge`）、`kg-entity-graph`（`kg_nell995_v2`）；其余 7 个图在 `application.yml` 里**注释保留**（schema 一个没删）。**
-**数据与索引状态：`http_demo_v3` 已含 `accountVector`（每账户 8 维）与 fuzzy 的 `fz_a7/xia1999`；`payment-graph` 的 HNSW 索引已建（`GET /api/v1/vector-index` 显示 `payment-graph Account.accountVector size=152`）；`.rocksdb/payment-graph-rocksdb-edge` 已按新的 `accountVector`+`location` 重新播种（151 点/300 边），GEO 可用、向量索引不可用（设计限制，见 §58.7）。**
+**最后一次会话：2026-09-23（周三）· 一天九批（第十四至二十二批）· 全量 `./mvnw test` 绿（0 失败 / 0 错误；gremlin 194 / fuzzy 49 / http 71 / schema / gemini / hnsw / …）**
+**九批一句话：十四 面板单元素 + 索引坏掉要报错 + 编译缓存上限 + RocksDB-Edge 的 HNSW（§60）· 十五 同一个两跳语句在 RocksDB-Edge 上 100 id×8 轮（§61）· 十六 geo+向量+边组合语句 100 次（§62）· 十七 `outE` vs `out` 各 100 次（交错测）（§63）· 十八 优化掉中间多余的点/边属性读（§64）· 十九 建模页七项改进（§65）· 二十 RocksDB-Edge 四条查询能力（§66）· 二十一 TinkerPop 写法四条（§67）· 二十二 事件序列模式（§68）。**后六批里三批是性能测试、三批是查询能力，测量方法本身也踩过坑（见 `DAILY-2026-09-23.md` §14）。**
+**用户原话、被否掉的方案、实测数字：`DAILY-2026-09-21.md` §1–§22 与 `DAILY-2026-09-23.md` §1–§14。**
+**现场（2026-09-23 收工时，可直接续做）：8081 `graph-http` + 8080 `graph-web` + 8083 `graph-http --profile hnsw-dynamic` 三个 JVM 都在跑，Aerospike 容器在跑；启停在下一节。**
+**8081 服务 4 个图：`payment-graph`（Aerospike，`http_demo_v3`）、`payment-graph-as-edge`、`payment-graph-rocksdb-edge`（`.rocksdb/payment-graph-rocksdb-edge`）、`kg-entity-graph`；其余 7 个在 `application.yml` 里注释保留。**
+**数据与索引状态（09-23 收工）：`http_demo_v3` 有 fuzzy 环（`fz_a1..fz_a7`，含 xia1999）+ 5 条事件会话（`ev_a1..ev_a5`，由 `FuzzyLinkDemoLoader` 播种，跑 `./mvnw test` 或 `FuzzyLinkIntegrationTest` 即重建）与它们的连接节点；`payment-graph` 与 `payment-graph-rocksdb-edge` 的 HNSW 索引都已建（152 / 51 点）；`fuzzy-patterns.json` 有 4 个模式（#0/#1 平铺，#2/#3 事件序列）；UI 的 `payment-graph` 示例查询里有 4 条序列例子（已实测可跑）。**
 **起停一条命令：`tools/start-phoenixgraph.sh [--no-build] [--with-hnsw]`；日志 `.logs/<服务>.out`；停 `tools/stop-phoenixgraph.sh`。改了 UI/资源/引擎一定要**重新建包**（服务读的是 jar 里的 `static/**`）。**
-**下一次入口：§66.2（给 RocksDB-Edge 加 `edge-id:<类>` 列族做边 id 索引：写入时维护 + 存量重建，现在 `g.E($id,类)` 是 O(类内边数) 扫描）；以及原清单：§65 的下一步（图下拉只列"被服务的"图，重启后自建的 `*.json` 会消失 —— 下拉应同时扫工作目录的 schema 文件）；以及原清单：§62.3（`circle` 的两个优化已做，剩下的是把 HNSW 的 `nearest` 从"每个 traverser 一次搜索"变成能共享/合并——那才是这条语句 78% 的时间）；以及原清单：§63.3（给 RocksDB-Edge 补"邻居读"：`supportsNeighbourRead`/`readNeighbours(Batch)` 只回 edgeId + 对端，不解码边属性 —— 现在顶点跳（`out()`）也把 Payment 的 status/type/amount/currency 全解码了；Aerospike 侧有这条路径，`edge.decoded = 0`）；§62.3（`circle` 步逐个读回 geo 命中，10 个命中 10 次往返）；以及原清单：§62.3 的优化点（`circle` 步把 geo 命中**批量**读回再把距离附上，现在是每个命中一次读——10 个命中 = 10 次往返，约占 127 次的 8%）；以及原清单：§60 未做项（把 RocksDB 的向量索引也做成**增量**维护：目前只有 rebuild 会写层边，Aerospike 侧写入时会维护索引；以及 `nearest` 在 RocksDB 上每次搜索多一次 layer-0 校验读）。原清单：§59.3 未做项（跨查询缓存：`vt`/`lastUpdatedTime` 已具备条件，但要做失效；本轮只确认了作用域是单次执行）；§58.7（RocksDB 图的向量索引后端：写 RocksDB 的 `HnswStore`，或把索引托管到 Aerospike 而向量从 RocksDB 读 + 用查询路径枚举待索引的点）；§57.9（`new` 只支持三种集合；barrier 仍是批量大小别名）；§56.7（投影上限、平行边 “×N”）；§51.6 余下（`vt` 塞进边读 / 命名类首跳按类型过滤）；§53.4 余下（limit 有序表示）；RocksDB 侧 stale 不一致（§53.1）；§52.5 的未做；UI 镜像边折叠（§47.8）；`map` 聚合/多列（§48.6）。**
+**下一次入口（按优先级）：1) §68 的序列模式收尾 —— 用户给的原始时间戳与他们的 pattern 顺序不符（排序后是 P→D→L→B），要么按用户时间戳调整 pattern 的步骤顺序、要么把一个"不要求先后、只要四个事件都存在且相邻 ≤100s"的变体做出来（目前是严格按时间顺序匹配）；2) §66.2 给 RocksDB-Edge 加 `edge-id:<类>` 列族做边 id 索引（现在 `g.E($id,类)` 是 O(类内边数) 顺序扫描，200 条 6–7 ms）；3) §65 的图下拉只列"被服务的"图（重启后自建的 `*.json` 会消失，应该同时扫工作目录）；4) §62.3 剩下的：`nearest(10)` 对 10 个 traverser 做 10 次独立 HNSW 搜索（这条语句 78% 的时间），要共享/合并搜索；5) §57.9/§56.7/§51.6/§53.4 的旧清单（`new` 只支持三种集合、barrier 仍是批量大小别名、投影上限 40、平行边"×N"、`vt` 进边读、limit 有序表示、RocksDB stale 不一致、UI 镜像边折叠、`map` 聚合）。**
 
 **明天开机（照抄三条命令）**
 
 ```bash
 tools/start-phoenixgraph.sh --no-build --with-hnsw   # Aerospike 容器 + 8081/8080/8083；改过代码去掉 --no-build
 curl -s localhost:8081/api/v1/graphs | head -c 200   # 应看到 4 个图
-curl -s localhost:8081/api/v1/vector-index           # 应看到 payment-graph Account.accountVector size=152
+curl -s localhost:8081/api/v1/vector-index           # 应看到 payment-graph 152 点 / rocksdb-edge 51 点
+node .logs/run-ui-examples.js                        # UI 里那四条事件序列示例的实际返回（应看到 fl_2_10.122_notmycard 等）
+node .logs/verify-sequence-final.js                  # 序列模式全貌：原始时间戳 vs 有序、每个账号的组、组成员
 ```
 
 **数据/索引丢了的恢复顺序**（缺哪步补哪步；RocksDB 必须先停服务，服务占着目录）：
