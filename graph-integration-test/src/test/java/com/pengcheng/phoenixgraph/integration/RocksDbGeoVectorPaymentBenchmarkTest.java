@@ -80,6 +80,11 @@ class RocksDbGeoVectorPaymentBenchmarkTest {
     private static final String GEO = SEED + CIRCLE + ".limit(10)";
     private static final String LOOKALIKES = GEO + ".nearest(10)";
     private static final String QUERY = LOOKALIKES + ".outE('Payment')";
+    /**
+     * The same statement ending on the <b>vertices</b> the payments reach instead of the edges: the answer is
+     * the receivers, so the edges are only walked - which is the comparison this benchmark is for.
+     */
+    private static final String QUERY_OUT = LOOKALIKES + ".out('Payment')";
 
     /** How many times the statement runs (what the caller asked for). */
     private static final int RUNS = 100;
@@ -113,6 +118,10 @@ class RocksDbGeoVectorPaymentBenchmarkTest {
     private final List<Run> runs = new ArrayList<>();
     private final List<Stage> stages = new ArrayList<>();
     private List<String> readTrace = List.of();
+    /** The same three measurements for the 'out()' variant. */
+    private final List<Run> runsOut = new ArrayList<>();
+    private final List<Stage> stagesOut = new ArrayList<>();
+    private List<String> readTraceOut = List.of();
     private List<String> cacheNotes = List.of();
 
     @BeforeAll
@@ -154,19 +163,29 @@ class RocksDbGeoVectorPaymentBenchmarkTest {
         }
     }
 
+    /**
+     * A hundred runs of each statement, <b>interleaved</b>: the two differ only in their last hop, so
+     * measuring one after the other would compare a cold JIT against a warm one. Alternating them gives
+     * both the same machine state, which is what makes the comparison in the report mean anything.
+     */
     @Test
     @Order(1)
-    void theStatementRunsAHundredTimes() {
+    void bothStatementsRunAHundredTimesEachInterleaved() {
         for (int i = 0; i < WARMUP; i++) {
             engine.executeWithSubgraph(QUERY);
+            engine.executeWithSubgraph(QUERY_OUT);
         }
         runs.clear();
+        runsOut.clear();
         for (int i = 0; i < RUNS; i++) {
             runs.add(measure("run " + (i + 1), QUERY));
+            runsOut.add(measure("run " + (i + 1), QUERY_OUT));
         }
-        assertEquals(RUNS, runs.size(), "a hundred runs");
-        assertTrue(runs.stream().allMatch(run -> run.items() > 0), "every run answers something");
-        System.out.printf(Locale.ROOT, "%d runs of the statement on %s%n", RUNS, label());
+        assertEquals(RUNS, runs.size(), "a hundred runs of A");
+        assertEquals(RUNS, runsOut.size(), "a hundred runs of B");
+        assertTrue(runs.stream().allMatch(run -> run.items() > 0), "every run of A answers something");
+        assertTrue(runsOut.stream().allMatch(run -> run.items() > 0), "every run of B answers something");
+        System.out.printf(Locale.ROOT, "%d interleaved runs of each statement on %s%n", RUNS, label());
     }
 
     /** The prefixes: which part of the statement costs what. */
@@ -193,10 +212,7 @@ class RocksDbGeoVectorPaymentBenchmarkTest {
         recording = false;
         List<String> lines = new ArrayList<>();
         for (Read read : reads) {
-            lines.add(String.format(Locale.ROOT, "    %-20s %-7s %-22s ids %-4d -> %-5d  %s", read.op(),
-                    read.kind(), read.edgeClass() == null ? "" : read.edgeClass(), read.ids(),
-                    read.returned(),
-                    read.properties().isEmpty() ? "no property named" : String.join(", ", read.properties())));
+            lines.add(traceLine(read));
         }
         readTrace = lines;
         assertFalse(lines.isEmpty(), "the statement reads something");
@@ -231,6 +247,31 @@ class RocksDbGeoVectorPaymentBenchmarkTest {
                 runs.get(0).traffic().getOrDefault(Metrics.KV_READ_CALL, 0L),
                 runs.get(1).traffic().getOrDefault(Metrics.KV_READ_CALL, 0L)));
         cacheNotes = notes;
+    }
+
+    @Test
+    @Order(6)
+    void theOutVariantStepsAreMeasuredOnTheirOwn() {
+        stagesOut.clear();
+        stagesOut.add(measureStage("1. seed only", SEED));
+        stagesOut.add(measureStage("2. + circle(5km).limit(10)", GEO));
+        stagesOut.add(measureStage("3. + nearest(10)", LOOKALIKES));
+        stagesOut.add(measureStage("4. + out('Payment') (the statement)", QUERY_OUT));
+    }
+
+    @Test
+    @Order(7)
+    void theOutVariantReadsAreListed() {
+        reads.clear();
+        recording = true;
+        engine.executeWithSubgraph(QUERY_OUT);
+        recording = false;
+        List<String> lines = new ArrayList<>();
+        for (Read read : reads) {
+            lines.add(traceLine(read));
+        }
+        readTraceOut = lines;
+        assertFalse(lines.isEmpty(), "the out() variant reads something");
     }
 
     // ------------------------------------------------------------------ measuring
@@ -425,12 +466,38 @@ class RocksDbGeoVectorPaymentBenchmarkTest {
         StringBuilder out = new StringBuilder();
         out.append('\n').append("=".repeat(102)).append('\n');
         out.append("geo + vector + edges benchmark on ").append(label()).append('\n');
-        out.append(QUERY).append('\n');
+        out.append("  A: ").append(QUERY).append("\n");
+        out.append("  B: ").append(QUERY_OUT).append('\n');
         out.append("=".repeat(102)).append('\n');
 
-        List<Long> times = runs.stream().map(Run::nanos).sorted().toList();
+        statement(out, "A  outE('Payment') - the answer is the edges", QUERY, runs, stages, readTrace);
+        statement(out, "B  out('Payment') - the answer is the receivers", QUERY_OUT, runsOut, stagesOut,
+                readTraceOut);
+        comparison(out);
+
+        if (!cacheNotes.isEmpty()) {
+            out.append(String.format(Locale.ROOT, "%ncaches (measured on A)%n"));
+            cacheNotes.forEach(note -> out.append(note).append('\n'));
+        }
+        out.append(String.format(Locale.ROOT,
+                "%n  an empty property list reads everything the class declares: a vertex read with no name%n"
+                        + "  asks for all its properties, and so does an edge read. The index' layer-0%n"
+                        + "  consistency check adds one read per search, so nearest(10) over ten traversers%n"
+                        + "  pays ten of them.\n"));
+        out.append('\n').append("=".repeat(102));
+        return out.toString();
+    }
+
+    /** One statement's sections: latency, its blocks, traffic, its steps, its read trace. */
+    private void statement(StringBuilder out, String title, String gremlin, List<Run> measured,
+                           List<Stage> measuredStages, List<String> trace) {
+        if (measured.isEmpty()) {
+            return;
+        }
+        out.append(String.format(Locale.ROOT, "%n--- %s%n", title));
+        List<Long> times = measured.stream().map(Run::nanos).sorted().toList();
         long total = times.stream().mapToLong(Long::longValue).sum();
-        out.append(String.format(Locale.ROOT, "%nlatency over %d runs of the statement%n", times.size()));
+        out.append(String.format(Locale.ROOT, "latency over %d runs%n", times.size()));
         out.append(String.format(Locale.ROOT,
                 "  mean %7.3f ms   min %7.3f   p50 %7.3f   p90 %7.3f   p95 %7.3f   p99 %7.3f   max %7.3f%n",
                 total / 1e6 / times.size(), at(times, 0.0), at(times, 0.50), at(times, 0.90), at(times, 0.95),
@@ -438,68 +505,95 @@ class RocksDbGeoVectorPaymentBenchmarkTest {
         out.append(String.format(Locale.ROOT,
                 "  throughput %.0f queries/s   wall %.2f s   items %.1f   subgraph %.1f vertices / %.1f edges%n",
                 times.size() / (total / 1e9), total / 1e9,
-                runs.stream().mapToInt(Run::items).average().orElse(0),
-                runs.stream().mapToInt(Run::vertices).average().orElse(0),
-                runs.stream().mapToInt(Run::edges).average().orElse(0)));
+                measured.stream().mapToInt(Run::items).average().orElse(0),
+                measured.stream().mapToInt(Run::vertices).average().orElse(0),
+                measured.stream().mapToInt(Run::edges).average().orElse(0)));
 
-        out.append(String.format(Locale.ROOT, "%nthe first runs are not the steady state: mean of each block of 20%n"));
-        for (int block = 0; block < runs.size(); block += 20) {
-            List<Run> slice = runs.subList(block, Math.min(block + 20, runs.size()));
-            out.append(String.format(Locale.ROOT, "  runs %3d-%3d  %7.3f ms mean   %7.3f p95   %6.1f kv reads%n",
+        out.append(String.format(Locale.ROOT, "  blocks of 20 (the first ones are not the steady state)%n"));
+        for (int block = 0; block < measured.size(); block += 20) {
+            List<Run> slice = measured.subList(block, Math.min(block + 20, measured.size()));
+            out.append(String.format(Locale.ROOT, "    runs %3d-%3d  %7.3f ms mean   %7.3f p95   %6.1f kv reads%n",
                     block + 1, block + slice.size(), meanMillis(slice),
                     at(slice.stream().map(Run::nanos).sorted().toList(), 0.95),
                     slice.stream().mapToLong(run -> run.traffic().getOrDefault(Metrics.KV_READ_CALL, 0L))
                             .average().orElse(0)));
         }
-        out.append(String.format(Locale.ROOT,
-                "  (the two tables below were measured later in the same JVM, so compare deltas inside a%n"
-                        + "  table, not across tables)%n"));
 
-        out.append(String.format(Locale.ROOT, "%nstorage traffic per run (mean, max, total)%n"));
+        out.append(String.format(Locale.ROOT, "  storage traffic per run (mean / max)%n"));
         for (String metric : TRAFFIC) {
-            long sum = runs.stream().mapToLong(run -> run.traffic().getOrDefault(metric, 0L)).sum();
-            long max = runs.stream().mapToLong(run -> run.traffic().getOrDefault(metric, 0L)).max().orElse(0);
-            out.append(String.format(Locale.ROOT, "  %-22s %9.2f   max %6d   total %8d%n",
-                    metric.replace("storage.", ""), (double) sum / runs.size(), max, sum));
+            long sum = measured.stream().mapToLong(run -> run.traffic().getOrDefault(metric, 0L)).sum();
+            long max = measured.stream().mapToLong(run -> run.traffic().getOrDefault(metric, 0L)).max().orElse(0);
+            out.append(String.format(Locale.ROOT, "    %-22s %9.2f / %-6d%n", metric.replace("storage.", ""),
+                    (double) sum / measured.size(), max));
         }
 
-        out.append(String.format(Locale.ROOT, "%nwhere the time goes: each step measured on its own "
-                + "(%d runs each, warm)%n", STAGE_RUNS));
-        double seed = meanMillis(stages.isEmpty() ? List.of() : stages.get(0).runs());
-        for (Stage stage : stages) {
-            List<Long> stageTimes = stage.runs().stream().map(Run::nanos).sorted().toList();
-            double mean = meanMillis(stage.runs());
-            out.append(String.format(Locale.ROOT,
-                    "  %-38s %7.3f ms mean   %7.3f p95   %7.3f max   %+7.3f vs the seed   %6.1f items%n",
-                    stage.label(), mean, at(stageTimes, 0.95), at(stageTimes, 1.0), mean - seed,
-                    stage.runs().stream().mapToInt(Run::items).average().orElse(0)));
-        }
-        if (stages.size() == 4) {
-            out.append(String.format(Locale.ROOT,
-                    "  steps: seed %.3f ms, +circle %.3f, +nearest(10) %.3f, +outE %.3f%n",
-                    meanMillis(stages.get(0).runs()),
-                    meanMillis(stages.get(1).runs()) - meanMillis(stages.get(0).runs()),
-                    meanMillis(stages.get(2).runs()) - meanMillis(stages.get(1).runs()),
-                    meanMillis(stages.get(3).runs()) - meanMillis(stages.get(2).runs())));
-        }
-
-        if (!cacheNotes.isEmpty()) {
-            out.append(String.format(Locale.ROOT, "%ncaches%n"));
-            cacheNotes.forEach(note -> out.append(note).append('\n'));
+        if (!measuredStages.isEmpty()) {
+            out.append(String.format(Locale.ROOT, "  where the time goes (%d runs each, warm)%n", STAGE_RUNS));
+            double seed = meanMillis(measuredStages.get(0).runs());
+            for (Stage stage : measuredStages) {
+                List<Long> stageTimes = stage.runs().stream().map(Run::nanos).sorted().toList();
+                out.append(String.format(Locale.ROOT,
+                        "    %-40s %7.3f ms   %7.3f p95   %+7.3f vs seed   %6.1f items%n",
+                        stage.label(), meanMillis(stage.runs()), at(stageTimes, 0.95),
+                        meanMillis(stage.runs()) - seed,
+                        stage.runs().stream().mapToInt(Run::items).average().orElse(0)));
+            }
+            if (measuredStages.size() == 4) {
+                out.append(String.format(Locale.ROOT,
+                        "    steps: seed %.3f, +circle %.3f, +nearest(10) %.3f, +last hop %.3f ms%n",
+                        meanMillis(measuredStages.get(0).runs()),
+                        meanMillis(measuredStages.get(1).runs()) - meanMillis(measuredStages.get(0).runs()),
+                        meanMillis(measuredStages.get(2).runs()) - meanMillis(measuredStages.get(1).runs()),
+                        meanMillis(measuredStages.get(3).runs()) - meanMillis(measuredStages.get(2).runs())));
+            }
         }
 
-        if (!readTrace.isEmpty()) {
-            out.append(String.format(Locale.ROOT, "%nwhat one run reads%n"));
-            readTrace.forEach(line -> out.append(line).append('\n'));
-            out.append(String.format(Locale.ROOT,
-                    "%n  an empty property list reads everything the class declares (and no read asked for a%n"
-                            + "  property by name): the vertices of the last hop come back whole, the layer edges%n"
-                            + "  and the neighbour reads carry no properties at all. The index' layer-0%n"
-                            + "  consistency check adds one read per search, so nearest(10) over ten traversers%n"
-                            + "  pays ten of them.%n"));
+        if (!trace.isEmpty()) {
+            out.append(String.format(Locale.ROOT, "  what one run of this statement reads%n"));
+            trace.forEach(line -> out.append(line).append('\n'));
         }
-        out.append('\n').append("=".repeat(102));
-        return out.toString();
+    }
+
+    /** A and B next to each other: what the last hop changes. */
+    private void comparison(StringBuilder out) {
+        if (runs.isEmpty() || runsOut.isEmpty()) {
+            return;
+        }
+        out.append(String.format(Locale.ROOT, "%n--- A against B: the last hop is the only difference%n"));
+        out.append(String.format(Locale.ROOT,
+                "  %-26s %14s %14s %12s%n", "", "A  outE (edges)", "B  out (vertices)", "B - A"));
+        line(out, "mean ms", meanMillis(runs), meanMillis(runsOut));
+        line(out, "p95 ms", at(runs.stream().map(Run::nanos).sorted().toList(), 0.95),
+                at(runsOut.stream().map(Run::nanos).sorted().toList(), 0.95));
+        line(out, "items returned", meanOf(runs, Run::items), meanOf(runsOut, Run::items));
+        line(out, "subgraph vertices", meanOf(runs, Run::vertices), meanOf(runsOut, Run::vertices));
+        line(out, "subgraph edges", meanOf(runs, Run::edges), meanOf(runsOut, Run::edges));
+        for (String metric : TRAFFIC) {
+            line(out, metric.replace("storage.", ""), meanTraffic(runs, metric), meanTraffic(runsOut, metric));
+        }
+        out.append(String.format(Locale.ROOT,
+                "%n  measured interleaved (A, B, A, B, ...), so the two columns share one JIT state and one%n"
+                        + "  cache state: the difference is the last hop and nothing else - the steps before it%n"
+                        + "  are identical in both.%n"));
+    }
+
+    private void line(StringBuilder out, String name, double a, double b) {
+        out.append(String.format(Locale.ROOT, "  %-26s %14.2f %14.2f %12.2f%n", name, a, b, b - a));
+    }
+
+    private static double meanOf(List<Run> runs, java.util.function.ToIntFunction<Run> field) {
+        return runs.stream().mapToInt(field).average().orElse(0);
+    }
+
+    private static double meanTraffic(List<Run> runs, String metric) {
+        return runs.stream().mapToLong(run -> run.traffic().getOrDefault(metric, 0L)).average().orElse(0);
+    }
+
+    /** One line of a read trace: the operation, what it answers, the class, ids, and the properties. */
+    private static String traceLine(Read read) {
+        return String.format(Locale.ROOT, "    %-20s %-7s %-22s ids %-4d -> %-5d  %s", read.op(),
+                read.kind(), read.edgeClass() == null ? "" : read.edgeClass(), read.ids(), read.returned(),
+                read.properties().isEmpty() ? "no property named" : String.join(", ", read.properties()));
     }
 
     private static double meanMillis(List<Run> runs) {
