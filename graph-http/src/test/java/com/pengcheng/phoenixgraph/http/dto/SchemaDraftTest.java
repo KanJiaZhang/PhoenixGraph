@@ -41,6 +41,7 @@ class SchemaDraftTest {
                                 new SchemaDraft.PropertyDraft("title", "string", "Title", null, null, null, null,
                                         null, null, null, null, null)))),
                 List.of(new SchemaDraft.EdgeDraft("Visits", "Visits", "DIRECTED", "Person", "Merchant", false,
+                        1000, 500, null,
                         List.of(new SchemaDraft.PropertyDraft("times", "long", "Times", null, null, null, null,
                                 null, null, null, null, null)))));
     }
@@ -84,7 +85,7 @@ class SchemaDraftTest {
         SchemaDraft withNullTarget = new SchemaDraft("g", null, "string", null,
                 List.of(new SchemaDraft.VertexDraft("Merchant", null, null, List.of())),
                 List.of(new SchemaDraft.EdgeDraft("Opens", null, "DIRECTED", "Merchant", "Merchant", true,
-                        List.of())));
+                        null, null, null, List.of())));
 
         assertTrue(withNullTarget.toSchema(1).edgeSchema("Opens").target().isNull());
     }
@@ -100,6 +101,39 @@ class SchemaDraftTest {
         assertEquals(128, rocks.toSchema(1).storage().regionCount());
     }
 
+    /**
+     * The engine owns id/createdTime/lastUpdatedTime (and source/target on an edge) with fixed indexes, so a
+     * property may not take one of those names: the save is refused with the name in the message.
+     */
+    @Test
+    void aPropertyCannotTakeTheEnginesOwnName() {
+        SchemaDraft propertyNamedId = new SchemaDraft("g", null, "string", null,
+                List.of(new SchemaDraft.VertexDraft("Person", null, null, List.of(
+                        new SchemaDraft.PropertyDraft("id", "string", null, null, null, null, null, null, null,
+                                null, null, null)))),
+                List.of());
+        IllegalArgumentException onId = assertThrows(IllegalArgumentException.class,
+                () -> propertyNamedId.toSchema(1));
+        assertTrue(onId.getMessage().contains("id"), onId.getMessage());
+
+        SchemaDraft propertyNamedSource = new SchemaDraft("g", null, "string", null,
+                List.of(new SchemaDraft.VertexDraft("Person", null, null, List.of())),
+                List.of(new SchemaDraft.EdgeDraft("Knows", null, "DIRECTED", "Person", "Person", false,
+                        null, null, null, List.of(
+                        new SchemaDraft.PropertyDraft("source", "string", null, null, null, null, null, null,
+                                null, null, null, null)))));
+        assertThrows(IllegalArgumentException.class, () -> propertyNamedSource.toSchema(1));
+
+        // an ordinary name is still fine
+        SchemaDraft ordinary = new SchemaDraft("g", null, "string", null,
+                List.of(new SchemaDraft.VertexDraft("Person", null, null, List.of(
+                        new SchemaDraft.PropertyDraft("name", "string", null, null, null, null, null, null, null,
+                                null, null, null)))),
+                List.of());
+        assertEquals("name", ordinary.toSchema(1).vertexSchema("Person").properties().get(0).name(),
+                "an ordinary property name is still accepted");
+    }
+
     @Test
     void anExistingGraphComesBackAsADraftThatRebuildsIt() {
         GraphSchema first = draft().toSchema(7);
@@ -112,6 +146,8 @@ class SchemaDraftTest {
         assertEquals(List.of("name", "age", "embedding", "where"),
                 second.vertexSchema("Person").properties().stream().map(property -> property.name()).toList());
         assertTrue(second.vertexSchema("Person").properties().get(2).isVector(), "flags survive the round trip");
+        assertEquals(1000, second.edgeSchema("Visits").maxOutgoingEdges(), "degree limits survive the round trip");
+        assertEquals(500, second.edgeSchema("Visits").maxIncomingEdges());
         assertEquals("name", again.vertices().get(0).display());
     }
 

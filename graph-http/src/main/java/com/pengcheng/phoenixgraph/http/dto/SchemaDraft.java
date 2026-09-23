@@ -59,14 +59,23 @@ public record SchemaDraft(String name, String description, String idType, Storag
     }
 
     /**
-     * An edge type: its name, direction, endpoints and properties.
+     * An edge type: its name, direction, endpoints, properties and how many edges a vertex may keep.
      *
-     * @param source      source vertex type ({@code null} for an undirected edge without endpoints)
-     * @param target      target vertex type ({@code null} when the edge may dangle)
-     * @param targetIsNull whether the target may be absent ({@code isNull} in the schema)
+     * <p>The degree limits only mean something for the schemes that spread a hub over several rows
+     * ({@code Aerospike-Edge}, {@code RocksDB-Edge}): an inline scheme keeps every edge of a vertex in one
+     * record, where a limit would only refuse writes. A storage that cannot use them ignores them, which is
+     * why the builder disables the fields for those schemes instead of hiding them.
+     *
+     * @param source        source vertex type ({@code null} for an undirected edge without endpoints)
+     * @param target        target vertex type ({@code null} when the edge may dangle)
+     * @param targetIsNull  whether the target may be absent ({@code isNull} in the schema)
+     * @param maxOutDegree  most outgoing edges one vertex may keep ({@code null}/0 = unlimited)
+     * @param maxInDegree   most incoming edges one vertex may keep ({@code null}/0 = unlimited)
+     * @param maxDegree     the same limit for both directions of an undirected/bidirectional class
      */
     public record EdgeDraft(String name, String description, String direction, String source, String target,
-                            Boolean targetIsNull, List<PropertyDraft> properties) {
+                            Boolean targetIsNull, Integer maxOutDegree, Integer maxInDegree,
+                            Integer maxDegree, List<PropertyDraft> properties) {
 
         public EdgeDraft {
             properties = properties == null ? List.of() : List.copyOf(properties);
@@ -108,7 +117,7 @@ public record SchemaDraft(String name, String description, String idType, Storag
             int index = 1;
             for (PropertyDraft property : vertex.properties()) {
                 VertexPropertySchema propertySchema = new VertexPropertySchema(index++,
-                        requireName(property), property.description(), parseType(property.type()),
+                        requireName(property, RESERVED_VERTEX), property.description(), parseType(property.type()),
                         constraintsOf(property));
                 decorate(propertySchema, property);
                 vertexSchema.property(propertySchema);
@@ -136,10 +145,19 @@ public record SchemaDraft(String name, String description, String idType, Storag
             }
             EdgeSchema edgeSchema = new EdgeSchema(propertyId++, edge.name(), edge.description(), source, target,
                     direction);
+            if (edge.maxOutDegree() != null && edge.maxOutDegree() > 0) {
+                edgeSchema.maxOutgoingEdges(edge.maxOutDegree());
+            }
+            if (edge.maxInDegree() != null && edge.maxInDegree() > 0) {
+                edgeSchema.maxIncomingEdges(edge.maxInDegree());
+            }
+            if (edge.maxDegree() != null && edge.maxDegree() > 0) {
+                edgeSchema.maxDegree(edge.maxDegree());
+            }
             int index = 1;
             for (PropertyDraft property : edge.properties()) {
                 EdgePropertySchema propertySchema = new EdgePropertySchema(index++,
-                        requireName(property), property.description(), parseType(property.type()),
+                        requireName(property, RESERVED_EDGE), property.description(), parseType(property.type()),
                         constraintsOf(property));
                 decorate(propertySchema, property);
                 edgeSchema.property(propertySchema);
@@ -151,6 +169,26 @@ public record SchemaDraft(String name, String description, String idType, Storag
             schema.storage(toStorage(storage));
         }
         return schema;
+    }
+
+    /**
+     * Names the engine owns: every vertex has an {@code id} and the meta timestamps, every edge also has a
+     * {@code source} and a {@code target}. Their indexes are fixed (0 for the id, -2/-1 for the timestamps),
+     * so declaring a property with one of these names would either collide with the built-in one or hide it.
+     */
+    private static final java.util.Set<String> RESERVED_VERTEX =
+            java.util.Set.of("id", "createdTime", "lastUpdatedTime");
+
+    private static final java.util.Set<String> RESERVED_EDGE =
+            java.util.Set.of("id", "source", "target", "createdTime", "lastUpdatedTime");
+
+    private static String requireName(PropertyDraft property, java.util.Set<String> reserved) {
+        String name = requireName(property);
+        if (reserved.contains(name)) {
+            throw new IllegalArgumentException("'" + name + "' is part of every element of this kind"
+                    + " (its index is fixed), so it cannot be declared as a property");
+        }
+        return name;
     }
 
     private static String requireName(PropertyDraft property) {
@@ -288,7 +326,8 @@ public record SchemaDraft(String name, String description, String idType, Storag
             String source = edge.source() == null ? null : edge.source().vertexName();
             String target = edge.target() == null ? null : edge.target().vertexName();
             edges.add(new EdgeDraft(edge.name(), edge.description(), edge.direction().name(), source, target,
-                    edge.target() != null && edge.target().isNull(), properties));
+                    edge.target() != null && edge.target().isNull(),
+                    edge.maxOutgoingEdges(), edge.maxIncomingEdges(), edge.maxDegree(), properties));
         }
         PropertyType idType = schema.vertexSchemas().isEmpty() ? PropertyType.ScalarType.STRING
                 : schema.vertexSchemas().get(0).idSchema().type();

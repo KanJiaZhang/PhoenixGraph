@@ -184,3 +184,16 @@ hr { border: none; border-top: 1px solid var(--border, #e4e9f2); margin: 12px 0;
   pointer-events: none;
 }
 #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+/* the engine's own properties: the id row is readable but locked, a reserved name is flagged red */
+.prop-table tr.id-row input[disabled] {
+  background: rgba(148, 163, 184, 0.12);
+  color: var(--muted, #64748b);
+  cursor: not-allowed;
+}
+.prop-table tr.id-row td:last-child { text-align: center; }
+.prop-table tr.reserved-row input[data-field="name"] {
+  border-color: #ef4444;
+  background: rgba(239, 68, 68, 0.08);
+}
+.csv-hint { font-size: 12px; }

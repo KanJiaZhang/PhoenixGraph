@@ -7,6 +7,7 @@ import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -104,6 +105,38 @@ public class ProxyController {
     public ResponseEntity<String> upsertEdge(@PathVariable("graph") String graph, @RequestBody String body) {
         return forward(HttpMethod.POST, "/api/v1/graphs/" + graph + "/edges",
                 new HttpEntity<>(body, jsonHeaders()));
+    }
+
+    /**
+     * Writes many vertices and edges into one graph in a single request: what a CSV import uses, so a file of
+     * a few hundred rows is a handful of round trips rather than one per row.
+     */
+    @PostMapping("/graphs/{graph}/batch")
+    public ResponseEntity<String> batch(@PathVariable("graph") String graph, @RequestBody String body) {
+        return forward(HttpMethod.POST, "/api/v1/graphs/" + graph + "/batch",
+                new HttpEntity<>(body, jsonHeaders()));
+    }
+
+    /**
+     * Deletes a vertex. The payload is the graph's own state, not this page's: the builder confirms the
+     * consequences before calling this (the edges that touched the vertex are not deleted with it).
+     */
+    @DeleteMapping("/graphs/{graph}/vertices/{id}")
+    public ResponseEntity<String> deleteVertex(@PathVariable("graph") String graph,
+                                               @PathVariable("id") String id) {
+        return forward(HttpMethod.DELETE, "/api/v1/graphs/" + graph + "/vertices/" + id, null);
+    }
+
+    /** Deletes one edge: an edge is stored at both endpoints, so both have to be named. */
+    @DeleteMapping("/graphs/{graph}/edges/{edgeId}")
+    public ResponseEntity<String> deleteEdge(@PathVariable("graph") String graph,
+                                             @PathVariable("edgeId") String edgeId,
+                                             @RequestParam("edgeSchemaName") String edgeSchemaName,
+                                             @RequestParam("source") String source,
+                                             @RequestParam("destination") String destination) {
+        return forward(HttpMethod.DELETE, "/api/v1/graphs/" + graph + "/edges/" + edgeId
+                + "?edgeSchemaName=" + edgeSchemaName + "&source=" + source + "&destination=" + destination,
+                null);
     }
 
     // --- fuzzy linking (patterns are edited in the builder page) ---

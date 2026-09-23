@@ -4658,3 +4658,99 @@ B 的最后一步比 A 多一次顶点读（`readVertices(50)` 物化答案 + `r
 ./mvnw -o -pl graph-integration-test test -Dtest=RocksDbEdgeSeededValuesBenchmarkTest
 ```
 输出：`.logs/bench-after-opt2.log`（geo+向量+边）、`.logs/bench-twohop-after-opt2.log`（两跳）。
+
+---
+
+## 65. 图管理（建模）页的七项改进
+
+页面是 `builder.html` + `js/builder.js`（draft = 后端接受的模型，JSON 预览就是要保存的内容）。后端侧只动了
+`SchemaDraft`（草稿 ↔ schema 的转换）与两条路由；其余是页面自己的事。
+
+### 65.1 点/边/属性都能写 description（#1）
+
+`PropertyDraft` 一直有 `description`，`VertexDraft`/`EdgeDraft` 也有，但**页面从没给它们输入框**：
+
+* 属性表新增一列「说明」（`data-field="description"`）；
+* 点卡片新增「描述」输入；边卡片同样。
+
+### 65.2 最大出入度：能填，但只对 `-Edge` 存储生效（#2）
+
+schema 里一直有 `maxOutgoingEdges`/`maxIncomingEdges`/`maxDegree`，`SchemaJsonCodec` 也读写它们，但
+**`SchemaDraft.EdgeDraft` 没有这三个字段** —— 于是页面上既填不了，打开已有图时这几个值还会被丢掉。
+
+* `EdgeDraft` 增加 `maxOutDegree`/`maxInDegree`/`maxDegree`，`toSchema` 用 fluent setter 写回
+  （`maxOutgoingEdges(...)` 等，这样 `maxDegreeSet` 也会置位），`toDraft` 读回来；
+* 页面每个边卡片加两个数字输入；**存储不是 `-Edge` 时置灰并说明原因**（内联方案把每个点的边放在一条记录里，
+  上限只能拒绝写入，没有意义）。
+
+实测（UI）：Aerospike 下 `disabled: true`，切到 `Aerospike-Edge` 后 `disabled: false`；API 往返
+`schema → draft` 保住 `maxOutDegree: 1000` ✓。
+
+### 65.3 id 是引擎的：名字与索引固定，类型可改（#3）
+
+`toSchema` 给每个点建 `VertexPropertySchema(0, "id", ...)`、每条边建 `id`/`source`/`target`（索引 0/1/2），
+`createdTime`/`lastUpdatedTime` 是 -2/-1。以前页面允许把属性取名 `id`，保存时才因为重名/冲突报错。
+
+* 属性表**第一行固定是 `id`**：名字禁用、索引固定（显示 🔒）、不能删、不能当向量/地理属性；
+* 它的**类型下拉 = 图实例的 id 类型**（string/long），改它等于改整个图（`draft.idType`），所有点同步；
+* 后端新增保留名校验：点里不许有 `id`/`createdTime`/`lastUpdatedTime`，边里还不许有 `source`/`target`，
+  报错信息直接点名（页面也会把这一行标红并 toast）。
+
+实测：页面把该行标红；保存返回
+`Cannot read the schema: 'id' is part of every element of this kind (its index is fixed), so it cannot be declared as a property` ✓；
+`SchemaDraftTest` 新增用例覆盖点/边两种保留名（10 个用例全绿）。
+
+### 65.4 写重复 id 先问一次（#4）
+
+写点/写边之前先查一次：`g.V('<id>','<类型>').limit(1)` 有结果就弹确认，把语义说清楚——**不会新建，是按属性
+时间戳合并（这次填的值覆盖旧值），没填的属性保持原样**；取消则报告「已取消：id 已存在」。写入后的结果行也会标注
+「（已存在的 id，合并写入）」。
+
+实测：第二次写 `v1` 弹出「点 v1 已经存在（Entity）」+3 条说明，确认后返回
+`写入点：SUCCESS（已存在的 id，合并写入）` ✓。
+
+### 65.5 保存后「造数据」的属性列立刻更新（#5）
+
+原因：属性表里改名/加属性只调用 `preview()`（只刷新 JSON 预览），而写入表单的属性列是 `render()` 时渲染的；
+保存成功后又只 `loadGraphs()`，没有重绘 —— 于是"加了属性、保存加载完，写点的地方看不到新列"。
+
+* 新增 `refreshDataForm()`：属性增删、属性改名、类型改名、保存成功后都调用它重绘写入表单；
+* 保存结果里也写明「下面『造数据』的属性列已经跟着新 schema 更新」。
+
+实测：给 `Entity` 加 `tag` 后保存，写入表单的列从 `["name"]` 变成 `["name","tag"]` ✓。
+
+### 65.6 删除都要先讲后果（#6）
+
+* **schema 侧**：删点类型/边类型/属性都弹确认并列出代价——存量数据不会被删除（只是不再被这张 schema 描述）、
+  属性的索引会随声明顺序前移、被引用的点类型删掉后保存会因端点校验失败（并列出哪些边引用它）；
+* **数据侧**：新增「5c · 删除已写入的数据」：删点会说明**它的边不会被一起删除（对端留下悬空边）**；删边要给出与
+  写入时一致的起点/终点，并说明**边存在两处、两处都会被删除**。后端补了页面用的两条代理路由
+  （`DELETE /api/graphs/{graph}/vertices/{id}`、`.../edges/{edgeId}?edgeSchemaName&source&destination`）。
+
+实测：删除弹窗文案逐条命中 ✓，确认后 `删除点：SUCCESS` ✓。
+
+### 65.7 从 CSV 导入点/边（#7）
+
+* 页面自己解析 CSV（RFC4180：引号、双引号转义、字段内的逗号与换行），表头即列名：点要 `id` + 属性名，
+  边要 `id`/`source`/`destination` + 属性名；
+* 导入前一项项确认：文件名、表头、数据行数、**没有 id 会被跳过的行数**、**表头里缺哪些属性列**（缺就拒绝并列出）、
+  以及未被识别的列（忽略）；
+* 写入按每 200 行一批，走**新的按图批量写**：`POST /api/v1/graphs/{graph}/batch`（原来只有
+  `/api/v1/batch`，它固定写到 primary 图 —— 页面刚建的图不在那里，所以整批失败）。批量写仍然是一次存储往返一批，
+  并且会顺带维护向量索引；
+* 另有「下载模板」按钮，按当前类型生成只有表头的 CSV。
+
+实测：确认弹窗内容正确；后端的按图批量写 `[{"id":"v2","status":"SUCCESS"},{"id":"v3","status":"SUCCESS"}]` ✓，
+回查 `g.V("v2","Entity").values("tag","name")` → `["second","tag,with,commas"]`（带逗号的字段原样保留）✓。
+
+### 65.8 复现与验证
+
+```bash
+# 后端：草稿往返（含出入度）与保留名
+./mvnw -o -pl graph-http test -Dtest=SchemaDraftTest        # 10 用例
+# 页面（headless Edge 驱动真实 DOM）：
+node .logs/verify-builder2.js    # 出入度置灰/启用、保留名标红+保存被拒、保存后写入列更新、重复 id 确认、删除确认
+node .logs/verify-csv2.js        # CSV 表头/行数/跳过/缺列的确认文案
+# 按图批量写（CSV 导入用的接口）：
+curl -X POST localhost:8081/api/v1/graphs/<graph>/batch -H 'content-type: application/json' -d '{"vertices":[...]}'
+```

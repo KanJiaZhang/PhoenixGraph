@@ -50,12 +50,16 @@
 
     <div class="card">
       <h2>2 · 点</h2>
+      <p class="hint">每个点都自带 <code>id</code>（索引固定为 0，类型由图实例的 id 类型决定）——
+        <code>id</code>、<code>createdTime</code>、<code>lastUpdatedTime</code> 不能当属性名。</p>
       <div id="vertexList" class="type-list"></div>
       <button id="addVertex" class="btn ghost small" type="button">+ 点</button>
     </div>
 
     <div class="card">
       <h2>3 · 边</h2>
+      <p class="hint">每条边也自带 <code>id</code>，另有 <code>source</code>/<code>target</code> 两个端点；
+        最大出入度只对 <code>-Edge</code> 存储有意义（其它存储里字段会置灰）。</p>
       <div id="edgeList" class="type-list"></div>
       <button id="addEdge" class="btn ghost small" type="button">+ 边</button>
     </div>
@@ -76,7 +80,8 @@
 
     <div class="card">
       <h2>5 · 造数据（可选）</h2>
-      <p class="hint">先保存并加载，再往这张图里写点和边；写完可以直接查。</p>
+      <p class="hint">先保存并加载，再往这张图里写点和边；写完可以直接查。属性列来自当前 schema，
+        保存后会自动跟着更新。写入一个已经存在的 id 会先提示（合并写入，不是新建）。</p>
       <div class="grid-2">
         <label>点类型<select id="dataVertexType"></select></label>
         <label>id<input id="dataVertexId" placeholder="p1"></label>
@@ -95,6 +100,46 @@
       <div id="dataEdgeProps" class="prop-editor"></div>
       <button id="addEdgeData" class="btn ghost small" type="button">写入边</button>
       <div id="dataResult" class="result" hidden></div>
+    </div>
+
+    <div class="card">
+      <h2>5b · 从 CSV 导入</h2>
+      <p class="hint">表头就是列名：点和边都要有 <code>id</code>，边还要有 <code>source</code> 与
+        <code>destination</code>，其余列按 schema 里的属性名对应（多出来的列会被忽略，缺的属性列会提示）。
+        导入前会先确认，按每 200 行一批写入。</p>
+      <div class="grid-2">
+        <label>点 CSV<input id="csvVertexFile" type="file" accept=".csv,text/csv"></label>
+        <label>&nbsp;<button id="importVertexCsv" class="btn ghost small" type="button">导入点</button>
+          <button id="csvVertexTemplate" class="btn ghost small" type="button">下载模板</button></label>
+      </div>
+      <p class="hint" id="csvVertexHint"></p>
+      <div class="grid-2">
+        <label>边 CSV<input id="csvEdgeFile" type="file" accept=".csv,text/csv"></label>
+        <label>&nbsp;<button id="importEdgeCsv" class="btn ghost small" type="button">导入边</button>
+          <button id="csvEdgeTemplate" class="btn ghost small" type="button">下载模板</button></label>
+      </div>
+      <p class="hint" id="csvEdgeHint"></p>
+    </div>
+
+    <div class="card">
+      <h2>5c · 删除已写入的数据</h2>
+      <p class="hint">删除是低层操作：点删掉后它的边不会跟着消失（对端会留下悬空边）；边存在于两个端点，
+        删除时要给出与写入时相同的起点/终点。每次都先确认代价。</p>
+      <div class="grid-2">
+        <label>点类型<select id="dataDeleteVertexType"></select></label>
+        <label>点 id<input id="dataDeleteVertexId" placeholder="p1"></label>
+      </div>
+      <button id="deleteVertexData" class="btn ghost small" type="button">删除点</button>
+      <hr>
+      <div class="grid-2">
+        <label>边类型<select id="dataDeleteEdgeType"></select></label>
+        <label>边 id<input id="dataDeleteEdgeId" placeholder="e1"></label>
+      </div>
+      <div class="grid-2">
+        <label>起点<input id="dataDeleteEdgeSource" placeholder="p1"></label>
+        <label>终点<input id="dataDeleteEdgeTarget" placeholder="p2"></label>
+      </div>
+      <button id="deleteEdgeData" class="btn ghost small" type="button">删除边</button>
     </div>
 
     <div class="card">
