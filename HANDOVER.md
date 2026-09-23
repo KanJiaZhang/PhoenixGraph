@@ -1,8 +1,8 @@
 # Handover — resume here
 
 > 本文件是**断点续做手记**：今天做了什么（结论）、现场怎么恢复、明天从哪继续。
-> 详细设计与实测数据在 `CONTEXT.md`：**2026-09-21 新增 §47–§60**（§47 仪表盘七问；§48 四问（二）；§49 三问（三）；§50 五问（四）；§51 四问（五）；§52（六）：Aerospike-Edge 大点冷/近线/在线三层；§53（七）：stale 写统一 / 结果面板复核 / 150 两跳扩展 + benchmark；§54（八）：表达式字符串函数 / display `$id` / count 交给服务端；§55（九）：用户报的 12 件事；§56（十）：算法 / legend·页签·示例 / 子图把 filter 掉的边留下；**§57（十一）：闭包 if/else 与集合、`values()` 的元素自身列、空答案不画、面板只报数目 + 135·150 两跳 benchmark**；**§58（十二）：fuzzy 的 xia 账号 / 图实例收敛到四个 / payment-graph 向量 / RocksDB-Edge GEO / 去掉 FuzzyPattern**）；
-> 过程记录在 **`DAILY-2026-09-21.md`**（§1–§22 共十三批（09-21）＋ `DAILY-2026-09-23.md`（第十四批：面板/索引一致性/编译缓存/RocksDB 向量索引））。**2026-09-20 是 §38–46**；**2026-09-18 是 §32–37**（含**类起点与扫描端口**）；2026-09-17 是 §21–31。
+> 详细设计与实测数据在 `CONTEXT.md`：**2026-09-21 新增 §47–§61**（§47 仪表盘七问；§48 四问（二）；§49 三问（三）；§50 五问（四）；§51 四问（五）；§52（六）：Aerospike-Edge 大点冷/近线/在线三层；§53（七）：stale 写统一 / 结果面板复核 / 150 两跳扩展 + benchmark；§54（八）：表达式字符串函数 / display `$id` / count 交给服务端；§55（九）：用户报的 12 件事；§56（十）：算法 / legend·页签·示例 / 子图把 filter 掉的边留下；**§57（十一）：闭包 if/else 与集合、`values()` 的元素自身列、空答案不画、面板只报数目 + 135·150 两跳 benchmark**；**§58（十二）：fuzzy 的 xia 账号 / 图实例收敛到四个 / payment-graph 向量 / RocksDB-Edge GEO / 去掉 FuzzyPattern**）；
+> 过程记录在 **`DAILY-2026-09-21.md`**（§1–§22 共十三批（09-21）＋ `DAILY-2026-09-23.md`（第十四批 §1–§5：面板/索引一致性/编译缓存/RocksDB 向量索引）与同一文件的 §6（第十五批：RocksDB 上的两跳 benchmark））。**2026-09-20 是 §38–46**；**2026-09-18 是 §32–37**（含**类起点与扫描端口**）；2026-09-17 是 §21–31。
 
 **最后一次会话：2026-09-21（周日）· 一天十二批（用户共报 ~60 件事）· 全量 `./mvnw test` 绿（gremlin 183（新增 ClosureStatement 11）/ http 71 / integration / schema / gemini / fuzzy / hnsw / …，0 失败 0 错误）**
 **十二批一句话：一 边方向/多笔支付/搜索/闭包（§47）· 二 图例/平行边弧/表达式语言（§48）· 三 终结步/弧距/带变量闭包（§49）· 四 顶点类型 `vt`/LWW/regex/两跳压测（§50）· 五 结果面板/类型当过滤/regex 公式（§51）· 六 Aerospike-Edge 冷·近线·在线三层（§52）· 七 stale 写统一 + 150 两跳扩展 + benchmark（§53）· 八 字符串函数/display `$id`/count 服务端（§54）· 九 用户报的 12 件（§55）· 十 算法 CC·Louvain/legend/页签/示例/子图 bug（§56）· 十一 闭包 `if/else`+集合/元素自身列/空答案/面板只报数目 + 两跳 benchmark（§57）· 十二 xia 账号/四个图实例/向量/GEO/去 FuzzyPattern（§58）。**十三 两跳投影查询的 100 id x 8 轮性能测试（§59：缓存省 15.7% / 批大小落在拐点 / 边与中间点的属性零加载；§59.7-59.8 三个"拿值或名字猜语义"的坑按声明类型根修，产品侧 `AerospikeReadKind` 硬化）**。详见 `DAILY-2026-09-21.md` §1–§22（§21 是跨批思考主线）。**
@@ -39,7 +39,8 @@ curl -s -X POST localhost:8081/api/v1/vector-index/rebuild -H "content-type: app
 ```
 
 
-**工作树状态：2026-09-23 第十四批已提交（面板单元素、索引坏掉的响亮报错、编译缓存上限、RocksDB-Edge 的 HNSW），`develop` 与 `origin` 同步。**
+**工作树状态：2026-09-23 第十四、十五批已提交（面板单元素、索引坏掉的响亮报错、编译缓存上限、RocksDB-Edge 的 HNSW），`develop` 与 `origin` 同步。**
+**第十五批（§61，benchmark）：把测量抽成 `graph-integration-test/.../TwoHopValuesBenchmark`（共享 harness：查询/测量/报告/2 个守卫 + `measureStorageSpecific` 钩子），`AerospikeHundredSeedsValuesBenchmarkTest` 与新的 `RocksDbEdgeSeededValuesBenchmarkTest` 各自只提供 store/ids/label；RocksDB 报告多一节存储专属测量（store 边缓存 on/off）。输出：`.logs/bench-rocksdb2.log`、`.logs/bench-asp-after.log`。**
 **第十四批（§60）新增/改：`graph-hnsw`（`HnswIndex.verifyLayers` + `searchById` 的文本比较 + 2 用例）；`graph-query-gremlin`（`MAX_COMPILED_QUERIES`/`compiledQueryCount` + `GremlinCompiledQueryCacheTest` 4 用例）；`graph-storage-rocksdb`（`RocksDbHandle.open` 打开目录已有的列族）；`graph-storage-rocksdb-edge`（`RocksDbHnswStore`/`RocksDbHnswMetadataStore`/`RocksDbHnswIndexFactory`/`RocksDbVectorIndexBuilder` + pom 依赖）；`graph-http`（`VectorIndexManager` 支持 RocksDB、`RocksDbGraphStores.edgeStore`、seeder 的 truncate 连元数据一起删）；`graph-integration-test`（`RocksDbVectorIndexIntegrationTest` 6 用例）；UI 面板逻辑与示例查询。验证脚本：`.logs/panel-fn-check.js`、`.logs/rocksdb-live.js`。**
 **第十三批收尾（§59.7-59.8）：记录器改为从声明类型推断（泛型参数/返回类型，删掉手写下标表）；加两个守卫用例（`everyStoreReadIsClassifiedFromItsDeclaredTypes`、`theRecordedHitsAgreeWithTheStorageCounters`）；种子 id 排序让 workload 可复现（`.logs/bench-det1.log` 与 `bench-det2.log` 逐字节相同）；产品侧新增 `AerospikeReadKind` + `AerospikeReadKindTest`（7 个用例）把"边读/点读"的指标分类从名字前缀改成 bin 优先。**
 **第十三批（§59，性能测试）：新增 `graph-integration-test/.../AerospikeHundredSeedsValuesBenchmarkTest`（6 个用例：100 个有效 id x 8 轮 = 800 次执行；记录每次存储调用的批大小与属性名；缓存开/关 A/B；batch/barrier 扫描；投影 vs 整顶点对照）。完整输出留在 `.logs/bench-final2.log`。**

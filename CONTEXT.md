@@ -4350,3 +4350,107 @@ node .logs/panel-fn-check.js                                                   #
 ```
 
 全量 `./mvnw test`：**BUILD SUCCESS，0 失败 / 0 错误**（含新用例）。
+
+---
+
+## 61. 同一个两跳投影 benchmark 跑在 RocksDB-Edge 上（100→51 个 id，816 次执行）
+
+用户要求把 §59 的查询在原 RocksDB-Edge 实例上再做一遍。两条语句/三个检查都一样，所以先把**测量与报告**
+抽成一个共享 harness（`TwoHopValuesBenchmark`），存储只提供三样东西：`openStore`（并挂 metrics）、
+`candidateIds`、`label`——实测报告因此可以逐行对比。
+
+* `AerospikeHundredSeedsValuesBenchmarkTest`：100 个 id × 8 轮 = 800 次；
+* `RocksDbEdgeSeededValuesBenchmarkTest`：**51 个 id × 16 轮 = 816 次**。
+
+**这个实例只有 51 个账户**（`PaymentGraphRocksDbLoader`：hub 135 + 1000..1049），所以"100 个有效 id"在这张图上
+不存在：harness 会把候选里"查询答不出东西"的丢掉，然后**用尽所有有效 id 并提高轮数**凑足 500–1000。另外它的
+账户 id 是**数字**（`g.V(1001,...)`），而语句里写的是文本 id —— 存储两种形式都能解析到同一条记录，这本身也顺带
+验证了 id 形式的容忍度。（服务占着演示目录，所以 benchmark 在**副本**上跑。）
+
+### 61.1 总览（51 id × 16 轮 = 816 次，RocksDB-Edge）
+
+```
+延迟     mean 0.51 ms  min 0.18  p50 0.42  p90 0.80  p95 1.01  p99 1.88  max 5.59
+吞吐     1958 查询/秒       墙钟 0.42 秒
+结果     291 项/查询        响应 3.9 KB/查询
+流量     kv.read.call 2.00/查询(max 2)   记录 51   顶点读 2 次调用/51 条   边读 0   解码边 0
+```
+
+比 Aerospike 那套（mean 4.96 ms、5.90 次往返）**快约 10 倍、往返少 2/3** —— 本地列族、没有网络。
+注意两套的 `vertex.read` 语义不同：Aerospike 的 `readBatch` 每个 key 记一次（所以它 = 记录数），
+RocksDB 的 handle 一次 `get`/`multiGet` 记一次调用（所以 2 次调用 / 51 条记录），报告里两个数都印。
+
+### 61.2 问题 1：缓存有效吗？
+
+**引擎的每查询缓存：有效但收益很小**——102 vs 107 次往返（省 4.7% = 0.10 次/查询），0.36 vs 0.44 ms/id。
+原因见下面那条：**存储自己还有一层缓存**，引擎缓存能省的东西已经被它省掉了。
+
+**(4) 存储侧（RocksDB 专属测量，本次新加)**：`RocksDbEdgeStore` 会把解码后的边列表缓存在 RocksDB 前面
+（`cacheEdgeLists`），于是预热之后**整条遍历的边一次读都不发生**（`edge.read = 0`）——只看计数器会误以为是引擎
+缓存的功劳。用同一份数据的第二个副本、把该缓存关掉再跑同样的 workload：
+
+```
+store edge cache off: 1.11 ms/query, 19.7 kv reads/query (5401 条边记录), 67.7 记录/query
+store edge cache on : 0.75 ms/query（种子 1000）, 2.0 kv reads/query（边全在内存里）
+```
+
+即：**存储的边缓存把每次查询的往返从 ~20 降到 2、延迟降约 1/3**。这条对"缓存是否有效"的回答很关键——
+在 RocksDB 上，两级缓存（引擎一层、存储一层）叠加，引擎那层的边际贡献本来就有限；这也是为什么本图上的
+`edge.decoded = 0`。
+
+### 61.3 问题 2：batch / barrier 自适应到合适值了吗？
+
+```
+51 个种子：102 次读带 2..50 个 id，102 次读只带 1 个 id
+  ids <= 10    50 次 (49%)      ← 小扇出（本图账户扇出 7 或 50）
+  ids <= 50    52 次 (51%)      ← 默认 50 是上限，规则没有把它顶到 100
+种子 135：hop-1 有 50 个对端 -> 下一跳读带 50 个 id
+种子 1000/1001/1002/1003：hop-1 7 个对端 -> 下一跳读带 7 个 id
+```
+
+显式 sweep（20 个 id）：
+
+```
+auto        4.00 reads/query  0.25 ms      batch(50)   4.00 reads  0.42 ms
+batch(1)   57.40 reads        0.57 ms      batch(100)  3.00 reads  0.23 ms
+batch(10)   8.00 reads        0.32 ms      batch(200)  3.00 reads  0.19 ms
+batch(25)   5.00 reads        0.49 ms      barrier(1) 57.10 reads  0.64 ms
+```
+
+结论与 Aerospike 版一致、但**本图的自适应更"保守"**：扇出只有 7 和 50 两种，规则
+`clamp(扇出/2, 当前 50, 100)` 的下限 50 让它**始终停在 50**（从未用到 100）；默认值本身就在拐点
+（25→50 把往返从 5 降到 4，50→100 再降到 3，延迟基本不变）；`batch(1)` 57 次往返、延迟 2.3 倍，
+说明批读仍是最大杠杆；`barrier(n)` 再次实测就是 `batch(n)` 的别名。
+
+### 61.4 问题 3：无关属性有没有被加载？
+
+**没有**——和 Aerospike 版同样的形态（Account 声明 **9** 个属性，查询只要 3 个）：
+
+```
+被测查询 values('accountUsage','firstName','accountStatus')（种子 135）
+  readEdges       ids 1  -> 50    none (identity only)   ← hop 1 只读邻居引用
+  readEdgesBatch  ids 50 -> 350   none (identity only)   ← hop 2 同上
+  readVertices    ids 1  -> 1     accountUsage, firstName, accountStatus
+  readVertices    ids 50 -> 50    accountUsage, firstName, accountStatus
+  读 153 个属性值，返回 1050 个值（13.9 KB）
+
+去掉 values()（答案是整顶点）
+  ... 同上两行边读 ...
+  readVertices    ids 1/50 ->  all declared properties
+  读 459 个属性值，返回 350 个顶点（141.0 KB）
+```
+
+* **边属性零加载**：两跳都是顶点跳，走的都是"邻居引用"读（`readEdges*` 的 attributes 为空、`edge.decoded = 0`），
+  `Payment [status, type, amount, currency]` 一次都没被点名；
+* **中间一跳的顶点读也省了**：只有最后一跳读顶点，且只读 3 个属性；
+* **省的形态**：属性值 153 vs 459（3×），响应 13.9 KB vs 141.0 KB（10×）——往返数不变，省的是体积/解码
+  （与 §59.5、§53 的结论一致）。
+
+### 61.5 复现
+
+```bash
+./mvnw -o -pl graph-integration-test test -Dtest=RocksDbEdgeSeededValuesBenchmarkTest
+./mvnw -o -pl graph-integration-test test -Dtest=AerospikeHundredSeedsValuesBenchmarkTest   # 同一 harness
+```
+两边各 9 个用例（含 2 个守卫：方法形状分类、命中数与存储计数器一致），**无时间断言**。
+本次输出：`.logs/bench-rocksdb2.log`（RocksDB）、`.logs/bench-asp-after.log`（Aerospike，回归对比）。
