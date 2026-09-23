@@ -8,10 +8,12 @@ import com.pengcheng.phoenixgraph.metrics.Metrics;
 import com.pengcheng.phoenixgraph.metrics.MetricsSnapshot;
 import com.pengcheng.phoenixgraph.query.aerospike.AerospikeGraphQuery;
 import com.pengcheng.phoenixgraph.query.gremlin.GremlinGraphQuery;
+import com.pengcheng.phoenixgraph.query.storage.EdgeSide;
 import com.pengcheng.phoenixgraph.query.storage.GraphQuery;
 import com.pengcheng.phoenixgraph.query.traversal.NeighborVertexResolver;
 import com.pengcheng.phoenixgraph.schema.GraphSchema;
 import com.pengcheng.phoenixgraph.schema.json.SchemaJsonCodec;
+import com.pengcheng.phoenixgraph.storage.TimeRange;
 import com.pengcheng.phoenixgraph.storage.aerospike.AerospikeEdgeStore;
 import com.pengcheng.phoenixgraph.storage.aerospike.AerospikeVertexStore;
 import org.junit.jupiter.api.AfterAll;
@@ -24,7 +26,11 @@ import org.junit.jupiter.api.TestMethodOrder;
 
 import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
+import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Proxy;
+import java.lang.reflect.Type;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -35,7 +41,9 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.TreeMap;
+import java.util.TreeSet;
 
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -120,13 +128,92 @@ class AerospikeHundredSeedsValuesBenchmarkTest {
     private List<String> sweep = List.of();
     private ProjectionReport projectionReport;
 
-    /** One storage read: which operation, how many ids, which properties, how much came back. */
-    private record Read(String op, int ids, List<String> properties, int returned) {
+    /** What a store read answers, taken from its declared return type rather than from its name. */
+    private enum Kind {
+        /** Vertex records: the reads a property projection is about. */
+        VERTEX,
+        /** Edge records, or the neighbour references of one edge class. */
+        EDGE,
+        /** A count. */
+        COUNT,
+        /** Something else a store exposes (geo hits). */
+        OTHER
+    }
+
+    /** One storage read: what it answers, how many ids it carried, which properties, how much came back. */
+    private record Read(String op, Kind kind, int ids, List<String> properties, int returned) {
         /** Whether this read materialises vertices (the ones the projection is about). */
         boolean isVertexRead() {
-            // "readVertices" does not start with "readVertex": the two differ at the ninth letter
-            return op.startsWith("readVert") || op.startsWith("scanVert");
+            return kind == Kind.VERTEX;
         }
+    }
+
+    /**
+     * How one store method is read: where its ids and its property names sit, what it answers, and whether
+     * it is traffic at all. Every part comes from the <b>declared types</b>, because neither the values nor
+     * the name can be trusted: the account ids of this graph are strings exactly like property names, and
+     * {@code readVertices} does not start with {@code readVertex} (they differ at the ninth letter).
+     */
+    private record Shape(int idsIndex, int propertiesIndex, Kind kind, boolean nested, boolean traffic) {
+    }
+
+    /** One shape per store method, worked out once. */
+    private final Map<Method, Shape> shapes = new LinkedHashMap<>();
+
+    private Shape shapeOf(Method method) {
+        Shape known = shapes.get(method);
+        if (known != null) {
+            return known;
+        }
+        Class<?> element = elementType(method.getGenericReturnType());
+        Kind kind = switch (element == null ? "" : element.getSimpleName()) {
+            case "VertexQueryResult" -> Kind.VERTEX;
+            case "EdgeQueryResult", "NeighbourRef", "ScannedEdge" -> Kind.EDGE;
+            case "Long" -> Kind.COUNT;
+            default -> Kind.OTHER;
+        };
+        Class<?> returns = method.getReturnType();
+        // traffic is anything that answers records or a count: a list, a single record, a number. A
+        // capability probe answers a boolean, so it is not traffic and is not recorded.
+        boolean traffic = List.class.isAssignableFrom(returns) || returns == long.class || returns == Long.class
+                || kind != Kind.OTHER;
+        int ids = -1;
+        int properties = -1;
+        for (int i = 0; i < method.getGenericParameterTypes().length; i++) {
+            Type parameter = method.getGenericParameterTypes()[i];
+            if (parameter == String[].class) {
+                properties = i; // the varargs form of a property list
+                continue;
+            }
+            if (!(parameter instanceof ParameterizedType list) || list.getRawType() != List.class) {
+                continue;
+            }
+            Type argument = list.getActualTypeArguments()[0];
+            if (argument == Object.class) {
+                ids = i; // List<Object> is the vertices to read
+            } else if (argument == String.class) {
+                properties = i; // List<String> is the property names
+            }
+        }
+        Shape shape = new Shape(ids, properties, kind, isNested(method.getGenericReturnType()), traffic);
+        shapes.put(method, shape);
+        return shape;
+    }
+
+    /** The innermost element of a (possibly nested) {@code List} type. */
+    private static Class<?> elementType(Type type) {
+        Type current = type;
+        while (current instanceof ParameterizedType list && list.getRawType() == List.class) {
+            current = list.getActualTypeArguments()[0];
+        }
+        return current instanceof Class<?> element ? element : null;
+    }
+
+    /** Whether the read answers one list per id ({@code List<List<X>>}) rather than a flat list. */
+    private static boolean isNested(Type type) {
+        return type instanceof ParameterizedType outer && outer.getRawType() == List.class
+                && outer.getActualTypeArguments()[0] instanceof ParameterizedType inner
+                && inner.getRawType() == List.class;
     }
 
     /** One measured execution: the seed, the wall time, the bytes the caller got, the storage traffic. */
@@ -425,67 +512,176 @@ class AerospikeHundredSeedsValuesBenchmarkTest {
     private GraphQuery recording(GraphQuery delegate) {
         return (GraphQuery) Proxy.newProxyInstance(GraphQuery.class.getClassLoader(),
                 new Class<?>[] {GraphQuery.class}, (proxy, method, args) -> {
+                    Shape shape = shapeOf(method);
                     Object value;
                     try {
                         value = method.invoke(delegate, args);
                     } catch (InvocationTargetException e) {
                         throw e.getCause();
                     }
-                    if (recording && isRead(method.getName())) {
-                        record(method.getName(), args, value);
+                    // a capability probe returns a boolean, so the declared return type already says
+                    // whether the call is traffic: no name list to keep up to date
+                    if (recording && shape.traffic()) {
+                        reads.add(read(method, shape, args, value));
                     }
                     return value;
                 });
     }
 
-    /** Whether a store method is a read (capability probes and helpers are not traffic). */
-    private static boolean isRead(String op) {
-        return op.startsWith("read") || op.startsWith("count") || op.startsWith("scan") || op.startsWith("geo");
+    private static Read read(Method method, Shape shape, Object[] args, Object value) {
+        int ids = shape.idsIndex() < 0 || shape.idsIndex() >= args.length
+                ? 1
+                : Math.max(1, ((List<?>) args[shape.idsIndex()]).size());
+        Object names = shape.propertiesIndex() < 0 || shape.propertiesIndex() >= args.length
+                ? null
+                : args[shape.propertiesIndex()];
+        List<String> properties = switch (names) {
+            case List<?> list -> list.stream().map(String::valueOf).toList();
+            case String[] array -> List.of(array);
+            case null, default -> List.of();
+        };
+        return new Read(method.getName(), shape.kind(), ids, properties, returned(shape, value));
     }
 
     /**
-     * Where a read's ids and property names sit in its arguments ({@code -1} = a single id, no names).
-     * The account ids of this graph are strings, exactly like property names, so position is the only
-     * thing that tells them apart.
+     * How many records came back. A batched read answers one list per id, so what was found is the elements
+     * of those inner lists - {@code list.size()} there is the number of ids asked for, not the answer.
      */
-    private static final Map<String, int[]> ARGUMENTS = Map.ofEntries(
-            Map.entry("readVertex", new int[] {-1, 2}),
-            Map.entry("readVertices", new int[] {1, 2}),
-            Map.entry("readEdges", new int[] {-1, 4}),
-            Map.entry("readEdgesBatch", new int[] {2, 3}),
-            Map.entry("readAllEdgesBatch", new int[] {0, 2}),
-            Map.entry("readEdgesWithin", new int[] {-1, 5}),
-            Map.entry("readEdgesBatchWithin", new int[] {2, 4}),
-            Map.entry("readAllEdgesBatchWithin", new int[] {0, 3}),
-            Map.entry("readNeighbours", new int[] {-1, -1}),
-            Map.entry("readNeighboursBatch", new int[] {2, -1}),
-            Map.entry("countEdges", new int[] {-1, -1}),
-            Map.entry("countEdgesBatch", new int[] {2, -1}),
-            Map.entry("scanVertices", new int[] {-1, 1}),
-            Map.entry("scanEdges", new int[] {-1, 1}),
-            Map.entry("geoNear", new int[] {-1, -1}));
-
-    private void record(String op, Object[] args, Object value) {
-        int[] where = ARGUMENTS.getOrDefault(op, new int[] {-1, -1});
-        int ids = where[0] < 0 || args.length <= where[0] ? 1 : size(args[where[0]]);
-        List<String> properties = where[1] < 0 || args.length <= where[1] ? List.of() : strings(args[where[1]]);
-        int returned = switch (value) {
-            // a batch read answers one list per input id (the neighbours or edges of each), so the
-            // elements are what was found, not the ids that were asked for
-            case List<?> list -> list.stream()
-                    .mapToInt(element -> element instanceof List<?> inner ? inner.size() : 1).sum();
-            case null -> 0;
-            default -> 1;
-        };
-        reads.add(new Read(op, ids, properties, returned));
+    private static int returned(Shape shape, Object value) {
+        if (value == null) {
+            return 0;
+        }
+        if (!(value instanceof List<?> list)) {
+            return 1;
+        }
+        int found = 0;
+        for (Object element : list) {
+            if (element == null) {
+                continue; // a key that is absent, or whose requested bins are all missing
+            }
+            if (shape.nested() && element instanceof List<?> inner) {
+                found += (int) inner.stream().filter(Objects::nonNull).count();
+            } else {
+                found++;
+            }
+        }
+        return found;
     }
 
-    private static int size(Object ids) {
-        return ids instanceof List<?> list ? Math.max(1, list.size()) : 1;
+    /**
+     * The recorder reads every store method the same way the engine does: from the declared types. This test
+     * is the guard that keeps that true - a new store method with two lists of the same element type, or a
+     * read whose answer cannot be classified, fails here instead of quietly producing wrong numbers.
+     */
+    @Test
+    @Order(7)
+    void everyStoreReadIsClassifiedFromItsDeclaredTypes() {
+        int traffic = 0;
+        int vertexReads = 0;
+        for (Method method : GraphQuery.class.getMethods()) {
+            if (Modifier.isStatic(method.getModifiers())) {
+                continue;
+            }
+            Shape shape = shapeOf(method);
+            if (!shape.traffic()) {
+                assertTrue(!List.class.isAssignableFrom(method.getReturnType()),
+                        method.getName() + " answers a list, so it is traffic");
+                continue;
+            }
+            traffic++;
+            if (shape.kind() == Kind.VERTEX) {
+                vertexReads++;
+            }
+            // the two list parameters must be told apart by their element type, not by their position
+            assertEquals(listParameters(method, Object.class) <= 1, true,
+                    method.getName() + " declares at most one List<Object> (the ids to read)");
+            assertEquals(listParameters(method, String.class) <= 1, true,
+                    method.getName() + " declares at most one List<String> (the property names)");
+        }
+        assertTrue(traffic >= 20, "the store exposes reads to record: " + traffic);
+        assertTrue(vertexReads >= 5, "reads that answer vertices: " + vertexReads);
+        // the classification of the reads this benchmark actually depends on
+        assertEquals(Kind.VERTEX, shapeOf(method("readVertices", String.class, List.class, List.class)).kind(),
+                "readVertices answers vertices");
+        assertEquals(Kind.EDGE, shapeOf(method("readNeighboursBatch", String.class, EdgeSide.class, List.class))
+                .kind(), "readNeighboursBatch answers neighbour references");
+        assertEquals(1, shapeOf(method("readVertices", String.class, List.class, List.class)).idsIndex(),
+                "readVertices takes its ids second");
+        assertEquals(2, shapeOf(method("readVertices", String.class, List.class, List.class)).propertiesIndex(),
+                "readVertices takes its property names third");
+        assertEquals(3, shapeOf(method("readEdgesBatchWithin", String.class, EdgeSide.class, TimeRange.class,
+                        List.class, List.class, int.class)).idsIndex(),
+                "readEdgesBatchWithin takes its ids fourth, after the time range");
+        assertEquals(4, shapeOf(method("readEdgesBatchWithin", String.class, EdgeSide.class, TimeRange.class,
+                        List.class, List.class, int.class)).propertiesIndex(),
+                "readEdgesBatchWithin takes its property names fifth");
+        assertTrue(shapeOf(method("readEdgesBatchWithin", String.class, EdgeSide.class, TimeRange.class,
+                        List.class, List.class, int.class)).nested(),
+                "readEdgesBatchWithin answers one list per id");
     }
 
-    private static List<String> strings(Object names) {
-        return names instanceof List<?> list ? list.stream().map(String::valueOf).toList() : List.of();
+    /** How many parameters of a method are a {@code List} of the given element type. */
+    private static int listParameters(Method method, Class<?> element) {
+        int found = 0;
+        for (Type parameter : method.getGenericParameterTypes()) {
+            if (parameter instanceof ParameterizedType list && list.getRawType() == List.class
+                    && list.getActualTypeArguments()[0] == element) {
+                found++;
+            }
+        }
+        return found;
+    }
+
+    private static Method method(String name, Class<?>... parameters) {
+        try {
+            return GraphQuery.class.getMethod(name, parameters);
+        } catch (NoSuchMethodException e) {
+            throw new AssertionError(name + " is gone from GraphQuery", e);
+        }
+    }
+
+    /**
+     * The recorded hits and the storage counters are two independent measurements of the same reads, so they
+     * have to agree: the store counts a vertex record once per key it found, and the recorder counts the
+     * elements that came back. When they disagree, one of the two is lying about what a read returned.
+     */
+    @Test
+    @Order(8)
+    void theRecordedHitsAgreeWithTheStorageCounters() {
+        String id = accountIds().get(0);
+        GremlinGraphQuery whole = new GremlinGraphQuery(store, NeighborVertexResolver.from(schema));
+
+        List<Read> readsOfQuery = new ArrayList<>();
+        run(whole, "g.V('" + id + "','Account').both('Payment').both('Payment')", readsOfQuery);
+        Map<String, Long> before = counters();
+        reads.clear();
+        recording = true;
+        whole.execute("g.V('" + id + "','Account').both('Payment').both('Payment')");
+        recording = false;
+        Map<String, Long> after = counters();
+        long counted = after.getOrDefault(Metrics.VERTEX_READ_ITEMS, 0L)
+                - before.getOrDefault(Metrics.VERTEX_READ_ITEMS, 0L);
+        long recorded = reads.stream().filter(Read::isVertexRead).mapToLong(Read::returned).sum();
+        assertEquals(counted, recorded,
+                "the store counted " + counted + " vertex records, the recorder saw " + recorded);
+
+        // with a projection the two can differ: a record that has none of the requested bins comes back as a
+        // miss although the store counted the key as read, so only the one direction holds
+        reads.clear();
+        recording = true;
+        before = counters();
+        engine.execute(query(id));
+        recording = false;
+        after = counters();
+        long countedProjected = after.getOrDefault(Metrics.VERTEX_READ_ITEMS, 0L)
+                - before.getOrDefault(Metrics.VERTEX_READ_ITEMS, 0L);
+        long recordedProjected = reads.stream().filter(Read::isVertexRead).mapToLong(Read::returned).sum();
+        assertTrue(recordedProjected <= countedProjected,
+                "a projection cannot answer more records than the store read: " + recordedProjected
+                        + " vs " + countedProjected);
+        System.out.printf(Locale.ROOT,
+                "counters: %d vertex records read (whole), %d (projected), recorder saw %d and %d%n",
+                counted, countedProjected, recorded, recordedProjected);
     }
 
     // ------------------------------------------------------------------ the ids
@@ -495,13 +691,17 @@ class AerospikeHundredSeedsValuesBenchmarkTest {
         if (!seeds.isEmpty()) {
             return seeds;
         }
+        // A scan hands records back in whatever order the server pleases, so the ids are sorted: the
+        // measured workload has to be the same one run to run, or two reports cannot be compared.
         LinkedHashSet<String> candidates = new LinkedHashSet<>(NAMED);
+        TreeSet<String> scanned = new TreeSet<>();
         client.scanAll(new ScanPolicy(), namespace, set, (key, record) -> {
             if (key != null && key.userKey != null && record != null
                     && "Account".equals(record.getString(AerospikeVertexStore.VERTEX_TYPE_BIN))) {
-                candidates.add(String.valueOf(key.userKey));
+                scanned.add(String.valueOf(key.userKey));
             }
         }, AerospikeVertexStore.VERTEX_TYPE_BIN);
+        candidates.addAll(scanned);
 
         // A valid id is one this query answers something for: the named ids may name an IP, an account
         // without payments, or a vertex of another type.

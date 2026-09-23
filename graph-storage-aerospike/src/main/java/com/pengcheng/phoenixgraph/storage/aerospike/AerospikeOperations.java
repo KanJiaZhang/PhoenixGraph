@@ -102,34 +102,20 @@ public interface AerospikeOperations {
 
         /** Edge sets of the aggregated schemes, and the per-edge-class marker bins. */
         private static boolean isEdgeSet(Key key) {
-            String set = key == null ? null : key.setName;
-            if (set == null) {
-                return false;
-            }
-            return set.startsWith("edge") || set.endsWith("_edgeheads") || set.contains("_edge_");
+            return AerospikeReadKind.isEdgeSet(key == null ? null : key.setName);
         }
 
         private static boolean isEdgeBin(String bin) {
-            return bin != null && bin.startsWith("ve_");
+            return AerospikeReadKind.isEdgeBin(bin);
         }
 
         /** Counts one read, both as key-value traffic and as a vertex or edge read. */
         private void read(Key key, String[] bins, long items) {
-            boolean edges = isEdgeSet(key) || (bins != null && bins.length > 0 && allEdgeBins(bins));
-            String call = edges ? Metrics.EDGE_READ : Metrics.VERTEX_READ;
+            String call = AerospikeReadKind.isEdge(key, bins) ? Metrics.EDGE_READ : Metrics.VERTEX_READ;
             metrics.increment(call);
             metrics.increment(Metrics.items(call), items);
             metrics.increment(Metrics.KV_READ_CALL);
             metrics.increment(Metrics.KV_READ_ITEMS, items);
-        }
-
-        private static boolean allEdgeBins(String[] bins) {
-            for (String bin : bins) {
-                if (!isEdgeBin(bin)) {
-                    return false;
-                }
-            }
-            return true;
         }
 
         private void readFailed() {
@@ -143,9 +129,9 @@ public interface AerospikeOperations {
                 for (int i = 0; i < keys.length; i++) {
                     boolean hit = records != null && i < records.length && records[i] != null;
                     found += hit ? 1 : 0;
-                    boolean edges = isEdgeSet(keys[i]) || (bins != null && bins.length > 0 && allEdgeBins(bins));
                     if (hit) {
-                        String call = edges ? Metrics.EDGE_READ : Metrics.VERTEX_READ;
+                        String call = AerospikeReadKind.isEdge(keys[i], bins)
+                                ? Metrics.EDGE_READ : Metrics.VERTEX_READ;
                         metrics.increment(call);
                         metrics.increment(Metrics.items(call));
                     }

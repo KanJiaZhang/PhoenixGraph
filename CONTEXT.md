@@ -4217,3 +4217,37 @@ JAVA_HOME="/c/Program Files/Java/jdk-26.0.2.1" ./mvnw -o -pl graph-integration-t
 
 参数：`-Dpayment.vertexSet=`（默认 `http_demo_v3`）、`AEROSPIKE_HOST/PORT/NAMESPACE`。用例里**没有时间断言**
 （只有"缓存不改变答案""两次执行读一样多""顶点读只点三个属性"这类不变量），所以在负载下也不会假失败。
+
+### 59.7 三个坑的**根修**（不是绕过）
+
+§22.2 记的三个坑都是"用值/用名字猜语义"引起的。修法是**从声明类型推**，并各加一个守卫用例，
+让它们不能悄悄回来（`graph-integration-test/.../AerospikeHundredSeedsValuesBenchmarkTest`）：
+
+| 坑 | 错在哪 | 现在的做法 | 守卫 |
+|---|---|---|---|
+| ① 无从值上区分 id 与属性名（账户 id 也是字符串） | 手写的"方法名 → 参数下标"表**写错了一格**（`readEdgesBatchWithin` 的 ids 在第 4 位而不是第 3 位，被时间窗参数挤走），错了也没人发现 | 从**泛型参数类型**读：`List<Object>` 是 ids、`List<String>` 是属性名、`String[]` 是 varargs 属性名；手写表删掉 | `everyStoreReadIsClassifiedFromItsDeclaredTypes`：遍历 `GraphQuery` 的每个非静态方法，断言同一种元素类型的 List 参数**至多一个**（再多就无法区分），并钉住 `readVertices` / `readEdgesBatchWithin` 的下标与 `List<List<…>>` 的嵌套形状 |
+| ② 用名字前缀判断"这条读是读点的" | `"readVertices".startsWith("readVertex")` **是 false**（第 9 个字母 `i` vs `e`），判定恒假、断言在空集上"通过" | 从**泛型返回类型**的元素判：`VertexQueryResult` → 点、`EdgeQueryResult`/`NeighbourRef`/`ScannedEdge` → 边、`Long` → 计数；"是否算流量"也从返回类型判（布尔 = 能力探测，不记） | 同一个守卫：断言 `readVertices` 是 VERTEX、`readNeighboursBatch` 是 EDGE、`readEdgesBatchWithin` 是 nested |
+| ③ 批读的外层 list 是"每个 id 一个列表" | `list.size()` 是**请求数**不是命中数，于是"hop-1 扇出"全是 1 | 按声明形状算：nested → 内层**非 null**元素求和；平坦 → 外层非 null 计数 | `theRecordedHitsAgreeWithTheStorageCounters`：同一查询用两个独立口径量同一件事——记录器数到的顶点记录数必须等于 `storage.vertex.read.items` 的增量（投影读时前者 ≤ 后者，因为"请求的 bin 一个都不在"的记录会被算成 miss）。实测 51 = 51 |
+
+另外把 id 集**排序**（`TreeSet`）后才取 100 个：扫描返回顺序由服务端决定，不排序的话两次运行的 workload 不是同一个，
+报告之间没法比。修完后同一环境连跑两次，流量数字**逐字节相同**（`kv.read 4792 / items 69584 / vertex 59216 / edge 10368`）。
+
+### 59.8 顺手硬化：`AerospikeOperations` 的"这是边读还是点读"
+
+同一个坑在**产品代码**里也有实例（指标分类）：
+
+```java
+// 原：名字说了算，而且要求"所有 bin 都是边 bin"
+boolean edges = set.startsWith("edge") || set.endsWith("_edgeheads") || set.contains("_edge_")
+        || (bins.length > 0 && allEdgeBins(bins));
+```
+
+两个隐患：**顶点集名字以 `edge` 开头**（如 `edge_store_v1`）时，整条读会被记成边读；而**边 bin + `vt` 元 bin 一起读**时
+`allEdgeBins` 为假，会退化成按集合名判，在 `http_demo_v3` 这种顶点集上被记成点读。
+
+现在抽成 `AerospikeReadKind`（包内可见、有 javadoc、有 7 个用例）：**bin 说了算**——读到任何 `vp_*`/`vpt_*` 就是点读，
+只有 `ve_*` 就是边读；**集合名只在整条记录读（没有 bin）时兜底**（`edges` / `edge_*` / `<set>_edge*` / `<set>_edgeheads`），
+并且明说"名字单独判不了"（顶点集可能就叫 `edge_...`），这一点在用例里写清楚了。
+
+对现有数据的**行为等价**：所有边读都只传一个 `ve_*` bin（`AerospikeEdgeStore` 的 `db.get(..., edgeBin(...))`），
+所有点读传 `vp_*`/`vpt_*`(+`vt`) 或不传 bin，两种规则结论一致；集成侧实测流量数字未变（唯一变化来自上面"排序"带来的固定 workload）。

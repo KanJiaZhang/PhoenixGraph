@@ -5,7 +5,7 @@
 > 过程记录在 **`DAILY-2026-09-21.md`**（§1–§20 共十二批）。**2026-09-20 是 §38–46**；**2026-09-18 是 §32–37**（含**类起点与扫描端口**）；2026-09-17 是 §21–31。
 
 **最后一次会话：2026-09-21（周日）· 一天十二批（用户共报 ~60 件事）· 全量 `./mvnw test` 绿（gremlin 183（新增 ClosureStatement 11）/ http 71 / integration / schema / gemini / fuzzy / hnsw / …，0 失败 0 错误）**
-**十二批一句话：一 边方向/多笔支付/搜索/闭包（§47）· 二 图例/平行边弧/表达式语言（§48）· 三 终结步/弧距/带变量闭包（§49）· 四 顶点类型 `vt`/LWW/regex/两跳压测（§50）· 五 结果面板/类型当过滤/regex 公式（§51）· 六 Aerospike-Edge 冷·近线·在线三层（§52）· 七 stale 写统一 + 150 两跳扩展 + benchmark（§53）· 八 字符串函数/display `$id`/count 服务端（§54）· 九 用户报的 12 件（§55）· 十 算法 CC·Louvain/legend/页签/示例/子图 bug（§56）· 十一 闭包 `if/else`+集合/元素自身列/空答案/面板只报数目 + 两跳 benchmark（§57）· 十二 xia 账号/四个图实例/向量/GEO/去 FuzzyPattern（§58）。**十三 两跳投影查询的 100 id x 8 轮性能测试（§59，缓存 15.7% / 批大小落在拐点 / 边与中间点的属性零加载）**。详见 `DAILY-2026-09-21.md` §1–§22（§21 是跨批思考主线）。**
+**十二批一句话：一 边方向/多笔支付/搜索/闭包（§47）· 二 图例/平行边弧/表达式语言（§48）· 三 终结步/弧距/带变量闭包（§49）· 四 顶点类型 `vt`/LWW/regex/两跳压测（§50）· 五 结果面板/类型当过滤/regex 公式（§51）· 六 Aerospike-Edge 冷·近线·在线三层（§52）· 七 stale 写统一 + 150 两跳扩展 + benchmark（§53）· 八 字符串函数/display `$id`/count 服务端（§54）· 九 用户报的 12 件（§55）· 十 算法 CC·Louvain/legend/页签/示例/子图 bug（§56）· 十一 闭包 `if/else`+集合/元素自身列/空答案/面板只报数目 + 两跳 benchmark（§57）· 十二 xia 账号/四个图实例/向量/GEO/去 FuzzyPattern（§58）。**十三 两跳投影查询的 100 id x 8 轮性能测试（§59：缓存省 15.7% / 批大小落在拐点 / 边与中间点的属性零加载；§59.7-59.8 三个"拿值或名字猜语义"的坑按声明类型根修，产品侧 `AerospikeReadKind` 硬化）**。详见 `DAILY-2026-09-21.md` §1–§22（§21 是跨批思考主线）。**
 **第一批（§47–§49，14 件事）的逐条细节在 `DAILY-2026-09-21.md` §1–§13，那里有用户原话、被否掉的方案与实测数字。**
 **现场（2026-09-21 收工时，可直接续做）：8081 `graph-http` + 8080 `graph-web` + 8083 `graph-http --profile hnsw-dynamic` 三个 JVM 都在跑，Aerospike 容器在跑。**
 **8081 只服务 4 个图：`payment-graph`（Aerospike，`http_demo_v3`）、`payment-graph-as-edge`（`payment_as_edge_v1`）、`payment-graph-rocksdb-edge`（`.rocksdb/payment-graph-rocksdb-edge`）、`kg-entity-graph`（`kg_nell995_v2`）；其余 7 个图在 `application.yml` 里**注释保留**（schema 一个没删）。**
@@ -39,7 +39,8 @@ curl -s -X POST localhost:8081/api/v1/vector-index/rebuild -H "content-type: app
 ```
 
 
-**工作树状态：本日十三个批次共 46 个提交，全部已提交并已 push 到 GitHub（`develop`）。**
+**工作树状态：本日十三个批次共 47 个提交，全部已提交并已 push 到 GitHub（`develop`）。**
+**第十三批收尾（§59.7-59.8）：记录器改为从声明类型推断（泛型参数/返回类型，删掉手写下标表）；加两个守卫用例（`everyStoreReadIsClassifiedFromItsDeclaredTypes`、`theRecordedHitsAgreeWithTheStorageCounters`）；种子 id 排序让 workload 可复现（`.logs/bench-det1.log` 与 `bench-det2.log` 逐字节相同）；产品侧新增 `AerospikeReadKind` + `AerospikeReadKindTest`（7 个用例）把"边读/点读"的指标分类从名字前缀改成 bin 优先。**
 **第十三批（§59，性能测试）：新增 `graph-integration-test/.../AerospikeHundredSeedsValuesBenchmarkTest`（6 个用例：100 个有效 id x 8 轮 = 800 次执行；记录每次存储调用的批大小与属性名；缓存开/关 A/B；batch/barrier 扫描；投影 vs 整顶点对照）。完整输出留在 `.logs/bench-final2.log`。**
 **第十二批（§58）：`FuzzyLinkDemoLoader` 加 `fz_a7/xia1999` 并停写 pattern 顶点；`FuzzySchema.isSupported` 放宽；`payment-graph.json` 删 `FuzzyPattern` 顶点 + Account 加 `accountVector`；`payment-graph-rocksdb-edge.json` 的 Account 加 `accountVector` + `location`；`application.yml` 的 graphs 收敛到三个（其余注释保留）；`QueryApiIntegrationTest.accountProps` 加向量；`PaymentGraphRocksDbLoader` + 新的 `AccountProfiles`（确定性向量 + 四片区坐标）；UI 示例查询加向量/GEO 样本。详见 `CONTEXT.md` §58 / `DAILY` §20。**
 **第十一批（§57）新增/修改：`GremlinQuery.indexOfLogicBrace` 深度判定；`GremlinExpression.program()` 改为按序执行 + `ifStatement`/`block`/`newCollection`/`collectionMethod` + `FRAME`（ThreadLocal per-element）；`GremlinElementExpression` 的伪键（`@createdTime`/`@lastUpdatedTime`/`@source`/`@target`）+ `value(...)`/`isPseudoName(...)`；`GremlinSteps.values` 用 `GremlinElementExpression.value`；`GremlinGraphQuery` 规划器跳过伪键 + 空答案→空子图；UI：面板只报数目 + 元素答案也报、`propertiesOfElement` 从子图补属性。测试：`GremlinClosureStatementTest`（11）+ `GremlinGraphQueryTest`（+2）。benchmark：`.logs/bench-two-hop.js`。详见 `CONTEXT.md` §57 / `DAILY` §19。**
