@@ -45,3 +45,6 @@ target/
 
 # a schema file the codec round-trip tests write into the working directory
 /Test-Graph.json
+
+# a schema built on this machine (the modelling page writes <graph>.json here)
+/TestGraph.json
