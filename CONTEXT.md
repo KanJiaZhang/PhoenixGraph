@@ -4454,3 +4454,91 @@ batch(25)   5.00 reads        0.49 ms      barrier(1) 57.10 reads  0.64 ms
 ```
 两边各 9 个用例（含 2 个守卫：方法形状分类、命中数与存储计数器一致），**无时间断言**。
 本次输出：`.logs/bench-rocksdb2.log`（RocksDB）、`.logs/bench-asp-after.log`（Aerospike，回归对比）。
+
+---
+
+## 62. 组合查询（geo + 向量 + 边）100 次运行的性能测试
+
+被测语句（用户在 RocksDB-Edge 实例上给的形状）：
+
+```groovy
+g.V(1001,'Account').circle('{"lat":31.2304,"lon":121.4737,"radius":5000}').limit(10).nearest(10).outE('Payment')
+```
+
+这是演示数据里唯一一条把三条访问路径串起来的语句：**geo 索引（S2）**定圆 → **向量索引（HNSW）**找相似 →
+**Payment 边表**收出款。测试 `RocksDbGeoVectorPaymentBenchmarkTest`（4 个用例，服务占着目录所以在副本上跑；
+索引在副本里重建，0.18 s / 51 点 / 7 层 / 753 链接，免得结果依赖服务那份是否建过索引）。
+
+### 62.1 100 次运行（实测）
+
+```
+延迟     mean 5.37 ms  min 2.76  p50 4.64  p90 7.89  p95 8.72  p99 13.42  max 15.38
+吞吐     186 查询/秒      墙钟 0.54 秒      结果 203 项      子图 51 点 / 241 边
+
+每 20 次一块（前几次不是稳态，JIT 与缓存都在暖机）
+  runs   1- 20    7.43 ms      runs  41- 60    4.81 ms      runs  81-100    4.09 ms
+  runs  21- 40    5.11 ms      runs  61- 80    5.41 ms
+
+每次运行的存储流量（均值，max 与均值相同 = 完全确定）
+  kv.read.call   127.00    记录 595     顶点读 111 次调用/582 条    边读 0     geo.read 54
+  edge.decoded     0.00    （这个计数器由 Aerospike 侧维护，RocksDB 侧不计数，不能读成"没解码"）
+```
+
+**稳态约 4.1 ms**（最后 20 次），100 次的均值 5.37 ms 里含 JIT/暖机；流量**每次都一样 127**（存储缓存预热后
+确定）——所以看趋势要看延迟，看流量不用重复取平均。
+
+### 62.2 时间花在哪一步（各 50 次，已预热）
+
+```
+  1. 只有种子                              0.058 ms   →  1 项
+  2. + circle(5km).limit(10)               0.303 ms   → 10 项     （geo 步 +0.245）
+  3. + nearest(10)                         2.863 ms   → 52 项     （向量步 +2.56，占 78%）
+  4. + outE('Payment')（就是被测语句）      3.282 ms   → 203 项    （边步 +0.42）
+```
+
+**向量步是绝对瓶颈**：`nearest(10)` 作用在 10 个 geo 命中上 = **10 次独立的 HNSW 搜索**，每次都要沿图层走
+（每跳一次读 + 邻居向量一次读，见 §62.3），所以代价随 traverser 数线性增长。geo 步便宜（0.25 ms，一次 S2
+读回 10 个点），边步也便宜（0.42 ms，一次批量边读 + 一次批量点读）。
+
+### 62.3 一次运行读了什么（实测 trace）
+
+```
+geoNear            GEO                     ids 1  -> 10     （S2 圆，1 次读回 10 个点）
+readVertices       VERTEX                  ids 1  -> 1      × 10   ← 每个 geo 命中单独读回（见下）
+readEdges          EDGE  accountVector_0  ids 1  -> 15/16  × 10   ← 每个 traverser 的 HNSW 图层走查
+readVertices       VERTEX                  ids 10/7/6 -> 同   × 10   ← 邻居向量，批量
+readEdgesBatch     EDGE  Payment          ids 49 -> 194          ← 最后一跳：一次批量边读
+readVertices       VERTEX                  ids 51 -> 51           ← 边的对端，一次批量点读
+```
+
+三点结论：
+
+1. **`nearest` 的代价在"每个 traverser 一次图走"**：per-traverser 的 `readEdges(accountVector_0)`（邻居引用）
+   + 批量 `readVertices`（邻居向量）——这就是 §62.2 里 78% 的来源。想再快只能减少 traverser 数（把
+   `limit(10)` 放到 `nearest` 之后再 dedup，或者对 10 个种子做一次合并搜索），不是调 batch/ef。
+2. **geo 命中是"一个一个读回来"的**（10 次 `readVertices(ids 1)` 本可合成 1 次 `ids 10`）：`circle` 步为了给每个
+   命中挂上距离，对每个 hit 单独读一次。对 10 个命中就是 10 次往返（占 127 次里的 ~8%），是**明确的优化点**
+   （改成先收齐 hits 再批量读、然后附着距离）。
+3. **收尾是批量且干净的**：最后一跳 `Payment` 是 1 次批量边读（49 个 id，在默认批 50 以内）→ 194 条边，
+   再接 1 次批量点读拿对端（51 个 id）。**边属性也没有被点名**（`readEdgesBatch` 的属性列表为空 = 读该类声明的
+   全部属性，因为答案是边本身）；HNSW 图层与邻居读天然没有属性。
+
+### 62.4 缓存
+
+```
+第一次运行（存储目录刚打开）： 3.45 ms, 127 次读
+其后二十次：                   3.00 ms, 127.0 次读   ← 存储把重复读走内存
+同一语句两次：                 127 = 127             ← 引擎的每查询缓存作用域是单次执行
+```
+
+与前几轮一致：**引擎缓存不跨执行**（写后读永远不回旧值），**存储自己的边列表缓存**把重复读吃掉——
+`edge.read` 因此在稳态恒为 0（边都来自内存），`kv.read.call` 的 127 次几乎全是顶点读与 geo 读。
+注意 `edge.decoded`/`edge.filtered` 这两个计数器只在 Aerospike 侧维护，RocksDB 侧恒为 0，不能当成"没有解码"。
+
+### 62.5 复现
+
+```bash
+./mvnw -o -pl graph-integration-test test -Dtest=RocksDbGeoVectorPaymentBenchmarkTest
+```
+4 个用例：100 次运行、4 段 step 归因、1 次运行读轨迹、缓存冷热对比（**无时间断言**，只有"每次都有结果""读到了东西"
+这类不变量）。本次输出 `.logs/bench-geo-vector6.log`。
