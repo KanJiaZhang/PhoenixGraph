@@ -44,7 +44,32 @@ public final class FuzzyDemo {
             true));
 
     /** The patterns the demo graphs start with. */
-    public static final List<FuzzyPattern> DEMO_PATTERNS = List.of(SHARED_HABITS, MACHINE_MAIL);
+    /**
+     * Pattern 2 - the session: a login, a balance check, a payment and a dispute, in that order, each
+     * within a hundred seconds of the step before it. The key is the /16 of the login address and the
+     * dispute reason, so two accounts whose sessions look alike are on one node.
+     */
+    public static final FuzzyPattern SESSION_100S = withDemo(new FuzzyPattern(2,
+            "Login -> BalanceCheck -> Payment -> Dispute, each within 100s",
+            "fl_2_L0(ip2(Login.IP))_[<100s]_B1_[<100s]_P2_[<100s]_D3(Dispute.DisputeReason)",
+            "One account's event list, read in time order: a Login, a BalanceCheck, a Payment and a "
+                    + "Dispute, all four present, the steps at most 100 seconds apart. The key is the /16 "
+                    + "of the login address and the dispute reason.",
+            true));
+
+    /**
+     * Pattern 3 - the same idea over a wider window, keyed on the /24, with the reason as a condition
+     * rather than as part of the key (every match of it is a NotMyCard dispute by construction).
+     */
+    public static final FuzzyPattern SESSION_300S_NOT_MY_CARD = withDemo(new FuzzyPattern(3,
+            "Login then a disputed payment on the same /24, within 5 minutes",
+            "fl_3_L0(ip3(Login.IP))_[<300s]_P1_[<300s]_D2(Dispute.DisputeReason)=='NotMyCard'",
+            "A login followed by a payment and a dispute within five minutes each, only when the reason "
+                    + "is NotMyCard. Accounts that share the network are linked.",
+            true));
+
+    public static final List<FuzzyPattern> DEMO_PATTERNS =
+            List.of(SHARED_HABITS, MACHINE_MAIL, SESSION_100S, SESSION_300S_NOT_MY_CARD);
 
     /**
      * The fragment the first demo pattern's regular expression contributes: the shape of

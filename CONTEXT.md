@@ -4930,3 +4930,22 @@ g.V('fl_2_10.122_notmycard','FuzzyLink').out('FuzzyLinkedTo').values('id') -> ["
 node .logs/verify-sequence-final.js                        # 上面那张表（原始 vs 有序、每账号的组、组成员）
 node .logs/verify-sequence-pattern.js                      # 关联过程（写 5 个账号 + links 接口）
 ```
+
+### 68.6 可以直接在 UI 上验证的例子（已加进下拉里的"示例查询"）
+
+`app.js` 的 `payment-graph` 示例列表里加了四条（重建 graph-web 后即可见）：
+
+| 示例标题 | 查询 | 结果 |
+|---|---|---|
+| 事件序列②：事件列表 → 行为组 | `g.V().fuzzyLink(2, '<事件列表>').values('id')` | `["fl_2_10.122_notmycard"]` |
+| 事件序列②：这一组里的账号 | 上面再 `.out('FuzzyLinkedTo').values('id')` | `["ev_a1","ev_a2"]` |
+| 事件序列③：/24 + 只有 NotMyCard | `g.V().fuzzyLink(3, '<事件列表>').values('id')` | `["fl_3_10.122.13"]` |
+| 事件序列：某账号属于哪些行为组 | `g.V('ev_a1','Account').in('FuzzyLinkedTo').values('id')` | 两个组 |
+
+事件列表用的是**种子里的那条会话**（`ev_a1`：Login → BalanceCheck → Payment → Dispute 各差 1 s，外加一个 pattern 不认识的 `Logout` —— 顺便演示"多余的��件被忽略"）。
+headless Edge 实测：下拉里出现这四条，点第一条 → 面板显示 `fl_2_10.122_notmycard` ✓。
+
+**数据可复现**：`FuzzyLinkDemoLoader` 现在也写这 5 条事件会话（`ev_a1..ev_a5`）及它们产生的连接节点/边
+（它直接用代码里的 context 调 `FuzzyLinks.plan`，所以事件列表**不落库**——真实引擎里"会话"是刚发生的事，
+由查询带进来），`FuzzyDemo.DEMO_PATTERNS` 同步加上 pattern 2/3，`FuzzyLinkIntegrationTest` 断言
+`largestNodePerPattern = {0=7, 1=4, 2=2, 3=3}` 并用 engine 跑了一遍"事件列表进、组出" ✓（12 用例全绿，跑测试即重新播种 `http_demo_v3`）。

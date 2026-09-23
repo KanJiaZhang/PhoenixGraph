@@ -472,6 +472,17 @@
         ['模糊关联①：同邮箱域名+国家+/16+名字词根', 'Fuzzy link 1: same mail domain + country + /16 + name stem', "g.V().fuzzyLink(0, '{\"email\":\"19880101@mail.ru\",\"phone\":\"+8613800138001\",\"ip\":\"10.20.31.7\",\"username\":\"zhang1988\"}')"],
         ['模糊关联①→账户→出款→收款方', 'Fuzzy link 1 -> account -> payment -> receiver', "g.V().fuzzyLink(0, '{\"email\":\"19880101@mail.ru\",\"phone\":\"+8613800138001\",\"ip\":\"10.20.31.7\",\"username\":\"zhang1988\"}').out('FuzzyLinkedTo').outE('Payment').otherV()"],
         ['模糊关联②：同/24+卡BIN+邮箱前四位', 'Fuzzy link 2: same /24 + card BIN + first four mail characters', "g.V().fuzzyLink(1, '{\"email\":\"44100101@qq.com\",\"ip\":\"10.30.40.11\",\"cardNumber\":\"6217000090009001\"}').out('FuzzyLinkedTo')"],
+      // the event sequence patterns: the event list goes in, the group (the pattern id and its key) comes out.
+      // ev_a1 and ev_a2 share the session, ev_a4 is the same /24 with a step past 100s (pattern 3 still
+      // takes it), ev_a5 disputes for another reason.
+      ['事件序列②：事件列表 → 行为组', 'Event sequence 2: an event list -> the group it belongs to',
+        "g.V().fuzzyLink(2, '{\"Login\":{\"ID\":\"ev_a1\",\"IP\":\"10.122.13.14\",\"Type\":\"Mobile\",\"EventTime\":1790147176281},\"BalanceCheck\":{\"ID\":\"ev_a1\",\"IP\":\"10.122.13.14\",\"EventTime\":1790147177281},\"Payment\":{\"ID\":\"ev_a1\",\"USD\":1000,\"CBIN\":\"035\",\"EventTime\":1790147178281},\"Dispute\":{\"ID\":\"ev_a1\",\"DisputeReason\":\"NotMyCard\",\"IP\":\"10.122.13.14\",\"EventTime\":1790147179281},\"Logout\":{\"ID\":\"ev_a1\",\"EventTime\":1790147239281}}').values('id')"],
+      ['事件序列②：这一组里的账号', 'Event sequence 2: the accounts in that group',
+        "g.V().fuzzyLink(2, '{\"Login\":{\"ID\":\"ev_a1\",\"IP\":\"10.122.13.14\",\"Type\":\"Mobile\",\"EventTime\":1790147176281},\"BalanceCheck\":{\"ID\":\"ev_a1\",\"IP\":\"10.122.13.14\",\"EventTime\":1790147177281},\"Payment\":{\"ID\":\"ev_a1\",\"USD\":1000,\"CBIN\":\"035\",\"EventTime\":1790147178281},\"Dispute\":{\"ID\":\"ev_a1\",\"DisputeReason\":\"NotMyCard\",\"IP\":\"10.122.13.14\",\"EventTime\":1790147179281},\"Logout\":{\"ID\":\"ev_a1\",\"EventTime\":1790147239281}}').out('FuzzyLinkedTo').values('id')"],
+      ['事件序列③：/24 + 只有 NotMyCard（reason 是条件）', 'Event sequence 3: same /24, NotMyCard only (the reason is a condition)',
+        "g.V().fuzzyLink(3, '{\"Login\":{\"ID\":\"ev_a1\",\"IP\":\"10.122.13.14\",\"Type\":\"Mobile\",\"EventTime\":1790147176281},\"BalanceCheck\":{\"ID\":\"ev_a1\",\"IP\":\"10.122.13.14\",\"EventTime\":1790147177281},\"Payment\":{\"ID\":\"ev_a1\",\"USD\":1000,\"CBIN\":\"035\",\"EventTime\":1790147178281},\"Dispute\":{\"ID\":\"ev_a1\",\"DisputeReason\":\"NotMyCard\",\"IP\":\"10.122.13.14\",\"EventTime\":1790147179281},\"Logout\":{\"ID\":\"ev_a1\",\"EventTime\":1790147239281}}').values('id')"],
+      ['事件序列：某账号属于哪些行为组', 'Event sequence: which behaviour groups an account belongs to',
+        "g.V('ev_a1','Account').in('FuzzyLinkedTo').values('id')"],
       ],
       'kg-entity-graph': [
         ['概念书的全部关系', 'All relations of concept_book_new_9', "g.V('concept_book_new_9','Entity').bothE().limit(20)"],

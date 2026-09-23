@@ -61,6 +61,53 @@ public final class FuzzyLinkDemoLoader {
             // email name is not four digits, so the second pattern does not apply to it
             {"fz_a7", "xia1999", "xia1999@mail.ru", "+8613800138007", "6217000070007777", "10.20.66.8"}};
 
+    /**
+     * The event-sequence accounts: each one is a session, and the sequence pattern reads it in time order.
+     *
+     * <p>{@code ev_a1} and {@code ev_a2} are the same behaviour (a login, a balance check, a payment and a
+     * dispute within a minute, on one /16, disputed as NotMyCard), so pattern 2 puts them on one link node;
+     * {@code ev_a3} is the same session on another network, {@code ev_a4} has a step 101 seconds after the one
+     * before it (past the 100s window of pattern 2, inside the 300s of pattern 3) and {@code ev_a5} disputes for
+     * another reason. The event list is what the pattern reads; it is not stored on the account, so a query
+     * passes it in.
+     */
+    private static final String[][] EVENT_SESSIONS = {
+            {"ev_a1", "10.122.13.14", "NotMyCard", "1000/2000/3000", "yes"},
+            {"ev_a2", "10.122.13.99", "NotMyCard", "2000/3000/4000", "no"},
+            {"ev_a3", "10.130.7.14", "NotMyCard", "1000/2000/3000", "no"},
+            {"ev_a4", "10.122.13.50", "NotMyCard", "1000/102000/103000", "no"},
+            {"ev_a5", "10.122.13.51", "Fraud", "1000/2000/3000", "no"}};
+
+    /** The event list of one demo session, as the pattern reads it: the four events, in time order. */
+    public static Map<String, Object> eventsOf(String[] session) {
+        String[] gaps = session[3].split("/");
+        long start = 1790147176281L;
+        Map<String, Object> events = new LinkedHashMap<>();
+        events.put("Login", Map.of("ID", session[0], "IP", session[1], "Type", "Mobile",
+                "EventTime", start));
+        events.put("BalanceCheck", Map.of("ID", session[0], "IP", session[1],
+                "EventTime", start + Long.parseLong(gaps[0])));
+        events.put("Payment", Map.of("ID", session[0], "USD", 1000, "CBIN", "035",
+                "EventTime", start + Long.parseLong(gaps[1])));
+        events.put("Dispute", Map.of("ID", session[0], "DisputeReason", session[2], "IP", session[1],
+                "EventTime", start + Long.parseLong(gaps[2])));
+        if ("yes".equals(session[4])) {
+            // an event the pattern does not name: ignored, so a list may carry more than the pattern asks
+            events.put("Logout", Map.of("ID", session[0], "IP", session[1],
+                    "EventTime", start + Long.parseLong(gaps[2]) + 60000));
+        }
+        return events;
+    }
+
+    /** The event list of one demo session as the JSON a query passes to the pattern. */
+    public static String eventsJson(String[] session) {
+        return FuzzyContexts.toJson(FuzzyContext.of(eventsOf(session)));
+    }
+
+    /** The event sessions the demo writes, for a test that wants to check them. */
+    public static List<String[]> eventSessions() {
+        return List.of(EVENT_SESSIONS);
+    }
     /** The accounts of the second ring: one /24 network, one card BIN, digits-only email names. */
     private static final String[][] RING_MACHINE_MAIL = {
             {"fz_b1", "user4410", "44100101@qq.com", "+8612800128001", "6217000090009001", "10.30.40.11"},
@@ -137,6 +184,29 @@ public final class FuzzyLinkDemoLoader {
         }
         vertexStore.upsertVertices(vertices);
 
+        // the event sessions: the accounts, and the links their event lists produce (the list itself is
+        // not stored - a query passes it in, which is how a risk engine links a session it just saw)
+        List<VertexUpsert> sessionVertices = new ArrayList<>();
+        int sessionEdges = 0;
+        for (String[] session : EVENT_SESSIONS) {
+            VertexSchema account = schema.vertexSchema("Account");
+            Map<Integer, VertexPropertyValue> properties = new LinkedHashMap<>();
+            properties.put(property(account, "firstName"), new VertexPropertyValue(session[0], now));
+            properties.put(property(account, "accountStatus"), new VertexPropertyValue("ACTIVE", now));
+            sessionVertices.add(new VertexUpsert(session[0], account, properties, now, now));
+            for (FuzzyLink link : FuzzyLinks.plan(patterns, FuzzyContext.of(eventsOf(session)))) {
+                sessionVertices.add(linkVertex(link, now));
+                edgeStore.upsertEdge(linkEdge(link, session[0], now));
+                nodes.add(link.linkVertexId());
+                sessionEdges++;
+                nodesPerPattern.computeIfAbsent(link.patternId(), k -> new LinkedHashSet<>())
+                        .add(link.linkVertexId());
+                perPatternEdges.merge(link.patternId(), 1, Integer::sum);
+            }
+        }
+        vertexStore.upsertVertices(sessionVertices);
+        linkEdges += sessionEdges;
+
         int payments = writePayments(now);
         Map<Integer, Integer> largest = new LinkedHashMap<>();
         for (Map.Entry<Integer, Set<String>> entry : nodesPerPattern.entrySet()) {
@@ -148,9 +218,17 @@ public final class FuzzyLinkDemoLoader {
                     }
                 }
             }
+            for (String[] session : EVENT_SESSIONS) {
+                for (FuzzyLink link : FuzzyLinks.plan(patterns, FuzzyContext.of(eventsOf(session)))) {
+                    if (link.patternId() == entry.getKey()) {
+                        membersByNode.merge(link.linkVertexId(), 1, Integer::sum);
+                    }
+                }
+            }
             largest.put(entry.getKey(), membersByNode.values().stream().max(Integer::compare).orElse(0));
         }
-        return new Summary(allAccounts().size() + 1, nodes.size(), linkEdges, payments, largest);
+        return new Summary(allAccounts().size() + 1 + EVENT_SESSIONS.length, nodes.size(), linkEdges,
+                payments, largest);
     }
 
     /** The context of a demo account, exactly as the loader stores it. */
@@ -160,11 +238,23 @@ public final class FuzzyLinkDemoLoader {
                 "cardNumber", row[4], "ipAddress", row[5]));
     }
 
+    /**
+     * How many accounts the rings hold (the members and the receiver, without the event sessions): the
+     * sessions are read from an event list rather than from properties, so the payments the demo writes are
+     * the rings', and a test that counts them says so with this number.
+     */
+    public static int memberAccounts() {
+        return allAccounts().size() + 1;
+    }
+
     /** The ids of the demo accounts, for a test that wants to check them. */
     public static List<String> accountIds() {
         List<String> ids = new ArrayList<>();
         for (String[] row : allAccounts()) {
             ids.add(row[0]);
+        }
+        for (String[] session : EVENT_SESSIONS) {
+            ids.add(session[0]);
         }
         ids.add(RECEIVER);
         return ids;

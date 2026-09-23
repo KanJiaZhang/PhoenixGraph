@@ -144,9 +144,12 @@ class FuzzyLinksTest {
         String json = codec.writeAll(Map.of("payment-graph", FuzzyDemo.DEMO_PATTERNS));
         List<FuzzyPattern> read = codec.read(json, "payment-graph");
 
-        assertEquals(2, read.size());
+        assertEquals(FuzzyDemo.DEMO_PATTERNS.size(), read.size());
         assertEquals(FuzzyDemo.SHARED_HABITS.expression(), read.get(0).expression());
         assertEquals(FuzzyDemo.MACHINE_MAIL.name(), read.get(1).name());
+        assertEquals(FuzzyDemo.SESSION_100S.expression(), read.get(2).expression(),
+                "the sequence patterns survive the JSON round trip too");
+        assertEquals(FuzzyDemo.SESSION_300S_NOT_MY_CARD.expression(), read.get(3).expression());
         assertEquals(List.of(), codec.read(json, "another-graph"));
     }
 

@@ -97,9 +97,13 @@ class FuzzyLinkIntegrationTest {
         assertEquals(7, summary.largestNodePerPattern().get(0),
                 "the first ring is seven accounts: six zhangs and one xia of the same name shape");
         assertEquals(4, summary.largestNodePerPattern().get(1), "the second ring is four accounts");
+        assertEquals(2, summary.largestNodePerPattern().get(2),
+                "the sessions that share a /16 and a reason are one group of two");
+        assertEquals(3, summary.largestNodePerPattern().get(3),
+                "the wider window of pattern 3 brings the slow session in: three on that /24");
         assertTrue(summary.nodes() >= 2, "the rings have their own nodes: " + summary);
-        assertEquals((summary.accounts() - 1) * 2, summary.payments(),
-                "every member pays twice, the receiver does not");
+        assertEquals((FuzzyLinkDemoLoader.memberAccounts() - 1) * 2, summary.payments(),
+                "every member of a ring pays twice, the receiver does not (the event sessions pay nothing)");
     }
 
     @Test
@@ -205,6 +209,24 @@ class FuzzyLinkIntegrationTest {
 
         assertEquals("mail.ru_86_10.20_" + FuzzyDemo.NAME_SHAPE, fromTheLoader);
         assertEquals(fromTheLoader, again, "the same context always lands on the same node");
+    }
+
+    /**
+     * The event list in, the group out: the sequence pattern through the engine, over the seeded storage.
+     * The list is the one the loader wrote the links for, so the query finds the node it produced.
+     */
+    @Test
+    void theEventSessionsAreLinkedByTheirSequence() {
+        String[] session = FuzzyLinkDemoLoader.eventSessions().get(0);
+        String json = FuzzyLinkDemoLoader.eventsJson(session);
+        List<Object> links = gremlin.execute("g.V().fuzzyLink(2, '" + json + "').values('id')");
+        assertEquals(List.of("fl_2_10.122_notmycard"), links.stream().map(String::valueOf).toList(),
+                "the event list evaluates to the pattern's link node");
+
+        List<Object> members = gremlin.execute("g.V('fl_2_10.122_notmycard','FuzzyLink')"
+                + ".out('FuzzyLinkedTo').values('id')");
+        assertEquals(Set.of("ev_a1", "ev_a2"), new LinkedHashSet<>(members.stream()
+                .map(String::valueOf).toList()), "the accounts whose session looks the same");
     }
 
     private static Set<String> idsOf(List<Object> elements) {
