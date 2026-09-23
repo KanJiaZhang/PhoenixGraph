@@ -1215,7 +1215,32 @@ public class GremlinGraphQuery {
             case VERTICES -> startVertices(context, source.ids(), source.name(), properties, verifySeeds);
             case VERTEX_TYPE -> startVertexScan(context, source.name(), properties);
             case EDGE_TYPE -> startEdgeScan(context, source.name(), properties);
+            case EDGES -> startEdges(context, source.ids(), source.name(), properties);
         };
+    }
+
+    /**
+     * Starts from named edge ids: {@code g.E('pay_1', 'Payment')}. The store is asked for the edges of that
+     * class with those ids (a store with an id index answers directly, one without walks the class once), and
+     * each answer becomes an edge traverser carrying both of its endpoints - which is what {@code otherV()}
+     * needs to know where the edge goes.
+     */
+    private static List<Object> startEdges(GremlinContext context, List<Object> edgeIds, String edgeName,
+                                           List<String> properties) {
+        if (edgeIds.isEmpty()) {
+            return List.of();
+        }
+        List<ScannedEdge> edges = context.graphQuery().readEdgesByIds(edgeName,
+                edgeIds, properties == null ? List.of() : properties);
+        List<Object> out = new ArrayList<>(edges.size());
+        for (ScannedEdge scanned : edges) {
+            EdgeQueryResult edge = scanned.edge();
+            context.recordVertex(null, scanned.source());
+            context.recordVertex(null, scanned.target());
+            out.add(new GremlinEdge(edge.edgeName(), edge.edgeId(), edge.side(), edge.otherVertexId(),
+                    edge.properties(), edge.createdTime(), edge.lastUpdatedTime(), scanned.source()));
+        }
+        return out;
     }
 
     /**

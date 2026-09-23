@@ -177,10 +177,30 @@ class GremlinQueryTest {
         assertEquals("payment", GremlinQuery.parse("g . E ( payment )").edgeName());
     }
 
+    /**
+     * {@code g.E(...)}: one argument is a class (a scan), more are edge ids and then the class they live in.
+     * The class is the last argument in both spellings, the same rule {@code g.V(...)} follows.
+     */
     @Test
-    void anEdgeStartNeedsExactlyOneClass() {
+    void anEdgeStartIsAClassOrIdsOfOne() {
+        GremlinQuery scan = GremlinQuery.parse("g.E('Payment')");
+        assertEquals(GremlinQuery.Source.Kind.EDGE_TYPE, scan.source().kind());
+
+        GremlinQuery one = GremlinQuery.parse("g.E('pay_1','Payment')");
+        assertEquals(GremlinQuery.Source.Kind.EDGES, one.source().kind());
+        assertEquals(List.of("pay_1"), one.source().ids());
+        assertEquals("Payment", one.edgeName());
+        assertNull(one.vertexName(), "an edge start names an edge class, not a vertex type");
+
+        GremlinQuery two = GremlinQuery.parse("g.E('pay_1','pay_2','Payment')");
+        assertEquals(List.of("pay_1", "pay_2"), two.source().ids());
+        assertEquals("Payment", two.edgeName());
+
+        // what is missing is said, not guessed: no class, no class after a comma, a blank class
         assertThrows(QueryException.class, () -> GremlinQuery.parse("g.E()"));
-        assertThrows(QueryException.class, () -> GremlinQuery.parse("g.E('a','b')"));
+        QueryException trailing = assertThrows(QueryException.class, () -> GremlinQuery.parse("g.E('pay_1',)"));
+        assertTrue(trailing.getMessage().contains("edge class is missing"), trailing.getMessage());
+        assertThrows(QueryException.class, () -> GremlinQuery.parse("g.E('pay_1',' ')"));
     }
 
     @Test

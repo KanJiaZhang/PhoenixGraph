@@ -4754,3 +4754,50 @@ node .logs/verify-csv2.js        # CSV 表头/行数/跳过/缺列的确认文�
 # 按图批量写（CSV 导入用的接口）：
 curl -X POST localhost:8081/api/v1/graphs/<graph>/batch -H 'content-type: application/json' -d '{"vertices":[...]}'
 ```
+
+---
+
+## 66. RocksDB-Edge：整类顺序遍历、按边 id 查找、按属性过滤（用 payment-graph-rocksdb-edge 验证）
+
+用户要的四条语句，实测（`/api/v1/query`，图 `payment-graph-rocksdb-edge`，数据是 51 个账户 / 200 条 Payment）：
+
+| 能力 | 语句 | 结果 |
+|---|---|---|
+| 整类遍历（顺序） | `g.V('Account')` / `g.E('Payment')` | 51 / 200 ✓（`limit(k)` 会被下推进扫描，只读前 k 条） |
+| 按边 id 查找 | `g.E('pay_hub_0','Payment')` | 该边（含属性）✓；`g.E(id1,id2,'Payment')` ✓；`.otherV()` → `1000/Alan` ✓；未知 id → 空 ✓ |
+| 按点属性过滤再跳边 | `g.V('Account').filter { it.get().values('accountStatus') == 'FROZEN' }.outE('Payment')` | 17 个点 → **51** 条边 ✓ |
+| 按边属性过滤再 otherV | `g.E('Payment').filter { it.get().values('status') == 'SUCCESS' }.otherV()` | **65** ✓；两个过滤器串联 → 59 ✓ |
+
+### 66.1 已经能用的部分（本次实测确认）
+
+* **整类顺序遍历**：RocksDB-Edge 的 `supportsScan() = true`，`g.V('类型')` / `g.E('类')` 走
+  `scanVertices`/`scanEdges`（列族里的有序区间），`limit(k)` 由 `scanLimit` 下推 ✓；
+* **属性过滤**：闭包里的 `it.get().values('k')`（复数，Groovy 的 `values(String...)`）与 `value('k')` 两种写法都
+  能用，且与 `.has('k','v')` 结果一致（都 17 / 65）✓。之前以为 `values()` 不行是误读——`.filter{...FROZEN}.outE()`
+  的 51 就是 17×3，正确。
+
+### 66.2 本次新增：按边 id 查找（`g.E($id, '类')`）
+
+原来 `g.E(...)` 只接受一个类名（整类扫描），两个参数直接报错。现在：
+
+* **语法**：最后一个参数是边类，前面的都是边 id（和 `g.V(id..., '类型')` 同一个约定）。
+  `g.E('Payment')` 仍是整类扫描；`g.E('id','Payment')` 是该类里的一条；`g.E(id1,id2,'Payment')` 是多条；
+  `g.E('id',)`（尾逗号）报「edge class is missing」。
+* **接口**：`GraphQuery.readEdgesByIds(edgeName, ids, propertyNames)`（默认实现），语义写在 javadoc 里：
+  一条边由"类 + 两个端点 + 创建时间"决定，只给 id 的存储**只能走类**；默认实现**整个请求只走一遍类**（不是每个 id 一遍）
+  并保持请求顺序，**有 id 索引的存储应当覆盖它**。返回 `ScannedEdge`（两个端点都在），所以 `otherV()` 知道该往哪走。
+* **引擎**：新增 `Source.Kind.EDGES` + `startEdges(...)`（把结果变成带端点的边 traverser）。非扫描型存储
+  （Aerospike 内联）会得到一句明确的话：`g.E(id, 'Payment') needs an edge id index, which AerospikeGraphQuery
+  does not keep ...`，而不是空答案。
+
+**代价（写在 javadoc 与这里）**：没有 id 索引时，`g.E($id,'类')` 是 **O(类内边数)** 的顺序扫描；200 条边实测 6–7 ms。
+下一步若要做成索引：`edge-id:<类>` 列族，`id → (source, direction, createdTime)`，写入时维护 + 存量重建。
+
+### 66.3 测试与复现
+
+```bash
+./mvnw -o -pl graph-query-gremlin test          # 190 用例（新增 2：按 id 起跳 + 非扫描存储的报错；改写 1：E(...) 语法）
+node .logs/rocksdb-edge-final.js                # 上表 13 条语句（含耗时）
+node .logs/rocksdb-edge-has.js                  # has / filter 两种写法一致
+node .logs/aerospike-edge-id.js                 # Aerospike 上的两条明确报错
+```

@@ -48,6 +48,8 @@ public final class GremlinQuery {
             VERTEX_TYPE,
             /** Every edge of one class. */
             EDGE_TYPE,
+            /** Named edge ids of one class. */
+            EDGES,
             /** No starting point (a step produces them). */
             NONE
         }
@@ -66,6 +68,10 @@ public final class GremlinQuery {
 
         static Source edgeType(String name) {
             return new Source(Kind.EDGE_TYPE, List.of(), name);
+        }
+
+        static Source edges(List<Object> ids, String name) {
+            return new Source(Kind.EDGES, ids, name);
         }
 
         static Source none() {
@@ -98,15 +104,16 @@ public final class GremlinQuery {
         return source.ids();
     }
 
-    /** The vertex type of a {@code g.V(...)} start, or {@code null}. */
+    /** The vertex type of a {@code g.V(...)} start, or {@code null} (an edge start names an edge class). */
     public String vertexName() {
-        return source.kind() == Source.Kind.EDGE_TYPE || source.kind() == Source.Kind.NONE
-                ? null : source.name();
+        return source.kind() == Source.Kind.VERTICES || source.kind() == Source.Kind.VERTEX_TYPE
+                ? source.name() : null;
     }
 
-    /** The edge class of a {@code g.E('class')} start, or {@code null}. */
+    /** The edge class of a {@code g.E(...)} start (a whole-class scan or named ids), or {@code null}. */
     public String edgeName() {
-        return source.kind() == Source.Kind.EDGE_TYPE ? source.name() : null;
+        return source.kind() == Source.Kind.EDGE_TYPE || source.kind() == Source.Kind.EDGES
+                ? source.name() : null;
     }
 
     public List<Step> steps() {
@@ -251,15 +258,32 @@ public final class GremlinQuery {
         if (parts.isEmpty()) {
             throw new QueryException("g.E(...) needs an edge class name, e.g. g.E('payment')");
         }
-        if (parts.size() > 1) {
-            throw new QueryException("g.E(...) takes one edge class name (all of its edges), got "
-                    + parts.size() + " arguments in: g.E(" + args + ")");
+        if (parts.size() == 1) {
+            String edgeName = parts.get(0);
+            if (edgeName.isBlank()) {
+                throw new QueryException("edgeName must not be blank in: g.E(" + args + ")");
+            }
+            if (args.trim().endsWith(",")) {
+                // 'g.E('pay_1', )': the comma says an id was meant, and one argument is a class, not an id
+                throw new QueryException("Expected 'g.E(edgeId..., edgeName)' or 'g.E(edgeName)' -"
+                        + " a trailing comma means the edge class is missing in: g.E(" + args + ")");
+            }
+            return Source.edgeType(edgeName);
         }
-        String edgeName = parts.get(0);
+        String edgeName = parts.get(parts.size() - 1);
         if (edgeName.isBlank()) {
             throw new QueryException("edgeName must not be blank in: g.E(" + args + ")");
         }
-        return Source.edgeType(edgeName);
+        List<Object> edgeIds = new ArrayList<>();
+        for (int i = 0; i < parts.size() - 1; i++) {
+            for (String id : splitIds(parts.get(i))) {
+                edgeIds.add(id);
+            }
+        }
+        if (edgeIds.isEmpty()) {
+            throw new QueryException("edgeId must not be blank in: g.E(" + args + ")");
+        }
+        return Source.edges(edgeIds, edgeName);
     }
 
     /** Parses a step chain such as {@code .has(key, value).count()} into steps. */

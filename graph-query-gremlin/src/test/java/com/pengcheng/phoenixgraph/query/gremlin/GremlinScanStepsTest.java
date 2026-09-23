@@ -111,6 +111,39 @@ class GremlinScanStepsTest {
     }
 
     /** A scan-capable store over the accounts and payments above. */
+    /**
+     * An edge id names one edge of a class: {@code g.E('a1->a2', 'payment')}. A store that keeps no
+     * id index walks the class once for the whole request, so several ids are one scan, and the answer
+     * keeps the order the ids were asked in.
+     */
+    @Test
+    void aNamedEdgeIdStartsFromThatEdge() {
+        GremlinGraphQuery engine = new GremlinGraphQuery(store(), NeighborVertexResolver.of(Map.of(), Map.of()));
+
+        // one id: the edge itself, and otherV() knows where it goes
+        assertEquals(List.of("a1->a2"), engine.execute("g.E('a1->a2','payment').values('id')"));
+        assertEquals(List.of("a2"), engine.execute("g.E('a1->a2','payment').otherV().values('id')"));
+        // the properties of the edge are there as well
+        assertEquals(List.of(1.0), engine.execute("g.E('a1->a2','payment').values('amount')"));
+
+        // several ids: one answer per id, in the order asked
+        assertEquals(List.of("a4->a5", "a1->a2"),
+                engine.execute("g.E('a4->a5','a1->a2','payment').values('id')"));
+        // an id that names no edge of the class is an empty answer, not a failure
+        assertEquals(List.of(), engine.execute("g.E('nope','payment').values('id')"));
+        // and the whole class is still a scan
+        assertEquals(5, ((Number) engine.execute("g.E('payment').count()").get(0)).intValue());
+    }
+
+    /** A store without a scan cannot look an edge id up either, and says so instead of guessing. */
+    @Test
+    void anEdgeIdOnAStoreWithoutAScanSaysWhatIsMissing() {
+        QueryException error = assertThrows(QueryException.class,
+                () -> new GremlinGraphQuery(keyedStore(), NeighborVertexResolver.of(Map.of(), Map.of()))
+                        .execute("g.E('a1->a2','payment')"));
+        assertTrue(error.getMessage().contains("edge id index"), error.getMessage());
+    }
+
     private static GraphQuery store() {
         return new ScanStore() {
             @Override

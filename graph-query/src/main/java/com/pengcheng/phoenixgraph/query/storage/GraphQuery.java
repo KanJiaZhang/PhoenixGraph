@@ -6,7 +6,11 @@ import com.pengcheng.phoenixgraph.schema.geo.GeoHit;
 import com.pengcheng.phoenixgraph.schema.geo.GeoSearch;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * Storage-agnostic vertex/edge query contract.
@@ -357,6 +361,54 @@ public interface GraphQuery {
     /** Reads every vertex of one type. */
     default List<VertexQueryResult> scanVertices(String vertexName, List<String> propertyNames) {
         return scanVertices(vertexName, propertyNames, 0);
+    }
+
+    /**
+     * The edges of one class with the given ids, each with both endpoints, in the order asked for.
+     *
+     * <p>An edge is identified by its class, its two endpoints and its creation time, and a caller only
+     * knows its id: a store can answer this from an id index, and one that keeps none can only walk the
+     * class. The default walks it <b>once for the whole request</b> (not once per id) and keeps the rows
+     * whose id was asked for, which is what {@code g.E(id, 'Class')} means on a store without an index; a
+     * store with one overrides this and answers directly.
+     *
+     * <p>The answer is in the order of {@code edgeIds}, and an id that is not there is simply absent (an
+     * id that names no edge of this class is an empty answer, not a failure).
+     *
+     * @param edgeName      the edge class to look in
+     * @param edgeIds      the edge ids to find
+     * @param propertyNames the properties to project; empty means all
+     */
+    default List<ScannedEdge> readEdgesByIds(String edgeName, List<Object> edgeIds,
+                                             List<String> propertyNames) {
+        if (edgeIds == null || edgeIds.isEmpty()) {
+            return List.of();
+        }
+        if (!supportsScan()) {
+            throw new QueryException("g.E(id, '" + edgeName + "') needs an edge id index, which "
+                    + getClass().getSimpleName() + " does not keep: it can read the edges of a vertex, not"
+                    + " find one by its id. Use a store whose tables are ordered ranges (the RocksDB-Edge"
+                    + " scheme walks a class), or walk the edges from a vertex instead.");
+        }
+        Set<String> wanted = new LinkedHashSet<>();
+        for (Object id : edgeIds) {
+            wanted.add(String.valueOf(id));
+        }
+        Map<String, ScannedEdge> found = new LinkedHashMap<>();
+        for (ScannedEdge edge : scanEdges(edgeName, propertyNames, 0)) {
+            String id = String.valueOf(edge.edge().edgeId());
+            if (wanted.contains(id)) {
+                found.putIfAbsent(id, edge);
+            }
+        }
+        List<ScannedEdge> out = new ArrayList<>(edgeIds.size());
+        for (Object id : edgeIds) {
+            ScannedEdge edge = found.get(String.valueOf(id));
+            if (edge != null) {
+                out.add(edge);
+            }
+        }
+        return out;
     }
 
     /**
