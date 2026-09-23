@@ -7,6 +7,7 @@ import com.pengcheng.phoenixgraph.schema.GraphSchema;
 import com.pengcheng.phoenixgraph.schema.GraphStorageSchema;
 import com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbStoreConfig;
 import com.pengcheng.phoenixgraph.storage.rocksdb.edge.RocksDbEdgeGraphQuery;
+import com.pengcheng.phoenixgraph.storage.rocksdb.edge.RocksDbHnswIndexFactory;
 import com.pengcheng.phoenixgraph.storage.rocksdb.edge.RocksDbEdgeStore;
 import com.pengcheng.phoenixgraph.storage.rocksdb.inline.RocksDbInlineGraphQuery;
 import com.pengcheng.phoenixgraph.storage.rocksdb.inline.RocksDbInlineStore;
@@ -88,6 +89,9 @@ public final class RocksDbGraphStores implements AutoCloseable {
                 yield new RocksDbInlineGraphQuery(store, schema);
             }
             case ROCKSDB_EDGE -> {
+                // a directory that was indexed once keeps a column family per HNSW layer, and RocksDB opens
+                // all of them or none: the layer edge classes have to be in the schema before the open
+                RocksDbHnswIndexFactory.declareLayers(schema);
                 RocksDbEdgeStore store = RocksDbEdgeStore.open(schema, config);
                 register(name, path, store);
                 if (metrics != null) {
@@ -118,6 +122,18 @@ public final class RocksDbGraphStores implements AutoCloseable {
     /** The directory opened for a graph, or {@code null} when it is not a RocksDB graph. */
     public String pathOf(String graphName) {
         return paths.get(graphName);
+    }
+
+    /**
+     * The RocksDB edge store of a graph, or {@code null} when the graph is not served by that scheme.
+     *
+     * <p>The write side of anything that lives in the graph's own directory but is not a vertex or an edge
+     * of the schema - today a vector index, whose layers are created while it is built - needs the store,
+     * not just the read path.
+     */
+    public RocksDbEdgeStore edgeStore(String graphName) {
+        AutoCloseable store = stores.get(graphName);
+        return store instanceof RocksDbEdgeStore edge ? edge : null;
     }
 
     /** The graphs served by RocksDB, in configuration order. */

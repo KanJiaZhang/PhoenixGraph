@@ -9,6 +9,7 @@ import com.pengcheng.phoenixgraph.http.service.GraphService;
 import com.pengcheng.phoenixgraph.http.service.QueryService;
 import com.pengcheng.phoenixgraph.schema.EdgeSchema;
 import com.pengcheng.phoenixgraph.schema.GraphSchema;
+import com.pengcheng.phoenixgraph.schema.VectorIndexSchemas;
 import com.pengcheng.phoenixgraph.schema.GraphSchemaManagers;
 import com.pengcheng.phoenixgraph.schema.VertexSchema;
 import com.pengcheng.phoenixgraph.schema.json.SchemaJsonCodec;
@@ -301,7 +302,7 @@ class QueryApiIntegrationTest {
             GraphSchema schema = ensureSchemaRegistered();
             AerospikeVertexStore vertexStore = new AerospikeVertexStore(client, namespace, set);
             AerospikeEdgeStore edgeStore = new AerospikeEdgeStore(client, namespace, set, schema);
-            truncateSet(client, namespace, set);
+            truncateSet(client, namespace, set, schema);
             seedSharedGraph(vertexStore, edgeStore, schema);
 
             QueryService queryService = QueryService.ambient(vertexStore, edgeStore);
@@ -599,6 +600,26 @@ class QueryApiIntegrationTest {
             }
         }
         assertNoFailures(upsertEdgesChunked(edgeStore, edges));
+    }
+
+    /**
+     * Truncates a set and drops the vector index metadata that described it.
+     *
+     * <p>The two live apart on purpose - the layer edges are edge bins of the vertex records, the metadata
+     * (entry points, size) is a record of its own - so a truncate that only clears the vertices leaves an
+     * index claiming a dataset whose layers are gone. A search then has nothing to walk and says so (the
+     * index refuses an answer it cannot make); dropping the record as well leaves the graph in the state a
+     * truncate means: no data, no index, rebuild it.
+     */
+    private static void truncateSet(AerospikeClient client, String namespace, String set, GraphSchema schema) {
+        truncateSet(client, namespace, set);
+        for (VectorIndexSchemas.VectorProperty property : VectorIndexSchemas.vectorProperties(schema)) {
+            new com.pengcheng.phoenixgraph.query.aerospike.AerospikeHnswMetadataStore(client, namespace,
+                    com.pengcheng.phoenixgraph.query.aerospike.AerospikeHnswIndexFactory.DEFAULT_METADATA_SET,
+                    com.pengcheng.phoenixgraph.query.aerospike.AerospikeHnswIndexFactory.metadataRecordKey(schema,
+                            property.vertexName(), property.propertyName()))
+                    .delete();
+        }
     }
 
     private static void truncateSet(AerospikeClient client, String namespace, String set) {

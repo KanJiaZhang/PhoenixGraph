@@ -437,10 +437,21 @@
       // a behaviour profile. The geo step answers here; the vector step needs the HNSW index, which
       // lives in the Aerospike edge bins, so the vector examples are on payment-graph.
       'payment-graph-rocksdb-edge': [
-        ['GEO · 人民广场 5km 内最近 10 个账户', 'GEO - the 10 nearest accounts within 5 km of People\'s Square', "g.V('1001','Account').circle('{\"lat\":31.2304,\"lon\":121.4737,\"radius\":5000}').limit(10)"],
-        ['GEO · 这 10 个账户的出款', 'GEO - the outgoing payments of those 10 accounts', "g.V('1001','Account').circle('{\"lat\":31.2304,\"lon\":121.4737,\"radius\":5000}').limit(10).outE('Payment')"],
-        ['GEO · 这 10 个账户的收款方', 'GEO - the receivers those 10 accounts pay', "g.V('1001','Account').circle('{\"lat\":31.2304,\"lon\":121.4737,\"radius\":5000}').limit(10).out('Payment').dedup().limit(10)"],
-        ['GEO · 带距离（米）', 'GEO - with the distance in metres', "g.V('1001','Account').circle('{\"lat\":31.2304,\"lon\":121.4737,\"radius\":5000}').limit(5).values('id','distanceMeters')"],
+        // this instance of the demo data keys its accounts by number (the loader writes long ids), so the
+        // examples use 1001 rather than '1001'
+        ['向量 · 最相似的 5 个账户', 'Vector - the 5 most similar accounts', "g.V(1001,'Account').nearest(5)"],
+        ['向量 · 相似账户的出款', 'Vector - the payments of the similar accounts', "g.V(1001,'Account').nearest(5).outE('Payment')"],
+        ['向量 → 收款方 → 再找相似', 'Vector -> receivers -> their lookalikes', "g.V(1001,'Account').nearest(5).out('Payment').dedup().nearest(3).values('id')"],
+        ['GEO + 向量 + 图 · 5km 内账户的相似账户及其出款',
+          'GEO + vector + graph - lookalikes of the accounts within 5 km, and what they pay',
+          "g.V(1001,'Account').circle('{\"lat\":31.2304,\"lon\":121.4737,\"radius\":5000}').limit(10).nearest(3).outE('Payment')"],
+        ['GEO + 向量 · 5km 内账户的相似账户',
+          'GEO + vector - the lookalikes of the accounts within 5 km',
+          "g.V(1001,'Account').circle('{\"lat\":31.2304,\"lon\":121.4737,\"radius\":5000}').limit(5).nearest(2).out('Payment').dedup().limit(20)"],
+        ['GEO · 人民广场 5km 内最近 10 个账户', 'GEO - the 10 nearest accounts within 5 km of People\'s Square', "g.V(1001,'Account').circle('{\"lat\":31.2304,\"lon\":121.4737,\"radius\":5000}').limit(10)"],
+        ['GEO · 这 10 个账户的出款', 'GEO - the outgoing payments of those 10 accounts', "g.V(1001,'Account').circle('{\"lat\":31.2304,\"lon\":121.4737,\"radius\":5000}').limit(10).outE('Payment')"],
+        ['GEO · 这 10 个账户的收款方', 'GEO - the receivers those 10 accounts pay', "g.V(1001,'Account').circle('{\"lat\":31.2304,\"lon\":121.4737,\"radius\":5000}').limit(10).out('Payment').dedup().limit(10)"],
+        ['GEO · 带距离（米）', 'GEO - with the distance in metres', "g.V(1001,'Account').circle('{\"lat\":31.2304,\"lon\":121.4737,\"radius\":5000}').limit(5).values('id','distanceMeters')"],
       ],
       'geo-merchants-rocksdb-inline': [
         ['GEO · 1km 内最近的 10 家商户', 'GEO - 10 nearest merchants within 1 km', "g.V('1','Merchant').circle('{\"lat\":31.2304,\"lon\":121.4737,\"radius\":1000}').limit(10)"],
@@ -1948,14 +1959,21 @@
    * Cypher projection as its row count plus the first row (the rows tab has the rest).
    */
   /**
+   * Whether one value is a graph element (a vertex or an edge traverser).
+   */
+  function isElementValue(value) {
+    return !!value && typeof value === 'object' && value.id !== undefined
+      && (value.label !== undefined || value.type !== undefined);
+  }
+
+  /**
    * Whether an answer is made of graph elements (vertices or edges). A subgraph is already on
    * the canvas, so the floating window stays out of the way for those: it is there for the
    * answers a graph cannot show - a count, a list of values, a projection.
    */
   function elementValues(list) {
     if (!list.length) return false;
-    return list.every((value) => value && typeof value === 'object'
-      && value.id !== undefined && (value.label !== undefined || value.type !== undefined));
+    return list.every(isElementValue);
   }
 
   function showValue(value, result) {
@@ -1999,7 +2017,9 @@
     if (!values.length) return { body: `0 ${t(unit)}`, detail: '' };
     const labels = values.map(valueLabel);
     const distinct = [...new Set(labels)];
-    if (labels.length === 1) {
+    // one scalar (a count(), a single value) is shown itself; one *element* is not, because a bare
+    // vertex id says nothing about the answer being one row - the result tab lists it either way
+    if (labels.length === 1 && !isElementValue(values[0])) {
       return { body: `<span class="value-scalar">${labels[0]}</span>`, detail: '' };
     }
     const body = `<span class="value-scalar value-small">${values.length} ${t(unit)}`

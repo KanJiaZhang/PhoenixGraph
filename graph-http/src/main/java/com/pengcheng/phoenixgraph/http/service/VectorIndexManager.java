@@ -11,11 +11,16 @@ import com.pengcheng.phoenixgraph.hnsw.HnswIndex;
 import com.pengcheng.phoenixgraph.hnsw.HnswMetadata;
 import com.pengcheng.phoenixgraph.hnsw.HnswNeighbor;
 import com.pengcheng.phoenixgraph.hnsw.VectorCodec;
+import com.pengcheng.phoenixgraph.http.config.RocksDbGraphStores;
 import com.pengcheng.phoenixgraph.http.config.StorageProperties;
 import com.pengcheng.phoenixgraph.query.aerospike.AerospikeGraphQuery;
 import com.pengcheng.phoenixgraph.query.aerospike.AerospikeHnswIndexFactory;
 import com.pengcheng.phoenixgraph.query.aerospike.AerospikeHnswMetadataStore;
 import com.pengcheng.phoenixgraph.query.aerospike.AerospikeHnswStore;
+import com.pengcheng.phoenixgraph.storage.rocksdb.edge.RocksDbEdgeStore;
+import com.pengcheng.phoenixgraph.storage.rocksdb.edge.RocksDbHnswIndexFactory;
+import com.pengcheng.phoenixgraph.storage.rocksdb.edge.RocksDbHnswMetadataStore;
+import com.pengcheng.phoenixgraph.storage.rocksdb.edge.RocksDbVectorIndexBuilder;
 import com.pengcheng.phoenixgraph.schema.EdgeSchema;
 import com.pengcheng.phoenixgraph.schema.GraphSchema;
 import com.pengcheng.phoenixgraph.schema.VectorIndexConfig;
@@ -67,18 +72,31 @@ public class VectorIndexManager {
     private final AerospikeClient client;
     private final String namespace;
     private final String metadataSet;
+    private final RocksDbGraphStores rocksDbStores;
     private final Map<String, Map<String, HnswIndex>> indexesByGraph = new ConcurrentHashMap<>();
 
     @Autowired
-    public VectorIndexManager(GraphResolver graphs, AerospikeClient client, StorageProperties properties) {
-        this(graphs, client, properties.namespace(), AerospikeHnswIndexFactory.DEFAULT_METADATA_SET);
+    public VectorIndexManager(GraphResolver graphs, AerospikeClient client, StorageProperties properties,
+                              RocksDbGraphStores rocksDbStores) {
+        this(graphs, client, properties.namespace(), AerospikeHnswIndexFactory.DEFAULT_METADATA_SET,
+                rocksDbStores);
     }
 
     public VectorIndexManager(GraphResolver graphs, AerospikeClient client, String namespace, String metadataSet) {
+        this(graphs, client, namespace, metadataSet, null);
+    }
+
+    /**
+     * @param rocksDbStores the RococksDB directories of this instance, or {@code null} in a test that only
+     *                      exercises Aerospike graphs
+     */
+    public VectorIndexManager(GraphResolver graphs, AerospikeClient client, String namespace, String metadataSet,
+                              RocksDbGraphStores rocksDbStores) {
         this.graphs = Objects.requireNonNull(graphs, "graphs");
         this.client = Objects.requireNonNull(client, "client");
         this.namespace = Objects.requireNonNull(namespace, "namespace");
         this.metadataSet = Objects.requireNonNull(metadataSet, "metadataSet");
+        this.rocksDbStores = rocksDbStores;
     }
 
     /**
@@ -99,6 +117,13 @@ public class VectorIndexManager {
     /** Highest layer to provide for a vector property: the declared ones or the built index'. */
     private int topLevelOf(GraphSchema schema, VectorIndexSchemas.VectorProperty property) {
         int declared = property.topLevel();
+        RocksDbEdgeStore rocksDbStore = rocksDbStore(schema.name());
+        if (rocksDbStore != null) {
+            HnswMetadata metadata = new RocksDbHnswMetadataStore(rocksDbStore.handle(),
+                    RocksDbHnswIndexFactory.metadataRecordKey(schema, property.vertexName(),
+                            property.propertyName())).read();
+            return metadata == null ? declared : Math.max(declared, metadata.topLevel());
+        }
         HnswMetadata metadata = new AerospikeHnswMetadataStore(client, namespace, metadataSet,
                 AerospikeHnswIndexFactory.metadataRecordKey(schema, property.vertexName(), property.propertyName()))
                 .read();
@@ -112,9 +137,6 @@ public class VectorIndexManager {
      * properties keeps its first one here.
      */
     public Map<String, HnswIndex> indexesOf(String graphName) {
-        if (!hasAerospikeStores(graphName)) {
-            return Map.of();
-        }
         Map<String, HnswIndex> byVertexType = new LinkedHashMap<>();
         for (HnswIndex index : indexes(graphName).values()) {
             byVertexType.putIfAbsent(index.vertexName(), index);
@@ -154,10 +176,11 @@ public class VectorIndexManager {
     public List<VectorIndexRebuildResult> rebuild(String graphName, String vertexSchemaName,
                                                  String vectorPropertyName) {
         GraphBinding binding = graphs.require(graphName);
-        if (!binding.hasAerospikeStores()) {
+        RocksDbEdgeStore rocksDbStore = rocksDbStore(graphName);
+        if (!binding.hasAerospikeStores() && rocksDbStore == null) {
             throw new IllegalArgumentException("Graph '" + graphName + "' is served by "
                     + binding.storageType().configName()
-                    + "; a vector index lives in the Aerospike edge bins and is only available there");
+                    + "; a vector index is built over Aerospike bins or a RocksDB-Edge directory");
         }
         List<VectorIndexSchemas.VectorProperty> properties =
                 VectorIndexSchemas.vectorProperties(binding.schema());
@@ -175,13 +198,30 @@ public class VectorIndexManager {
         }
         List<VectorIndexRebuildResult> results = new ArrayList<>(properties.size());
         for (VectorIndexSchemas.VectorProperty property : properties) {
-            results.add(rebuild(binding, property));
+            results.add(rocksDbStore != null
+                    ? rebuildRocksDb(binding, rocksDbStore, property)
+                    : rebuild(binding, property));
         }
         // the cached indexes are stale (fresh edges, new metadata): reopen them so
         // queries pick the rebuilt graph up at once
         indexesByGraph.remove(binding.name());
         indexes(binding.name());
         return results;
+    }
+
+    /**
+     * Rebuilds the index of a graph served by RocksDB-Edge: one scan of the vertex type gives the ids and
+     * the vectors, the old layers go, and the inserts write the layer classes (column families created on
+     * demand). The layer classes are declared on the schema first, because RocksDB has to open every family
+     * a directory holds and the schema a service loads does not name them.
+     */
+    private VectorIndexRebuildResult rebuildRocksDb(GraphBinding binding, RocksDbEdgeStore store,
+                                                    VectorIndexSchemas.VectorProperty property) {
+        RocksDbHnswIndexFactory.declareLayers(binding.schema());
+        RocksDbVectorIndexBuilder.Built built = RocksDbVectorIndexBuilder.rebuild(store, binding.graphQuery(),
+                binding.schema(), property);
+        return new VectorIndexRebuildResult(binding.name(), built.vertexName(), built.vectorProperty(),
+                built.vertices(), built.layers(), built.links(), built.pruned(), built.seconds());
     }
 
     private VectorIndexRebuildResult rebuild(GraphBinding binding, VectorIndexSchemas.VectorProperty property) {
@@ -351,16 +391,33 @@ public class VectorIndexManager {
         return graphs.require(graphName).hasAerospikeStores();
     }
 
-    /** Opens (once) every vector index of a graph, keyed by {@code vertex|property}. */
+    /**
+     * Opens (once) every vector index of a graph, keyed by {@code vertex|property}.
+     *
+     * <p>Both storages are served: an Aerospike graph reads its layers through the Aerospike edge store, a
+     * RocksDB graph through the generic graph query ({@code GraphQueryHnswStore}) with the metadata row in
+     * its own directory. A query engine cannot tell the difference - {@code nearest(k)} asks for an index
+     * per vertex type either way.
+     */
     private Map<String, HnswIndex> indexes(String graphName) {
-        if (!hasAerospikeStores(graphName)) {
+        GraphBinding binding = graphs.require(graphName);
+        RocksDbEdgeStore rocksDbStore = rocksDbStore(graphName);
+        if (!binding.hasAerospikeStores() && rocksDbStore == null) {
             return Map.of();
         }
-        return indexesByGraph.computeIfAbsent(graphs.require(graphName).name(), name -> {
-            GraphBinding binding = graphs.require(name);
+        return indexesByGraph.computeIfAbsent(binding.name(), name -> {
+            Map<String, HnswIndex> opened = new LinkedHashMap<>();
+            if (rocksDbStore != null) {
+                for (VectorIndexSchemas.VectorProperty property
+                        : VectorIndexSchemas.vectorProperties(binding.schema())) {
+                    opened.put(key(property.vertexName(), property.propertyName()),
+                            RocksDbHnswIndexFactory.open(binding.graphQuery(), rocksDbStore.handle(),
+                                    binding.schema(), property, METADATA_TTL));
+                }
+                return Map.copyOf(opened);
+            }
             AerospikeGraphQuery query = new AerospikeGraphQuery(binding.vertexStore(), binding.edgeStore(),
                     binding.schema());
-            Map<String, HnswIndex> opened = new LinkedHashMap<>();
             for (VectorIndexSchemas.VectorProperty property : VectorIndexSchemas.vectorProperties(binding.schema())) {
                 opened.put(key(property.vertexName(), property.propertyName()),
                         AerospikeHnswIndexFactory.open(query, binding.edgeStore(), binding.schema(), client,
@@ -368,6 +425,11 @@ public class VectorIndexManager {
             }
             return Map.copyOf(opened);
         });
+    }
+
+    /** The RocksDB edge store of a graph, or {@code null} when it is not served by that scheme. */
+    private RocksDbEdgeStore rocksDbStore(String graphName) {
+        return rocksDbStores == null ? null : rocksDbStores.edgeStore(graphName);
     }
 
     private static String key(String vertexSchemaName, String vectorProperty) {

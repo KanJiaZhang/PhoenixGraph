@@ -4251,3 +4251,102 @@ boolean edges = set.startsWith("edge") || set.endsWith("_edgeheads") || set.cont
 
 对现有数据的**行为等价**：所有边读都只传一个 `ve_*` bin（`AerospikeEdgeStore` 的 `db.get(..., edgeBin(...))`），
 所有点读传 `vp_*`/`vpt_*`(+`vt`) 或不传 bin，两种规则结论一致；集成侧实测流量数字未变（唯一变化来自上面"排序"带来的固定 workload）。
+
+---
+
+## 60. 第十四批：结果面板的单元素、编译缓存、以及在 RocksDB-Edge 上真正跑起来的向量索引
+
+### 60.1 面板：一个元素也要报数量和 distinct
+
+用户报 `g.V(1003,'Account').nearest(20).both('Payment')` **没有显示结果数量和 distinct 数量，显示的是 account id 150**。两层原因：
+
+1. **面板只对"多于一个"报数量**（`summarizeValues`）：`labels.length === 1` 时直接把那个值放大显示 —— 对 `count()` 这种标量是对的，对**一个顶点/边**就成了"只显示一个 id"。现在按"这个值是不是图元素"分流：
+
+| 答案 | 修前 | 修后 |
+|---|---|---|
+| 1 个顶点/边 | `150`（就一个 id） | `1 项 · 1 个不同值` |
+| 1 个标量（`count()`） | `76` | `76`（不变） |
+| 2 个元素 | `2 项 · 2 个不同值` | 不变 |
+| 同一元素两次 | `2 项 · 1 个不同值` | 不变 |
+
+用**服务上真正下发的那份 app.js**验证（抽出 `isElementValue`/`valueLabel`/`summarizeValues` 在 node 里跑，8 个用例，见 `.logs/panel-fn-check.js`）——不是看源码，是看浏览器会执行到的那份。
+
+2. **它当时只返回 1 个元素，是因为向量索引是坏的**（见 §60.2）。所以这条报障同时暴露了一个"静默给错答案"的问题。
+
+### 60.2 索引坏了却照样回答：截断图以后 `nearest(k)` 只回一个点
+
+复现：`g.V('1003','Account').nearest(20)` 返回 **1** 个元素（2041/150 之类），`nearest(5)` 也是 1 个；`both('Payment')` 正常。
+
+根因链条（实测）：
+
+* 演示播种器（`QueryApiIntegrationTest#demoSharedGraphViaApi`）先 `truncateSet(...)` **清空整个顶点集** —— HNSW 的层边就住在顶点记录的 `ve_*` bin 里，所以层数据一起没了；
+* 而**索引元数据**（entry points / size / topLevel）在另一个 set（`hnsw_meta`）里，**活了下来**，仍然声称 `size=152, topLevel=8`；
+* 搜索于是从"只剩元数据"的入口点出发：走不到任何邻居，答案就是入口点自己 —— 看起来像"结果很少"，实际是**错的**。
+
+取证：`g.V('1001','Account').bothE('accountVector_0').count()` = **0**、入口点的 `accountVector_3` 也是 0，而 `GET /api/v1/vector-index` 仍显示 `size=152`。重建索引后同一查询立刻恢复（`nearest(5)` → 5 个）。
+
+**修法（三层）**：
+
+1. **拒绝回答**（`HnswIndex.verifyLayers`，读路径每次搜索前一次读）：每个建好的索引里每个顶点在 layer 0 上至少有一条边（入口点也一样），所以"元数据说有 N 个向量、入口点在 layer 0 却没有邻居"就判定为坏索引，抛
+   `... has no layer data, although its metadata says it holds 152 vectors (its entry point has no neighbour on layer 0): the index has to be rebuilt`。
+   **故意不缓存**这次校验：刚被重载作废的索引不该因为"记得自己是好的"继续回答。新增 2 个用例（`aSearchRefusesAnIndexWhoseLayersAreGone`、`aSearchOfAnIndexThatWasNeverBuiltAnswersNothing`）。
+2. **播种器一致**：`truncateSet(client, ns, set, schema)` 现在连该图向量属性的**元数据记录一起删**（截断就是"没数据、没索引"），演示工作流不再留下坏索引。
+3. **顺手修的同类 bug**：`HnswIndex.searchById` 用**对象相等**排除自身，而调用方给的是 `'1001'`（字符串）、RocksDB 数据集里存的是 `1001`（long）→ 自身会出现在"最相似的 k 个"里且距离为 0。改成按**文本**比较（与引擎其它地方解析 id 的方式一致），RocksDB 集成用例立刻抓到过这个（`[Long:1001, Long:1004, ...]`）。
+
+### 60.3 编译缓存：同一语句只编译一次，问题是它没有上限
+
+**没有 Groovy**：整个引擎里没有 `GroovyShell`/`GroovyClassLoader`，所谓 Groovy 语法是项目自己的解析器（`GremlinQuery.parse` + `GremlinExpression.parse`）。
+
+* `GremlinGraphQuery.execute(String)` 用 `compiledCache.computeIfAbsent(text, this::compile)` 按**整条语句文本**缓存：解析出的步骤、**属性投影计划**、以及**闭包表达式**（`filter { }` / `map { }` 在建步骤时就解析，绝不按元素解析）全在里面；
+* 引擎实例**按图缓存**（`QueryService.engineFor` 的 `engines.computeIfAbsent`），所以一条语句在一个进程里只编译一次；
+* 实测（`GremlinCompiledQueryCacheTest`，4 个用例 + 打印数字）：**解析+编译 6.7 µs**，命中缓存的执行 89.6 µs，每次重新编译 165.5 µs（1.85×）——对内存假存储是 40%，对真实存储（毫秒级）是千分之几；
+* **发现的问题**：缓存**无上限**，而 key 是整条语句文本 —— 一个把 id 写进语句的客户端（仪表盘就是这么干的）会一直加条目。现在 `MAX_COMPILED_QUERIES = 512`，满了整体清空（重编译一次远比记住它便宜），外加用例证明清空后答案不变、条目数有界；
+* 基准里 100 个不同 id 的语句 = **100 次编译**（不是 800 次）✓ 同一 id 的 8 轮复用同一份编译结果。
+
+### 60.4 RocksDB-Edge 上真正可用 的 HNSW（§58.7 的未做项）
+
+原先只支持 Aerospike，理由是"索引住在 Aerospike 的边 bin 里"。**索引其实不需要特定存储**：层就是普通边类、搜索走通用 `GraphQuery`。这次把它接上：
+
+**新增（`graph-storage-rocksdb-edge`）**
+
+| 类 | 作用 |
+|---|---|
+| `RocksDbHnswStore implements HnswStore` | 写侧：层边按 `accountVector_<l>` 读写；一批 link 按层分组写（`upsertEdges` 要求同批同类）；prune 时先读回该行的 creationTime 再删（RocksDB 行键含创建时间） |
+| `RocksDbHnswMetadataStore implements HnswMetadataStore` | 元数据一行 KV 放在**图自己的目录**里（`hnsw:meta` 列族，按需创建），格式是可读的 `key=value` 文本 |
+| `RocksDbHnswIndexFactory` | `open`（搜索侧：`GraphQueryHnswStore` + `GraphQueryVectorSource`，只读）、`builder`（构建侧：`RocksDbHnswStore`）、`declareLayers`、config/provisioner |
+| `RocksDbVectorIndexBuilder.rebuild` | 一次**扫描**顶点类就同时拿到 ids 和向量（RocksDB-Edge 支持 `scanVertices`，不必像 Aerospike 那样从 layer 0 走图）、清掉旧层、重新插入并 `flush` |
+
+**改动**：`VectorIndexManager` 去掉 Aerospike-only 门槛，读路径对 RocksDB 图用新工厂、写路径走新 builder（`RocksDbGraphStores.edgeStore(name)` 暴露存储）；`RocksDbGraphStores.open` 打开目录前先 `declareLayers`。
+
+**顺带修的真 bug（RocksDB 特有）**：`RocksDbHandle.open` 要求打开目录里**每一个**列族，而层类是按需创建的 ⇒ 索引建过一次以后，服务重启时按 JSON 加载的 schema 不认识那些列族，**目录直接打不开**。现在 `RocksDbHandle.open` 会先问目录它有哪些列族（`RocksDB.listColumnFamilies`）并一起打开 —— 这是"可重开"的关键，不是便利。
+
+**实测（`RocksDbVectorIndexIntegrationTest`，6 个用例；在演示目录的**副本**上跑，不打扰运行中的服务）**：
+
+```
+built Account.accountVector: 51 vertices, 7 layers, 753 links, 274 pruned, 0.1 s
+nearest(1001): [1004, 1007, 1010, 1013, 1016] at [0.0000, 0.0000, 0.0001, 0.0001, 0.0002]
+vector + graph      : nearest(5).outE('Payment') -> 15 条边 / 子图 23 点 36 边
+geo + vector + graph: 5km 内 41 个账户 -> 它们的相似账户 -> 78 条出款 / 子图 47 点 100 边
+```
+
+服务上（HTTP，`POST /api/v1/vector-index/rebuild {"graph":"payment-graph-rocksdb-edge"}`）同样工作：
+`vertices:51, layers:7, links:753, seconds:0.221`，随后 `nearest(5)`、`nearest(5).outE('Payment')`、
+`circle(5km).limit(10).nearest(3).outE('Payment')`（**78 项 / 子图 47 点 100 边**）、
+`circle(5km).limit(5).nearest(2).out('Payment').dedup().limit(20)` 全部返回数据 ✓。
+
+**注意**：这个数据集（`PaymentGraphRocksDbLoader`）的账户 id 是**数字**（`g.V(1001,'Account')`），而 Aerospike 那套
+（`http_demo_v3`）是**字符串**（`g.V('1001','Account')`）。UI 示例里两套图各自用对的写法，README/HANDOVER 也注明。
+
+### 60.5 复现与验证
+
+```bash
+# 单元：编译缓存 / 面板的纯函数 / 索引一致性
+./mvnw -o -pl graph-query-gremlin test -Dtest=GremlinCompiledQueryCacheTest     # 4 用例 + 打印 µs
+./mvnw -o -pl graph-hnsw test -Dtest=HnswIndexTest                             # 15 用例（含 2 个新）
+node .logs/panel-fn-check.js                                                   # 服务上那份 app.js 的 8 个用例
+# 集成：RocksDB 上的向量索引 + geo + 图
+./mvnw -o -pl graph-integration-test test -Dtest=RocksDbVectorIndexIntegrationTest
+# 服务：重建两张图的索引，然后跑 .logs/rocksdb-live.js 里的 8 条查询
+```
+
+全量 `./mvnw test`：**BUILD SUCCESS，0 失败 / 0 错误**（含新用例）。

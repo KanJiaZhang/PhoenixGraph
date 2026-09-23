@@ -80,6 +80,9 @@ public class GremlinGraphQuery {
     private FuzzyPatternRegistry fuzzyPatterns = FuzzyPatternRegistry.empty();
     private GeminiCluster geminiCluster;
     private Supplier<Map<String, HnswIndex>> hnswIndexSource;
+    /** Highest number of query texts kept compiled; a full cache is dropped rather than grown. */
+    public static final int MAX_COMPILED_QUERIES = 512;
+
     private final Map<String, CompiledQuery> compiledCache = new ConcurrentHashMap<>();
     private boolean cacheEnabled = true;
     private int scanLimit = 0;
@@ -369,11 +372,31 @@ public class GremlinGraphQuery {
         return this;
     }
 
-    /** Parses and executes a Gremlin-style traversal query (compiled once, then cached). */
+    /**
+     * Parses and executes a Gremlin-style traversal query (compiled once per query text, then cached).
+     *
+     * <p>The cache is keyed by the <b>whole</b> query text, so a caller that writes the seed id into the
+     * text pays one compile per distinct text - a hundred ids are a hundred compiles, not a hundred per
+     * round. Everything the parse produces is reused: the resolved steps, the property projection plan and
+     * the closure expressions ({@code filter { ... }}, {@code map { ... }}), which are parsed when the step
+     * is built and never per element. There is no Groovy involved (no {@code GroovyShell}, no
+     * {@code GroovyClassLoader}): the expression language is this project's own parser.
+     */
     public List<Object> execute(String gremlin) {
         Objects.requireNonNull(gremlin, "gremlin");
+        if (compiledCache.size() >= MAX_COMPILED_QUERIES) {
+            // Every distinct text adds an entry, so a client that generates a query per id (a dashboard
+            // does) must not grow the cache forever. Dropping all of them costs one recompile each, which
+            // is a small fraction of executing the query; keeping them costs memory for the process' life.
+            compiledCache.clear();
+        }
         CompiledQuery compiled = compiledCache.computeIfAbsent(gremlin, this::compile);
         return executeCompiled(compiled);
+    }
+
+    /** How many query texts are compiled and held ({@link #MAX_COMPILED_QUERIES} is the bound). */
+    public int compiledQueryCount() {
+        return compiledCache.size();
     }
 
     /** Executes an already-parsed traversal query (compiled on each call). */

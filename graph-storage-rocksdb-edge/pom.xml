@@ -28,6 +28,11 @@
             <groupId>com.pengcheng.phoenixgraph</groupId>
             <artifactId>graph-query</artifactId>
         </dependency>
+        <!-- the vector index: the HnswStore/HnswMetadataStore interfaces this module implements -->
+        <dependency>
+            <groupId>com.pengcheng.phoenixgraph</groupId>
+            <artifactId>graph-hnsw</artifactId>
+        </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>

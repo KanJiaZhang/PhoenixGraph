@@ -216,6 +216,49 @@ class HnswIndexTest {
         assertEquals(index(built, id, 8), index(reopened, id, 8));
     }
 
+    /**
+     * An index whose metadata survived a reload must refuse to answer instead of answering with the entry
+     * point alone: the metadata record lives apart from the layer edges, so truncating or reloading the
+     * graph leaves the one and takes the other.
+     */
+    @Test
+    void aSearchRefusesAnIndexWhoseLayersAreGone() {
+        Dataset dataset = Dataset.clustered(400, 4, 77L);
+        InMemoryHnswStore builtOn = new InMemoryHnswStore();
+        HnswMetadataStore registry = HnswMetadataStore.inMemory();
+        HnswIndex built = HnswIndex.builder().vertexName("Vector").vectorProperty("vector")
+                .store(builtOn).vectors(dataset).metadataStore(registry).size(400).build();
+        built.insertAll(dataset.ids());
+        built.flush();
+        Object id = dataset.ids().get(7);
+        assertTrue(built.searchById(id, 5).size() > 1, "a built index answers several neighbours");
+
+        // the same metadata over a store that holds nothing: a reloaded graph with a surviving record
+        HnswIndex overEmptyLayers = HnswIndex.builder().vertexName("Vector").vectorProperty("vector")
+                .store(new InMemoryHnswStore()).vectors(dataset).metadataStore(registry)
+                .config(HnswConfig.defaults()).build();
+        assertEquals(400, overEmptyLayers.stats().size(), "the metadata is what survived");
+        assertTrue(!overEmptyLayers.entryPoints().isEmpty(), "with entry points to search from");
+
+        IllegalStateException error = assertThrows(IllegalStateException.class,
+                () -> overEmptyLayers.searchById(id, 5));
+        assertTrue(error.getMessage().contains("rebuilt"), "the error says what to do: " + error.getMessage());
+        assertTrue(error.getMessage().contains("400"), "and how many vectors it claims: " + error.getMessage());
+        // a search by an explicit vector is the same path
+        assertThrows(IllegalStateException.class, () -> overEmptyLayers.search(dataset.vector(id), 5));
+    }
+
+    @Test
+    void aSearchOfAnIndexThatWasNeverBuiltAnswersNothing() {
+        // a declared index nobody built has no metadata record and no layers: there is nothing to find
+        // (the write path indexes vertices as they are written, so a built index is never metadata-less)
+        Dataset dataset = Dataset.clustered(50, 4, 78L);
+        HnswIndex neverBuilt = HnswIndex.builder().vertexName("Vector").vectorProperty("vector")
+                .store(new InMemoryHnswStore()).vectors(dataset)
+                .metadataStore(HnswMetadataStore.inMemory()).size(50).build();
+        assertEquals(List.of(), neverBuilt.search(dataset.vector(dataset.ids().get(0)), 5));
+    }
+
     @Test
     void overwriteStartsAFreshIndex() {
         Dataset dataset = Dataset.clustered(100, 4, 41L);

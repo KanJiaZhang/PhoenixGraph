@@ -310,6 +310,7 @@ public final class HnswIndex {
             throw new IllegalArgumentException("k must be >= 1, got " + k);
         }
         refreshEntryPoints();
+        verifyLayers();
         if (entryPoints.isEmpty()) {
             return new HnswSearchOutcome(List.of(), ef, ef, 0, 0, 0, 1);
         }
@@ -336,6 +337,34 @@ public final class HnswIndex {
         return searchById(vertexId, k, config.efSearch());
     }
 
+    /**
+     * Refuses to answer from an index whose layers are gone, which is what a truncated or reloaded graph
+     * leaves behind: the metadata record (size, entry points, layer count) lives apart from the layer
+     * edges, so it survives while the vertex records that carried them do not.
+     *
+     * <p>Every vertex of a built index has at least one neighbour on layer 0, the entry point included,
+     * which is what makes the check decisive: an entry point with no layer-0 neighbour while the metadata
+     * claims a dataset means a search would answer with that one vertex instead of the nearest ones. A
+     * wrong answer that looks like a small one is worse than an error that says the index has to be
+     * rebuilt.
+     *
+     * <p>It costs one read of the entry point's layer-0 neighbours and is deliberately not cached: an index
+     * that was just invalidated by a reload must not answer from a memory of having been fine. An index
+     * with no metadata at all is left alone - it is either being built in this process (its entry points
+     * are in memory before the record is written) or there is nothing to find.
+     */
+    private void verifyLayers() {
+        if (size <= 1 || entryPoints.isEmpty()) {
+            return;
+        }
+        Object entry = entryPoints.get(0).vertexId();
+        if (store.neighbours(entry, 0).isEmpty()) {
+            throw new IllegalStateException("The vector index of " + vertexName + "." + vectorProperty
+                    + " has no layer data, although its metadata says it holds " + size + " vectors"
+                    + " (its entry point has no neighbour on layer 0): the index has to be rebuilt");
+        }
+    }
+
     /** {@code k} nearest neighbours of {@code vertexId}, excluding the vertex itself. */
     public List<HnswSearchResult> searchById(Object vertexId, int k, int ef) {
         return searchById(vertexId, k, ef, null);
@@ -344,15 +373,22 @@ public final class HnswIndex {
     /**
      * {@code k} nearest neighbours of {@code vertexId} that satisfy {@code filter}
      * (the vertex itself is never returned).
+     *
+     * <p>The vertex itself is recognised by the <b>text</b> of its id: a caller writes an id one way and the
+     * store hands the same vertex back the way it holds it (a number written as text, or the other way
+     * round), and both name one vertex. Comparing the objects would let the query vertex appear in its own
+     * answer - at distance zero - whenever the two forms differ, which is exactly what a caller reading
+     * "the accounts most like this one" must not see.
      */
     public List<HnswSearchResult> searchById(Object vertexId, int k, int ef, HnswFilter filter) {
         float[] query = vectors.vector(vertexId);
         if (query == null) {
             return List.of();
         }
+        String self = String.valueOf(vertexId);
         List<HnswSearchResult> results = new ArrayList<>(k);
         for (HnswSearchResult hit : search(query, k + 1, ef, filter)) {
-            if (!hit.vertexId().equals(vertexId)) {
+            if (!String.valueOf(hit.vertexId()).equals(self)) {
                 results.add(hit);
             }
         }

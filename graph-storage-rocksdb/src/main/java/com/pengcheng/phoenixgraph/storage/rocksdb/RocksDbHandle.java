@@ -6,6 +6,7 @@ import org.rocksdb.ColumnFamilyOptions;
 import org.rocksdb.CompressionType;
 import org.rocksdb.DBOptions;
 import org.rocksdb.FlushOptions;
+import org.rocksdb.Options;
 import org.rocksdb.ReadOptions;
 import org.rocksdb.RocksDB;
 import org.rocksdb.RocksDBException;
@@ -73,6 +74,12 @@ public final class RocksDbHandle implements AutoCloseable {
      * Opens (creating it when configured) the RocksDB directory and every named column
      * family. Missing families are created, so opening a fresh directory with the
      * schema's families is one call.
+     *
+     * <p>The families the directory <b>already</b> has are opened too, whatever the caller named: RocksDB
+     * refuses to open a database unless every family it holds is opened, and some families are created at
+     * runtime rather than declared (the layer classes of a vector index, one per layer). Asking the
+     * directory is therefore what makes a graph reopenable after it was indexed; the caller's names are the
+     * ones that get created when they are missing.
      */
     public static RocksDbHandle open(RocksDbStoreConfig config, Collection<String> columnFamilies) {
         Objects.requireNonNull(config, "config");
@@ -83,6 +90,7 @@ public final class RocksDbHandle implements AutoCloseable {
         if (columnFamilies != null) {
             names.addAll(columnFamilies);
         }
+        names.addAll(existingColumnFamilies(config.path()));
 
         DBOptions dbOptions = new DBOptions()
                 .setCreateIfMissing(config.createIfMissing())
@@ -117,6 +125,26 @@ public final class RocksDbHandle implements AutoCloseable {
     /** Convenience: opens a directory with the given families. */
     public static RocksDbHandle open(String path, Collection<String> columnFamilies) {
         return open(RocksDbStoreConfig.of(path), columnFamilies);
+    }
+
+    /**
+     * The column families a directory already holds, or none when it does not exist yet (a fresh graph).
+     * A directory that cannot be listed is not an error here: the open that follows will report it.
+     */
+    private static Set<String> existingColumnFamilies(String path) {
+        if (!java.nio.file.Files.isDirectory(java.nio.file.Path.of(path))) {
+            return Set.of();
+        }
+        try (Options options = new Options()) {
+            List<byte[]> families = RocksDB.listColumnFamilies(options, path);
+            Set<String> names = new LinkedHashSet<>();
+            for (byte[] family : families) {
+                names.add(new String(family, StandardCharsets.UTF_8));
+            }
+            return names;
+        } catch (RocksDBException e) {
+            return Set.of();
+        }
     }
 
     /** Counts every key-value operation of this handle into {@code metrics}. */

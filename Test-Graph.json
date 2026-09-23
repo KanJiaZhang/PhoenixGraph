@@ -1,0 +1,183 @@
+{
+  "id" : 32,
+  "name" : "Test-Graph",
+  "description" : "Test Graph Admin",
+  "constraints" : {
+    "idSchemaIndex" : 0,
+    "createdTimeIndex" : -2,
+    "lastUpdatedTimeIndex" : -1
+  },
+  "storage" : null,
+  "vertexSchemas" : [ {
+    "id" : 1,
+    "name" : "Account",
+    "description" : "",
+    "idSchema" : {
+      "id" : 0,
+      "name" : "id",
+      "description" : "Vertex id",
+      "type" : "STRING"
+    },
+    "createdTime" : {
+      "id" : -2,
+      "name" : "createdTime",
+      "description" : "Property creation time (epoch milliseconds)",
+      "type" : "LONG"
+    },
+    "lastUpdatedTime" : {
+      "id" : -1,
+      "name" : "lastUpdatedTime",
+      "description" : "Property last-update time (epoch milliseconds)",
+      "type" : "LONG"
+    },
+    "properties" : [ {
+      "id" : 1,
+      "name" : "name",
+      "description" : "",
+      "type" : "STRING",
+      "display" : true
+    }, {
+      "id" : 2,
+      "name" : "status",
+      "description" : "",
+      "type" : "STRING"
+    } ]
+  }, {
+    "id" : 4,
+    "name" : "Email",
+    "description" : "",
+    "idSchema" : {
+      "id" : 0,
+      "name" : "id",
+      "description" : "Vertex id",
+      "type" : "STRING"
+    },
+    "createdTime" : {
+      "id" : -2,
+      "name" : "createdTime",
+      "description" : "Property creation time (epoch milliseconds)",
+      "type" : "LONG"
+    },
+    "lastUpdatedTime" : {
+      "id" : -1,
+      "name" : "lastUpdatedTime",
+      "description" : "Property last-update time (epoch milliseconds)",
+      "type" : "LONG"
+    },
+    "properties" : [ {
+      "id" : 1,
+      "name" : "email",
+      "description" : "",
+      "type" : "STRING",
+      "display" : true
+    }, {
+      "id" : 2,
+      "name" : "emailDomain",
+      "description" : "",
+      "type" : "STRING"
+    } ]
+  } ],
+  "edgeSchemas" : [ {
+    "id" : 9,
+    "name" : "Payment",
+    "description" : "",
+    "idSchema" : {
+      "id" : 0,
+      "name" : "id",
+      "description" : "Edge id",
+      "type" : "LONG"
+    },
+    "source" : {
+      "id" : 7,
+      "name" : "source",
+      "description" : "Endpoint (source) in Account",
+      "type" : "STRING",
+      "vertex" : "Account"
+    },
+    "target" : {
+      "id" : 8,
+      "name" : "target",
+      "description" : "Endpoint (target) in Account",
+      "type" : "STRING",
+      "vertex" : "Account"
+    },
+    "createdTime" : {
+      "id" : -2,
+      "name" : "createdTime",
+      "description" : "Property creation time (epoch milliseconds)",
+      "type" : "LONG"
+    },
+    "lastUpdatedTime" : {
+      "id" : -1,
+      "name" : "lastUpdatedTime",
+      "description" : "Property last-update time (epoch milliseconds)",
+      "type" : "LONG"
+    },
+    "direction" : "DIRECTED",
+    "properties" : [ {
+      "id" : 1,
+      "name" : "usd",
+      "description" : "",
+      "type" : "LONG"
+    }, {
+      "id" : 2,
+      "name" : "status",
+      "description" : "",
+      "type" : "STRING"
+    } ],
+    "maxOutgoingEdges" : 0,
+    "maxIncomingEdges" : 0,
+    "maxDegree" : 0
+  }, {
+    "id" : 14,
+    "name" : "EmailToAccount",
+    "description" : "",
+    "idSchema" : {
+      "id" : 0,
+      "name" : "id",
+      "description" : "Edge id",
+      "type" : "LONG"
+    },
+    "source" : {
+      "id" : 12,
+      "name" : "source",
+      "description" : "Endpoint (source) in Email",
+      "type" : "STRING",
+      "vertex" : "Email"
+    },
+    "target" : {
+      "id" : 13,
+      "name" : "target",
+      "description" : "Endpoint (target) in Account",
+      "type" : "STRING",
+      "vertex" : "Account"
+    },
+    "createdTime" : {
+      "id" : -2,
+      "name" : "createdTime",
+      "description" : "Property creation time (epoch milliseconds)",
+      "type" : "LONG"
+    },
+    "lastUpdatedTime" : {
+      "id" : -1,
+      "name" : "lastUpdatedTime",
+      "description" : "Property last-update time (epoch milliseconds)",
+      "type" : "LONG"
+    },
+    "direction" : "DIRECTED",
+    "properties" : [ {
+      "id" : 1,
+      "name" : "linkedTime",
+      "description" : "",
+      "type" : "STRING"
+    }, {
+      "id" : 2,
+      "name" : "linkedSource",
+      "description" : "",
+      "type" : "STRING"
+    } ],
+    "maxOutgoingEdges" : 0,
+    "maxIncomingEdges" : 0,
+    "maxDegree" : 0
+  } ]
+}
