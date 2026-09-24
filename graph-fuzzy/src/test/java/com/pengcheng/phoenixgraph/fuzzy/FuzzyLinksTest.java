@@ -5,6 +5,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -149,7 +150,11 @@ class FuzzyLinksTest {
         assertEquals(FuzzyDemo.MACHINE_MAIL.name(), read.get(1).name());
         assertEquals(FuzzyDemo.SESSION_100S.expression(), read.get(2).expression(),
                 "the sequence patterns survive the JSON round trip too");
-        assertEquals(FuzzyDemo.SESSION_300S_NOT_MY_CARD.expression(), read.get(3).expression());
+        assertEquals(FuzzyDemo.SESSION_AROUND_100S.expression(), read.get(3).expression());
+        assertEquals(FuzzyDemo.SESSION_MOBILE_DISPUTE.expression(), read.get(4).expression(),
+                "the conditions survive the JSON round trip");
+        assertEquals(FuzzyDemo.SESSION_SHARED_FIELDS.expression(), read.get(5).expression(),
+                "the anyFields UDF survives it too");
         assertEquals(List.of(), codec.read(json, "another-graph"));
     }
 
@@ -264,6 +269,25 @@ class FuzzyLinksTest {
     }
 
     @Test
+    void aSequenceExampleSurvivesTheFileWithItsEventList(@TempDir Path dir) {
+        Path file = dir.resolve("p.json");
+        Map<String, Object> example = new LinkedHashMap<>();
+        example.put("Login", Map.of("IP", "10.141.20.30", "Type", "Mobile", "EventTime", 1790147176281L));
+        example.put("BalanceCheck", Map.of("IP", "10.141.20.30", "EventTime", 1790147177281L));
+        example.put("Payment", Map.of("IP", "10.141.20.30", "EventTime", 1790147176781L));
+        example.put("Dispute", Map.of("DisputeReason", "NotMyCard", "IP", "10.141.20.30",
+                "EventTime", 1790147179781L));
+        new FileFuzzyPatterns(file, "g").save(FuzzyDemo.SESSION_AROUND_100S.withExample(example));
+
+        FuzzyPattern read = new FileFuzzyPatterns(file, "g").require(3);
+        FuzzyContext context = FuzzyContext.of(read.example());
+
+        assertEquals("10.141_NotMyCard", read.parsedSequence().key(context),
+                "the event list came back as events, not as empty strings");
+        assertEquals("fl_3_10.141_notmycard", read.linkVertexId(context));
+    }
+
+    @Test
     void aPatternWithoutAnExampleSaysNothingRatherThanGuessing() {
         FuzzyPattern plain = FuzzyPattern.of(4, "ip2(ip)");
 
@@ -283,5 +307,7 @@ class FuzzyLinksTest {
         }
         assertTrue(signatures.stream().anyMatch(s -> s.name().equals("regex")));
         assertTrue(signatures.stream().anyMatch(s -> s.name().equals("cardBin")));
+        assertTrue(signatures.stream().anyMatch(s -> s.name().equals("anyFields")),
+                "the context UDF is documented for the editor as well: " + signatures);
     }
 }

@@ -48,7 +48,11 @@ public final class FuzzyExpression {
         }
 
         /** Another function applied to its own arguments. */
-        record Call(String function, List<Node> args) implements Node {
+        record Call(String function, java.util.List<Node> args) implements Node {
+        }
+
+        /** A list of arguments, written {@code [Login, Payment, Dispute]}: a context function reads them. */
+        record List(java.util.List<Node> items) implements Node {
         }
     }
 
@@ -167,12 +171,45 @@ public final class FuzzyExpression {
             throw new FuzzyPatternException("Function '" + function + "' needs a field, e.g. "
                     + function + "(email)");
         }
+        if (FuzzyFunctions.isContextFunction(function)) {
+            // a context function reads the events themselves, so its arguments are rendered as written
+            // rather than evaluated to values: [Login, Payment] is the list of event names
+            List<String> rendered = new ArrayList<>(args.size());
+            for (Node arg : args) {
+                rendered.add(renderArgument(arg, context));
+            }
+            return FuzzyFunctions.applyContext(function, context, rendered);
+        }
         String value = evaluateNode(args.get(0), context);
         List<String> rest = new ArrayList<>(args.size() - 1);
         for (int i = 1; i < args.size(); i++) {
             rest.add(evaluateNode(args.get(i), context));
         }
         return FuzzyFunctions.apply(function, value, rest);
+    }
+
+    /**
+     * An argument of a context function as text: a field keeps its name ({@code Login} names an event), a
+     * list becomes its items joined by commas, and a nested call is evaluated.
+     */
+    private static String renderArgument(Node node, FuzzyContext context) {
+        if (node instanceof Node.Field field) {
+            return field.name();
+        }
+        if (node instanceof Node.Literal literal) {
+            return literal.text();
+        }
+        if (node instanceof Node.List list) {
+            List<String> items = new ArrayList<>(list.items().size());
+            for (Node item : list.items()) {
+                items.add(renderArgument(item, context));
+            }
+            return String.join(",", items);
+        }
+        if (node instanceof Node.Call call) {
+            return evaluateCall(call.function(), call.args(), context);
+        }
+        return null;
     }
 
     private static String evaluateNode(Node node, FuzzyContext context) {
@@ -213,6 +250,13 @@ public final class FuzzyExpression {
         if (node instanceof Node.Literal literal) {
             return "'" + literal.text() + "'";
         }
+        if (node instanceof Node.List list) {
+            List<String> items = new ArrayList<>(list.items().size());
+            for (Node item : list.items()) {
+                items.add(render(item));
+            }
+            return "[" + String.join(", ", items) + "]";
+        }
         return node instanceof Node.Call call ? render(call) : "";
     }
 
@@ -224,6 +268,10 @@ public final class FuzzyExpression {
         } else if (node instanceof Node.Call call) {
             for (Node arg : call.args()) {
                 collectFields(arg, out);
+            }
+        } else if (node instanceof Node.List list) {
+            for (Node item : list.items()) {
+                collectFields(item, out);
             }
         }
     }
@@ -309,6 +357,30 @@ public final class FuzzyExpression {
         private Node argument() {
             skipSpaces();
             char c = peek();
+            if (c == '[') {
+                pos++; // '['
+                List<Node> items = new ArrayList<>();
+                skipSpaces();
+                if (peek() == ']') {
+                    pos++;
+                    return new Node.List(List.copyOf(items));
+                }
+                while (true) {
+                    items.add(argument());
+                    skipSpaces();
+                    char next = peek();
+                    if (next == ',') {
+                        pos++;
+                        continue;
+                    }
+                    if (next == ']') {
+                        pos++;
+                        return new Node.List(List.copyOf(items));
+                    }
+                    throw new FuzzyPatternException("Expected ',' or ']' in the list of '" + text
+                            + "', found '" + next + "'");
+                }
+            }
             if (c == '\'' || c == '"') {
                 return new Node.Literal(quoted());
             }
@@ -323,6 +395,10 @@ public final class FuzzyExpression {
             String name = name();
             skipSpaces();
             if (peek() != '(') {
+                // true/false are literals a context function reads, not fields of the context
+                if ("true".equals(name) || "false".equals(name)) {
+                    return new Node.Literal(name);
+                }
                 return new Node.Field(name);
             }
             pos++; // '('

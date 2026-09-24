@@ -99,8 +99,12 @@ class FuzzyLinkIntegrationTest {
         assertEquals(4, summary.largestNodePerPattern().get(1), "the second ring is four accounts");
         assertEquals(2, summary.largestNodePerPattern().get(2),
                 "the sessions that share a /16 and a reason are one group of two");
-        assertEquals(3, summary.largestNodePerPattern().get(3),
-                "the wider window of pattern 3 brings the slow session in: three on that /24");
+        assertEquals(2, summary.largestNodePerPattern().get(3),
+                "pattern 3 links the sessions whose dispute came from the login address");
+        assertEquals(2, summary.largestNodePerPattern().get(4),
+                "pattern 4 links the mobile sessions tied by address, cookie or reason");
+        assertEquals(3, summary.largestNodePerPattern().get(5),
+                "pattern 5 links the sessions that agree on three field values");
         assertTrue(summary.nodes() >= 2, "the rings have their own nodes: " + summary);
         assertEquals((FuzzyLinkDemoLoader.memberAccounts() - 1) * 2, summary.payments(),
                 "every member of a ring pays twice, the receiver does not (the event sessions pay nothing)");
@@ -227,6 +231,76 @@ class FuzzyLinkIntegrationTest {
                 + ".out('FuzzyLinkedTo').values('id')");
         assertEquals(Set.of("ev_a1", "ev_a2"), new LinkedHashSet<>(members.stream()
                 .map(String::valueOf).toList()), "the accounts whose session looks the same");
+    }
+
+    /**
+     * Pattern 3 reads a cross-step condition ({@code Dispute.ip == Login.ip}) and a payment that may happen
+     * before the balance check. {@code ev_a6} and {@code ev_a9} share the /16 and the reason and both dispute
+     * from the login address, so they are one group; {@code ev_a7} disputes from elsewhere and pattern 3
+     * leaves it out.
+     */
+    @Test
+    void theDisputeAddressConditionDecidesPatternThree() {
+        String json = sessionJson(5); // ev_a6
+        List<Object> links = gremlin.execute("g.V().fuzzyLink(3, '" + json + "').values('id')");
+        assertEquals(List.of("fl_3_10.141_notmycard"), links.stream().map(String::valueOf).toList());
+
+        List<Object> members = gremlin.execute("g.V('fl_3_10.141_notmycard','FuzzyLink')"
+                + ".out('FuzzyLinkedTo').values('id')");
+        assertEquals(Set.of("ev_a6", "ev_a9"), ids(members), "ev_a7's dispute came from another address");
+
+        // ev_a7 does not produce pattern 3's link at all: the condition is not satisfied
+        assertEquals(List.of(), gremlin.execute("g.V().fuzzyLink(3, '" + sessionJson(6) + "').values('id')"));
+    }
+
+    /**
+     * Pattern 4 adds {@code Login.type=='Mobile'} and the three-way alternative. The same {@code ev_a6} is on
+     * its own group, and this time {@code ev_a7} joins it (the reason is NotMyCard) while {@code ev_a9} - a web
+     * login - is left out; {@code ev_a8} is a Fraud dispute tied to the payment by cookie, so it forms its own
+     * group.
+     */
+    @Test
+    void theMobileAndAlternativeConditionsDecidePatternFour() {
+        List<Object> members = gremlin.execute("g.V('fl_4_10.141_notmycard','FuzzyLink')"
+                + ".out('FuzzyLinkedTo').values('id')");
+        assertEquals(Set.of("ev_a6", "ev_a7"), ids(members),
+                "ev_a7 is tied by NotMyCard, ev_a9 is not a mobile login");
+
+        List<Object> fraud = gremlin.execute("g.V('fl_4_10.141_fraud','FuzzyLink')"
+                + ".out('FuzzyLinkedTo').values('id')");
+        assertEquals(Set.of("ev_a8"), ids(fraud), "the Fraud dispute is tied by the cookie it shares");
+    }
+
+    private static String sessionJson(int index) {
+        return FuzzyLinkDemoLoader.eventsJson(FuzzyLinkDemoLoader.eventSessions().get(index));
+    }
+
+    /**
+     * Pattern 5's step value is the anyFields UDF: it looks at the login, the payment and the dispute of a
+     * match and keeps the fields they all agree on. {@code ev_a1} agrees on cookie, ip and type (and its
+     * session is ordered within the windows), so the link's key names those fields; {@code ev_b2} agrees on too
+     * few of them and {@code ev_b3}'s payment is past the 50s window, so neither produces a link.
+     */
+    @Test
+    void theAnyFieldsUdfLinksSessionsByTheirSharedFields() {
+        List<Object> links = gremlin.execute("g.V().fuzzyLink(5, '" + sessionJson(0) + "').values('id')");
+        assertEquals(List.of("fl_5_10.122_cookie_ip_type"), links.stream().map(String::valueOf).toList());
+
+        List<Object> members = gremlin.execute("g.V('fl_5_10.122_cookie_ip_type','FuzzyLink')"
+                + ".out('FuzzyLinkedTo').values('id')");
+        assertEquals(Set.of("ev_a1", "ev_a2", "ev_a5"), ids(members),
+                "the sessions whose login, payment and dispute agree on the same three fields");
+
+        assertEquals(List.of(), gremlin.execute("g.V().fuzzyLink(5, '" + sessionJson(10) + "').values('id')"),
+                "ev_b2 agrees on only one field");
+        assertEquals(List.of(), gremlin.execute("g.V().fuzzyLink(5, '" + sessionJson(11) + "').values('id')"),
+                "ev_b3's payment is 60 seconds after the balance check");
+    }
+
+    private static Set<String> ids(List<Object> elements) {
+        return new LinkedHashSet<>(elements.stream().map(element -> String.valueOf(
+                element instanceof GremlinVertex vertex ? vertex.id()
+                        : element instanceof GremlinEdge edge ? edge.otherVertexId() : element)).toList());
     }
 
     private static Set<String> idsOf(List<Object> elements) {

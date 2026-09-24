@@ -16,6 +16,7 @@ import com.pengcheng.phoenixgraph.storage.aerospike.AerospikeEdgeStore;
 import com.pengcheng.phoenixgraph.storage.aerospike.AerospikeVertexStore;
 import com.pengcheng.phoenixgraph.storage.aerospike.EdgePropertyValue;
 import com.pengcheng.phoenixgraph.storage.aerospike.EdgeUpsert;
+import com.pengcheng.phoenixgraph.storage.aerospike.StoredVertex;
 import com.pengcheng.phoenixgraph.storage.aerospike.VertexPropertyValue;
 import com.pengcheng.phoenixgraph.storage.aerospike.VertexUpsert;
 
@@ -62,39 +63,100 @@ public final class FuzzyLinkDemoLoader {
             {"fz_a7", "xia1999", "xia1999@mail.ru", "+8613800138007", "6217000070007777", "10.20.66.8"}};
 
     /**
-     * The event-sequence accounts: each one is a session, and the sequence pattern reads it in time order.
+     * The event-sequence accounts: each one is a session, and the sequence patterns read it in time order.
+     *
+     * <p>Columns: id, login IP, dispute reason, the offsets in millis of the balance check, the payment and
+     * the dispute from the login (the payment may sit before the balance check), an extra event the patterns
+     * do not name, the device of the login, the address the dispute came from, the cookie on the payment and
+     * the cookie on the dispute.
      *
      * <p>{@code ev_a1} and {@code ev_a2} are the same behaviour (a login, a balance check, a payment and a
-     * dispute within a minute, on one /16, disputed as NotMyCard), so pattern 2 puts them on one link node;
-     * {@code ev_a3} is the same session on another network, {@code ev_a4} has a step 101 seconds after the one
-     * before it (past the 100s window of pattern 2, inside the 300s of pattern 3) and {@code ev_a5} disputes for
-     * another reason. The event list is what the pattern reads; it is not stored on the account, so a query
-     * passes it in.
+     * dispute within a minute, on one /16, disputed as NotMyCard) and {@code ev_a3} is the same session on
+     * another network; {@code ev_a4} has a step 102 seconds after the one before it (past every 100s window)
+     * and {@code ev_a5} disputes for another reason. {@code ev_a6..ev_a9} are the sessions the two-sided-window
+     * patterns separate: {@code ev_a6} satisfies both, {@code ev_a7} ties the dispute to the payment by
+     * cookie (pattern 4 only), {@code ev_a8} ties a Fraud dispute by cookie (pattern 4 only) and
+     * {@code ev_a9} logs in from the web (pattern 3 only). Their balance check and payment are around each
+     * other, so the ordered pattern 2 does not apply to them at all. {@code ev_b1} is the session the
+     * anyFields pattern links (login, payment and dispute agree on cookie, ip and type), {@code ev_b2} agrees
+     * on too few fields and {@code ev_b3} puts 60 seconds between the balance check and the payment.
+     *
+     * <p>The event list is what the patterns read; it is not stored on the account, so a query passes it in.
      */
     private static final String[][] EVENT_SESSIONS = {
-            {"ev_a1", "10.122.13.14", "NotMyCard", "1000/2000/3000", "yes"},
-            {"ev_a2", "10.122.13.99", "NotMyCard", "2000/3000/4000", "no"},
-            {"ev_a3", "10.130.7.14", "NotMyCard", "1000/2000/3000", "no"},
-            {"ev_a4", "10.122.13.50", "NotMyCard", "1000/102000/103000", "no"},
-            {"ev_a5", "10.122.13.51", "Fraud", "1000/2000/3000", "no"}};
+            {"ev_a1", "10.122.13.14", "NotMyCard", "1000/2000/3000", "yes", "Mobile", "10.122.13.14", "ck_a1", "ck_a1"},
+            {"ev_a2", "10.122.13.99", "NotMyCard", "2000/3000/4000", "no", "Mobile", "10.122.13.99", "ck_a2", "ck_a2"},
+            {"ev_a3", "10.130.7.14", "NotMyCard", "1000/2000/3000", "no", "Mobile", "10.130.7.14", "ck_a3", "ck_a3"},
+            {"ev_a4", "10.122.13.50", "NotMyCard", "1000/102000/103000", "no", "Mobile", "10.122.13.50", "ck_a4", "ck_a4"},
+            {"ev_a5", "10.122.13.51", "Fraud", "1000/2000/3000", "no", "Mobile", "10.122.13.51", "ck_a5", "ck_a5"},
+            {"ev_a6", "10.141.20.30", "NotMyCard", "1000/500/3500", "no", "Mobile", "10.141.20.30", "ck_a6", "ck_a6"},
+            {"ev_a7", "10.141.20.31", "NotMyCard", "1000/500/3500", "no", "Mobile", "10.99.99.99", "ck_a7", "ck_x7"},
+            {"ev_a8", "10.141.20.32", "Fraud", "1000/500/3500", "no", "Mobile", "10.99.99.98", "ck_a8", "ck_a8"},
+            {"ev_a9", "10.141.20.33", "NotMyCard", "1000/500/3500", "no", "Web", "10.141.20.33", "ck_a9", "ck_a9"},
+            // pattern 5: the login, the payment and the dispute agree on the same three fields (cookie, ip, type),
+            // so anyFields finds them; ev_b2 disagrees on two of the three and ev_b3 is 60s between the balance
+            // check and the payment (past the 50s window)
+            {"ev_b1", "10.155.30.10", "NotMyCard", "1000/2000/3000", "no", "Mobile", "10.155.30.10", "ck_b1", "ck_b1"},
+            {"ev_b2", "10.156.30.11", "NotMyCard", "1000/2000/3000", "no", "Mobile", "10.99.99.96", "ck_b2", "ck_x2"},
+            {"ev_b3", "10.157.30.12", "NotMyCard", "1000/61000/62000", "no", "Mobile", "10.157.30.12", "ck_b3", "ck_b3"}};
 
-    /** The event list of one demo session, as the pattern reads it: the four events, in time order. */
+    /** The event list of one demo session, as the patterns read it: the four events, in time order. */
     public static Map<String, Object> eventsOf(String[] session) {
         String[] gaps = session[3].split("/");
         long start = 1790147176281L;
+        long balance = start + Long.parseLong(gaps[0]);
+        long payment = start + Long.parseLong(gaps[1]);
+        long dispute = start + Long.parseLong(gaps[2]);
+        String loginType = session.length > 5 ? session[5] : "Mobile";
+        String disputeIp = session.length > 6 ? session[6] : session[1];
+
         Map<String, Object> events = new LinkedHashMap<>();
-        events.put("Login", Map.of("ID", session[0], "IP", session[1], "Type", "Mobile",
-                "EventTime", start));
-        events.put("BalanceCheck", Map.of("ID", session[0], "IP", session[1],
-                "EventTime", start + Long.parseLong(gaps[0])));
-        events.put("Payment", Map.of("ID", session[0], "USD", 1000, "CBIN", "035",
-                "EventTime", start + Long.parseLong(gaps[1])));
-        events.put("Dispute", Map.of("ID", session[0], "DisputeReason", session[2], "IP", session[1],
-                "EventTime", start + Long.parseLong(gaps[2])));
+        Map<String, Object> login = new LinkedHashMap<>();
+        login.put("ID", session[0]);
+        login.put("IP", session[1]);
+        login.put("Type", loginType);
+        if (session.length > 7) {
+            // the login carries the session cookie too, so the login, the payment and the dispute agree on it
+            login.put("Cookie", session[7]);
+        }
+        login.put("EventTime", start);
+        events.put("Login", login);
+
+        Map<String, Object> balanceCheck = new LinkedHashMap<>();
+        balanceCheck.put("ID", session[0]);
+        balanceCheck.put("IP", session[1]);
+        balanceCheck.put("EventTime", balance);
+        events.put("BalanceCheck", balanceCheck);
+
+        Map<String, Object> paymentEvent = new LinkedHashMap<>();
+        paymentEvent.put("ID", session[0]);
+        paymentEvent.put("IP", session[1]);
+        paymentEvent.put("Type", loginType);
+        paymentEvent.put("USD", 1000);
+        paymentEvent.put("CBIN", "035");
+        if (session.length > 7) {
+            paymentEvent.put("Cookie", session[7]);
+        }
+        paymentEvent.put("EventTime", payment);
+        events.put("Payment", paymentEvent);
+
+        Map<String, Object> disputeEvent = new LinkedHashMap<>();
+        disputeEvent.put("ID", session[0]);
+        disputeEvent.put("DisputeReason", session[2]);
+        disputeEvent.put("IP", disputeIp);
+        disputeEvent.put("Type", loginType);
+        if (session.length > 8) {
+            disputeEvent.put("Cookie", session[8]);
+        }
+        disputeEvent.put("EventTime", dispute);
+        events.put("Dispute", disputeEvent);
         if ("yes".equals(session[4])) {
             // an event the pattern does not name: ignored, so a list may carry more than the pattern asks
-            events.put("Logout", Map.of("ID", session[0], "IP", session[1],
-                    "EventTime", start + Long.parseLong(gaps[2]) + 60000));
+            Map<String, Object> logout = new LinkedHashMap<>();
+            logout.put("ID", session[0]);
+            logout.put("IP", session[1]);
+            logout.put("EventTime", dispute + 60000);
+            events.put("Logout", logout);
         }
         return events;
     }
@@ -161,6 +223,7 @@ public final class FuzzyLinkDemoLoader {
     /** Writes the demo into the graph, replacing whatever was there for these accounts. */
     public Summary load() {
         long now = System.currentTimeMillis();
+        removePreviousLinks();
         List<VertexUpsert> vertices = new ArrayList<>();
         Set<String> nodes = new LinkedHashSet<>();
         int linkEdges = 0;
@@ -229,6 +292,41 @@ public final class FuzzyLinkDemoLoader {
         }
         return new Summary(allAccounts().size() + 1 + EVENT_SESSIONS.length, nodes.size(), linkEdges,
                 payments, largest);
+    }
+
+    /**
+     * Removes the links a previous seed left behind, before the current patterns write theirs.
+     *
+     * <p>The patterns are data, so a pattern whose shape changed leaves its old link node in the graph; a
+     * re-seed without this would keep both the old group and the new one, and a query would report a group no
+     * pattern produces any more. Only this demo's accounts and its link vertices are touched: the
+     * {@code FuzzyLinkedTo} edge bins of both ends are cleared and the link vertices are removed, then the
+     * caller writes the current plan back.
+     *
+     * <p>The link vertices are found by scanning for the {@code key} property (a link always carries one) and
+     * keeping the records that say they are links - the scan is by property index, which every vertex type has
+     * its own numbering of.
+     */
+    private void removePreviousLinks() {
+        VertexSchema linkSchema = schema.vertexSchema(FuzzySchema.LINK_VERTEX);
+        EdgeSchema linkEdge = schema.edgeSchema(FuzzySchema.LINK_EDGE);
+        if (linkSchema == null || linkEdge == null) {
+            return;
+        }
+        int keyProperty = property(linkSchema, FuzzySchema.KEY_PROPERTY);
+        List<Object> linkVertices = new ArrayList<>();
+        for (StoredVertex vertex : vertexStore.scanVerticesWithProperty(keyProperty, List.of(keyProperty))) {
+            String id = String.valueOf(vertex.vertexId());
+            if (FuzzySchema.LINK_VERTEX.equals(vertex.vertexType()) || id.startsWith("fl_")) {
+                linkVertices.add(vertex.vertexId());
+            }
+        }
+        List<Object> endpoints = new ArrayList<>(accountIds());
+        endpoints.addAll(linkVertices);
+        edgeStore.clearEdgeClasses(List.of(linkEdge), endpoints);
+        if (!linkVertices.isEmpty()) {
+            vertexStore.deleteVertices(linkVertices);
+        }
     }
 
     /** The context of a demo account, exactly as the loader stores it. */

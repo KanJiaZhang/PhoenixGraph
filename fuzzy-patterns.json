@@ -33,28 +33,57 @@
     "id" : 2,
     "name" : "Login -> BalanceCheck -> Payment -> Dispute, each within 100s",
     "expression" : "fl_2_L0(ip2(Login.IP))_[<100s]_B1_[<100s]_P2_[<100s]_D3(Dispute.DisputeReason)",
-    "description" : "One account's event list, read in time order: a Login, a BalanceCheck, a Payment and a Dispute, all four present, the steps at most 100 seconds apart. The key is the /24 of the login address and the dispute reason, so accounts whose sessions look alike (same network, same reason) land on one link node. Extra events in the list are ignored; a missing step, a longer gap or a value the step needs that is not there makes the pattern not apply.",
+    "description" : "One account's event list, read in time order: a Login, a BalanceCheck, a Payment and a Dispute, all four present, the steps at most 100 seconds apart. The key is the /16 of the login address and the dispute reason, so accounts whose sessions look alike (same network, same reason) land on one link node. Extra events in the list are ignored; a missing step, a longer gap or a value the step needs that is not there makes the pattern not apply.",
     "enabled" : true,
     "example" : {
-      "Login" : { "ID" : 123, "IP" : "10.122.13.14", "Type" : "Mobile", "EventTime" : 1790147176281 },
-      "BalanceCheck" : { "ID" : 123, "IP" : "10.122.13.14", "EventTime" : 1790147177881 },
-      "Payment" : { "ID" : 123, "USD" : 1000, "CBIN" : "035", "EventTime" : 1790147114881 },
-      "Dispute" : { "ID" : 123, "DisputeReason" : "NotMyCard", "IP" : "10.122.13.14", "EventTime" : 1790147128881 }
+      "Login" : { "ID" : "ev_a1", "IP" : "10.122.13.14", "Type" : "Mobile", "EventTime" : 1790147176281 },
+      "BalanceCheck" : { "ID" : "ev_a1", "IP" : "10.122.13.14", "EventTime" : 1790147177281 },
+      "Payment" : { "ID" : "ev_a1", "USD" : 1000, "CBIN" : "035", "EventTime" : 1790147178281 },
+      "Dispute" : { "ID" : "ev_a1", "DisputeReason" : "NotMyCard", "IP" : "10.122.13.14", "EventTime" : 1790147179281 }
     },
     "demoTitle" : "pattern -> the accounts whose session looks the same",
     "demoSteps" : ".out('FuzzyLinkedTo')"
   }, {
     "id" : 3,
-    "name" : "Login then a disputed payment on the same /24, within 5 minutes",
-    "expression" : "fl_3_L0(ip3(Login.IP))_[<300s]_P1_[<300s]_D2(Dispute.DisputeReason)=='NotMyCard'",
-    "description" : "The same idea with a wider window, a /24 in the key and the reason as a condition rather than as part of the key: it fires on a login followed by a payment and a dispute within five minutes each, and only when the reason is NotMyCard. Accounts that share the network are linked.",
+    "name" : "Login -> BalanceCheck <-> Payment -> Dispute, the dispute from the login address",
+    "expression" : "fl_3_L0(ip2(Login.ip))_[<100s]_B1_[-100s<time_interval<100s]_P2_[<100s]_D3(Dispute.DisputeReason)[Dispute.ip==Login.ip]",
+    "description" : "A Login, a BalanceCheck, a Payment and a Dispute, each within a hundred seconds of the step written before it; the balance check and the payment may happen in either order (the window is two-sided), and the dispute has to come from the address the login came from. The key is the /16 of the login address and the dispute reason, so accounts whose sessions look alike and did not move network halfway through land on one link node.",
     "enabled" : true,
     "example" : {
-      "Login" : { "ID" : 456, "IP" : "10.122.13.99", "Type" : "Mobile", "EventTime" : 1790147176281 },
-      "Payment" : { "ID" : 456, "USD" : 2000, "CBIN" : "035", "EventTime" : 1790147376281 },
-      "Dispute" : { "ID" : 456, "DisputeReason" : "NotMyCard", "IP" : "10.122.13.99", "EventTime" : 1790147476281 }
+      "Login" : { "ID" : "ev_a6", "IP" : "10.141.20.30", "Type" : "Mobile", "EventTime" : 1790147176281 },
+      "BalanceCheck" : { "ID" : "ev_a6", "IP" : "10.141.20.30", "EventTime" : 1790147177281 },
+      "Payment" : { "ID" : "ev_a6", "USD" : 1000, "CBIN" : "035", "Cookie" : "ck_a6", "EventTime" : 1790147176781 },
+      "Dispute" : { "ID" : "ev_a6", "DisputeReason" : "NotMyCard", "IP" : "10.141.20.30", "Cookie" : "ck_a6", "EventTime" : 1790147179781 }
     },
-    "demoTitle" : "pattern -> the accounts on the same network",
+    "demoTitle" : "pattern -> the accounts whose dispute came from the login address",
+    "demoSteps" : ".out('FuzzyLinkedTo')"
+  }, {
+    "id" : 4,
+    "name" : "mobile Login session, dispute tied by address, cookie or reason",
+    "expression" : "fl_4_L0(ip2(Login.ip))[Login.type=='Mobile']_[<100s]_B1_[-100s<time_interval<100s]_P2_[<100s]_D3(Dispute.DisputeReason)[Dispute.ip==Login.ip || Dispute.cookie == Payment.Cookie || Dispute.DisputeReason == 'NotMyCard']",
+    "description" : "The same session as pattern 3, but only when the login was made from a mobile device and the dispute is tied to the session in one of three ways: it came from the login address, it carries the cookie the payment carried, or its reason is NotMyCard. A condition written over the matched events is what separates the three: each alternative links a different set of accounts, and the key is still the /16 of the login address and the dispute reason.",
+    "enabled" : true,
+    "example" : {
+      "Login" : { "ID" : "ev_a6", "IP" : "10.141.20.30", "Type" : "Mobile", "EventTime" : 1790147176281 },
+      "BalanceCheck" : { "ID" : "ev_a6", "IP" : "10.141.20.30", "EventTime" : 1790147177281 },
+      "Payment" : { "ID" : "ev_a6", "USD" : 1000, "CBIN" : "035", "Cookie" : "ck_a6", "EventTime" : 1790147176781 },
+      "Dispute" : { "ID" : "ev_a6", "DisputeReason" : "NotMyCard", "IP" : "10.141.20.30", "Cookie" : "ck_a6", "EventTime" : 1790147179781 }
+    },
+    "demoTitle" : "pattern -> the mobile accounts tied by address, cookie or reason",
+    "demoSteps" : ".out('FuzzyLinkedTo')"
+  }, {
+    "id" : 5,
+    "name" : "mobile session whose login, payment and dispute agree on three fields",
+    "expression" : "fl_5_L0(ip2(Login.ip))[Login.type=='Mobile']_[<100s]_B1_[<50s]_P2_[<100s]_D3(anyFields([Login, Payment, Dispute], 3, false))",
+    "description" : "A mobile login, a balance check, a payment and a dispute (each within 100s, the payment within 50s of the balance check), where the login, the payment and the dispute share at least three field values. The step value is the anyFields UDF: it finds the fields present in every listed event with the same value and puts their names, in alphabetical order, into the key - so cookie_ip_type is a signature no single event carries. Bookkeeping fields (id, event time, event name) never count; the last argument true would keep the agreed value of each field in the fragment.",
+    "enabled" : true,
+    "example" : {
+      "Login" : { "ID" : "ev_a1", "IP" : "10.122.13.14", "Type" : "Mobile", "Cookie" : "ck_a1", "EventTime" : 1790147176281 },
+      "BalanceCheck" : { "ID" : "ev_a1", "IP" : "10.122.13.14", "EventTime" : 1790147177281 },
+      "Payment" : { "ID" : "ev_a1", "IP" : "10.122.13.14", "Type" : "Mobile", "USD" : 1000, "CBIN" : "035", "Cookie" : "ck_a1", "EventTime" : 1790147178281 },
+      "Dispute" : { "ID" : "ev_a1", "DisputeReason" : "NotMyCard", "IP" : "10.122.13.14", "Type" : "Mobile", "Cookie" : "ck_a1", "EventTime" : 1790147179281 }
+    },
+    "demoTitle" : "pattern -> the accounts that agree on the same three fields",
     "demoSteps" : ".out('FuzzyLinkedTo')"
   } ]
 }

@@ -212,5 +212,185 @@ class FuzzySequenceTest {
         FuzzyPatternException wrongId = assertThrows(FuzzyPatternException.class,
                 () -> new FuzzyPattern(5, "session", EXPRESSION, "", true));
         assertTrue(wrongId.getMessage().contains("names pattern 2"), wrongId.getMessage());
+
+        FuzzyPatternException badCondition = assertThrows(FuzzyPatternException.class,
+                () -> FuzzySequence.parse("L0(ip2(Login.IP))_[<100s]_D1[Dispute.ip = Login.ip]"));
+        assertTrue(badCondition.getMessage().contains("=="), badCondition.getMessage());
+    }
+
+    // --- the two patterns of the second round: a two-sided window and conditions over the matched events ---
+
+    private static final String AROUND = "fl_3_L0(ip2(Login.ip))_[<100s]_B1_[-100s<time_interval<100s]_P2_"
+            + "[<100s]_D3(Dispute.DisputeReason)[Dispute.ip==Login.ip]";
+
+    private static final String MOBILE = "fl_4_L0(ip2(Login.ip))[Login.type=='Mobile']_[<100s]_B1_"
+            + "[-100s<time_interval<100s]_P2_[<100s]_D3(Dispute.DisputeReason)[Dispute.ip==Login.ip || "
+            + "Dispute.cookie == Payment.Cookie || Dispute.DisputeReason == 'NotMyCard']";
+
+    /**
+     * A session with the fields the two patterns read. The balance check and the dispute may carry a cookie,
+     * which is what the second alternative of pattern 4 looks at.
+     */
+    private static Map<String, Object> session(String loginIp, String loginType, String reason,
+                                               String disputeIp, String paymentCookie,
+                                               String disputeCookie) {
+        long start = 1790147176281L;
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("Login", Map.of("IP", loginIp, "Type", loginType, "EventTime", start));
+        out.put("BalanceCheck", Map.of("IP", loginIp, "EventTime", start + 1000));
+        Map<String, Object> payment = new LinkedHashMap<>();
+        payment.put("IP", loginIp);
+        payment.put("Cookie", paymentCookie);
+        payment.put("EventTime", start + 500); // before the balance check: the two-sided window allows it
+        out.put("Payment", payment);
+        Map<String, Object> dispute = new LinkedHashMap<>();
+        dispute.put("DisputeReason", reason);
+        dispute.put("IP", disputeIp);
+        dispute.put("Cookie", disputeCookie);
+        dispute.put("EventTime", start + 3500);
+        out.put("Dispute", dispute);
+        return out;
+    }
+
+    @Test
+    void aTwoSidedWindowLetsThePaymentComeFirst() {
+        FuzzyContext context = contextOf(session("10.141.20.30", "Mobile", "NotMyCard",
+                "10.141.20.30", "ck_pay", "ck_dispute"));
+        assertEquals("10.141_NotMyCard", FuzzySequence.parse(AROUND).key(context),
+                "the payment happened 500 ms before the balance check and still fits the window");
+        assertNull(FuzzySequence.parse(EXPRESSION).key(context),
+                "the forward window of pattern 2 does not allow the payment to come first");
+
+        Map<String, Object> late = session("10.141.20.30", "Mobile", "NotMyCard",
+                "10.141.20.30", "ck_pay", "ck_dispute");
+        ((Map<String, Object>) late.get("Payment")).put("EventTime", 1790147176281L + 300_000L);
+        assertNull(FuzzySequence.parse(AROUND).key(contextOf(late)),
+                "five minutes apart is outside the two-sided window too");
+    }
+
+    @Test
+    void aConditionReadsTheFieldsOfTheMatchedEvents() {
+        FuzzySequence pattern = FuzzySequence.parse(AROUND);
+        FuzzyContext sameAddress = contextOf(session("10.141.20.30", "Mobile", "NotMyCard",
+                "10.141.20.30", "ck_pay", "ck_dispute"));
+        FuzzyContext movedAddress = contextOf(session("10.141.20.30", "Mobile", "NotMyCard",
+                "10.99.99.99", "ck_pay", "ck_dispute"));
+
+        assertEquals("10.141_NotMyCard", pattern.key(sameAddress));
+        assertNull(pattern.key(movedAddress),
+                "the dispute came from another address: the condition does not hold");
+
+        List<FuzzyExpression.Step> steps = pattern.explain(sameAddress);
+        assertEquals("[Dispute.ip==Login.ip]", steps.get(4).part());
+        assertEquals("true", steps.get(4).value());
+        assertNull(pattern.explain(movedAddress).get(4).value());
+    }
+
+    @Test
+    void aStepConditionConstrainsTheEventItFollows() {
+        FuzzySequence pattern = FuzzySequence.parse(MOBILE);
+        assertNotNull(pattern.key(contextOf(session("10.141.20.30", "Mobile", "NotMyCard",
+                "10.141.20.30", "ck_pay", "ck_dispute"))));
+        assertNull(pattern.key(contextOf(session("10.141.20.30", "Web", "NotMyCard",
+                "10.141.20.30", "ck_pay", "ck_dispute"))),
+                "a web login is not what pattern 4 asks for");
+    }
+
+    @Test
+    void theAlternativesOfAConditionEachMatchOnTheirOwn() {
+        FuzzySequence pattern = FuzzySequence.parse(MOBILE);
+        // the address agrees, the cookie does not, and the reason is Fraud: the first alternative carries it
+        assertNotNull(pattern.key(contextOf(session("10.141.20.30", "Mobile", "Fraud",
+                "10.141.20.30", "ck_pay", "ck_dispute"))));
+        // the address moved, the cookies agree: the second alternative carries it
+        assertEquals("10.141_Fraud", pattern.key(contextOf(session("10.141.20.30", "Mobile", "Fraud",
+                "10.99.99.99", "ck_shared", "ck_shared"))));
+        // the address moved, the cookies differ, but the reason is NotMyCard: the third alternative carries it
+        assertEquals("10.141_NotMyCard", pattern.key(contextOf(session("10.141.20.30", "Mobile", "NotMyCard",
+                "10.99.99.99", "ck_pay", "ck_other"))));
+        // none of the three: the pattern does not apply
+        assertNull(pattern.key(contextOf(session("10.141.20.30", "Mobile", "Fraud",
+                "10.99.99.99", "ck_pay", "ck_other"))));
+    }
+
+    // --- anyFields: the fields several matched events agree on ---
+
+    private static final String SHARED_FIELDS = "fl_5_L0(ip2(Login.ip))[Login.type=='Mobile']_[<100s]_B1_"
+            + "[<50s]_P2_[<100s]_D3(anyFields([Login, Payment, Dispute], 3, false))";
+
+    /**
+     * A session whose login, payment and dispute carry the same fields; the caller decides where they agree and
+     * how far apart the steps are.
+     */
+    private static Map<String, Object> sharedFields(String loginIp, String loginType, String disputeIp,
+                                                    String payCookie, String disputeCookie,
+                                                    long balanceGap, long paymentGap) {
+        long start = 1790147176281L;
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("Login", Map.of("ID", "s", "IP", loginIp, "Type", loginType, "Cookie", payCookie,
+                "EventTime", start));
+        out.put("BalanceCheck", Map.of("ID", "s", "IP", loginIp, "EventTime", start + balanceGap));
+        out.put("Payment", Map.of("ID", "s", "IP", loginIp, "Type", loginType, "Cookie", payCookie,
+                "EventTime", start + balanceGap + paymentGap));
+        out.put("Dispute", Map.of("ID", "s", "IP", disputeIp, "Type", loginType, "Cookie", disputeCookie,
+                "EventTime", start + balanceGap + paymentGap + 1000));
+        return out;
+    }
+
+    @Test
+    void anyFieldsListsTheFieldsEveryEventAgreesOn() {
+        FuzzyContext context = FuzzyContext.of(Map.of(
+                "Login", Map.of("IP", "10.1.2.3", "Type", "Mobile", "Cookie", "c1"),
+                "Payment", Map.of("IP", "10.1.2.3", "Type", "Mobile", "Cookie", "c1"),
+                "Dispute", Map.of("IP", "10.1.2.3", "Type", "Mobile", "Cookie", "c1")));
+
+        assertEquals("cookie_ip_type", FuzzyFunctions.applyContext("anyFields", context,
+                List.of("Login,Payment,Dispute", "3", "false")), "the names in alphabetical order");
+        assertEquals("cookie=c1_ip=10.1.2.3_type=Mobile", FuzzyFunctions.applyContext("anyFields", context,
+                List.of("Login,Payment,Dispute", "3", "true")), "with true each name keeps its value");
+        assertNull(FuzzyFunctions.applyContext("anyFields", context,
+                List.of("Login,Payment,Dispute", "4", "false")), "asking for more than agree makes it not apply");
+    }
+
+    @Test
+    void anyFieldsNeverCountsTheBookkeepingFields() {
+        // the id and the event time are equal across the three, but they say nothing about the session
+        FuzzyContext context = FuzzyContext.of(Map.of(
+                "Login", Map.of("ID", "s", "EventTime", 1L),
+                "Payment", Map.of("ID", "s", "EventTime", 2L),
+                "Dispute", Map.of("ID", "s", "EventTime", 3L)));
+
+        assertNull(FuzzyFunctions.applyContext("anyFields", context,
+                List.of("Login,Payment,Dispute", "1", "false")),
+                "there is no agreed identity field to link on");
+    }
+
+    @Test
+    void anyFieldsReadsTheEventsTheStepsMatched() {
+        FuzzySequence pattern = FuzzySequence.parse(SHARED_FIELDS);
+
+        assertEquals("10.155_cookie_ip_type", pattern.key(contextOf(sharedFields(
+                "10.155.30.10", "Mobile", "10.155.30.10", "ck", "ck", 1000, 2000))));
+
+        // the payment is 60 seconds after the balance check: past the [<50s] window
+        assertNull(pattern.key(contextOf(sharedFields(
+                "10.155.30.10", "Mobile", "10.155.30.10", "ck", "ck", 1000, 60000))));
+
+        // the dispute moved and its cookie differs: only the type agrees, so there is no three-field signature
+        assertNull(pattern.key(contextOf(sharedFields(
+                "10.155.30.10", "Mobile", "10.99.99.9", "ck", "other", 1000, 2000))));
+    }
+
+    @Test
+    void anyFieldsParsesAsAListOfEventsAndABoolean() {
+        FuzzySequence pattern = FuzzySequence.parse(SHARED_FIELDS);
+
+        assertEquals("anyFields([Login, Payment, Dispute], 3, false)",
+                pattern.steps().get(3).valueExpression());
+        assertTrue(pattern.fieldsByStep().get("D3(anyFields([Login, Payment, Dispute], 3, false))")
+                .containsAll(List.of("Login", "Payment", "Dispute")),
+                "the editor is told which events the UDF reads");
+        assertTrue(FuzzyFunctions.isContextFunction("anyFields"));
+        assertTrue(FuzzyFunctions.isFunction("anyFields"), "the parser accepts it as a function");
     }
 }

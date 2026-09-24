@@ -106,12 +106,37 @@ public final class FuzzyPatterns {
             return Map.of();
         }
         Map<String, Object> values = new LinkedHashMap<>();
-        example.fields().forEachRemaining(entry -> {
-            JsonNode value = entry.getValue();
-            values.put(entry.getKey(), value.isNumber() ? value.numberValue()
-                    : value.isBoolean() ? value.booleanValue() : value.isNull() ? null : value.asText());
-        });
+        example.fields().forEachRemaining(entry -> values.put(entry.getKey(), readValue(entry.getValue())));
         return values;
+    }
+
+    /**
+     * One value of an example as it is: a nested object stays a map and an array stays a list, because a
+     * sequence pattern's example is the event list itself ({@code {"Login": {"IP": ..., "EventTime": ...}}})
+     * rather than a flat context - flattening it to text would leave the example unable to fire the pattern it
+     * is meant to show.
+     */
+    private static Object readValue(JsonNode value) {
+        if (value == null || value.isNull()) {
+            return null;
+        }
+        if (value.isNumber()) {
+            return value.numberValue();
+        }
+        if (value.isBoolean()) {
+            return value.booleanValue();
+        }
+        if (value.isObject()) {
+            Map<String, Object> nested = new LinkedHashMap<>();
+            value.fields().forEachRemaining(entry -> nested.put(entry.getKey(), readValue(entry.getValue())));
+            return nested;
+        }
+        if (value.isArray()) {
+            List<Object> items = new ArrayList<>();
+            value.forEach(item -> items.add(readValue(item)));
+            return items;
+        }
+        return value.asText();
     }
 
     /** The patterns of one entry, validated as they are read. */

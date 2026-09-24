@@ -5,9 +5,13 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.TreeMap;
 import java.util.function.BiFunction;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -39,11 +43,29 @@ public final class FuzzyFunctions {
     private record Entry(String usage, String description, int minArgs, Function function) {
     }
 
+    /**
+     * A function that reads the whole context rather than one value: {@code anyFields} compares several
+     * events of a sequence at once, so a value-at-a-time signature cannot express it.
+     */
+    @FunctionalInterface
+    private interface ContextFunction {
+        String apply(FuzzyContext context, List<String> args);
+    }
+
+    private record ContextEntry(String usage, String description, ContextFunction function) {
+    }
+
     private static final Map<String, Entry> FUNCTIONS = new LinkedHashMap<>();
+    private static final Map<String, ContextEntry> CONTEXT_FUNCTIONS = new LinkedHashMap<>();
 
     private static void register(String name, String usage, int minArgs, String description,
                                 Function function) {
         FUNCTIONS.put(name, new Entry(usage, description, minArgs, function));
+    }
+
+    private static void registerContext(String name, String usage, String description,
+                                        ContextFunction function) {
+        CONTEXT_FUNCTIONS.put(name, new ContextEntry(usage, description, function));
     }
 
     static {
@@ -191,6 +213,11 @@ public final class FuzzyFunctions {
         register("opt", "opt(field)", 0,
                 "A part that may be missing: it becomes * instead of making the pattern not apply",
                 (value, args) -> trimmed(value) == null ? "*" : trimmed(value));
+        registerContext("anyFields", "anyFields([Event, ...], n[, true])",
+                "The fields that every listed event carries with the same value - at least n of them, or the "
+                        + "pattern does not apply. The names are sorted and joined (cookie_ip_type); when the "
+                        + "last argument is true each name keeps the value they agreed on (ip=10.12.13.14)",
+                FuzzyFunctions::anyFields);
     }
 
     private FuzzyFunctions() {
@@ -198,13 +225,21 @@ public final class FuzzyFunctions {
 
     /** Whether a name is a function of this library. */
     public static boolean isFunction(String name) {
-        return FUNCTIONS.containsKey(name);
+        return FUNCTIONS.containsKey(name) || CONTEXT_FUNCTIONS.containsKey(name);
+    }
+
+    /** Whether the function reads the whole context (it takes a list of events, not one value). */
+    public static boolean isContextFunction(String name) {
+        return CONTEXT_FUNCTIONS.containsKey(name);
     }
 
     /** The signatures of every function, for the pattern editor. */
     public static List<Signature> signatures() {
-        List<Signature> out = new ArrayList<>(FUNCTIONS.size());
+        List<Signature> out = new ArrayList<>(FUNCTIONS.size() + CONTEXT_FUNCTIONS.size());
         for (Map.Entry<String, Entry> entry : FUNCTIONS.entrySet()) {
+            out.add(new Signature(entry.getKey(), entry.getValue().usage(), entry.getValue().description()));
+        }
+        for (Map.Entry<String, ContextEntry> entry : CONTEXT_FUNCTIONS.entrySet()) {
             out.add(new Signature(entry.getKey(), entry.getValue().usage(), entry.getValue().description()));
         }
         return out;
@@ -232,6 +267,131 @@ public final class FuzzyFunctions {
                     + " argument(s) besides the field: " + entry.usage());
         }
         return entry.function().apply(value, withValue);
+    }
+
+    /**
+     * Applies a context function: the arguments arrive as the expression wrote them (a list as
+     * {@code Login,Payment,Dispute}, a literal as its text), and the function reads the events it needs out
+     * of the context.
+     */
+    static String applyContext(String name, FuzzyContext context, List<String> args) {
+        ContextEntry entry = CONTEXT_FUNCTIONS.get(name);
+        if (entry == null) {
+            throw new FuzzyPatternException("Unknown context function '" + name + "'. Known functions: "
+                    + String.join(", ", CONTEXT_FUNCTIONS.keySet()));
+        }
+        return entry.function().apply(context, args);
+    }
+
+    /**
+     * The fields every event of a list carries with the same value: the similarity of a session that no single
+     * step owns.
+     *
+     * <p>Bookkeeping fields ({@code id}, the event time, the event name) are ignored: they are either unique to
+     * one event or say nothing about who the session belongs to. With the last argument false the fragment is
+     * the field names in alphabetical order ({@code cookie_ip_type}); with true each name keeps the value the
+     * events agreed on ({@code cookie=abc_ip=10.12.13.14_type=mobile}). Fewer than the required number of agreed
+     * fields means the pattern does not apply - the session has no such signature to link on.
+     */
+    private static String anyFields(FuzzyContext context, List<String> args) {
+        if (args.isEmpty() || args.get(0) == null || args.get(0).isBlank()) {
+            throw new FuzzyPatternException("anyFields needs the events to compare, e.g. "
+                    + "anyFields([Login, Payment, Dispute], 3)");
+        }
+        List<String> events = new ArrayList<>();
+        for (String name : args.get(0).split(",")) {
+            if (!name.isBlank()) {
+                events.add(name.trim());
+            }
+        }
+        if (events.size() < 2) {
+            throw new FuzzyPatternException("anyFields needs at least two events to compare, got "
+                    + events);
+        }
+        int required = args.size() > 1 ? count(args, 1, 1) : 1;
+        boolean withValues = args.size() > 2 && Boolean.parseBoolean(args.get(2) == null
+                ? "false" : args.get(2).trim());
+
+        List<Map<String, Object>> fields = new ArrayList<>(events.size());
+        for (String event : events) {
+            Object value = context.find(event);
+            if (!(value instanceof Map<?, ?> map)) {
+                return null; // the event is not part of this match: the pattern does not apply
+            }
+            Map<String, Object> named = new LinkedHashMap<>();
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                named.put(String.valueOf(entry.getKey()), entry.getValue());
+            }
+            fields.add(named);
+        }
+
+        // the names every event carries, ignoring the bookkeeping fields
+        Set<String> candidates = new LinkedHashSet<>();
+        for (Map<String, Object> event : fields) {
+            Set<String> names = new LinkedHashSet<>();
+            for (String key : event.keySet()) {
+                String normalised = normalise(key);
+                if (!ANY_FIELDS_IGNORED.contains(normalised)) {
+                    names.add(normalised);
+                }
+            }
+            if (candidates.isEmpty()) {
+                candidates.addAll(names);
+            } else {
+                candidates.retainAll(names);
+            }
+        }
+        // of those, the ones whose values agree across every event, in alphabetical order
+        Map<String, String> agreed = new TreeMap<>();
+        for (String name : candidates) {
+            String value = null;
+            boolean first = true;
+            boolean equal = true;
+            for (Map<String, Object> event : fields) {
+                String text = fieldText(event, name);
+                if (first) {
+                    value = text;
+                    first = false;
+                } else if (!Objects.equals(value, text)) {
+                    equal = false;
+                    break;
+                }
+            }
+            if (equal && value != null) {
+                agreed.put(name, value);
+            }
+        }
+        if (agreed.size() < required) {
+            return null; // not enough of a signature to link on
+        }
+        if (withValues) {
+            List<String> parts = new ArrayList<>(agreed.size());
+            for (Map.Entry<String, String> entry : agreed.entrySet()) {
+                parts.add(entry.getKey() + "=" + entry.getValue());
+            }
+            return String.join("_", parts);
+        }
+        return String.join("_", agreed.keySet());
+    }
+
+    /** Fields that say nothing about a session's identity, so anyFields never counts them. */
+    private static final Set<String> ANY_FIELDS_IGNORED = Set.of(
+            "id", "eventtime", "time", "timestamp", "ts", "name", "eventname", "eventtype", "event");
+
+    /** The value of a field, addressed by its normalised name, as text. */
+    private static String fieldText(Map<String, Object> event, String normalised) {
+        for (Map.Entry<String, Object> entry : event.entrySet()) {
+            if (normalise(entry.getKey()).equals(normalised)) {
+                Object value = entry.getValue();
+                return value == null ? null : String.valueOf(value).trim();
+            }
+        }
+        return null;
+    }
+
+    /** The key a field name is compared under (case and separators do not matter). */
+    private static String normalise(String field) {
+        return field.toLowerCase(Locale.ROOT).replace("_", "").replace("-", "");
     }
 
     // --- value helpers ---
