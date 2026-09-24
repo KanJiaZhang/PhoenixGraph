@@ -48,6 +48,27 @@ phoenixgraph:
         vertex-set: http_demo_v3
       - schema: kg-entity-graph
         vertex-set: kg_nell995_v2
+      # 《三国演义》knowledge graph (relation-sharded like kg-entity-graph, but with a
+      # typed Entity vertex and relation/xrelation/relationLabel/relationFamily on the
+      # edge); loaded by SanguoGraphIntegrationTest:
+      #   g.V('曹操_3','Entity').bothE().filter(relation.equals('lord') || xrelation.equals('lord'))
+      #   g.V('诸葛亮_3','Entity').bothE().filter(relation.equals('minister')).otherV()
+      - schema: sanguo-kg
+        vertex-set: kg_sanguo_v1
+      # the same 《三国演义》 graph served by RocksDB-Edge: the vertex id is the plain
+      # entity name (no relation shard) and the edges live in an edge table, so one
+      # person is one record. Loaded by SanguoRocksDbEdgeTest / SanguoRocksDbLoader:
+      #   g.V('曹操','Entity').bothE().filter(relation.equals('lord') || xrelation.equals('lord'))
+      #   g.V('姜维','Entity').bothE().filter(xrelation.equals('master')).otherV()
+      - schema: sanguo-kg-rocksdb-edge
+        vertex-set: kg_sanguo_v1
+      # 方案 C：同一份数据 + 从文档自由文本（历史/小说）抽出的实体与关系，也是 RocksDB-Edge。
+      # 比 sanguo-kg-rocksdb-edge 多 ~42 实体 / ~969 关系（mentions / holds / 军师 / 谋士 / 交战 / 斩杀），
+      # 由 SanguoTextGraphTest / SanguoTextGraph 装载（.rocksdb/sanguo-kg-text）：
+      #   g.V('五虎上将','Entity').inE().filter(relation.equals('holds')).otherV().values('name')
+      #   g.V('刘备','Entity').inE().filter(relation.equals('strategistOf')).otherV().values('name')
+      - schema: sanguo-kg-text
+        vertex-set: kg_sanguo_v1
 
     # --- the graphs the dashboard hides for now ---------------------------------
     # - schema: payment-graph-rocksdb-inline

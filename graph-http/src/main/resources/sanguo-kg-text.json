@@ -1,0 +1,47 @@
+{
+  "id": 6,
+  "name": "sanguo-kg-text",
+  "description": "方案 C: the same 《三国演义》 graph on RocksDB-Edge, but the data set is extended with what the document free text (历史/小说) yields — mentions, offices, 军师/谋士, 交战/斩杀 — so it holds more entities and relations than sanguo-kg-rocksdb-edge. Vertex id = the entity name; max out-/in-degree 2000.",
+  "constraints": { "idSchemaIndex": 0, "createdTimeIndex": -2, "lastUpdatedTimeIndex": -1 },
+  "vertexSchemas": [
+    {
+      "id": 1,
+      "name": "Entity",
+      "description": "A knowledge-graph entity (person / faction / place / office / chapter), keyed by its name",
+      "idSchema": { "id": 0, "name": "id", "description": "Entity id (the entity name)", "type": "STRING" },
+      "createdTime": { "id": -2, "name": "createdTime", "description": "Creation time", "type": "LONG" },
+      "lastUpdatedTime": { "id": -1, "name": "lastUpdatedTime", "description": "Last update time", "type": "LONG" },
+      "properties": [
+        { "id": 1, "name": "name", "description": "Entity name (人物/势力/籍贯/官职/章回)", "type": "STRING", "display": true },
+        { "id": 2, "name": "entityType", "description": "Male/Female/Person/Faction/Place/Position/Chapter", "type": "STRING" },
+        { "id": 3, "name": "gender", "description": "男 / 女 (documented persons only)", "type": "STRING" },
+        { "id": 4, "name": "courtesyName", "description": "字", "type": "STRING" },
+        { "id": 5, "name": "historicity", "description": "史实人物 / 虚构人物", "type": "STRING" },
+        { "id": 6, "name": "history", "description": "历史简介", "type": "STRING" },
+        { "id": 7, "name": "novel", "description": "演义简介", "type": "STRING" }
+      ]
+    }
+  ],
+  "edgeSchemas": [
+    {
+      "id": 1,
+      "name": "Entity_Entity",
+      "description": "A directed relation between two entities",
+      "idSchema": { "id": 0, "name": "id", "description": "Edge id", "type": "STRING" },
+      "source": { "id": 1, "name": "source", "description": "Source vertex id", "type": "STRING", "vertex": "Entity" },
+      "target": { "id": 2, "name": "target", "description": "Target vertex id", "type": "STRING", "vertex": "Entity" },
+      "createdTime": { "id": -2, "name": "createdTime", "description": "Creation time", "type": "LONG" },
+      "lastUpdatedTime": { "id": -1, "name": "lastUpdatedTime", "description": "Last update time", "type": "LONG" },
+      "direction": "DIRECTED",
+      "maxOutgoingEdges": 2000,
+      "maxIncomingEdges": 2000,
+      "properties": [
+        { "id": 3, "name": "relation", "description": "Forward relation name (e.g. father)", "type": "STRING" },
+        { "id": 4, "name": "xrelation", "description": "Reverse relation name; equals relation when it has no inverse", "type": "STRING" },
+        { "id": 5, "name": "relationLabel", "description": "中文关系名 (e.g. 父亲)", "type": "STRING" },
+        { "id": 6, "name": "relationFamily", "description": "关系家族 (e.g. 亲属)", "type": "STRING" }
+      ]
+    }
+  ],
+  "storage": { "type": "RocksDB-Edge", "path": "sanguo-kg-text", "regionCount": 512, "maxVersions": 1, "cacheEdges": true }
+}

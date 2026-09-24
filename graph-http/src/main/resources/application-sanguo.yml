@@ -1,0 +1,14 @@
+# 《三国演义》knowledge-graph-only profile: serves the sanguo-kg graph (relation
+# sharding over a single Entity vertex type, relation names on the edges) as the
+# only graph. The default profile already serves it *alongside* payment-graph and
+# the NELL-995 graph; this profile is for a lighter instance that only needs it.
+#
+#   java -jar graph-http/target/graph-http-0.1.0-SNAPSHOT.jar --spring.profiles.active=sanguo
+#
+# The data is seeded by SanguoGraphIntegrationTest:
+#   ./mvnw -pl graph-integration-test -am test -Dtest=SanguoGraphIntegrationTest
+phoenixgraph:
+  storage:
+    vertex-set: kg_sanguo_v1
+    schema: sanguo-kg
+    graphs: []

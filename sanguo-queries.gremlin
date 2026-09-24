@@ -1,0 +1,82 @@
+// ================================================================
+// 《三国演义》知识图谱 · Gremlin 查询清单（一行一条，可直接复制）
+// 图：sanguo-kg-rocksdb-edge（RocksDB-Edge，点 id = 实体名）。
+// 换到 Aerospike 图 sanguo-kg 时把点 id 换成 名字_shard（如 曹操_3）。
+// ================================================================
+
+// ---- 1. 问答式（22 条） ----
+g.V('关羽','Entity').outE().filter(relation.equals('serves')).otherV().dedup().where(inE().filter(relation.equals('serves')).otherV().hasId('曹操')).values('name')
+g.V('关羽','Entity').bothE('Entity_Entity').where(otherV().hasId('曹操')).count()
+g.V('关羽','Entity').outE().filter(relation.equals('appearsIn')).otherV().dedup().where(inE().filter(relation.equals('appearsIn')).otherV().hasId('曹操')).count()
+g.V('刘备','Entity').outE().filter(relation.equals('lord')).otherV().dedup().where(inE().filter(relation.equals('lord')).otherV().hasId('曹操')).values('name')
+g.V('诸葛亮','Entity').inE().filter(relation.equals('lord')).otherV().values('name')
+g.V('关羽','Entity').outE().filter(relation.equals('elder_sworn_brother')).otherV().values('name')
+g.V('刘备','Entity').inE().filter(relation.equals('younger_sworn_brother')).otherV().dedup().values('name')
+g.V('Entity').inE().filter(relation.equals('lord')).otherV().groupCount().by('name')
+g.V('吴','Entity').inE().filter(relation.equals('serves')).otherV().dedup().where(outE().filter(relation.equals('lord'))).values('name')
+g.V('魏','Entity').inE().filter(relation.equals('serves')).otherV().dedup().count()
+g.V('Entity').outE().filter(relation.equals('serves')).otherV().groupCount().by('name')
+g.V('曹操','Entity').outE().filter(relation.equals('lord')).otherV().dedup().where(inE().filter(relation.equals('lord')).otherV().hasId('刘备')).values('name')
+g.V('Entity').outE().filter(relation.equals('lord')).otherV().groupCount().by('name')
+g.V('张辽','Entity').inE().filter(relation.equals('lord')).otherV().values('name')
+g.V('徐庶','Entity').inE().filter(relation.equals('lord')).otherV().values('name')
+g.V('Entity').inE().filter(relation.equals('serves')).otherV().groupCount().by('name')
+g.V('曹操','Entity').bothE().filter(relation.equals('same_clan')).otherV().values('name')
+g.V('诸葛亮','Entity').bothE().filter(relationFamily.equals('亲属')).otherV().dedup().values('name')
+g.V('诸葛亮','Entity').bothE().filter(relationFamily.equals('亲属')).otherV().dedup().where(inE().filter(relation.equals('lord')).otherV().hasId('孙权')).values('name')
+g.V('Entity').inE().filter(relation.equals('appearsIn')).otherV().groupCount().by('name')
+g.V('Entity').outE().filter(relation.equals('appearsIn')).otherV().groupCount().by('name')
+g.V('诸葛亮','Entity').repeat(both('Entity_Entity')).times(2).hasId('司马懿').count()
+g.V('五虎上将','Entity').inE().filter(relation.equals('holds')).otherV().values('name')
+g.V('五虎上将之首','Entity').inE().filter(relation.equals('holds')).otherV().values('name')
+
+// ---- 2. 多跳（两跳 / 三跳，12 条） ----
+g.V('刘备','Entity').both('Entity_Entity').both('Entity_Entity').dedup().count()
+g.V('刘备','Entity').outE().filter(relation.equals('lord')).otherV().outE().filter(relation.equals('master')).otherV().dedup().values('name')
+g.V('刘备','Entity').both('Entity_Entity').dedup().where(both('Entity_Entity').hasId('曹操')).values('name')
+g.V('徐庶','Entity').outE().filter(relation.equals('serves')).otherV().inE().filter(relation.equals('serves')).otherV().dedup().count()
+g.V('诸葛亮','Entity').outE().filter(relation.equals('appearsIn')).otherV().inE().filter(relation.equals('appearsIn')).otherV().dedup().count()
+g.V('刘备','Entity').both('Entity_Entity').both('Entity_Entity').groupCount().by('name')
+g.V('刘备','Entity').repeat(both('Entity_Entity')).times(2).hasId('曹操').count()
+g.V('刘备','Entity').repeat(both('Entity_Entity')).times(3).hasId('曹操').count()
+g.V('刘备','Entity').both('Entity_Entity').both('Entity_Entity').both('Entity_Entity').cyclicPath().path('name').limit(5)
+g.V('魏','Entity').in('Entity_Entity').out('Entity_Entity').out('Entity_Entity').hasId('蜀').count()
+g.V('司马懿','Entity').inE().filter(relation.equals('son')).otherV().inE().filter(relation.equals('son')).otherV().dedup().values('name')
+g.V('曹操','Entity').outE().filter(relation.equals('lord')).otherV().hasId('司马懿').inE().filter(relation.equals('son')).otherV().hasId('司马昭').inE().filter(relation.equals('son')).otherV().dedup().values('name')
+
+// ---- 3. 典型查询（10 条） ----
+g.V('曹操','Entity').values('name','entityType','gender','courtesyName')
+g.V('曹操','Entity').bothE()
+g.V('曹操','Entity').bothE().otherV().dedup()
+g.V('曹操','Entity').outE().filter(relation.equals('lord'))
+g.V('曹操','Entity').outE().filter(relation.equals('lord')).otherV().dedup()
+g.V('刘备','Entity').bothE().filter(relation.equals('lord') || xrelation.equals('lord')).otherV().dedup()
+g.V('姜维','Entity').bothE().filter(relation.equals('master') || xrelation.equals('master')).otherV().dedup()
+g.V('曹操','Entity').bothE().groupCount('relationFamily')
+g.V('曹嵩','Entity').outE().filter(relation.equals('father')).otherV().outE().filter(relation.equals('father')).otherV().dedup()
+g.V('魏','Entity').inE().filter(relation.equals('serves')).otherV().dedup().count()
+
+// ---- 4. Cypher → Gremlin 的 Gremlin 侧（10 条） ----
+g.V('曹操','Entity').values('name','entityType','gender','courtesyName')
+g.V('曹操','Entity').outE('Entity_Entity').limit(20).elementMap()
+g.V('曹操','Entity').outE('Entity_Entity').filter(relation.equals('lord')).limit(20).otherV().values('name')
+g.V('马谡','Entity').outE('Entity_Entity').filter(xrelation.equals('lord')).otherV().values('name')
+g.V('曹操','Entity').outE('Entity_Entity').groupCount().by('relationFamily')
+g.V('曹嵩','Entity').out('Entity_Entity').out('Entity_Entity').dedup().path('name').limit(20)
+g.V('诸葛亮','Entity').outE('Entity_Entity').filter(relation.equals('appearsIn')).limit(25).otherV().values('name')
+g.V('魏','Entity').inE('Entity_Entity').filter(relation.equals('serves')).limit(20).otherV().valueMap('name','entityType')
+g.V('刘备','Entity').bothE('Entity_Entity').where(otherV().hasId('诸葛亮')).values('relation','relationLabel')
+g.V('曹操','Entity').inE('Entity_Entity').filter(relationFamily.equals('亲属')).limit(20).elementMap()
+
+// ---- 5. 「关羽 和 诸葛亮 是什么关系」解题模板（11 步） ----
+g.V('关羽','Entity').bothE('Entity_Entity').where(otherV().hasId('诸葛亮')).elementMap()
+g.V('关羽','Entity').outE().filter(relation.equals('serves')).otherV().dedup().where(inE().filter(relation.equals('serves')).otherV().hasId('诸葛亮')).values('name')
+g.V('关羽','Entity').inE().filter(relation.equals('lord')).otherV().dedup().where(outE().filter(relation.equals('lord')).otherV().hasId('诸葛亮')).values('name')
+g.V('关羽','Entity').bothE('Entity_Entity').groupCount().by('relationLabel')
+g.V('诸葛亮','Entity').bothE('Entity_Entity').groupCount().by('relationLabel')
+g.V('关羽','Entity').both('Entity_Entity').dedup().where(both('Entity_Entity').hasId('诸葛亮')).groupCount().by('entityType')
+g.V('关羽','Entity').both('Entity_Entity').dedup().where(both('Entity_Entity').hasId('诸葛亮')).where(not(has('entityType','Chapter'))).values('name')
+g.V('关羽','Entity').outE().filter(relation.equals('appearsIn')).otherV().dedup().where(inE().filter(relation.equals('appearsIn')).otherV().hasId('诸葛亮')).count()
+g.V('关羽','Entity').repeat(both('Entity_Entity')).times(2).hasId('诸葛亮').count()
+g.V('关羽','Entity').both('Entity_Entity').dedup().where(hasId('刘备')).both('Entity_Entity').dedup().where(hasId('诸葛亮')).count()
+g.V('关羽','Entity').bothE('Entity_Entity').where(otherV().hasId('刘备')).elementMap()

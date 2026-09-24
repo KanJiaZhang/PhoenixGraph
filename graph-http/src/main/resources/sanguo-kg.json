@@ -1,0 +1,47 @@
+{
+  "id": 4,
+  "name": "sanguo-kg",
+  "description": "《三国演义》knowledge graph: one Entity vertex type (person / faction / place / office / chapter), relation-sharded by floorMod(relation.hashCode(), 10); directed Entity_Entity relations (max out-/in-degree 2000) carrying relation/xrelation/relationLabel/relationFamily",
+  "constraints": { "idSchemaIndex": 0, "createdTimeIndex": -2, "lastUpdatedTimeIndex": -1 },
+  "vertexSchemas": [
+    {
+      "id": 1,
+      "name": "Entity",
+      "description": "A knowledge-graph entity, replicated per relation shard",
+      "idSchema": { "id": 0, "name": "id", "description": "Entity id (name_shard)", "type": "STRING" },
+      "createdTime": { "id": -2, "name": "createdTime", "description": "Creation time", "type": "LONG" },
+      "lastUpdatedTime": { "id": -1, "name": "lastUpdatedTime", "description": "Last update time", "type": "LONG" },
+      "properties": [
+        { "id": 1, "name": "name", "description": "Entity name (人物/势力/籍贯/官职/章回)", "type": "STRING", "display": true },
+        { "id": 2, "name": "shard", "description": "Relation shard (floorMod(relation.hashCode(), 10))", "type": "LONG" },
+        { "id": 3, "name": "entityType", "description": "Male/Female/Person/Faction/Place/Position/Chapter", "type": "STRING" },
+        { "id": 4, "name": "gender", "description": "男 / 女 (documented persons only)", "type": "STRING" },
+        { "id": 5, "name": "courtesyName", "description": "字", "type": "STRING" },
+        { "id": 6, "name": "historicity", "description": "史实人物 / 虚构人物", "type": "STRING" },
+        { "id": 7, "name": "history", "description": "历史简介", "type": "STRING" },
+        { "id": 8, "name": "novel", "description": "演义简介", "type": "STRING" }
+      ]
+    }
+  ],
+  "edgeSchemas": [
+    {
+      "id": 1,
+      "name": "Entity_Entity",
+      "description": "A directed relation between two entities",
+      "idSchema": { "id": 0, "name": "id", "description": "Edge id", "type": "STRING" },
+      "source": { "id": 1, "name": "source", "description": "Source vertex id", "type": "STRING", "vertex": "Entity" },
+      "target": { "id": 2, "name": "target", "description": "Target vertex id", "type": "STRING", "vertex": "Entity" },
+      "createdTime": { "id": -2, "name": "createdTime", "description": "Creation time", "type": "LONG" },
+      "lastUpdatedTime": { "id": -1, "name": "lastUpdatedTime", "description": "Last update time", "type": "LONG" },
+      "direction": "DIRECTED",
+      "maxOutgoingEdges": 2000,
+      "maxIncomingEdges": 2000,
+      "properties": [
+        { "id": 3, "name": "relation", "description": "Forward relation name (e.g. father)", "type": "STRING" },
+        { "id": 4, "name": "xrelation", "description": "Reverse relation name; equals relation when it has no inverse", "type": "STRING" },
+        { "id": 5, "name": "relationLabel", "description": "中文关系名 (e.g. 父亲)", "type": "STRING" },
+        { "id": 6, "name": "relationFamily", "description": "关系家族 (e.g. 亲属)", "type": "STRING" }
+      ]
+    }
+  ]
+}

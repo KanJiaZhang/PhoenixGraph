@@ -70,6 +70,9 @@
                 <directory>${project.basedir}/../graph-http/src/main/resources</directory>
                 <includes>
                     <include>kg-entity-graph.json</include>
+                    <include>sanguo-kg.json</include>
+                    <include>sanguo-kg-rocksdb-edge.json</include>
+                    <include>sanguo-kg-text.json</include>
                     <include>hnsw-sift.json</include>
                 </includes>
             </testResource>
