@@ -19,6 +19,7 @@
   - **大图 hub 150**（5000 点压测）→ 100 个一跳 Account（2000..2099），每账户 39 IP + 10 Phone（`AccountToPhone` 出度上限 10）；`g.V('150','Account').both().both()` = **5000** 跳 / 子图 **5001 点 / 5000 边**（JSON ~1.5MB，后端 ~0.5s）。
 - **旧数据**：set `http_rich_v2`（由 `layeredBothHopQueryViaApi` 播种）：888 分层图，两跳 `both()` 子图 421 点 / 430 边。
 - **知识图谱数据**：set `kg_nell995_v2` + schema `kg-entity-graph`（NELL-995，113,553 点 / 149,678 边，按 relation 分片，见第 12/13 节）。**默认 `application.yml` 同时加载 payment-graph 与 kg-entity-graph**，UI 下拉框可切换。
+- **中文知识图谱数据**：set `kg_sanguo_v1` + schema `sanguo-kg`（《三国演义》OpenKG 文档数据集：331 篇人物文档 + OWL 本体 + 本地补充三元组 `triples-extra.csv` → RDF → 1,102 实体 / 2,447 边，同样按 relation 分片，但边上带中文关系名/关系家族）。**见 [SANGUO-KG.md](SANGUO-KG.md)**，默认 `application.yml` 也已挂上。
 - **Account 节点含 List/Map 属性**（见第 9 节踩坑）：`accountUsage`(id=4, list<string>) 与 `accountLimited`(id=5, map<string>)。
 
 ---
@@ -284,6 +285,69 @@ KG_TRIPLE_LIMIT=5000 ... 同上
 
 > 注意：`bothE()`（无参）在这种建模下比 `both('Entity_Entity')` 更直观；两者等价（只有一种边）。
 
+### 12.1 《三国演义》知识图谱（`sanguo-kg`，中文文档数据集）
+
+第二套知识图谱，数据与管线都与 NELL 那套独立，完整说明见 [SANGUO-KG.md](SANGUO-KG.md)。
+
+- **数据**：OpenKG《三国演义》部分，三个文档文件（331 篇人物文档 `renwu_process_v1.csv`、60 个关系的
+  OWL 本体 `theory.owl`、153 条 curated 三元组 `triples.csv`），gzip 在
+  `graph-integration-test/src/test/resources/kg/sanguo/`，重下：`tools/download-sanguo-dataset.sh`。
+- **解析成 RDF**：`SanguoOntology`（解析 OWL 的类/关系/逆关系/domain/range/OWL 特性，并归纳出 11 个
+  粗粒度关系家族）+ `SanguoDataset`（读人物文档，派生 父亲/母亲/兄弟/配偶/孩子/效力/官职/籍贯/出场）
+  + `SanguoRdf`/`SanguoRdfGenerator`（TBox + ABox，物化逆关系与对称关系）。产物冻结在
+  `src/test/resources/kg/sanguo/rdf/`：`sanguo-ontology.ttl`（486 语句）、`sanguo-kg.ttl`、`sanguo-kg.nt`、
+  `VALIDATION.md`，由 `SanguoRdfTest` 逐字节比对，所以不会漂移。
+- **校验**：`SanguoRdfValidator` 查 10 条规则（谓词已声明、无悬挂 IRI、domain/range、非自反、非对称、
+  逆/对称闭包、对合性、声明逆关系、重复三元组）；3,395 条 domain/range 通过、**0 违反**、523 条无法判定
+  （关系端点人物没有文档，性别未知）。校验实际抓出了 3 个 bug：匿名 `owl:inverseOf` 漏读、军阀势力与
+  人物同名（33 条 `rdfs:range` 违反 + 自环）、人物属性谓词未在 TBox 声明。
+- **存储**：schema `sanguo-kg`（`graph-http/src/main/resources/sanguo-kg.json`，由
+  `node tools/generate-sanguo-schema.js` 生成）：一个点类型 `Entity`（`name/shard/entityType/gender/
+  courtesyName/historicity/history/novel`）+ 一个有向边类型 `Entity_Entity`（`relation/xrelation/
+  relationLabel/relationFamily`，度上限 2000）。**属性名避开 `id/label/type/source/target`**（查询层的元键，
+  重名会被遮蔽）。分片规则与 `kg-entity-graph` 一致：`name + "_" + floorMod(relation.hashCode(), 10)`，
+  1,102 实体 → 1,637 条点记录 / 2,447 条边，10 个分片里 9 个有边。
+- **播种/查询**：`SanguoGraphIntegrationTest`（点 500/批、边 1000/批、8 线程约 2.3s，已播种自动跳过，
+  `KG_RESEED=true` 强制）；`SanguoExampleQueries` 是 20 条实例查询（Gremlin 10 + Cypher 10）的可执行真源，
+  `SanguoExampleQueriesTest` 每条都跑并断言有结果，UI 下拉框同源。
+- **服务**：默认 profile 已挂 `sanguo-kg`（set `kg_sanguo_v1`）；单图 profile `--spring.profiles.active=sanguo`。
+- **RocksDB-Edge 双胞胎**：`sanguo-kg-rocksdb-edge`（schema id=5，同一个生成脚本产出，带 `storage` 块）
+  存**同一份数据**，但**点不做 hash**——点 id 就是实体名（`曹操` 一条记录 = 整个邻域，而不是
+  `曹操_2…曹操_9` 十条），并且只存 2,298 条源关系（RocksDB-Edge 把一条边同时挂在源点出表和目标点
+  入表，不需要复制逆/对称闭包；Aerospike 版 2,447 条）。`SanguoRocksDbLoader` 装载（1,102 点 /
+  2,298 边，126 ms），`SanguoRocksDbQueries` + `SanguoRocksDbEdgeTest` 跑 20 条典型查询并**打印结果**，
+  还和 Aerospike 实例做同问题答案对齐（lord 22 / serves 92 / appearsIn 78 / father 1 全部一致）。
+- **Cypher↔Gremlin 与多跳查询**：`SanguoRocksDbQueries.CYPHER_TO_GREMLIN`（10 条：把 §5.3 的 Cypher
+  逐条翻译成 Gremlin，两种语言都跑并并排打印）与 `MULTI_HOP`（12 条：两跳/三跳的关系链、共同邻居、
+  同势力、同回出场、路径强度、可达性、三跳环、跨势力、祖孙三代、混合关系链）。测试把两种语言的
+  计数对齐断言（刘备两跳邻居 202、徐庶同僚 124、诸葛亮同回 46、刘备→曹操 2 跳 1 条 / 3 跳 295 条）。
+  例句也进了 UI；两份 Markdown 表由测试写到 `target/sanguo-rdf/`。详见 [SANGUO-KG.md](SANGUO-KG.md) §5.7/§5.8。
+- **方案 C（新图 `sanguo-kg-text`，RocksDB-Edge）**：读被结构化解析忽略的两列（`历史`/`小说`），用
+  **词典 + 正则**抽取（无模型，可复现）：`mentions`(902) / `holds`(22) / `fought`(18) / `killed`(17) /
+  `strategistOf`(3) / `advisorOf`(1) = **963 条关系**，另新增 **18 个职衔 + 7 个人物**（颜良/文丑/华雄/麹义/章邯/吕旷/杨怀/杨骏）。
+  图规模：**1,135 实体 / 3,257 关系**（base 为 1,102/2,298，**+33 / +959**）。两个新关系家族：`提及`、`冲突`。
+  它**自动**抽到了方案 B 手工加的「五虎上将」（含之首），并回答了 base 图答不了的：刘备的军师=**徐庶/庞统**、
+  曹操的谋士=**司马懿**、关羽斩杀过**颜良/文丑/华雄**、谁杀了关羽=**孙权**、关羽传记提到了谁。
+  单字简称（「忠与**羽**连战」）用 `ALIAS` 表还原；带 provenance 的报告在
+  [SANGUO-KG-TEXT-EXTRACTION.md](SANGUO-KG-TEXT-EXTRACTION.md)。详见 [SANGUO-KG.md](SANGUO-KG.md) §7。
+  > 过程中又修了一个真 bug：`SanguoDataset.of()` 原来只转一次关系，`mentions` 会先把 `中郎将`/`第1回`/`乌戈国`
+  > 建成 `Person`，后面的 `holds`/`appearsIn` 就改不过来了（93 条 `range` 违反）。改成**两趟：先把属性关系
+  > 的目标定型，再处理人物–人物关系**。
+- **本地补充三元组（上游缺口）**：`kg/sanguo/triples-extra.csv`（8 条，明文）补的是「本体有类型、上游没写事实」
+  那类缺口 —— 方案 B 把「五虎上将」当成职位（`关羽 --holds--> 五虎上将之首`、张飞/赵云/马超/黄忠 → `五虎上将`），
+  另补 `刘备 --lord--> 关羽/张飞`（上游只记了「义弟」）。层因分析、诊断查询、三种修复方案都在
+  `SANGUO-KG-QUERIES.md` §9；实测：`g.V('五虎上将','Entity').inE().filter(relation.equals('holds')).otherV()` → 五虎将。
+  > 边 id 也改成了**由三元组本身导出**（`head|relation|tail`），而不是下标 —— 原来按下标当 id，
+  > 插入一条三元组会让后面所有边的 id 平移，重复播种时旧边会以旧 id 留在 bins 里变成重复边
+  >（实测 `曹操` 的度从 220 涨到 280）。
+- **查询手册（单文件，方便复制）**：[SANGUO-KG-QUERIES.md](SANGUO-KG-QUERIES.md) —— 把全部查询汇总成一个文件：
+  22 条问答式查询（如「关羽和曹操是什么关系？」「刘备的手下有谁是从曹操那边叛逃过来的？」）、
+  12 条两跳/三跳、20 条典型、10 条 Cypher→Gremlin 转换；每条都有 Gremlin +（如可行的）Cypher +
+  **实测答案**，开头还有两份「一行一条」的纯查询清单（`sanguo-queries.gremlin` / `sanguo-queries.cypher`
+  也单独存了一份）。由 `SanguoRocksDbEdgeTest#writesTheQueryCookbook` 生成：它把目录里的**每一条**查询
+  在这张图上跑一遍、记下回答、断言非空，再写出文件 —— 所以手册不会和代码走偏。
+  详见 [SANGUO-KG.md](SANGUO-KG.md) 第 5 节。
+
 ---
 
 ## 13. 多图实例 + 查询错误回传（本轮新增）
@@ -474,7 +538,6 @@ schema 默认 `efSearch = 30`（见第 16 节）时的同一套索引：**recall
 ### 15.8 端到端查询（HTTP / UI）
 
 `application.yml` 默认同时挂三个图：`payment-graph`（http_demo_v1）、`kg-entity-graph`（kg_nell995_v2）、`hnsw-sift`（hnsw_sift_v1）；`--spring.profiles.active=hnsw` 只挂向量图（见 `application-hnsw.yml`）。
-
 ```bash
 curl -s -X POST http://localhost:8080/api/query -H 'content-type: application/json' -d '{
   "graphName":"hnsw-sift",
@@ -4949,3 +5012,801 @@ headless Edge 实测：下拉里出现这四条，点第一条 → 面板显示 
 （它直接用代码里的 context 调 `FuzzyLinks.plan`，所以事件列表**不落库**——真实引擎里"会话"是刚发生的事，
 由查询带进来），`FuzzyDemo.DEMO_PATTERNS` 同步加上 pattern 2/3，`FuzzyLinkIntegrationTest` 断言
 `largestNodePerPattern = {0=7, 1=4, 2=2, 3=3}` 并用 engine 跑了一遍"事件列表进、组出" ✓（12 用例全绿，跑测试即重新播种 `http_demo_v3`）。
+
+---
+
+## 69. 事件序列模式（第二轮）：双向时间窗口 + 步骤/跨步骤条件
+
+§68 的序列模式只认"上一步之后 N 秒内"（单向窗口）和写在步骤上的 `=='字面量'`。用户这次给了两个更完整的
+pattern（大括号是引用、中括号是推断逻辑、小括号是实例内容，替换后如下）：
+
+```
+fl_3_L0(ip2(Login.ip))_[<100s]_B1_[-100s<time_interval<100s]_P2_[<100s]_D3(Dispute.DisputeReason)[Dispute.ip==Login.ip]
+fl_4_L0(ip2(Login.ip))[Login.type=='Mobile']_[<100s]_B1_[-100s<time_interval<100s]_P2_[<100s]_D3(Dispute.DisputeReason)[Dispute.ip==Login.ip || Dispute.cookie == Payment.Cookie || Dispute.DisputeReason == 'NotMyCard']
+```
+
+这正好补上 §68 收尾清单的第 1 条（"不要求先后、只要相邻在窗口内"），并第一次引入**条件**。
+
+### 69.1 语法的三处增量
+
+| 写法 | 语义 | 实现 |
+|---|---|---|
+| `_[<100s]_` | 下一步在**之后** ≤100s（等号成立算通过） | 沿用 §68；`withinSeconds=100, minSeconds=0` |
+| `_[-100s<time_interval<100s]_` | `-100s < 间隔 < 100s`：**双向**，Payment 可以先于 BalanceCheck | 新 `GAP_RANGE` 正则；`withinSeconds=100, minSeconds=-100`；匹配时按"与上一步事件的时间差"落在 `[min,max]` 判定，`min<0` 时允许往前找事件 |
+| `[A==B]`、`[A==B || C==D]`、`[Login.type=='Mobile']` | 写在步骤后或序列末尾的**条件**，读各步骤**已匹配事件**的字段 | 新 `FuzzyCondition`：`== != && || ()`，`&&` 优先级高于 `||`；操作数是 `字段路径`（`Dispute.ip`）或字面量（`'Mobile'`） |
+
+**条件读的是"哪个事件"**：匹配完成后把每个命中事件按**事件自己的名字**（`Login`）和**步骤名**（`L0`/`L`）
+放进上下文，于是 `Dispute.ip == Login.ip` 就是"第 4 步命中的 Dispute 的 IP 等于第 1 步命中的 Login 的 IP"，
+与它在列表里是第几个无关。**字段缺失时比较为 false**（缺证据不算命中），值按文本比较（BIN 的前导零不丢）。
+
+### 69.2 匹配算法：带回溯的贪心
+
+§68 是"按时间排序 + 单向游标贪心"。双向窗口下 Payment 可能在 BalanceCheck 之前，游标回不去，所以改成
+**递归回溯**：每一步按时间顺序试所有未被占用、满足窗口的事件，末尾校验全部条件；取**第一个成功的组合**
+（仍是"最早出现的那次"）。事件列表很短（一次会话 4–6 条），回溯代价可忽略；另加 50 万次尝试的上限，
+超过就明确报"事件列表太大，收窄窗口或减少事件"，而不是静默给错答案。
+
+### 69.3 演示数据：让每个 pattern 真的关联到账号
+
+`FuzzyLinkDemoLoader` 的事件会话从 5 条扩到 9 条（`ev_a1..ev_a9`），列从 5 个扩到 9 个（登录设备、Dispute 的 IP、
+Payment/Dispute 各自的 Cookie）。新增的 `ev_a6..ev_a9` 的 BalanceCheck 与 Payment **互换先后**（`1000/500/3500`
+毫秒偏移），所以严格单向的 pattern #2 对它们**不适用**——正是为了演示双向窗口：
+
+| 会话 | 登录 | 设备 | reason | Dispute IP | Cookie | pattern 3 | pattern 4 |
+|---|---|---|---|---|---|---|---|
+| ev_a6 | 10.141.20.30 | Mobile | NotMyCard | = 登录 IP | 相同 | ✓ | ✓（地址/原因两条） |
+| ev_a7 | 10.141.20.31 | Mobile | NotMyCard | 10.99.99.99 | 不同 | ✗（地址不符） | ✓（原因=NotMyCard） |
+| ev_a8 | 10.141.20.32 | Mobile | Fraud | 10.99.99.98 | 相同 | ✗ | ✓（Cookie 相同） |
+| ev_a9 | 10.141.20.33 | Web | NotMyCard | = 登录 IP | 相同 | ✓ | ✗（不是 Mobile） |
+
+`ev_a1/ev_a2` 仍走单向的 pattern #2（同在 10.122，NotMyCard），顺带也被 #3/#4 命中。
+
+### 69.4 实测（`payment-graph`，8081 服务在跑；`.logs/verify-sequence-v2.js`）
+
+```
+pattern 3
+  ev_a6: ["fl_3_10.141_notmycard"]  members=["ev_a6","ev_a9"]
+  ev_a7: []                          ← Dispute.ip 不是登录 IP
+  ev_a8: []                          ← 同上（Cookie 不在 pattern 3 里）
+  ev_a9: ["fl_3_10.141_notmycard"]  members=["ev_a6","ev_a9"]
+pattern 4
+  ev_a6: ["fl_4_10.141_notmycard"]  members=["ev_a6","ev_a7"]
+  ev_a7: ["fl_4_10.141_notmycard"]  members=["ev_a6","ev_a7"]   ← 靠 reason 进来
+  ev_a8: ["fl_4_10.141_fraud"]      members=["ev_a8"]            ← 靠 Cookie 进来，另成一组
+  ev_a9: []                          ← Web 登录
+```
+
+`FuzzyLinkDemoLoader.load()` 现在会先清掉上一轮 seed 留下的 `FuzzyLinkedTo` 边（对演示账号与扫到的链接点都 `clearEdgeClasses`）+ 删掉扫得到的链接点，
+否则 pattern 形状一变就会同时留下新旧两组（实测：老 pattern 3 的 `fl_3_10.122.13` 的**边**已清掉，
+`g.V('ev_a1','Account').in('FuzzyLinkedTo')` 从 4 条回到 3 条；该旧点本身是软删（`lastUpdatedTime` 过期），
+在后台回收前直接按 id 查仍读得到，但它已没有任何入边，不影响从账号出发的遍历）。
+
+### 69.5 复现与测试
+
+```bash
+./mvnw -o -pl graph-fuzzy test -Dtest=FuzzySequenceTest          # 15 用例（新增双向窗口/跨步骤条件/OR 三类）
+./mvnw -o -pl graph-fuzzy test                                   # 54 用例
+# 无存储的分组断言（3 用例）：每个 pattern 到底关联了哪些账号
+./mvnw -o -pl graph-integration-test -am -Dtest=FuzzySessionGroupingTest -Dsurefire.failIfNoSpecifiedTests=false test
+# 真 Aerospike 上跑（会重新播种 http_demo_v3）
+./mvnw -o -pl graph-integration-test -am -Dtest=FuzzyLinkIntegrationTest -Dsurefire.failIfNoSpecifiedTests=false test
+node .logs/verify-sequence-v2.js                                 # 上面那张实测表
+node .logs/run-ui-examples.js                                    # UI 下拉里 6 条序列示例的实际返回
+```
+
+`fuzzy-patterns.json` 现在是 5 个模式（#0/#1 平铺，#2/#3/#4 序列），#3/#4 各带 ev_a6 的事件列表作为 example；
+顺带修了 `FuzzyPatterns.readExample` 把嵌套对象摊成空串的 bug（序列 pattern 的 example 就是事件列表，必须原样带回来，
+`FuzzyLinksTest.aSequenceExampleSurvivesTheFileWithItsEventList` 钉住）。UI 的 `payment-graph` 示例列表里，
+序列例子从 4 条变 6 条（pattern 2 / 3 / 3 的组 / 4 的组 / 某账号属于哪些组）。
+
+---
+
+## 70. 事件序列模式（第三轮）：`anyFields` UDF —— 跨事件的共有字段
+
+第三轮的 pattern 引入一个**读整个匹配结果**的 UDF（前两轮的函数都只读一个值）：
+
+```
+fl_5_L0(ip2(Login.ip))[Login.type=='Mobile']_[<100s]_B1_[<50s]_P2_[<100s]_D3(anyFields([Login, Payment, Dispute], 3, false))
+```
+
+### 70.1 `anyFields` 的语义
+
+`anyFields([事件, ...], n, 是否带值)`：在**这些事件都出现**的字段里，找出**值相等**的那些；数量不足 `n` 就
+**模式不适用**（返回 null，不是空 key）。结果按字段名**字母序**：
+
+* 第三个参数 `false`（默认）：只列字段名 → `cookie_ip_type`；
+* `true`：每个字段带上它们一致的值 → `cookie=c1_ip=10.12.13.14_type=Mobile`（`FuzzyKey` 最后会把整条 key 小写）。
+
+**簿记字段永远不参与**：`id`、`eventTime/time/timestamp/ts`、事件名（`name/eventName/eventType/event`）——
+它们要么每个事件不同（时间），要么只是流水号，不构成"同类会话"的签名。字段名大小写/下划线不敏感，值按文本比。
+
+### 70.2 为此加的语法与求值能力
+
+| 增量 | 说明 |
+|---|---|
+| 列表字面量 `[Login, Payment, Dispute]` | `FuzzyExpression` 的 `Node.List`；只作为**参数**出现，不是可求值的值 |
+| `true` / `false` 字面量 | 解析成 `Literal`（以前会被当成字段名 `false`） |
+| **上下文函数**类别 | `FuzzyFunctions` 新增 `registerContext(...)`/`isContextFunction(...)`/`applyContext(...)`；`anyFields` 注册在这里。普通函数签名是"一个值 + 参数"，装不下"一组事件" |
+| 参数**按写法渲染** | 上下文函数不做逐值求值：字段保留名字（`Login` 表示事件）、列表用逗号连接、嵌套调用求值。`anyFields` 再按 `,` 拆开事件名，用 `FuzzyContext.find(名字)` 取到事件 map |
+| 步骤值改用**整个匹配结果**求值 | 以前 `D3(...)` 只看 D3 命中的那个事件；现在用"所有命中事件（按事件名/步骤名寻址）+ 当前事件字段"的合并上下文，`anyFields` 才看得到 Login/Payment/Dispute |
+| 值/条件校验移到**叶子** | 搜索时只做"事件名 + 窗口"，全部步骤配好、值从合并上下文取到、条件成立才算命中；值缺失就回溯换一种配法 |
+
+### 70.3 演示数据与每个 pattern 关联的账号
+
+`ev_a1/a2/a5`（各自 /16 相同、Mobile、登录/支付/争议三事件都带相同的 `Cookie`/`IP`/`Type`）→ anyFields 找到
+`cookie_ip_type`；`ev_b1`（10.155）自己一组；`ev_b2` 只有 `Type` 一致（IP 与 Cookie 都不同）→ 不适用；
+`ev_b3` 在 BalanceCheck→Payment 之间放了 **60s**（越过 `[<50s]`）→ 不适用。三个 pattern 的组大小：
+`#2=2, #3=2, #4=2, #5=3`（`{0=7,1=4,2=2,3=2,4=2,5=3}`）。账号总数 30（环 18 + 12 条会话），57 条 link 边。
+
+### 70.4 实测（`.logs/verify-anyfields.js`，8081 服务在跑）
+
+```
+pattern 5 (anyFields)
+  ev_a1: ["fl_5_10.122_cookie_ip_type"]  members=["ev_a1","ev_a2","ev_a5"]   ← cookie/ip/type 三项一致
+  ev_b1: ["fl_5_10.155_cookie_ip_type"]  members=["ev_b1"]
+  ev_b2: []                              ← 只有 Type 一致（<3）
+  ev_b3: []                              ← B→P 60s，越过 [<50s]
+```
+
+`g.V('ev_a1','Account').in('FuzzyLinkedTo').values('id')` 现为 4 条（#2/#3/#4/#5 各一）。
+`false`/`true` 两种拼法都有单测：`FuzzySequenceTest.anyFieldsListsTheFieldsEveryEventAgreesOn`
+（`cookie_ip_type` vs `cookie=c1_ip=10.1.2.3_type=Mobile`），簿记字段不计数见
+`anyFieldsNeverCountsTheBookkeepingFields`。
+
+### 70.5 复现与测试
+
+```bash
+./mvnw -o -pl graph-fuzzy test -Dtest=FuzzySequenceTest      # 19 用例（新增 anyFields 4 个）
+./mvnw -o -pl graph-fuzzy test                               # 58 用例
+./mvnw -o -pl graph-integration-test -am -Dtest=FuzzySessionGroupingTest -Dsurefire.failIfNoSpecifiedTests=false test  # 4 用例（#5 的组成员）
+./mvnw -o -pl graph-integration-test -am -Dtest=FuzzyLinkIntegrationTest -Dsurefire.failIfNoSpecifiedTests=false test # 15 用例（真 Aerospike，播种 http_demo_v3）
+node .logs/verify-anyfields.js                               # 上面那张实测表
+node .logs/run-ui-examples.js                                # UI 下拉里 8 条序列示例
+```
+
+`fuzzy-patterns.json` 现在 6 个模式（#0/#1 平铺，#2–#5 序列）；UI 的 `payment-graph` 示例 8 条。
+
+---
+
+## 71. Gremlin 文本区支持 Groovy 风格脚本（管理员开关）
+
+用户报：`def ids = g.V(1001, 'Account').values('id').toList()` + `print(ids)` 这种多语句写法报
+`Expected 'g.V(...)' or 'g.E(edgeName)' prefix`。原因是文本区只接受**一条遍历**。这一批让同一批遍历可以
+写成**一段脚本**，并给文本区一个**只给管理员看、暂时默认放开**的开关。
+
+### 71.1 支持的脚本语法（新类 `GremlinScript`）
+
+```groovy
+def ids = g.V(1001, 'Account').values('id').toList()
+print(ids)
+```
+
+| 形状 | 语义 |
+|---|---|
+| `def name = <expr>` / `name = <expr>` | 存一个值（变量） |
+| `print(<expr>)` / `println(<expr>)` | 记一行输出 |
+| `return <expr>` | 立即返回 |
+| `<expr>` | 最后一条的表达式的值就是答案 |
+| `g.V(var, 'Type')` | 变量可当 id：列表展开成逗号分隔的 id，元素取它的 id；空列表明确报"变量为空" |
+| `var.size()/count()/toList()/toSet()/isEmpty()/next()/get(i)` | 变量上的小方法链 |
+| `[1, 'a', true]`、字符串、数字、布尔、null | 字面量 |
+
+**结果口径**：有 `print` 时，一次 `print` 的值就是答案（`print(ids)` → 那批 id），多次 `print` 则是这些值的列表；
+没有 `print` 时是最后一条语句的值。响应里另有 `output`（打印的文本行）和**所有遍历的合并子图**（画布照常画）。
+
+### 71.2 为什么不是真正的 Groovy 运行时
+
+引擎一直**故意没有 Groovy**（`GremlinGraphQuery` 的注释写着没有 `GroovyShell`/`GroovyClassLoader`，表达式语言是自己的）。
+把一个真正的 Groovy 塞进服务端等于把任意代码执行放进查询接口；这一版做的是**Groovy 形状的子集**（语句/变量/`def`/`print`/列表/方法链），
+在项目自己的解析器上跑，所以既能写用户要的多语句查询，又不引入新依赖与执行面。读不出的表达式会明确点名支持范围
+（`Unknown script method '.shuffle()'. Supported: ...` / `Unknown script variable 'x'`），不会静默返回空。
+
+### 71.3 API
+
+`POST /api/v1/query` 的请求多了可选 `script`：`true` 强制按脚本跑，`false` 强制按单条遍历跑，**不传则由文本自己判断**
+（有 `def`/`print`/`return`/赋值或多条语句就是脚本；分行的链式遍历（下一行以 `.` 开头）仍算一条）。响应为
+`ScriptResponse{result, output, subgraph}`——`result`/`subgraph` 与原来的约定一致，UI 无需特殊分支即可显示。
+
+### 71.4 UI（管理员开关）
+
+`index.html` 的 Gremlin 行里加了 `#scriptToggleWrap`（`#scriptToggle`）：**只给管理员看**由
+`IS_ADMIN`/`SHOW_SCRIPT_MODE` 两个常量把关，现在都是 `true`（"暂时放开"；把 `IS_ADMIN` 改 false 即对所有人隐藏，
+后端仍能自动识别脚本）。打开后占位符变成脚本示例（`def ids = ...`），请求带 `script: true`，选择记忆在 `localStorage`；
+示例下拉里也加了一条"脚本：先取一批 id，再统计"。
+
+### 71.5 实测（8081 服务在跑；`.logs/verify-script-mode.js`）
+
+```
+用户的那段：  def ids = g.V(1001,'Account').nearest(5).values('id').toList()  /  print(ids)
+  -> result ["1004","1007","1010","1013","1016"]   output ["[1004, 1007, 1010, 1013, 1016]"]   子图 6 点
+变量当 id：   g.V(ids, 'Account').outE('Payment').count()  -> 5   （子图 20 点，说明确实从这些 id 走的）
+方法链：      print(ids.size()) / print(ids.get(0))  -> 5 / "1004"
+多次 print：  -> result [5, ["1004",...]]  output ["5","[1004,...]"]
+空变量：      def ids = <空>.toList(); g.V(ids,...)  -> 400 "The script variable 'ids' is empty, so there is no id to walk from"
+单条遍历：    g.V(1001,'Account').nearest(3).values('id')  -> 不是脚本，结果不变
+```
+
+headless Edge 驱动真实页面：开关可见（标签"脚本"）✓、示例下拉里有脚本条目 ✓、打开开关后占位符变化 ✓、
+跑用户脚本后面板显示 `5 项 · 5 个不同值`、画布 6 点 5 边 ✓。
+
+### 71.6 复现与测试
+
+```bash
+./mvnw -o -pl graph-query-gremlin test -Dtest=GremlinScriptTest   # 11 用例（解析/变量/print/链/空变量/子图合并/错误文案）
+./mvnw -o -pl graph-query-gremlin test                            # 204 用例
+./mvnw -o -pl graph-http test                                     # 73 用例（QueryControllerTest 12，含 script 绑定）
+node .logs/verify-script-mode.js                                  # 上面的 headless UI 实测
+```
+
+顺带修了演示环境的一件事：`payment-graph` 的 HNSW 索引 size 掉到 0（上一批截断顶点集留下的），
+`POST /api/v1/vector-index/rebuild` 重建为 152 点 / 9 层 / 2883 条链接，`nearest(5)` 恢复。
+
+---
+
+## 72. 向量索引边默认隐藏、`path()`、sender/receiver 四跳脚本
+
+三件事一起做的：正常查询里不显示 HNSW 的 `accountVector_x` 索引边、补上 `path()` step、给出一段可在 UI 跑的两点四跳路径脚本。
+
+### 72.1 未命名 hop 跳过向量索引层边
+
+`accountVector_0..8` 是 HNSW 自己的层边，不是数据关系。以前 `g.V(1001,'Account').both()` 会把它们当邻居读、
+画布也会把它们画出来。实现：`GremlinGraphQuery` 从 schema 算出向量属性对应的层边名（`VectorIndexSchemas.levelOfLayerEdge`），
+通过 `GremlinContext.hiddenEdgeClasses(...)` 传给执行上下文；`readAllEdgeClassesBatched`（**只有未命名 hop 走这条**）
+在返回前把这些层边滤掉。于是：
+
+* `g.V(1001,'Account').bothE()` 只剩 `Payment/PhoneToAccount/IPToAccount`（实测 37/1/16 条，**无 vector**）；
+* 显式命名层边（`bothE('accountVector_0')`）仍然读得到（单元用例钉住）；
+* `nearest(k)` 的搜索走的是**命名**层边（`GraphQueryHnswStore` 按 `HnswLevels.edgeName` 读），不受影响，且它记录的
+  layer-0 链接照旧进子图 —— 也就是"只有查向量相似时才显示"（实测 `nearest(3)` 子图 3 条 `accountVector_0`）。
+
+### 72.2 `path()`
+
+新类 `GremlinPath`（`extends AbstractList<Object>`，即"可以被当 list 用的 path 对象"），`path()` 由
+`GremlinGraphQuery#runPathCompiled` 执行：普通管线是 list 变换（只知道当前元素、不知道从哪来），所以路径需要一次"带记忆的走"。
+步骤序列在 `path()` 之前用**路径感知**方式走：hop 追加走过的边（`out` 追加边+到达点，`outE` 只追加边，`otherV` 追加到达点），
+`has/filter/limit/dedup` 作用在每条路径的最后一个元素上、不匹配就整条丢弃；`path()` 之后照常走普通管线。
+`path()` 出现在 hop 之后以外的位置会明确报错，而不是悄悄丢路径。
+
+```
+g.V(1001, 'Account').out('Payment').out('Payment').path()   -> 81 条 path，每条 5 个元素（v,e,v,e,v）
+g.V(1001, 'Account').out('Payment').out('Payment').path().count() -> 81
+```
+
+path 里的点是**全属性**读的（编译期对含 `path()` 的查询把所有投影计划设为"全读"），所以画布/答案能显示点内容。
+
+### 72.3 脚本层补的集合方法
+
+为写四跳脚本给 `GremlinScript` 的方法链补了：`last/first/start/end/reverse/get/contains/indexOf/add/addAll/retainAll(或 intersect，
+去重的公共值)/distinct/join/joinOnEnd`，以及表达式的 `+`（数字相加、其余按文本拼接，用来 `print('...: ' + x)`）。
+集合方法**返回新列表**（脚本里赋值），`joinOnEnd(other)` 把两组 path 按"末端是同一个点"拼成更长的 path：
+右半段反向、公共点只留一次、**走过的点重复出现（成环）就丢弃**——正是"达不到四跳的路径要排除"。
+另外把结果口径讲清楚：**脚本最后是 `print` 时，打印的值就是答案；最后是一条表达式时，那个表达式的值才是答案，print 只是 output。**
+
+### 72.4 sender/receiver 四跳脚本（可放 UI 跑）
+
+`payment-graph` 上 sender=1000、receiver=1006（两点各有两跳路径、且有公共中点）：
+
+```groovy
+def sender = 1000
+def receiver = 1006
+
+def sPaths = g.V(sender, 'Account').out('Payment').out('Payment').path().toList()
+def rPaths = g.V(receiver, 'Account').out('Payment').out('Payment').path().toList()
+
+def sMids = g.V(sender, 'Account').out('Payment').out('Payment').values('id').toList()
+def rMids = g.V(receiver, 'Account').out('Payment').out('Payment').values('id').toList()
+def common = sMids.retainAll(rMids)
+def midObjects = g.V(common, 'Account').toList()
+
+def four = sPaths.joinOnEnd(rPaths)
+
+def answer = []
+answer = answer.addAll(sPaths)
+answer = answer.addAll(rPaths)
+answer = answer.addAll(four)
+print('sender two-hop paths: ' + sPaths.size())
+print('receiver two-hop paths: ' + rPaths.size())
+print('common mids: ' + common)
+print('middle objects: ' + midObjects.size())
+print('four-hop paths: ' + four.size())
+answer
+```
+
+实测（`.logs/verify-paths.js`）：sender 两跳 33 条、receiver 两跳 9 条、公共中点 `[1008,1014,1020,1026]`、
+中点对象 4 个、四跳路径 **30** 条、`answer` 共 72 个 path 对象；一条四跳：`1000 → 1001 → 1008 → 1007 → 1006`。
+（脚本里 `g.V(common,'Account')` 用的是上一批做的"变量当 id"；`midObjects` 与四跳路径中间的点是同一批对象。）
+
+### 72.5 复现与测试
+
+```bash
+./mvnw -o -pl graph-query-gremlin test -Dtest=GremlinPathTest   # 4 用例（path 结构/多分支/hop-after-path/隐藏层边）
+./mvnw -o -pl graph-query-gremlin test -Dtest=GremlinScriptTest # 17 用例（joinOnEnd/环剔除/retainAll/+/两端）
+./mvnw -o -pl graph-query-gremlin test                          # 215 用例
+./mvnw -o -pl graph-http test                                    # 73 用例
+node .logs/verify-paths.js                                        # 上面 72.1–72.4 的实测
+```
+
+UI 的 `payment-graph` 示例里加了两条：`g.V(1001,'Account').out('Payment').out('Payment').path()` 与上面那段四跳脚本。
+**注意**：服务重启会重置 `payment-graph` 的 HNSW 索引（size 变 0，`nearest` 空），起来后要跑一次
+`POST /api/v1/vector-index/rebuild`（这次重建为 152 点 / 9 层 / 2913 链接）。
+
+---
+
+## 73. 四跳脚本改写：第二跳只跳边（`outE`）+ 性能
+
+用户要求：sender / receiver 的**最后一跳**不用 `out('')`，直接 `outE('')`。改完后路径以**边**结尾，
+落点从边本身读（`otherVertexId`），少读一批点；脚本里公共点对象由第 2 步 `g.V(common,'Account')` 取来，
+拼接时填进中间。
+
+### 73.1 改写后的脚本（UI 示例同步）
+
+```groovy
+def sender = 1000
+def receiver = 1006
+
+// 第二跳只跳边：path 以边结尾 [点, 边, 点, 边]
+def sPaths = g.V(sender, 'Account').out('Payment').outE('Payment').path().toList()
+def rPaths = g.V(receiver, 'Account').out('Payment').outE('Payment').path().toList()
+
+// 落点 = 最后那条边的另一端；求交拿公共 id，再取点对象
+def common = sPaths.endIds().retainAll(rPaths.endIds())
+def midObjects = g.V(common, 'Account').toList()
+
+// 按公共落点拼四跳，中间点用 midObjects 的对象填充；成环的丢弃
+def four = sPaths.joinOnEnd(rPaths, midObjects)
+
+def answer = []
+answer = answer.addAll(sPaths)
+answer = answer.addAll(rPaths)
+answer = answer.addAll(four)
+print('sender two-hop paths: ' + sPaths.size())
+print('receiver two-hop paths: ' + rPaths.size())
+print('common mids: ' + common)
+print('middle objects: ' + midObjects.size())
+print('four-hop paths: ' + four.size())
+answer
+```
+
+为此脚本层加了两个方法：`endIds()`（每条 path 的落点：末元素是点就是它，是边就是 `otherVertexId`——**不读点**），
+以及 `joinOnEnd(other, middleObjects)`（末元素是边时，用第 2 步取到的点对象填公共点，再反接另一半）。
+
+### 73.2 结果与改前一致
+
+```
+sender two-hop paths: 33   receiver two-hop paths: 9
+common mids: [1008, 1014, 1020, 1026]   middle objects: 4
+four-hop paths: 30   answer = 72 个 path 对象
+一条四跳: 1000 -> 1001 -> 1008 -> 1007 -> 1006
+```
+
+### 73.3 性能（`.logs/bench-path.js`，100 次交错 A/B，计数器取每次查询前后的差值）
+
+| 变体 | mean | median | p95 | p99 | max | kv.read | vertex.read | edge.read | 答案 | 响应 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| A 第二跳 `out('Payment')` | 34.72 ms | 34.61 | 42.16 | 44.72 | 44.72 | 33 | 44 | 8 | 72 paths | 154.89 KB |
+| **B 第二跳 `outE('Payment')`（改写）** | **29.20 ms** | **29.51** | **35.38** | **40.47** | **40.47** | **23** | **34** | 8 | 72 paths | **139.56 KB** |
+
+**B vs A：延迟 −5.53 ms（−15.9%）、kv 读 −10、点读 −10、边读不变（8）、响应小 15.3 KB。** 省下的正是第二跳
+"读到达点"的那 10 次点读（sender 侧 5 + receiver 侧 5 个点）；两跳 path 里因此也只带边、不带到达点对象，响应更小。
+数字在 50 次与 100 次两轮完全一致（工作负载可复现）。
+
+### 73.4 复现
+
+```bash
+node .logs/verify-paths.js      # 结果等价（33/9/4/30/72 与一条四跳样例）
+node .logs/bench-path.js 100    # 上表（改成别的次数即可）
+```
+
+---
+
+## 74. Groovy 脚本：控制流与闭包；TinkerPop 3.8.2 step 兼容表
+
+用户两问：脚本模式能不能写 `for`/`if`/闭包；参考文档里的 Gremlin step 都支持吗。前者补齐了，后者逐条核对并记录（下表）。
+
+### 74.1 脚本层新增：控制流、闭包、算术
+
+`GremlinScript` 从"一串平铺语句"变成"语句树"，因此可以嵌套：
+
+| 写法 | 说明 |
+|---|---|
+| `if (cond) { ... } else { ... }` / `else if` | 条件支持 `&& \|\| !`、`== != < <= > >=`、括号；两边都是普通脚本表达式（`g.V(...).count() > 0` 也可） |
+| `for (x in <list>) { ... }` | 遍历列表、数组、Map 的 entry；`g.V(...)` 的结果也是列表 |
+| `while (cond) { ... }` | 有 10 万次上限，防呆循环 |
+| `break` / `continue` | 在 `for`/`while` 里生效 |
+| 闭包 `{ ... }` / `{ x -> ... }` / `{ x, i -> ... }` | 作为方法参数：`each`、`eachWithIndex`、`collect`、`findAll`、`find`、`any`、`every`、`count`、`sum`；无参时绑定 `it`，参数遮蔽外层同名变量并在调用后还原 |
+| 算术 `+ - * / %` 与比较 | `+` 数字相加/其余拼接；`*`/`-`/`%` 整数保持整数，`/` 为浮点；`!` 取反 |
+| 元素访问 | 闭包里 `it.id()`、`it.label()`、`it.value('k')`、`it.values('a','b')`、`it.properties()`；`'abc'.size()`、`[1,2].size()` 这类字面量上的方法也支持 |
+| 真值 | Groovy 真值：null/false/0/空串/空集合/空 Map 为假 |
+
+实测（8081）：
+
+```groovy
+def ids = [1000, 1001, 1002, 1003]
+def hits = []
+for (id in ids) {
+  def n = g.V(id, 'Account').outE('Payment').count()
+  if (n.get(0) > 0) { hits = hits.add(id + ':' + n.get(0)) }
+}
+def edges = g.V('1000','Account').outE('Payment').toList()
+def statuses = edges.collect { it.value('status') }
+def successful = statuses.findAll { it == 'SUCCESS' }
+print('hits: ' + hits); print('statuses: ' + statuses); print('successful: ' + successful.size())
+```
+→ `hits: [1000:3, 1001:27, 1002:3, 1003:3]`、`statuses: [SUCCESS, PENDING, SUCCESS]`、`successful: 2`。
+
+**仍然刻意不做**：类/`import`/线程/IO/`try-catch`/`switch`/区间 `1..5`/Map 字面量 `[k:v]`/`each` 之外的 Map 方法/多方法派发。
+这不是"能跑的 Groovy"，是"查询需要的 Groovy 子集"，读不出的写法会明确报错（例如 `.shuffle()` 会列出支持的方法）。
+
+### 74.2 TinkerPop 3.8.2 step 兼容表
+
+对照 <https://tinkerpop.apache.org/docs/3.8.2/reference/> 的步骤目录逐条核对。✅ 支持、🟡 部分（语法或能力有差别）、❌ 未支持（附原因）。
+
+**起点 / Start**
+
+| step | 状态 | 备注 |
+|---|---|---|
+| `g.V(id..., type)` / `g.V(type)` / `g.V()` | ✅ | 空起点给 `fuzzyLink`/`nearest` 这类自带起点的 step |
+| `g.E(class)` / `g.E(id..., class)` / `g.E()` | ✅ | |
+| `inject`, `V()`, `E()`（中途） | ❌ | 不产生新起点的语义未做 |
+
+**顶点跳 / 边跳（flatMap）**
+
+| step | 状态 | 备注 |
+|---|---|---|
+| `out` `in` `both`（0..n 个类名） | ✅ | |
+| `outE` `inE` `bothE` | ✅ | 支持 `has`/`filter`/`limit` 下推到存储 |
+| `otherV` | ✅ | |
+| `outV` `inV` `bothV` | ❌ | 只有 `otherV`（本条边"另一端"） |
+| `edge` `V` `E`（中途） | ❌ | |
+
+**过滤 / filter**
+
+| step | 状态 | 备注 |
+|---|---|---|
+| `has(key)` / `has(key,value)` / `has(label,key,value)` | ✅ | 值支持字符串/数字/`matches` 的 token |
+| `hasLabel` `hasId` `hasKey` `hasNot` `hasValue` | ✅ | |
+| `filter { ... }` | ✅ | 闭包用自己的表达式语言 |
+| `filter(<child>)` / `where` / `and`/`or`/`not`(child) | 🟡 | `not/and/or` 接受子遍历（`not(out('x'))`）；`filter` 只收闭包表达式；`where` 未做 |
+| `is(value)` / `is(gt/lt/gte/lte/neq/eq)` | ✅ | `within/between/inside/outside` 未做 |
+| `dedup` | 🟡 | 全局去重；`dedup('a')`/`by()` 未做（无 step label） |
+| `limit` `range` `skip` `tail` `sample` | ✅ | `sample` 用固定种子（可复现优先）；`limit(local)` 未做 |
+| `coin` `timeLimit` `simplePath` `cyclicPath` | ❌ | 需要遍历器历史/随机副作用 |
+| `all` `any` `none`（列表谓词）, `has(key,P)` 的 `P` 形式 | ❌ | |
+
+**映射 / map**
+
+| step | 状态 | 备注 |
+|---|---|---|
+| `values` `valueMap` `elementMap` | ✅ | `valueMap` 无 `by()`/`with(tokens)` |
+| `map { ... }` | ✅ | 闭包 |
+| `id` `label` `identity` `constant` | ✅ | |
+| `path` | 🟡 | 支持 hop 链 + `has/filter/limit/dedup` 后 `path()`；`path().by()/from()/to()` 未做，`path()` 后不能接 hop |
+| `count` `sum` `min` `max` `mean` | ✅ | 全局；`count(local)`/`by()` 未做 |
+| `fold` `unfold` | ✅ | |
+| `order([key[, asc\|desc]])` | 🟡 | 直接给 key；TinkerPop 的 `order().by('k', desc)` 形式未做 |
+| `groupCount([key])` | 🟡 | 同上；缺属性归到 `(none)`（JSON 不能有 null 键） |
+| `group` `project` `select` `sack` `loops` `math` `index` `element` | ❌ | 需要 step label/副作用/遍历器状态 |
+| `toLower` `toUpper` `trim` `length` | ✅ | |
+| `asString` `asNumber` `asBool` `asDate` `concat` `split` `substring` `replace` `format` `lTrim` `rTrim` | ❌ | 未做 |
+| `dateAdd` `dateDiff` `dateFormat` | ❌ | 未做 |
+| `combine` `conjoin` `difference` `disjunct` `intersect`(step) `product` | ❌ | 集合运算未做（脚本里可用 `retainAll/addAll` 等） |
+
+**分支 / 副作用**
+
+| step | 状态 | 备注 |
+|---|---|---|
+| `union(child...)` `coalesce(child...)` `local(child...)` | ✅ | 子遍历参数（`union(out('a'), out('b'))`） |
+| `repeat` `emit` `until` `times` `choose` `optional` `branch` `match` | ❌ | 需要遍历器的循环/标签状态；可用脚本 `for`/`if` + `union`/`coalesce` 近似 |
+| `sideEffect` `inject` `aggregate` `store` `cap` `subgraph` `tree` | ❌ | 无 side-effect 存储 |
+| `with` `withSideEffect` `withSack` `withStrategies` `withoutStrategies` | ❌ | 不适用 |
+| `profile` `explain` | ❌ | 指标走 `/api/v1/metrics/{graph}` |
+| `barrier` `batch` | ✅ | 本项目自己的批量/屏障写法 |
+| `createdBetween` `nearest` `circle` `fuzzyLink` `pageRank` `louvain` `connectedComponents`/`cc` `sssp` `bfs` | ✅ | 本项目扩展（`nearest`/`circle`/`fuzzyLink`/算法） |
+
+**写 / 终端**
+
+| step | 状态 | 备注 |
+|---|---|---|
+| `toList` `toSet` `toBulkSet` `toIterator` `next` `iterate` `none` `discard` | ✅ | 引擎本来就返回列表 |
+| `count` `size` | ✅ | `size()` 是 Groovy 拼写 |
+| `addV` `addE` `mergeV` `mergeE` `property` `drop` `io` `read` `write` `call` | ❌ | 查询引擎只读；写入走 HTTP 写接口（`POST /api/v1/graphs/{graph}/vertices|edges`） |
+| `hasNext` `tryNext` `promise` `fill` `asAdmin` | ❌ | |
+
+### 74.3 复现
+
+```bash
+./mvnw -o -pl graph-query-gremlin test -Dtest=GremlinScriptTest        # 27 用例（控制流/闭包/算术/元素访问）
+./mvnw -o -pl graph-query-gremlin test -Dtest=GremlinTinkerPopStepsTest # 11 用例（新 step）
+./mvnw -o -pl graph-query-gremlin test                                  # 236 用例
+```
+
+新增实现：`GremlinSteps` 的 `identity/constant/id/label/hasId/hasNot/hasKey/hasValue/is/range/skip/tail/sample/fold/unfold/sum/mean/max/min/order/groupCount/valueMap/toLower/toUpper/trim/length`；`GremlinGraphQuery` 注册的 `union/coalesce/local/not/and/or`（子遍历）；`GremlinQuery.splitArgs` 改为按括号深度切分（支持嵌套子遍历）。`GremlinScript` 新增控制流/闭包/算术/元素方法。
+
+---
+
+## 75. TinkerPop step 支持（第二批）：`by()`、字符串/类型/集合、分支与循环近似
+
+用户要求"除写入外尽量把其余未支持的 step 也支持上"。这一批把 §74.2 表里可做的都做了，剩下的确实需要换遍历器模型（见 75.3）。
+
+### 75.1 新增（✅）
+
+| 组 | step |
+|---|---|
+| 调制器 | `by(key[, asc\|desc])`——编译器把它折进前一个 step：`order().by('age')`→`order('age')`、`order().by('age', desc)`、`groupCount().by('k')`、`dedup().by('k')`、`path().by('k')`（`path().by` 返回"每个元素在该键上的值"的 walk，缺键处为 null） |
+| 元素/值 | `properties`、`elementMap`（已有）、`key`/`value` 以 `valueMap` 覆盖；`dedup(key)` 按属性去重 |
+| 字符串 | `asString`、`concat`、`split`、`substring`、`replace`、`lTrim`、`rTrim`（`toLower/toUpper/trim/length` 已有） |
+| 类型 | `asNumber`、`asBool`、`asDate`（ISO-8601 → epoch millis，与 schema 存时间的口径一致） |
+| 集合 | `combine`、`intersect`、`difference`、`disjunct`、`all(p)`、`any(p)`、`none(p)`（列表谓词；`none()` 仍是终端） |
+| 分支 | `optional(t)`（= coalesce(t, identity)）、`where(t)`（t 有结果就保留）、`choose(pred, a, b)`、`branch` 未做 |
+| 循环 | `repeat(t).times(n)`（`times` 由编译器折进 `repeat`；t 重复 n 次） |
+| 路径 | `simplePath()`、`cyclicPath()`（在 `path()` 的走链里按"点是否重复"过滤） |
+| 其它 | `coin(p)`（固定种子、可复现）、`inject(v...)` 与 `g.inject(v...)` 起点、`timeLimit(ms)`（引擎无长步骤循环可打断，做透传） |
+
+### 75.2 实测（8081）
+
+```
+g.V(1000,'Account').outE('Payment').order().by('createdTime', desc).limit(1).id()  -> ["pay_r0"]
+g.V(1000,'Account').outE('Payment').groupCount().by('status')                       -> [{"SUCCESS":2,"PENDING":1}]
+g.V(1000,'Account').outE('Payment').dedup().by('status').count()                    -> [2]
+g.V(1000,'Account').outE('Payment').values('status').toUpper()                      -> ["SUCCESS","PENDING","SUCCESS"]
+g.inject('2025-01-01T00:00:00Z').asDate()                                            -> [1735689600000]
+g.V(1000,'Account').outE('Payment').values('status').fold().combine([100]).unfold() -> ["SUCCESS","PENDING","SUCCESS",100]
+g.V(1000,'Account').optional(out('Payment')).count()                                 -> [3]
+g.V(1000,'Account').repeat(out('Payment')).times(1).count()                          -> [3]
+g.V(1000,'Account').out('Payment').out('Payment').simplePath().path().count()        -> [33]
+```
+
+### 75.3 仍未支持（以及为什么）
+
+这些都是**同一个原因**：本引擎的遍历器是"列表里一个值"，没有逐条 traverser 的标签/副作用/循环状态。要把它们做对，需要先把执行模型换成带 `Traverser{value, path, sack, labels}` 的管线（一次大改，不是加 step）：
+
+* **标签/副作用**：`as`、`select`、`match`、`project`、`sack`、`loops`、`cap`、`aggregate`、`store`、`subgraph`、`tree`、`index`、`math`、`element`、`vertex`、`edge`、`propertyMap`、`key`(step)、`value`(step)、`properties`(step)、`outV/inV/bothV`。
+* **真正的循环/分支**：`repeat` 的 `until`/`emit`、`branch`（多谓词）、`match`（依赖标签）；可继续用脚本 `for`/`if` + `union/coalesce/optional/choose` 近似。
+* **带标签的 `where`**：`where('a', eq('b'))`。
+* **谓词扩展**：`is(within/between/inside/outside)`、`has(key, P)`、`all/any/none` 以外的 `P` 组合。
+* **调制器扩展**：`order().by(traversal)`、`valueMap().by()`、`path().from()/to()`、`group()`。
+* **集合/杂项**：`conjoin`、`product`、`format`、`profile`、`explain`、`hasNext`/`tryNext`/`promise`/`fill`/`asAdmin`（后四个是 Java API）、`V()`/`E()` 中途重启扫描。
+* **写入**（用户明确排除）：`addV/addE/mergeV/mergeE/property/drop/io/read/write/call` —— 查询引擎只读，写入走 HTTP 写接口。
+
+### 75.4 复现与测试
+
+```bash
+./mvnw -o -pl graph-query-gremlin test -Dtest=GremlinTinkerPopStepsTest  # 15 用例（+by/字符串/集合/分支/inject）
+./mvnw -o -pl graph-query-gremlin test -Dtest=GremlinPathTest            # 5 用例（+path().by / simplePath / cyclicPath）
+./mvnw -o -pl graph-query-gremlin test                                   # 241 用例
+```
+
+---
+
+## 76. Gremlin step 支持现状（合并版，代替向前翻 §74.2/§75 的增量）
+
+§74.2 是逐条核对的第一版，§75 是第二批增量；这里合并成一份当前口径。✅ 支持、🟡 部分、❌ 未支持（附原因）。
+
+### 起点
+
+| step | 状态 |
+|---|---|
+| `g.V(id..., type)`、`g.V(type)`、`g.V()`、`g.E(class)`、`g.E(id..., class)`、`g.E()`、`g.inject(v...)` | ✅ |
+| `V()` / `E()` 中途重启扫描、`inject` 以外的 start step | ❌ |
+
+### 跳（flatMap）
+
+| step | 状态 |
+|---|---|
+| `out` `in` `both`（0..n 类名） | ✅ |
+| `outE` `inE` `bothE` | ✅ |
+| `otherV` | ✅ |
+| `outV` `inV` `bothV` `edge` `V`/`E`(中途) | ❌ |
+
+### 过滤（filter）
+
+| step | 状态 |
+|---|---|
+| `has(key)` / `has(key,value)` / `has(label,key,value)` | ✅ |
+| `hasLabel` `hasId` `hasNot` `hasKey` `hasValue` | ✅ |
+| `filter { ... }`（闭包表达式） | ✅ |
+| `is(v)` / `is(gt\|gte\|lt\|lte\|neq\|eq)` | ✅ |
+| `not` `and` `or`（子遍历） | ✅ |
+| `where(child)` | ✅ |
+| `dedup` / `dedup(key)` | 🟡 全局或按 key；`dedup('a','b')` 多标签未做 |
+| `limit` `range` `skip` `tail` `sample` | ✅（`sample` 固定种子以保证可复现；`limit(local)` 未做） |
+| `coin(p)` | ✅（固定种子） |
+| `all(p)` `any(p)` `none(p)`（列表谓词） | ✅ |
+| `has(key, P)`、`is(within/between/inside/outside)` | 🟡 谓词形式有限 |
+| `simplePath` `cyclicPath` | ✅（需与 `path()` 同用） |
+| `timeLimit(ms)` | ✅（透传） |
+| `where('a', eq('b'))`、`match` | ❌ 需 step label |
+
+### 映射/聚合（map）
+
+| step | 状态 |
+|---|---|
+| `values` `valueMap` `elementMap` `map { ... }` | ✅（`valueMap().by()`/`with(tokens)` 未做） |
+| `id` `label` `identity` `constant` | ✅ |
+| `count` `sum` `min` `max` `mean` | ✅ 全局；`count(local)`/`by()` 未做 |
+| `fold` `unfold` | ✅ |
+| `order` / `order(key[, asc\|desc])` / `order().by('k'[, desc])` | ✅ |
+| `groupCount` / `groupCount(key)` / `groupCount().by('k')` | ✅（缺属性归到 `(none)`，JSON 不能有 null 键） |
+| `path` / `path(key)` / `path().by('k')` | 🟡 支持 hop 链 + `has/filter/limit/dedup/simplePath/cyclicPath`；`path().from()/to()` 未做 |
+| `toLower` `toUpper` `trim` `length` `asString` `asNumber` `asBool` `asDate` `concat` `split` `substring` `replace` `lTrim` `rTrim` | ✅ |
+| `combine` `intersect` `difference` `disjunct` | ✅（参数写 `[a,b]` 或单值） |
+| `group` `project` `select` `sack` `loops` `math` `index` `element` `key`(step) `value`(step) `properties`(step) | ❌ 需 label/副作用 |
+| `conjoin` `product` `format` | ❌ 未做 |
+| `dateAdd` `dateDiff` `dateFormat` | ❌ 未做 |
+
+### 分支/循环/副作用
+
+| step | 状态 |
+|---|---|
+| `union` `coalesce` `local` `optional` | ✅（子遍历参数） |
+| `choose(pred, a, b)` | ✅ |
+| `repeat(child).times(n)` | 🟡 只支持固定次数；`until`/`emit` 未做 |
+| `branch`（多谓词）、`match`、`repeat.until/emit` | ❌ 需遍历器循环/标签状态 |
+| `sideEffect` `inject`(中途) `aggregate` `store` `cap` `subgraph` `tree` `profile` `explain` | ❌ 无 side-effect 存储（`profile/*` 用 `/api/v1/metrics/{graph}`；`inject` 已支持） |
+| `with` `withSideEffect` `withSack` `withStrategies` `withoutStrategies` | ❌ 不适用 |
+| `barrier` `batch` | ✅（本项目写法） |
+| `createdBetween` `nearest` `circle` `fuzzyLink` `pageRank` `louvain` `connectedComponents`/`cc` `sssp` `bfs` | ✅（本项目扩展） |
+
+### 终端/写入
+
+| step | 状态 |
+|---|---|
+| `toList` `toSet` `toBulkSet` `toIterator` `next` `iterate` `none()` `discard` `count` `size` | ✅ |
+| `hasNext` `tryNext` `promise` `fill` `asAdmin` | ❌ Java API |
+| `addV` `addE` `mergeV` `mergeE` `property` `drop` `io` `read` `write` `call` | ❌ 查询只读；写入走 HTTP 写接口 |
+
+**一句话**：可读/可算的 step 基本齐了；剩下的是**step label / side-effect / 遍历器循环状态**那一类（`as/select/where('a',eq('b'))/match/project/sack/aggregate/cap/repeat.until` 等），要把执行模型换成带 `Traverser{value,path,sack,labels}` 的管线才能做对；再就是写入（按约定排除）与少数补丁型 step（`conjoin/product/format/date*`、Java 终端 API）。
+
+---
+
+## 77. 四跳脚本改成双向 `both('Payment').bothE('Payment')` + 性能对比
+
+用户要求：四跳 path 查询的跳方向改成 `both('Payment').bothE('Payment')`（无向），重写脚本并做简单性能测试。
+
+### 77.1 改写后的脚本（UI 示例同步）
+
+```groovy
+def sender = 1000
+def receiver = 1006
+
+def sPaths = g.V(sender, 'Account').both('Payment').bothE('Payment').path().toList()
+def rPaths = g.V(receiver, 'Account').both('Payment').bothE('Payment').path().toList()
+
+def common = sPaths.endIds().retainAll(rPaths.endIds())
+def midObjects = g.V(common, 'Account').toList()
+
+def four = sPaths.joinOnEnd(rPaths, midObjects)
+
+def answer = []
+answer = answer.addAll(sPaths)
+answer = answer.addAll(rPaths)
+answer = answer.addAll(four)
+print('sender two-hop paths: ' + sPaths.size())
+print('receiver two-hop paths: ' + rPaths.size())
+print('common mids: ' + common)
+print('middle objects: ' + midObjects.size())
+print('four-hop paths: ' + four.size())
+answer
+```
+
+与 §73 的唯一区别是两处 hop：`out('Payment').outE('Payment')` → `both('Payment').bothE('Payment')`。
+`endIds()`（末元素是边取 `otherVertexId`）和 `joinOnEnd(..., midObjects)`（公共点填对象、成环丢弃）都不变，所以
+"对方跳过来"的边也能参与：一条四跳现在是 `1000 → 135 → 1012 → 1005 → 1006`（135 是 hub，边可能逆向走）。
+
+### 77.2 结果对比（sender=1000, receiver=1006）
+
+| 量 | A `out.outE`（§73） | B `both.bothE`（本次） |
+|---|---|---|
+| sender 两跳 path | 33 | **528** |
+| receiver 两跳 path | 9 | **118** |
+| 公共中点 | 4 (`1008,1014,1020,1026`) | **51**（几乎整个 10.10/10.12 邻域 + hub 135） |
+| 中点对象 | 4 | 51 |
+| 四跳 path | 30 | **396** |
+| answer 总 path | 72 | **1042** |
+
+### 77.3 性能（`.logs/bench-path-both.js`，100 次交错 A/B，计数器取每次查询前后差值）
+
+| 变体 | mean | median | p95 | p99 | max | kv.read | vertex.read | edge.read | edge.decode | 答案 | 响应 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| A `out(Payment).outE(Payment)` | 34.20 ms | 35.47 | 41.46 | 45.39 | 45.39 | 23 | 34 | 8 | 48 | 72 paths | 139.69 KB |
+| **B `both(Payment).bothE(Payment)`** | **94.42 ms** | 92.76 | 110.58 | 204.58 | 204.58 | **59** | **220** | **32** | **285** | **1042 paths** | **1824.03 KB** |
+
+**B vs A：延迟 +60.22 ms（+176%）、kv 读 +36、点读 +186、边读 +24、边解码 +237、响应 ≈13 倍。**
+
+### 77.4 怎么读这个数字
+
+这不是"改慢了"，是**工作负载本身大了**：`both` 的两跳邻域是无向的（sender 侧从 33 条变 528 条），
+`bothE` 还要把中间点的**两个方向**的 Payment 边都读一遍，所以点读/边读/答案数同步放大；`edge.decode` 从 48 到 285
+正对应多读出来的边。选哪个取决于业务：
+* 只关心"钱从 sender 流出去"→ 用 A（有向，快 2.8 倍、答案小）；
+* 关心"两个账户之间任意方向的资金往来"→ 用 B（完整，但要接受更大读放大，必要时加 `limit`/`createdBetween` 收窄）。
+
+### 77.5 复现
+
+```bash
+node .logs/bench-path-both.js 100     # 上表（次数可改）
+node .logs/verify-paths.js            # 仍是 A 变体的结果校验；B 的脚本在 UI 示例里
+```
+
+---
+
+## 78. 四跳 path finding 性能分析 + 优化
+
+对 §77 的 `both('Payment').bothE('Payment')` 四跳脚本做了逐段归因，找到并修掉了一处真正的引擎浪费。
+
+### 78.1 归因（先用 §14.7 的规矩量，再动手）
+
+`both` 两跳 path（`path().count()`）与**非 path** 等价查询对比：
+
+| 查询 | kv.read | vertex.read | edge.read | edge.decode |
+|---|---|---|---|---|
+| `both('Payment').count()`（非 path） | 2 | 0 | 2 | 0 |
+| `both('Payment').path().count()` | **10** | 8 | 2 | 12 |
+| `both('Payment').bothE('Payment').count()`（非 path） | 4 | 0 | 26 | 0 |
+| `both('Payment').bothE('Payment').path().count()` | **24** | 8 | 16 | 160 |
+
+结论：path 模式的每一跳是**逐个 walk 调一次边 step**（`expandPathHop` 里 `for path: edgeStep.apply([last])`），
+也就是**每个到达点一次存储读**；而普通管线把多个点合成一次批量读。两跳 `both` 因此 24 次存储往返，而不是 4 次。
+
+### 78.2 优化一：path 跳改成批量读（`GremlinGraphQuery.expandPathHop`）
+
+改成：收集所有 walk 的"落脚点" → 用 `GremlinContext.readAllEdgesBatchCached`（命名边）或
+`readAllEdgeClassesBatched`（未命名边）**一次批量读**每个类的边（按 `batchSize=50` 分块、按输入顺序返回、带查询内缓存）
+→ 把所有边拍平，用一次 `otherV()` 批量解析远端顶点（内部按 schema 分组批量读）→ 再按 walk 顺序拼回去。
+未命名边那一支还补了 `ctx.recordEdges(...)`（批量读不自己记子图，否则画布会丢边）。
+
+**实测（同一查询，改前 → 改后）**
+
+| 指标 | 改前 | 改后 |
+|---|---|---|
+| 两跳 `both` path：kv.read | 24 | **6** |
+| 两跳 `both` path：延迟 | 31.58 ms | **≈17 ms（min 12.6 / median 16.8）** |
+| 完整脚本 B：kv.read | 59 | **23** |
+| 完整脚本 A：kv.read | 23 | **15** |
+| 结果 | s=528 r=118 mids=51 four=396 | **完全相同** |
+
+### 78.3 优化二：`joinOnEnd` 按落点建索引（`GremlinScript`）
+
+原来是 `for left: for right:` 的 **O(|L|×|R|)**（528×118 ≈ 6.2 万对）。改成先把右侧按"末端点 id"收进
+`LinkedHashMap`，左侧每个只查自己那一组：**O(|L|+|R|+匹配数)**，且保持原来的 (left, right) 输出顺序。
+
+### 78.4 优化后成本构成（`both` 四跳完整脚本）
+
+```
+traversals only (sPath + rPath)      32.09 ms
++ endIds/retainAll/g.V(common)/join  44.53 ms   → 脚本计算 ≈ 12 ms
++ 返回全部 1042 个 path（1.7 MB）     74.95 ms   → 序列化+传输 ≈ 30 ms
+```
+
+也就是说：批量读之后**瓶颈已经从存储往返转到"答案体积"**（1.7 MB / 1042 个带全属性的 path）。
+这是 §77 那个脚本的设计（要求"所有 path 对象都放进 list 返回"）决定的，不是引擎浪费。要继续压，只能动答案形状：
+
+| 答案形状 | 延迟 | 响应 |
+|---|---|---|
+| 全部（sPaths+rPaths+four） | 80.23 ms | 1728 KB |
+| 只返回 `four`（396 条四跳） | 64.25 ms | 1016 KB |
+| 只返回 id 列表 | 70.30 ms* | 33 KB |
+
+\* id 列表那次因机器噪声偏高；**响应从 1.7 MB 降到 33 KB** 是确定的，序列化/传输那 ~30 ms 会基本消失。
+另外可选的收窄手段（不需要改引擎）：`both('Payment').limit(k)` / `createdBetween(...)` 把两跳邻域框小。
+
+### 78.5 复现
+
+```bash
+node .logs/bench-path-opt.js 20      # 78.1 + 78.4 的归因
+node .logs/bench-path-both.js 100    # §77 的 A/B 交错基准（B kv 从 59 降到 23）
+./mvnw -o -pl graph-query-gremlin test   # 242 用例（新增"一跳批量读 + 保持 walk 顺序"用例）
+```
+
+### 78.6 只返回 path 数目能省多少（`.logs/bench-path-count.js`，100 次交错）
+
+同一段脚本、同一批遍历与 join，只改**答案形状**（全部 1042 个 path 对象 vs `four.size()` 一个数字）：
+
+| 变体 | mean | median | p95 | p99 | max | kv.read | 响应 |
+|---|---|---|---|---|---|---|---|
+| ALL 返回全部 1042 个 path | 70.55 ms | 69.14 | 88.15 | 120.52 | 120.52 | 23 | 1728 KB |
+| **COUNT 只返回 `four.size()`** | **37.77 ms** | **37.85** | **47.53** | **53.75** | 53.75 | 23 | **0.06 KB** |
+
+**延迟 −32.78 ms（mean，−46.5%）／−31.29 ms（median，−45.3%）；p95 −40.6 ms、p99 −66.8 ms；响应从 1.73 MB 降到 60 B。**
+存储计数两边完全一致（kv 23 / 点读 220 / 边读 32 / 边解码 285）——遍历与 join 的工作量没变，省的正是那 1.7 MB 的
+序列化 + 传输 + 客户端解析，以及它带来的 GC 抖动（p99 从 120 ms 掉到 54 ms）。
