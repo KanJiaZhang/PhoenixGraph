@@ -9,9 +9,11 @@ import com.pengcheng.phoenixgraph.query.aerospike.AerospikeHnswIndexFactory;
 import com.pengcheng.phoenixgraph.query.cypher.CypherGraphQuery;
 import com.pengcheng.phoenixgraph.query.cypher.CypherResult;
 import com.pengcheng.phoenixgraph.http.dto.QueryResponse;
+import com.pengcheng.phoenixgraph.http.dto.ScriptResponse;
 import com.pengcheng.phoenixgraph.fuzzy.FuzzyPatternRegistry;
 import com.pengcheng.phoenixgraph.gemini.GeminiCluster;
 import com.pengcheng.phoenixgraph.query.gremlin.GremlinGraphQuery;
+import com.pengcheng.phoenixgraph.query.gremlin.GremlinScript;
 import com.pengcheng.phoenixgraph.query.result.Subgraph;
 import com.pengcheng.phoenixgraph.query.traversal.NeighborVertexResolver;
 import com.pengcheng.phoenixgraph.schema.GeoIndexSchemas;
@@ -250,13 +252,23 @@ public class QueryService {
     public record Answer(Object body, boolean truncated, int limit) {
     }
 
-    /** Runs a query and caps its answer (see {@link Answer}). */
+    /** Runs a query with the script mode decided from the text (see the overload below). */
     public Answer queryCapped(String graphName, String query, Map<String, String> params, String language,
                               boolean returnSubgraph, boolean includeResult, String source) {
+        return queryCapped(graphName, query, params, language, returnSubgraph, includeResult, source, null);
+    }
+
+    /**
+     * Runs a query and caps its answer (see {@link Answer}).
+     *
+     * @param script whether a Gremlin query is a Groovy-style script; {@code null} decides from the text
+     */
+    public Answer queryCapped(String graphName, String query, Map<String, String> params, String language,
+                              boolean returnSubgraph, boolean includeResult, String source, Boolean script) {
         String selected = language == null || language.isBlank() ? GREMLIN : language.trim().toLowerCase();
         String caller = source == null || source.isBlank() ? Metrics.SOURCE_HTTP : source.trim().toLowerCase();
         Object body = measured(graphName, selected, caller, () -> execute(graphName, query, params, selected,
-                returnSubgraph, includeResult));
+                returnSubgraph, includeResult, script));
         return cap(body);
     }
 
@@ -274,6 +286,12 @@ public class QueryService {
     }
 
     private Object capValue(Object body, boolean[] truncated) {
+        if (body instanceof ScriptResponse response) {
+            Object result = capValue(response.result(), truncated);
+            Subgraph subgraph = (Subgraph) capValue(response.subgraph(), truncated);
+            return result == response.result() && subgraph == response.subgraph()
+                    ? response : new ScriptResponse(result, response.output(), subgraph);
+        }
         if (body instanceof Subgraph subgraph) {
             List<Subgraph.Vertex> vertices = capList(subgraph.vertices(), truncated);
             List<Subgraph.Edge> edges = capList(subgraph.edges(), truncated);
@@ -301,10 +319,19 @@ public class QueryService {
     }
 
     private Object execute(String graphName, String query, Map<String, String> params, String selected,
-                           boolean returnSubgraph, boolean includeResult) {
+                           boolean returnSubgraph, boolean includeResult, Boolean script) {
         return switch (selected) {
             case GREMLIN -> {
                 String substituted = substitute(query, params);
+                // a script is the same traversals written as statements (variables, print): the client may
+                // say so, and when it does not the text decides
+                boolean asScript = script != null ? script : GremlinScript.looksLikeScript(substituted);
+                if (asScript) {
+                    GremlinScript.Result result = GremlinScript.parse(substituted)
+                            .execute(engineFor(graphName)::executeWithSubgraph);
+                    yield new ScriptResponse(result.value(), result.output(),
+                            returnSubgraph ? result.subgraph() : Subgraph.EMPTY);
+                }
                 if (!returnSubgraph) {
                     yield engineFor(graphName).execute(substituted);
                 }

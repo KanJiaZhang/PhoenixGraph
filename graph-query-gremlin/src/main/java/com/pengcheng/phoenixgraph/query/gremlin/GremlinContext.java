@@ -78,6 +78,13 @@ public final class GremlinContext {
     private boolean cacheEnabled = true;
     private int scanLimit = 0;
     private boolean collectSubgraph = false;
+    /**
+     * Edge classes an unnamed hop ({@code out()}, {@code bothE()}) must not read: the HNSW layer edges of a
+     * vector index are the index' own machinery, not a relationship of the data, so a normal traversal over
+     * "every edge" would otherwise walk them and a UI would draw them. A hop that names one explicitly still
+     * reads it, and {@code nearest} records the layer-0 links it searched on purpose.
+     */
+    private Set<String> hiddenEdgeClasses = Set.of();
     private final Map<String, VertexRef> subgraphVertices = new LinkedHashMap<>();
     private final Map<String, VertexRef> edgeEndpointVertices = new LinkedHashMap<>();
     private final Map<String, Subgraph.Edge> subgraphEdges = new LinkedHashMap<>();
@@ -678,6 +685,9 @@ public final class GremlinContext {
     /**
      * Reads the edges of every edge class for the given vertices, in parallel
      * batches; the result has one entry per input vertex, in request order.
+     *
+     * <p>Edge classes in {@link #hiddenEdgeClasses()} are dropped from the result: an unnamed hop walks the
+     * graph's relationships, and the layer edges of a vector index are not one of them.
      */
     public List<List<EdgeQueryResult>> readAllEdgeClassesBatched(List<Object> vertexIds, EdgeSide direction,
                                                                  List<String> propertyNames) {
@@ -691,9 +701,33 @@ public final class GremlinContext {
                         : graphQuery.readAllEdgesBatch(batch, direction, propertyNames));
         List<List<EdgeQueryResult>> all = new ArrayList<>(vertexIds.size());
         for (List<List<EdgeQueryResult>> part : results) {
-            all.addAll(part);
+            for (List<EdgeQueryResult> edges : part) {
+                all.add(hiddenEdgeClasses.isEmpty() ? edges : visible(edges));
+            }
         }
         return all;
+    }
+
+    /** The edges that are not an index' own layer links. */
+    private List<EdgeQueryResult> visible(List<EdgeQueryResult> edges) {
+        List<EdgeQueryResult> out = new ArrayList<>(edges.size());
+        for (EdgeQueryResult edge : edges) {
+            if (!hiddenEdgeClasses.contains(edge.edgeName())) {
+                out.add(edge);
+            }
+        }
+        return out;
+    }
+
+    /** The edge classes an unnamed hop skips (the vector index layer edges of the schema). */
+    public Set<String> hiddenEdgeClasses() {
+        return hiddenEdgeClasses;
+    }
+
+    /** @see #hiddenEdgeClasses() */
+    public GremlinContext hiddenEdgeClasses(Set<String> names) {
+        this.hiddenEdgeClasses = names == null ? Set.of() : Set.copyOf(names);
+        return this;
     }
 
     /** Reads the edges of one edge class for many vertices in parallel batches (request order). */

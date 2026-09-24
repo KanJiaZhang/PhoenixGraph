@@ -149,7 +149,185 @@ public class GremlinStepRegistry {
         // size() is the Groovy spelling of the same reduction, so `toList().size()` works
         register("size", args -> GremlinSteps.count());
         register("limit", args -> GremlinSteps.limit(parseLong(single(args, "limit"))));
-        register("dedup", args -> GremlinSteps.dedup());
+        register("dedup", args -> GremlinSteps.dedup(args.isEmpty() ? null : single(args, "dedup")));
+        // by() is a modulator: the compiler folds it into the step before it (order/groupCount/dedup/path),
+        // so this registration is only reached when it stood somewhere it cannot attach to
+        register("by", args -> {
+            throw new QueryException("by(...) must follow order(...), groupCount(...), dedup() or path()");
+        });
+        // the map/filter/reduce shapes a TinkerPop client writes (see GremlinSteps)
+        register("identity", args -> {
+            requireNoArgs(args, "identity");
+            return GremlinSteps.identity();
+        });
+        register("constant", args -> GremlinSteps.constant(single(args, "constant")));
+        register("id", args -> {
+            requireNoArgs(args, "id");
+            return GremlinSteps.id();
+        });
+        register("label", args -> {
+            requireNoArgs(args, "label");
+            return GremlinSteps.label();
+        });
+        register("hasId", args -> GremlinSteps.hasId(requireArgs(args, "hasId")));
+        register("hasNot", args -> GremlinSteps.hasNot(single(args, "hasNot")));
+        register("hasKey", args -> GremlinSteps.hasKey(requireArgs(args, "hasKey")));
+        register("hasValue", args -> GremlinSteps.hasValue(requireArgs(args, "hasValue")));
+        register("is", args -> GremlinSteps.is(single(args, "is")));
+        register("range", args -> {
+            if (args.size() != 2) {
+                throw new QueryException("range expects range(low, high), got " + args.size());
+            }
+            return GremlinSteps.range(parseLong(args.get(0)), parseLong(args.get(1)));
+        });
+        register("skip", args -> GremlinSteps.range(parseLong(single(args, "skip")), -1));
+        register("tail", args -> GremlinSteps.tail(args.isEmpty() ? 1 : positiveInt(single(args, "tail"))));
+        register("sample", args -> GremlinSteps.sample(positiveInt(single(args, "sample"))));
+        register("fold", args -> {
+            requireNoArgs(args, "fold");
+            return GremlinSteps.fold();
+        });
+        register("unfold", args -> {
+            requireNoArgs(args, "unfold");
+            return GremlinSteps.unfold();
+        });
+        register("sum", args -> {
+            requireNoArgs(args, "sum");
+            return GremlinSteps.sum();
+        });
+        register("mean", args -> {
+            requireNoArgs(args, "mean");
+            return GremlinSteps.mean();
+        });
+        register("max", args -> {
+            requireNoArgs(args, "max");
+            return GremlinSteps.max();
+        });
+        register("min", args -> {
+            requireNoArgs(args, "min");
+            return GremlinSteps.min();
+        });
+        register("order", args -> {
+            if (args.size() > 2) {
+                throw new QueryException("order expects order([key[, asc|desc]]), got " + args.size());
+            }
+            boolean descending = args.size() > 1
+                    && (args.get(1).equalsIgnoreCase("desc") || args.get(1).equalsIgnoreCase("descending"));
+            return GremlinSteps.order(args.isEmpty() ? null : args.get(0), descending);
+        });
+        register("groupCount", args -> GremlinSteps.groupCount(args.isEmpty() ? null
+                : single(args, "groupCount")));
+        register("valueMap", args -> GremlinSteps.valueMap(args));
+        register("toLower", args -> {
+            requireNoArgs(args, "toLower");
+            return GremlinSteps.toLower();
+        });
+        register("toUpper", args -> {
+            requireNoArgs(args, "toUpper");
+            return GremlinSteps.toUpper();
+        });
+        register("trim", args -> {
+            requireNoArgs(args, "trim");
+            return GremlinSteps.trimString();
+        });
+        register("length", args -> {
+            requireNoArgs(args, "length");
+            return GremlinSteps.length();
+        });
+        register("asString", args -> {
+            requireNoArgs(args, "asString");
+            return GremlinSteps.asString();
+        });
+        register("asNumber", args -> {
+            requireNoArgs(args, "asNumber");
+            return GremlinSteps.asNumber();
+        });
+        register("asBool", args -> {
+            requireNoArgs(args, "asBool");
+            return GremlinSteps.asBool();
+        });
+        register("asDate", args -> {
+            requireNoArgs(args, "asDate");
+            return GremlinSteps.asDate();
+        });
+        register("concat", args -> GremlinSteps.concat(single(args, "concat")));
+        register("lTrim", args -> {
+            requireNoArgs(args, "lTrim");
+            return GremlinSteps.lTrim();
+        });
+        register("rTrim", args -> {
+            requireNoArgs(args, "rTrim");
+            return GremlinSteps.rTrim();
+        });
+        register("replace", args -> {
+            if (args.size() != 2) {
+                throw new QueryException("replace expects replace(from, to), got " + args.size());
+            }
+            return GremlinSteps.replace(args.get(0), args.get(1));
+        });
+        register("split", args -> GremlinSteps.split(single(args, "split")));
+        register("substring", args -> {
+            if (args.isEmpty() || args.size() > 2) {
+                throw new QueryException("substring expects substring(start[, end]), got " + args.size());
+            }
+            int start = (int) parseLong(args.get(0));
+            int end = args.size() > 1 ? (int) parseLong(args.get(1)) : -1;
+            return GremlinSteps.substring(start, end);
+        });
+        register("combine", args -> GremlinSteps.combine(single(args, "combine")));
+        register("intersect", args -> GremlinSteps.intersect(single(args, "intersect")));
+        register("difference", args -> GremlinSteps.difference(single(args, "difference")));
+        register("disjunct", args -> GremlinSteps.disjunct(single(args, "disjunct")));
+        register("all", args -> GremlinSteps.allOf(single(args, "all")));
+        register("any", args -> GremlinSteps.anyOf(single(args, "any")));
+        register("none", args -> {
+            // none() is the terminal that emits nothing; none(p) is the list predicate
+            if (args.isEmpty()) {
+                return GremlinSteps.nothing();
+            }
+            return GremlinSteps.noneOf(single(args, "none"));
+        });
+        register("coin", args -> {
+            if (args.size() != 1) {
+                throw new QueryException("coin expects coin(probability), got " + args.size());
+            }
+            try {
+                return GremlinSteps.coin(Double.parseDouble(args.get(0)));
+            } catch (NumberFormatException e) {
+                throw new QueryException("coin expects a number between 0 and 1, got: " + args.get(0));
+            }
+        });
+        register("inject", args -> {
+            if (args.isEmpty()) {
+                throw new QueryException("inject expects at least one value");
+            }
+            return GremlinSteps.inject(args);
+        });
+        register("timeLimit", args -> {
+            parseLong(single(args, "timeLimit"));
+            return GremlinSteps.timeLimit();
+        });
+        // these two are walked by the path execution; reaching them means there was no path()
+        register("simplePath", args -> {
+            requireNoArgs(args, "simplePath");
+            return GremlinSteps.needsPath("simplePath");
+        });
+        register("cyclicPath", args -> {
+            requireNoArgs(args, "cyclicPath");
+            return GremlinSteps.needsPath("cyclicPath");
+        });
+        register("times", args -> {
+            throw new QueryException("times(n) must follow repeat(child), e.g. repeat(out('Payment')).times(2)");
+        });
+        // path() is executed by the path walk (GremlinGraphQuery#runPathCompiled); this is the resolved
+        // step the compiler validates, so the name is known like every other one
+        register("path", args -> {
+            // path() carries the walk; path(key) (or path().by(key)) carries the key's values instead
+            if (args.size() > 1) {
+                throw new QueryException("path expects path() or path(key), got " + args.size());
+            }
+            return GremlinSteps.path();
+        });
         register("pagerank", args -> GremlinAlgorithms.pagerank());
         register("louvain", args -> GremlinAlgorithms.louvain());
         register("cc", args -> GremlinAlgorithms.cc());
@@ -165,6 +343,14 @@ public class GremlinStepRegistry {
             throw new QueryException(stepName + " expects exactly 1 argument, got " + args.size());
         }
         return args.get(0);
+    }
+
+    /** A step that needs at least one argument. */
+    private static List<String> requireArgs(List<String> args, String stepName) {
+        if (args.isEmpty()) {
+            throw new QueryException(stepName + " expects at least 1 argument");
+        }
+        return List.copyOf(args);
     }
 
     /** A terminal step that takes no arguments. */

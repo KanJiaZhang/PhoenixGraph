@@ -28,7 +28,7 @@ public class QueryController {
     public Object query(@RequestBody QueryRequest request, HttpServletResponse response) {
         QueryService.Answer answer = service.queryCapped(request.graphName(), request.query(),
                 request.params(), request.languageOrDefault(), request.returnSubgraph(),
-                request.includeResultOrDefault(), request.sourceOrDefault());
+                request.includeResultOrDefault(), request.sourceOrDefault(), request.script());
         if (answer.truncated()) {
             // the answer is capped so the response stays parseable: tell the client, which can say
             // "narrow the query" instead of silently showing a partial graph

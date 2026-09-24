@@ -25,7 +25,8 @@ import java.util.regex.Pattern;
  */
 public final class GremlinQuery {
 
-    private static final Pattern HEADER = Pattern.compile("^g\\s*\\.\\s*([VE])\\s*\\(", Pattern.CASE_INSENSITIVE);
+    private static final Pattern HEADER = Pattern.compile("^g\\s*\\.\\s*([VE]|inject)\\s*\\(",
+            Pattern.CASE_INSENSITIVE);
 
     /** One parsed step: its name and argument tokens. */
     public record Step(String name, List<String> args) {
@@ -149,9 +150,9 @@ public final class GremlinQuery {
 
         Matcher head = HEADER.matcher(s);
         if (!head.find()) {
-            throw new QueryException("Expected 'g.V(...)' or 'g.E(edgeName)' prefix, got: " + s);
+            throw new QueryException("Expected 'g.V(...)', 'g.E(edgeName)' or 'g.inject(...)' prefix, got: " + s);
         }
-        int open = head.end() - 1; // index of the '(' after g.V / g.E
+        int open = head.end() - 1; // index of the '(' after the start step
         int close = matchingParen(s, open);
         String args = s.substring(open + 1, close);
         List<String> parts = splitArgs(args).stream().map(GremlinQuery::unquote).toList();
@@ -164,8 +165,16 @@ public final class GremlinQuery {
             rest = rest.substring(0, brace).trim();
         }
         List<Step> steps = parseSteps(rest);
-        if (head.group(1).equalsIgnoreCase("E")) {
+        String method = head.group(1);
+        if (method.equalsIgnoreCase("E")) {
             return new GremlinQuery(edgeSource(parts, args), steps, logic);
+        }
+        if (method.equalsIgnoreCase("inject")) {
+            // g.inject(v...): the values enter the traversal, which is how a query starts from constants
+            List<Step> all = new ArrayList<>();
+            all.add(new Step("inject", List.copyOf(parts)));
+            all.addAll(steps);
+            return new GremlinQuery(Source.none(), all, logic);
         }
         return new GremlinQuery(vertexSource(parts, args), steps, logic);
     }
@@ -468,11 +477,12 @@ public final class GremlinQuery {
         return -1;
     }
 
-    /** Splits comma-separated arguments, ignoring commas inside quotes. */
+    /** Splits comma-separated arguments, ignoring commas inside quotes and nested brackets. */
     private static List<String> splitArgs(String s) {
         List<String> result = new ArrayList<>();
         StringBuilder current = new StringBuilder();
         char quote = 0;
+        int depth = 0;
         for (int i = 0; i < s.length(); i++) {
             char c = s.charAt(i);
             if (quote != 0) {
@@ -480,10 +490,18 @@ public final class GremlinQuery {
                 if (c == quote) {
                     quote = 0;
                 }
-            } else if (c == '\'' || c == '"') {
+                continue;
+            }
+            if (c == '\'' || c == '"') {
                 quote = c;
                 current.append(c);
-            } else if (c == ',') {
+            } else if (c == '(' || c == '[' || c == '{') {
+                depth++;
+                current.append(c);
+            } else if (c == ')' || c == ']' || c == '}') {
+                depth--;
+                current.append(c);
+            } else if (c == ',' && depth == 0) {
                 result.add(current.toString().trim());
                 current.setLength(0);
             } else {

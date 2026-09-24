@@ -105,6 +105,12 @@
     <div class="query-mode gremlin-row" id="gremlinPanel" hidden>
       <textarea id="gremlinInput" rows="2"
                 placeholder="g.V(888,'Account').batch(40).both('Payment').both('Payment')"></textarea>
+      <label class="switch script-switch" id="scriptToggleWrap" hidden
+             data-i18n-title="scriptToggle" title="Groovy 脚本模式">
+        <input type="checkbox" id="scriptToggle">
+        <span class="slider"></span>
+        <span class="switch-label" data-i18n="scriptMode">脚本</span>
+      </label>
       <select id="exampleSelect" class="example-select" data-i18n-title="examples" title="示例查询" hidden></select>
     </div>
   </header>

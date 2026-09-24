@@ -20,6 +20,7 @@ import com.pengcheng.phoenixgraph.schema.EdgeDirection;
 import com.pengcheng.phoenixgraph.schema.EdgeSchema;
 import com.pengcheng.phoenixgraph.schema.GraphSchema;
 import com.pengcheng.phoenixgraph.schema.VertexSchema;
+import com.pengcheng.phoenixgraph.schema.VectorIndexSchemas;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -151,6 +152,247 @@ public class GremlinGraphQuery {
                 throw new QueryException(e.getMessage(), e);
             }
         });
+        // branch steps whose arguments are sub-traversals (TinkerPop's `__` children written as
+        // out('x').has('k','v')): each is resolved with this registry and run on one element
+        registry.register("union", args -> {
+            List<String> subTraversals = requireSubTraversals(args, "union");
+            return (ctx, in) -> {
+                List<Object> out = new ArrayList<>();
+                for (Object element : in) {
+                    for (String sub : subTraversals) {
+                        out.addAll(runSubTraversal(ctx, sub, List.of(element)));
+                    }
+                }
+                return out;
+            };
+        });
+        // local(...) applies its traversal to each element on its own: the flat pipeline has no global
+        // barrier, so this is the union semantics of one child
+        registry.register("local", args -> {
+            List<String> subTraversals = requireSubTraversals(args, "local");
+            return (ctx, in) -> {
+                List<Object> out = new ArrayList<>();
+                for (Object element : in) {
+                    for (String sub : subTraversals) {
+                        out.addAll(runSubTraversal(ctx, sub, List.of(element)));
+                    }
+                }
+                return out;
+            };
+        });
+        registry.register("coalesce", args -> {
+            List<String> subTraversals = requireSubTraversals(args, "coalesce");
+            return (ctx, in) -> {
+                List<Object> out = new ArrayList<>();
+                for (Object element : in) {
+                    boolean matched = false;
+                    for (String sub : subTraversals) {
+                        List<Object> reached = runSubTraversal(ctx, sub, List.of(element));
+                        if (!reached.isEmpty()) {
+                            out.addAll(reached);
+                            matched = true;
+                            break;
+                        }
+                    }
+                    if (!matched && element instanceof GremlinElement e) {
+                        ctx.dropElement(e);
+                    }
+                }
+                return out;
+            };
+        });
+        registry.register("not", args -> {
+            if (args.size() != 1) {
+                throw new QueryException("not expects one child traversal, got " + args.size());
+            }
+            String sub = args.get(0);
+            return (ctx, in) -> {
+                List<Object> out = new ArrayList<>();
+                for (Object element : in) {
+                    if (runSubTraversal(ctx, sub, List.of(element)).isEmpty()) {
+                        out.add(element);
+                    } else if (element instanceof GremlinElement e) {
+                        ctx.dropElement(e);
+                    }
+                }
+                return out;
+            };
+        });
+        registry.register("and", args -> {
+            List<String> subTraversals = requireSubTraversals(args, "and");
+            return (ctx, in) -> keepByChildren(ctx, in, subTraversals, true);
+        });
+        registry.register("or", args -> {
+            List<String> subTraversals = requireSubTraversals(args, "or");
+            return (ctx, in) -> keepByChildren(ctx, in, subTraversals, false);
+        });
+        // optional(t) is coalesce(t, identity); where(t) keeps the element when t reaches something;
+        // choose(pred, a, b) picks a branch; repeat(t).times(n) runs t n times
+        registry.register("optional", args -> {
+            String child = singleSubTraversal(args, "optional");
+            return (ctx, in) -> {
+                List<Object> out = new ArrayList<>();
+                for (Object element : in) {
+                    List<Object> reached = runSubTraversal(ctx, child, List.of(element));
+                    out.addAll(reached.isEmpty() ? List.of(element) : reached);
+                }
+                return out;
+            };
+        });
+        registry.register("where", args -> {
+            String child = singleSubTraversal(args, "where");
+            return (ctx, in) -> {
+                List<Object> out = new ArrayList<>();
+                for (Object element : in) {
+                    if (!runSubTraversal(ctx, child, List.of(element)).isEmpty()) {
+                        out.add(element);
+                    } else if (element instanceof GremlinElement e) {
+                        ctx.dropElement(e);
+                    }
+                }
+                return out;
+            };
+        });
+        registry.register("choose", args -> {
+            if (args.size() != 3) {
+                throw new QueryException("choose expects choose(predicate, trueChild, falseChild), got "
+                        + args.size());
+            }
+            return (ctx, in) -> {
+                List<Object> out = new ArrayList<>();
+                for (Object element : in) {
+                    boolean condition = !runSubTraversal(ctx, args.get(0), List.of(element)).isEmpty();
+                    out.addAll(runSubTraversal(ctx, condition ? args.get(1) : args.get(2), List.of(element)));
+                }
+                return out;
+            };
+        });
+        registry.register("repeat", args -> {
+            if (args.size() != 2) {
+                throw new QueryException("repeat expects repeat(child).times(n)");
+            }
+            int times;
+            try {
+                times = Integer.parseInt(args.get(1).trim());
+            } catch (NumberFormatException e) {
+                throw new QueryException("times expects a number, got: " + args.get(1));
+            }
+            if (times < 0) {
+                throw new QueryException("times must not be negative, got: " + times);
+            }
+            String child = args.get(0);
+            return (ctx, in) -> {
+                List<Object> current = in;
+                for (int i = 0; i < times; i++) {
+                    List<Object> next = new ArrayList<>();
+                    for (Object element : current) {
+                        next.addAll(runSubTraversal(ctx, child, List.of(element)));
+                    }
+                    current = next;
+                }
+                return current;
+            };
+        });
+    }
+
+    /** The one child traversal a step such as {@code optional}/{@code where} expects. */
+    private static String singleSubTraversal(List<String> args, String stepName) {
+        if (args.size() != 1) {
+            throw new QueryException(stepName + " expects one child traversal, got " + args.size());
+        }
+        return args.get(0);
+    }
+
+    /** The child traversals a branch step was given, or an error naming what it expects. */
+    private static List<String> requireSubTraversals(List<String> args, String stepName) {
+        if (args.isEmpty()) {
+            throw new QueryException(stepName + " expects at least one child traversal, e.g. "
+                    + stepName + "(out('Payment'))");
+        }
+        return List.copyOf(args);
+    }
+
+    /** Keeps the elements for which every ({@code all}) or any child traversal reaches something. */
+    private List<Object> keepByChildren(GremlinContext context, List<Object> in,
+                                        List<String> subTraversals, boolean all) {
+        List<Object> out = new ArrayList<>();
+        for (Object element : in) {
+            boolean every = true;
+            boolean any = false;
+            for (String sub : subTraversals) {
+                boolean reached = !runSubTraversal(context, sub, List.of(element)).isEmpty();
+                every &= reached;
+                any |= reached;
+            }
+            if (all ? every : any) {
+                out.add(element);
+            } else if (element instanceof GremlinElement e) {
+                context.dropElement(e);
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Folds a {@code by(...)} modulator into the step before it: {@code order().by('age')} becomes
+     * {@code order('age')}, {@code groupCount().by('status')} becomes {@code groupCount('status')},
+     * {@code dedup().by('card')} and {@code path().by('name')} likewise. A {@code by} the engine cannot
+     * attach to is a query error rather than a step of its own.
+     */
+    private static List<GremlinQuery.Step> foldModulators(List<GremlinQuery.Step> steps) {
+        List<GremlinQuery.Step> out = new ArrayList<>();
+        for (GremlinQuery.Step step : steps) {
+            if (step.name().equals("times") && !out.isEmpty()
+                    && out.get(out.size() - 1).name().equals("repeat")
+                    && out.get(out.size() - 1).args().size() == 1) {
+                GremlinQuery.Step repeat = out.get(out.size() - 1);
+                out.set(out.size() - 1, new GremlinQuery.Step("repeat",
+                        List.of(repeat.args().get(0), step.args().isEmpty() ? "1" : step.args().get(0))));
+                continue;
+            }
+            if (!step.name().equals("by")) {
+                out.add(step);
+                continue;
+            }
+            GremlinQuery.Step folded = out.isEmpty() ? null : applyBy(out.get(out.size() - 1), step.args());
+            if (folded == null) {
+                throw new QueryException("by(...) must follow order(...), groupCount(...), dedup() or path()");
+            }
+            out.set(out.size() - 1, folded);
+        }
+        return out;
+    }
+
+    /** The step a {@code by(...)} turns the step before it into, or {@code null} when it cannot attach. */
+    private static GremlinQuery.Step applyBy(GremlinQuery.Step previous, List<String> byArgs) {
+        if (byArgs.isEmpty()) {
+            return null;
+        }
+        String key = byArgs.get(0);
+        return switch (previous.name()) {
+            case "order" -> new GremlinQuery.Step("order",
+                    byArgs.size() > 1 ? List.of(key, byArgs.get(1)) : List.of(key));
+            case "groupCount" -> new GremlinQuery.Step("groupCount", List.of(key));
+            case "dedup" -> new GremlinQuery.Step("dedup", List.of(key));
+            case "path" -> new GremlinQuery.Step("path", List.of(key));
+            default -> null;
+        };
+    }
+
+    /**
+     * Runs a child traversal (a step chain such as {@code out('Payment').has('status','SUCCESS')}) on one
+     * element. The child's steps are resolved with the same registry as the outer query, so a branch step
+     * can use every step the engine has. Properties are read in full: the child was not part of the outer
+     * projection plan.
+     */
+    private List<Object> runSubTraversal(GremlinContext context, String stepChain, List<Object> in) {
+        List<GremlinQuery.Step> steps = GremlinQuery.parseSteps("." + stepChain.trim());
+        List<Object> current = in;
+        for (GremlinQuery.Step step : steps) {
+            context.readProperties(List.of());
+            current = registry.resolve(step.name(), step.args()).apply(context, current);
+        }
+        return current;
     }
 
     /**
@@ -492,6 +734,7 @@ public class GremlinGraphQuery {
         if (query.logic() != null && !query.logic().isBlank()) {
             parsedSteps.addAll(expandLogic(query.logic()));
         }
+        parsedSteps = foldModulators(parsedSteps);
         parsedSteps = optimizeSteps(parsedSteps);
         // a circle step absorbs the limit directly following it: the geo search keeps only that
         // many hits while it walks the index, so the vertex reads, the collected subgraph and
@@ -555,6 +798,15 @@ public class GremlinGraphQuery {
         }
         List<String>[] properties = planProperties(plannedSteps);
         List<String> startProperties = startProperties(plannedSteps);
+        if (plannedSteps.stream().anyMatch(step -> step.name().equals("path"))) {
+            // a path hands back the elements it walked, so the walk itself may read them in full: the
+            // projection plan (which normally reads only what the next step consumes) would leave the
+            // vertices of a path with no properties
+            for (int i = 0; i < properties.length; i++) {
+                properties[i] = List.of();
+            }
+            startProperties = List.of();
+        }
         List<GremlinStep> steps = new ArrayList<>(plannedSteps.size());
         List<String> stepNames = new ArrayList<>(plannedSteps.size());
         for (int i = 0; i < plannedSteps.size(); i++) {
@@ -588,7 +840,8 @@ public class GremlinGraphQuery {
         boolean verifySeeds = startProperties == null
                 && (untypedFirstHop(plannedSteps) || plannedSteps.stream()
                         .allMatch(step -> isSeedPassThrough(step.name())));
-        return new CompiledQuery(source, properties, startProperties, verifySeeds, stepNames, steps);
+        return new CompiledQuery(source, properties, startProperties, verifySeeds, stepNames, steps,
+                List.copyOf(plannedSteps));
     }
 
     /**
@@ -916,10 +1169,37 @@ public class GremlinGraphQuery {
         context.maxBatchSize(maxBatchSize);
         context.scanLimit(scanLimit);
         context.parallelism(parallelism);
+        context.hiddenEdgeClasses(hiddenEdgeClasses());
         return context;
     }
 
+    /**
+     * The edge classes an unnamed hop must not read: the HNSW layer edges of the graph's vector indexes.
+     *
+     * <p>An index' layer edges are its own machinery, not a relationship of the data, so
+     * {@code g.V(1001,'Account').out()} must not walk them and a UI must not draw them. They stay reachable
+     * when a hop names one, and {@code nearest} still records the layer-0 links it searched so a similarity
+     * answer can be drawn.
+     */
+    private Set<String> hiddenEdgeClasses() {
+        if (schema == null) {
+            return Set.of();
+        }
+        Set<String> names = new LinkedHashSet<>();
+        for (VectorIndexSchemas.VectorProperty property : VectorIndexSchemas.vectorProperties(schema)) {
+            for (EdgeSchema edge : schema.edgeSchemas()) {
+                if (VectorIndexSchemas.levelOfLayerEdge(property.propertyName(), edge.name()) >= 0) {
+                    names.add(edge.name());
+                }
+            }
+        }
+        return names;
+    }
+
     private List<Object> runCompiled(GremlinContext context, CompiledQuery compiled) {
+        if (compiled.stepNames.contains("path")) {
+            return runPathCompiled(context, compiled);
+        }
         List<Object> current = start(context, compiled.source, compiled.startProperties, compiled.verifySeeds);
         int hopsDone = 0;
         int hopFanOut = 0;
@@ -948,6 +1228,244 @@ public class GremlinGraphQuery {
         return current;
     }
 
+    /**
+     * Executes a traversal that asks for {@code path()}: the steps before it are walked element by element,
+     * remembering the edges and vertices visited, and the step itself turns each walk into a
+     * {@link GremlinPath}. The steps after it run normally on the path objects.
+     *
+     * <p>The normal pipeline is a list transform (it knows the current elements but not where they came from),
+     * so a path needs the walk itself. Only the steps a path is built from are walked this way - hops and the
+     * filters that decide which walks survive ({@code has}, {@code filter}, {@code limit}, {@code dedup});
+     * anything else before {@code path()} is refused with a message rather than silently losing the path.
+     */
+    private List<Object> runPathCompiled(GremlinContext context, CompiledQuery compiled) {
+        int pathAt = compiled.stepNames.indexOf("path");
+        for (int i = pathAt + 1; i < compiled.stepNames.size(); i++) {
+            if (isHop(compiled.stepNames.get(i))) {
+                throw new QueryException("A hop after path() is not supported; put path() at the end of the "
+                        + "traversal (the steps after it only read the path objects)");
+            }
+        }
+        List<List<Object>> paths = new ArrayList<>();
+        for (Object seed : start(context, compiled.source, compiled.startProperties, compiled.verifySeeds)) {
+            List<Object> one = new ArrayList<>(1);
+            one.add(seed);
+            paths.add(one);
+        }
+        for (int i = 0; i < pathAt; i++) {
+            paths = walkPathStep(context, paths, compiled.plan.get(i));
+        }
+        List<Object> current = new ArrayList<>(paths.size());
+        String pathKey = compiled.plan.get(pathAt).args().isEmpty() ? null
+                : compiled.plan.get(pathAt).args().get(0);
+        for (List<Object> path : paths) {
+            if (pathKey == null) {
+                current.add(new GremlinPath(path));
+            } else {
+                // path().by('name'): the walk of the values each element carries under that key
+                List<Object> mapped = new ArrayList<>(path.size());
+                for (Object element : path) {
+                    mapped.add(element instanceof GremlinElement gremlinElement
+                            ? gremlinElement.properties().get(pathKey) : null);
+                }
+                current.add(new GremlinPath(mapped));
+            }
+        }
+        for (int i = pathAt + 1; i < compiled.steps.size(); i++) {
+            context.readProperties(compiled.properties[i]);
+            current = compiled.steps.get(i).apply(context, current);
+        }
+        return current;
+    }
+
+    /** One step of a path walk: a hop appends what it traversed, a filter drops the walks that do not match. */
+    private List<List<Object>> walkPathStep(GremlinContext context, List<List<Object>> paths,
+                                            GremlinQuery.Step step) {
+        String name = step.name();
+        if (name.equals("otherV")) {
+            return expandOtherV(context, paths);
+        }
+        if (isHop(name)) {
+            return expandPathHop(context, paths, step);
+        }
+        if (name.equals("simplePath") || name.equals("cyclicPath")) {
+            boolean simple = name.equals("simplePath");
+            List<List<Object>> out = new ArrayList<>();
+            for (List<Object> path : paths) {
+                if (repeatsAVertex(path) != simple) {
+                    out.add(path);
+                }
+            }
+            return out;
+        }
+        if (name.equals("has") || name.equals("filter") || name.equals("limit") || name.equals("dedup")) {
+            return filterPaths(context, paths, registry.resolve(name, step.args()));
+        }
+        throw new QueryException("'" + name + "' before path() is not supported; a path is built from hops "
+                + "(out/in/both/outE/inE/bothE/otherV) and the filters has/filter/limit/dedup");
+    }
+
+    /** Expands every walk by one hop: the edge traversed, and for a vertex hop the vertex it reached. */
+    /**
+     * Expands every walk by one hop, reading in <b>batches</b> rather than one walk at a time.
+     *
+     * <p>The first version called the edge step once per walk, which is one storage read per reached
+     * vertex and made a two-hop walk O(neighbours) round trips. The whole point of the storage layer's
+     * batch reads is that many vertices are read in one call, so this collects what every walk stands on,
+     * reads their edges in one batched (and cached) pass per edge class, and resolves the far vertices of
+     * all those edges in one more batched pass. The walks are then rebuilt in walk order, so the answer is
+     * the same - only the number of round trips changes.
+     */
+    private List<List<Object>> expandPathHop(GremlinContext context, List<List<Object>> paths,
+                                             GremlinQuery.Step step) {
+        String name = step.name();
+        boolean vertexHop = isVertexHop(name);
+        EdgeSide side = edgeSideOf(name);
+        List<String> edgeNames = step.args().isEmpty() ? null : step.args();
+
+        // what each walk stands on for this hop: itself, or the far end of its last edge
+        List<Object> standingIds = new ArrayList<>(paths.size());
+        for (List<Object> path : paths) {
+            standingIds.add(standingId(path.get(path.size() - 1)));
+        }
+
+        List<List<EdgeQueryResult>> edgesPerPath = readPathEdges(context, standingIds, edgeNames, side);
+
+        // one flat list of the edges the walks reached, remembering which walk each belongs to
+        List<GremlinEdge> flatEdges = new ArrayList<>();
+        List<Integer> ownerPath = new ArrayList<>();
+        for (int i = 0; i < paths.size(); i++) {
+            for (EdgeQueryResult edge : edgesPerPath.get(i)) {
+                if (edge.otherVertexId() == null) {
+                    continue; // it has no far end to stand on
+                }
+                flatEdges.add(new GremlinEdge(edge.edgeName(), edge.edgeId(), edge.side(),
+                        edge.otherVertexId(), edge.properties(), edge.createdTime(), edge.lastUpdatedTime(),
+                        standingIds.get(i)));
+                ownerPath.add(i);
+            }
+        }
+
+        // every far vertex in one batched read (the vertex read is grouped by schema name inside)
+        List<Object> farVertices = vertexHop && !flatEdges.isEmpty()
+                ? GremlinSteps.otherV().apply(context, new ArrayList<>(flatEdges)) : List.of();
+
+        List<List<Object>> out = new ArrayList<>(flatEdges.size());
+        for (int i = 0; i < flatEdges.size(); i++) {
+            if (vertexHop && i >= farVertices.size()) {
+                continue;
+            }
+            List<Object> extended = new ArrayList<>(paths.get(ownerPath.get(i)));
+            extended.add(flatEdges.get(i));
+            if (vertexHop) {
+                extended.add(farVertices.get(i));
+            }
+            out.add(extended);
+        }
+        return out;
+    }
+
+    /** The vertex a walk stands on for the next hop: itself, or the far end of its last edge. */
+    private static Object standingId(Object last) {
+        if (last instanceof GremlinEdge edge) {
+            return edge.otherVertexId();
+        }
+        if (last instanceof GremlinVertex vertex) {
+            return vertex.id();
+        }
+        return null;
+    }
+
+    /**
+     * The edges of every standing vertex, read in one batched (and cached) call per edge class; the result
+     * has one list per walk, in walk order.
+     */
+    private List<List<EdgeQueryResult>> readPathEdges(GremlinContext context, List<Object> standingIds,
+                                                      List<String> edgeNames, EdgeSide side) {
+        if (standingIds.isEmpty()) {
+            return List.of();
+        }
+        if (edgeNames == null) {
+            // an unnamed hop reads every class; the store call does not record the edges itself, so the
+            // subgraph a UI draws gets them from here
+            List<List<EdgeQueryResult>> all = context.readAllEdgeClassesBatched(standingIds, side, List.of());
+            for (int i = 0; i < all.size(); i++) {
+                context.recordEdges(standingIds.get(i), all.get(i));
+            }
+            return all;
+        }
+        if (edgeNames.size() == 1) {
+            return context.readAllEdgesBatchCached(edgeNames.get(0), side, standingIds, List.of());
+        }
+        List<List<EdgeQueryResult>> merged = new ArrayList<>(standingIds.size());
+        for (int i = 0; i < standingIds.size(); i++) {
+            merged.add(new ArrayList<>());
+        }
+        for (String edgeName : edgeNames) {
+            List<List<EdgeQueryResult>> part = context.readAllEdgesBatchCached(edgeName, side, standingIds,
+                    List.of());
+            for (int i = 0; i < part.size(); i++) {
+                merged.get(i).addAll(part.get(i));
+            }
+        }
+        return merged;
+    }
+
+    private static EdgeSide edgeSideOf(String name) {
+        return switch (name) {
+            case "out", "outE" -> EdgeSide.OUT;
+            case "in", "inE" -> EdgeSide.IN;
+            default -> EdgeSide.BOTH;
+        };
+    }
+
+    /** {@code otherV()}: each walk's last element is an edge, and the vertex at its far end is appended. */
+    private List<List<Object>> expandOtherV(GremlinContext context, List<List<Object>> paths) {
+        List<List<Object>> out = new ArrayList<>();
+        for (List<Object> path : paths) {
+            Object last = path.get(path.size() - 1);
+            List<Object> far = GremlinSteps.otherV().apply(context, List.of(last));
+            if (far.isEmpty()) {
+                continue;
+            }
+            List<Object> extended = new ArrayList<>(path);
+            extended.add(far.get(0));
+            out.add(extended);
+        }
+        return out;
+    }
+
+    /** The edge read a hop stands for: {@code out} reads like {@code outE}, and so on. */
+    /** Whether a walk visits a vertex twice ({@code simplePath} keeps the ones that do not). */
+    private static boolean repeatsAVertex(List<Object> path) {
+        Set<String> seen = new LinkedHashSet<>();
+        for (Object element : path) {
+            if (element instanceof GremlinVertex vertex && !seen.add(String.valueOf(vertex.id()))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Applies a filter step to the walks' last elements and keeps the walks whose element survived. */
+    private static List<List<Object>> filterPaths(GremlinContext context, List<List<Object>> paths,
+                                                  GremlinStep step) {
+        List<Object> lasts = new ArrayList<>(paths.size());
+        for (List<Object> path : paths) {
+            lasts.add(path.get(path.size() - 1));
+        }
+        List<Object> kept = step.apply(context, lasts);
+        List<List<Object>> out = new ArrayList<>();
+        int k = 0;
+        for (List<Object> path : paths) {
+            if (k < kept.size() && kept.get(k) == path.get(path.size() - 1)) {
+                out.add(path);
+                k++;
+            }
+        }
+        return out;
+    }
+
     /** A compiled query: resolved steps + precomputed property projection plan. */
     private static final class CompiledQuery {
         final GremlinQuery.Source source;
@@ -956,16 +1474,19 @@ public class GremlinGraphQuery {
         final boolean verifySeeds;
         final List<String> stepNames;
         final List<GremlinStep> steps;
+        /** The planned steps as parsed (their args), which the path walk needs to read the edge names. */
+        final List<GremlinQuery.Step> plan;
 
         CompiledQuery(GremlinQuery.Source source, List<String>[] properties,
                       List<String> startProperties, boolean verifySeeds, List<String> stepNames,
-                      List<GremlinStep> steps) {
+                      List<GremlinStep> steps, List<GremlinQuery.Step> plan) {
             this.source = source;
             this.properties = properties;
             this.startProperties = startProperties;
             this.verifySeeds = verifySeeds;
             this.stepNames = stepNames;
             this.steps = steps;
+            this.plan = plan;
         }
     }
 
@@ -1033,7 +1554,20 @@ public class GremlinGraphQuery {
                 }
                 break;
             }
-            if (name.equals("elementMap")) {
+            if (name.equals("elementMap") || name.equals("path")) {
+                // both hand back the element itself (a map of it, or the walk that visited it), so every
+                // property may be read
+                all = true;
+                break;
+            }
+            if (name.equals("hasNot") || name.equals("hasKey") || name.equals("hasValue")
+                    || name.equals("valueMap") || name.equals("order") || name.equals("groupCount")
+                    || name.equals("union") || name.equals("local") || name.equals("coalesce")
+                    || name.equals("not") || name.equals("and") || name.equals("or")
+                    || name.equals("optional") || name.equals("where") || name.equals("choose")
+                    || name.equals("repeat")) {
+                // these read the element's properties (which ones depends on the argument, or on a child
+                // traversal), so the projection stays "all"
                 all = true;
                 break;
             }

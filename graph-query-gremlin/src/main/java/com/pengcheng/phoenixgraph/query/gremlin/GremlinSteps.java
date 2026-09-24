@@ -24,6 +24,7 @@ import com.pengcheng.phoenixgraph.storage.TimeRange;
 import com.pengcheng.phoenixgraph.query.storage.VertexQueryResult;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -646,7 +647,7 @@ final class GremlinSteps {
 
     /** {@code toSet()}: every traverser once, in first-seen order (element identity, then value). */
     static GremlinStep toSet() {
-        return dedup();
+        return dedup(null);
     }
 
     /**
@@ -706,7 +707,722 @@ final class GremlinSteps {
         };
     }
 
+    // --- map / filter / reduce: the shapes a TinkerPop client writes ---
+
+    /** {@code identity()}: pass the traverser through. */
+    static GremlinStep identity() {
+        return (ctx, in) -> in;
+    }
+
+    /** {@code constant(v)}: every traverser becomes the value. */
+    static GremlinStep constant(String value) {
+        return (ctx, in) -> {
+            List<Object> out = new ArrayList<>(in.size());
+            for (int i = 0; i < in.size(); i++) {
+                out.add(value);
+            }
+            return out;
+        };
+    }
+
+    /** {@code id()}: the element's id. */
+    static GremlinStep id() {
+        return (ctx, in) -> {
+            List<Object> out = new ArrayList<>(in.size());
+            for (Object o : in) {
+                out.add(requireElement(o).id());
+            }
+            return out;
+        };
+    }
+
+    /** {@code label()}: the element's label (schema name). */
+    static GremlinStep label() {
+        return (ctx, in) -> {
+            List<Object> out = new ArrayList<>(in.size());
+            for (Object o : in) {
+                out.add(requireElement(o).label());
+            }
+            return out;
+        };
+    }
+
+    /** {@code hasId(ids...)}: keep the elements whose id is one of them. */
+    static GremlinStep hasId(List<String> ids) {
+        return (ctx, in) -> filterElements(ctx, in,
+                element -> ids.stream().anyMatch(id -> id.equals(String.valueOf(element.id()))));
+    }
+
+    /** {@code hasNot(key)}: keep the elements that do not carry the property. */
+    static GremlinStep hasNot(String key) {
+        return (ctx, in) -> filterElements(ctx, in, element -> element.properties().get(key) == null);
+    }
+
+    /** {@code hasKey(keys...)}: keep the elements that carry every key. */
+    static GremlinStep hasKey(List<String> keys) {
+        return (ctx, in) -> filterElements(ctx, in,
+                element -> keys.stream().allMatch(key -> element.properties().containsKey(key)));
+    }
+
+    /** {@code hasValue(values...)}: keep the elements one of whose property values matches. */
+    static GremlinStep hasValue(List<String> values) {
+        return (ctx, in) -> filterElements(ctx, in, element -> element.properties().values().stream()
+                .anyMatch(value -> values.stream().anyMatch(token -> matches(value, token))));
+    }
+
+    /** {@code is(value)} / {@code is(gt(5))}: keep the traversers whose own value matches. */
+    static GremlinStep is(String token) {
+        return (ctx, in) -> {
+            List<Object> out = new ArrayList<>();
+            for (Object o : in) {
+                if (isMatch(o, token)) {
+                    out.add(o);
+                } else if (o instanceof GremlinElement element) {
+                    ctx.dropElement(element);
+                }
+            }
+            return out;
+        };
+    }
+
+    private static final java.util.regex.Pattern IS_PREDICATE = java.util.regex.Pattern.compile(
+            "^\\s*(gt|gte|lt|lte|neq|eq)\\s*\\((.*)\\)\\s*$", java.util.regex.Pattern.DOTALL);
+
+    private static boolean isMatch(Object value, String token) {
+        java.util.regex.Matcher matcher = IS_PREDICATE.matcher(token.trim());
+        if (matcher.matches()) {
+            return predicateMatches(value, matcher.group(1), matcher.group(2).trim());
+        }
+        return matches(value, token);
+    }
+
+    private static boolean predicateMatches(Object value, String predicate, String argument) {
+        if (predicate.equals("eq")) {
+            return matches(value, argument);
+        }
+        if (predicate.equals("neq")) {
+            return !matches(value, argument);
+        }
+        int comparison = compareValues(value, argument);
+        return switch (predicate) {
+            case "gt" -> comparison > 0;
+            case "gte" -> comparison >= 0;
+            case "lt" -> comparison < 0;
+            case "lte" -> comparison <= 0;
+            default -> throw new QueryException("Unknown is() predicate: " + predicate);
+        };
+    }
+
+    private static int compareValues(Object left, String right) {
+        String text = unquote(right);
+        try {
+            return Double.compare(Double.parseDouble(String.valueOf(left)), Double.parseDouble(text));
+        } catch (NumberFormatException e) {
+            return String.valueOf(left).compareTo(text);
+        }
+    }
+
+    private static String unquote(String text) {
+        if (text.length() >= 2) {
+            char first = text.charAt(0);
+            if ((first == '\'' || first == '"') && text.charAt(text.length() - 1) == first) {
+                return text.substring(1, text.length() - 1);
+            }
+        }
+        return text;
+    }
+
+    /** {@code range(low, high)} / {@code skip(n)} / {@code tail(n)}: a slice of the traversers. */
+    static GremlinStep range(long low, long high) {
+        return (ctx, in) -> {
+            int from = (int) Math.max(0, Math.min(low, in.size()));
+            int to = high < 0 ? in.size() : (int) Math.max(from, Math.min(high, in.size()));
+            for (int i = 0; i < in.size(); i++) {
+                if ((i < from || i >= to) && in.get(i) instanceof GremlinElement element) {
+                    ctx.dropElement(element);
+                }
+            }
+            return new ArrayList<>(in.subList(from, to));
+        };
+    }
+
+    /** {@code tail(n)}: the last n traversers. */
+    static GremlinStep tail(int n) {
+        return (ctx, in) -> {
+            int from = Math.max(0, in.size() - n);
+            for (int i = 0; i < from; i++) {
+                if (in.get(i) instanceof GremlinElement element) {
+                    ctx.dropElement(element);
+                }
+            }
+            return new ArrayList<>(in.subList(from, in.size()));
+        };
+    }
+
+    /** {@code sample(n)}: n traversers, chosen with a fixed seed so a query is reproducible. */
+    static GremlinStep sample(int n) {
+        return (ctx, in) -> {
+            List<Object> copy = new ArrayList<>(in);
+            java.util.Collections.shuffle(copy, new java.util.Random(42L));
+            if (n >= copy.size()) {
+                return copy;
+            }
+            List<Object> out = new ArrayList<>(copy.subList(0, n));
+            for (int i = n; i < copy.size(); i++) {
+                if (copy.get(i) instanceof GremlinElement element) {
+                    ctx.dropElement(element);
+                }
+            }
+            return out;
+        };
+    }
+
+    /** {@code fold()}: every traverser becomes one list. */
+    static GremlinStep fold() {
+        return (ctx, in) -> List.of(new ArrayList<>(in));
+    }
+
+    /** {@code unfold()}: a collection becomes its items. */
+    static GremlinStep unfold() {
+        return (ctx, in) -> {
+            List<Object> out = new ArrayList<>();
+            for (Object o : in) {
+                if (o instanceof java.util.Collection<?> collection) {
+                    out.addAll(collection);
+                } else if (o instanceof Map<?, ?> map) {
+                    out.addAll(map.entrySet());
+                } else if (o instanceof Object[] array) {
+                    out.addAll(java.util.Arrays.asList(array));
+                } else {
+                    out.add(o);
+                }
+            }
+            return out;
+        };
+    }
+
+    /** {@code sum()}: the numeric total of the traversers. */
+    static GremlinStep sum() {
+        return (ctx, in) -> {
+            boolean integral = true;
+            double total = 0;
+            for (Object o : in) {
+                Number number = asNumber(o);
+                integral &= isIntegral(number);
+                total += number.doubleValue();
+            }
+            return List.of(integral ? (Object) (long) total : total);
+        };
+    }
+
+    /** {@code mean()}: the numeric average of the traversers. */
+    static GremlinStep mean() {
+        return (ctx, in) -> {
+            if (in.isEmpty()) {
+                return List.of();
+            }
+            double total = 0;
+            for (Object o : in) {
+                total += asNumber(o).doubleValue();
+            }
+            return List.of(total / in.size());
+        };
+    }
+
+    /** {@code max()} / {@code min()}: the largest / smallest traverser. */
+    static GremlinStep max() {
+        return reduceByComparison(true);
+    }
+
+    static GremlinStep min() {
+        return reduceByComparison(false);
+    }
+
+    private static GremlinStep reduceByComparison(boolean largest) {
+        return (ctx, in) -> {
+            Object best = null;
+            for (Object o : in) {
+                if (best == null || (compareOrderValues(o, best) > 0) == largest) {
+                    best = o;
+                }
+            }
+            return best == null ? List.of() : List.of(best);
+        };
+    }
+
+    /** {@code order([key[, desc]])}: sort the traversers (by a property when a key is given). */
+    static GremlinStep order(String key, boolean descending) {
+        return (ctx, in) -> {
+            List<Object> out = new ArrayList<>(in);
+            out.sort((a, b) -> {
+                int comparison = compareOrderValues(orderKey(a, key), orderKey(b, key));
+                return descending ? -comparison : comparison;
+            });
+            return out;
+        };
+    }
+
+    private static Object orderKey(Object value, String key) {
+        if (key == null) {
+            return value instanceof GremlinElement element ? element.id() : value;
+        }
+        return value instanceof GremlinElement element ? element.properties().get(key) : value;
+    }
+
+    private static int compareOrderValues(Object a, Object b) {
+        if (a == null) {
+            return b == null ? 0 : -1;
+        }
+        if (b == null) {
+            return 1;
+        }
+        if (a instanceof Number x && b instanceof Number y) {
+            return Double.compare(x.doubleValue(), y.doubleValue());
+        }
+        try {
+            return Double.compare(Double.parseDouble(String.valueOf(a)), Double.parseDouble(String.valueOf(b)));
+        } catch (NumberFormatException e) {
+            return String.valueOf(a).compareTo(String.valueOf(b));
+        }
+    }
+
+    /** {@code groupCount([key])}: how often each traverser (or each property value) appears. */
+    static GremlinStep groupCount(String key) {
+        return (ctx, in) -> {
+            Map<Object, Long> counts = new LinkedHashMap<>();
+            for (Object o : in) {
+                Object groupKey = key == null ? groupKey(o) : orderKey(o, key);
+                if (groupKey == null) {
+                    // a missing property is a group of its own; JSON cannot carry a null map key, so the
+                    // group is named rather than dropped
+                    groupKey = "(none)";
+                }
+                counts.merge(groupKey, 1L, Long::sum);
+            }
+            return List.of(counts);
+        };
+    }
+
+    private static Object groupKey(Object value) {
+        return value instanceof GremlinElement element
+                ? element.label() + "#" + element.id() : value;
+    }
+
+    /** {@code valueMap([keys...])}: the projected properties as a map. */
+    static GremlinStep valueMap(List<String> keys) {
+        return (ctx, in) -> {
+            List<Object> out = new ArrayList<>(in.size());
+            for (Object o : in) {
+                GremlinElement element = requireElement(o);
+                Map<String, Object> map = new LinkedHashMap<>();
+                if (keys.isEmpty()) {
+                    map.putAll(element.properties());
+                } else {
+                    for (String key : keys) {
+                        map.put(key, element.properties().get(key));
+                    }
+                }
+                out.add(map);
+            }
+            return out;
+        };
+    }
+
+    /** {@code toLower()} / {@code toUpper()} / {@code trim()} / {@code length()}: the string steps. */
+    static GremlinStep toLower() {
+        return mapStrings(text -> text.toLowerCase(java.util.Locale.ROOT));
+    }
+
+    static GremlinStep toUpper() {
+        return mapStrings(text -> text.toUpperCase(java.util.Locale.ROOT));
+    }
+
+    static GremlinStep trimString() {
+        return mapStrings(String::trim);
+    }
+
+    static GremlinStep length() {
+        return (ctx, in) -> {
+            List<Object> out = new ArrayList<>(in.size());
+            for (Object o : in) {
+                out.add((long) String.valueOf(o).length());
+            }
+            return out;
+        };
+    }
+
+    private static GremlinStep mapStrings(Function<String, String> mapper) {
+        return (ctx, in) -> {
+            List<Object> out = new ArrayList<>(in.size());
+            for (Object o : in) {
+                out.add(o == null ? null : mapper.apply(String.valueOf(o)));
+            }
+            return out;
+        };
+    }
+
+    /** {@code asString()}: every traverser as text. */
+    static GremlinStep asString() {
+        return mapStrings(text -> text);
+    }
+
+    /** {@code asNumber()}: parse text into a number (a Long when it is whole, else a Double). */
+    static GremlinStep asNumber() {
+        return (ctx, in) -> {
+            List<Object> out = new ArrayList<>(in.size());
+            for (Object o : in) {
+                out.add(parseNumber(o));
+            }
+            return out;
+        };
+    }
+
+    private static Object parseNumber(Object value) {
+        if (value instanceof Number) {
+            return value;
+        }
+        String text = String.valueOf(value).trim();
+        try {
+            return Long.parseLong(text);
+        } catch (NumberFormatException ignored) {
+            try {
+                return Double.parseDouble(text);
+            } catch (NumberFormatException e) {
+                throw new QueryException("asNumber cannot read '" + value + "' as a number");
+            }
+        }
+    }
+
+    /** {@code asBool()}: parse text into a boolean. */
+    static GremlinStep asBool() {
+        return (ctx, in) -> {
+            List<Object> out = new ArrayList<>(in.size());
+            for (Object o : in) {
+                out.add(o instanceof Boolean ? o : Boolean.parseBoolean(String.valueOf(o).trim()));
+            }
+            return out;
+        };
+    }
+
+    /** {@code asDate()}: an ISO-8601 instant becomes its epoch millis (a number, as the schema keeps times). */
+    static GremlinStep asDate() {
+        return (ctx, in) -> {
+            List<Object> out = new ArrayList<>(in.size());
+            for (Object o : in) {
+                if (o instanceof Number) {
+                    out.add(o);
+                    continue;
+                }
+                try {
+                    out.add(java.time.Instant.parse(String.valueOf(o).trim()).toEpochMilli());
+                } catch (RuntimeException e) {
+                    throw new QueryException("asDate cannot read '" + o + "' as an ISO-8601 instant");
+                }
+            }
+            return out;
+        };
+    }
+
+    /** {@code concat(suffix)}: append text to every traverser. */
+    static GremlinStep concat(String suffix) {
+        return mapStrings(text -> text + suffix);
+    }
+
+    /** {@code lTrim()} / {@code rTrim()}: trim one side. */
+    static GremlinStep lTrim() {
+        return mapStrings(text -> text.replaceAll("^\\s+", ""));
+    }
+
+    static GremlinStep rTrim() {
+        return mapStrings(text -> text.replaceAll("\\s+$", ""));
+    }
+
+    /** {@code replace(from, to)}: replace every occurrence. */
+    static GremlinStep replace(String from, String to) {
+        return mapStrings(text -> text.replace(from, to));
+    }
+
+    /** {@code split(separator)}: the parts as a list. */
+    static GremlinStep split(String separator) {
+        return (ctx, in) -> {
+            List<Object> out = new ArrayList<>(in.size());
+            for (Object o : in) {
+                out.add(new ArrayList<>(java.util.Arrays.asList(
+                        String.valueOf(o).split(java.util.regex.Pattern.quote(separator)))));
+            }
+            return out;
+        };
+    }
+
+    /** {@code substring(start[, end])}: a slice of the text. */
+    static GremlinStep substring(int start, int end) {
+        return mapStrings(text -> {
+            int from = Math.max(0, Math.min(start, text.length()));
+            int to = end < 0 ? text.length() : Math.max(from, Math.min(end, text.length()));
+            return text.substring(from, to);
+        });
+    }
+
+    /** {@code coin(p)}: keep each traverser with probability p (a fixed seed keeps a query reproducible). */
+    static GremlinStep coin(double probability) {
+        return (ctx, in) -> {
+            java.util.Random random = new java.util.Random(42L);
+            List<Object> out = new ArrayList<>();
+            for (Object o : in) {
+                if (random.nextDouble() < probability) {
+                    out.add(o);
+                } else if (o instanceof GremlinElement element) {
+                    ctx.dropElement(element);
+                }
+            }
+            return out;
+        };
+    }
+
+    /** {@code inject(values...)}: the values enter the traverser stream (before the incoming ones). */
+    static GremlinStep inject(List<String> values) {
+        List<Object> injected = new ArrayList<>(values.size());
+        for (String value : values) {
+            injected.add(coerce(unquote(value)));
+        }
+        return (ctx, in) -> {
+            List<Object> out = new ArrayList<>(injected);
+            out.addAll(in);
+            return out;
+        };
+    }
+
+    /** {@code timeLimit(ms)}: the engine has no long step loop to interrupt, so this passes through. */
+    static GremlinStep timeLimit() {
+        return (ctx, in) -> in;
+    }
+
+    /** A step that only makes sense while a path is being walked ({@code simplePath}/{@code cyclicPath}). */
+    static GremlinStep needsPath(String stepName) {
+        return (ctx, in) -> {
+            throw new QueryException(stepName + "() needs path() in the same traversal");
+        };
+    }
+
+    /**
+     * The collection steps ({@code combine}, {@code intersect}, {@code difference}, {@code disjunct}): the
+     * traverser is a collection and the argument names the other one, written {@code [1, 2]} or a single value.
+     */
+    static GremlinStep combine(String argument) {
+        List<Object> other = valueList(argument);
+        return mapCollection(value -> {
+            List<Object> out = new ArrayList<>(value);
+            out.addAll(other);
+            return out;
+        });
+    }
+
+    static GremlinStep intersect(String argument) {
+        List<Object> other = valueList(argument);
+        return mapCollection(value -> {
+            List<Object> out = new ArrayList<>();
+            for (Object item : value) {
+                if (other.contains(item)) {
+                    out.add(item);
+                }
+            }
+            return out;
+        });
+    }
+
+    static GremlinStep difference(String argument) {
+        List<Object> other = valueList(argument);
+        return mapCollection(value -> {
+            List<Object> out = new ArrayList<>();
+            for (Object item : value) {
+                if (!other.contains(item)) {
+                    out.add(item);
+                }
+            }
+            return out;
+        });
+    }
+
+    static GremlinStep disjunct(String argument) {
+        List<Object> other = valueList(argument);
+        return mapCollection(value -> {
+            List<Object> out = new ArrayList<>(value);
+            for (Object item : other) {
+                if (!out.contains(item)) {
+                    out.add(item);
+                }
+            }
+            return out;
+        });
+    }
+
+    private static GremlinStep mapCollection(Function<List<Object>, List<Object>> mapper) {
+        return (ctx, in) -> {
+            List<Object> out = new ArrayList<>(in.size());
+            for (Object o : in) {
+                out.add(mapper.apply(asList(o)));
+            }
+            return out;
+        };
+    }
+
+    private static List<Object> asList(Object value) {
+        if (value instanceof Collection<?> collection) {
+            return new ArrayList<>(collection);
+        }
+        return value == null ? new ArrayList<>() : new ArrayList<>(List.of(value));
+    }
+
+    /** {@code all(p)} / {@code any(p)} / {@code none(p)}: a predicate over a collection traverser. */
+    static GremlinStep allOf(String predicate) {
+        return overCollectionItems(predicate, "all");
+    }
+
+    static GremlinStep anyOf(String predicate) {
+        return overCollectionItems(predicate, "any");
+    }
+
+    static GremlinStep noneOf(String predicate) {
+        return overCollectionItems(predicate, "none");
+    }
+
+    private static GremlinStep overCollectionItems(String predicate, String mode) {
+        return (ctx, in) -> {
+            List<Object> out = new ArrayList<>();
+            for (Object o : in) {
+                List<Object> items = asList(o);
+                boolean holds = switch (mode) {
+                    case "all" -> !items.isEmpty() && items.stream().allMatch(item -> isMatch(item, predicate));
+                    case "any" -> items.stream().anyMatch(item -> isMatch(item, predicate));
+                    default -> items.stream().noneMatch(item -> isMatch(item, predicate));
+                };
+                if (holds) {
+                    out.add(o);
+                } else if (o instanceof GremlinElement element) {
+                    ctx.dropElement(element);
+                }
+            }
+            return out;
+        };
+    }
+
+    /** A step argument written as a list ({@code [1, 2]}) or a single value. */
+    private static List<Object> valueList(String argument) {
+        String text = argument == null ? "" : argument.trim();
+        if (text.length() >= 2 && text.startsWith("[") && text.endsWith("]")) {
+            text = text.substring(1, text.length() - 1);
+        }
+        List<Object> out = new ArrayList<>();
+        for (String part : splitTopLevel(text)) {
+            if (!part.isBlank()) {
+                out.add(coerce(unquote(part.trim())));
+            }
+        }
+        return out;
+    }
+
+    private static Object coerce(String text) {
+        if (text.equals("true")) {
+            return Boolean.TRUE;
+        }
+        if (text.equals("false")) {
+            return Boolean.FALSE;
+        }
+        try {
+            return Integer.parseInt(text);
+        } catch (NumberFormatException ignored) {
+            // not an int
+        }
+        try {
+            return Long.parseLong(text);
+        } catch (NumberFormatException ignored) {
+            // not a long either
+        }
+        try {
+            return Double.parseDouble(text);
+        } catch (NumberFormatException ignored) {
+            // not a number at all
+        }
+        return text;
+    }
+
+    /** Splits on top-level commas, ignoring quotes and brackets. */
+    private static List<String> splitTopLevel(String text) {
+        List<String> out = new ArrayList<>();
+        StringBuilder current = new StringBuilder();
+        char quote = 0;
+        int depth = 0;
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (quote != 0) {
+                current.append(c);
+                if (c == quote) {
+                    quote = 0;
+                }
+                continue;
+            }
+            if (c == '\'' || c == '"') {
+                quote = c;
+                current.append(c);
+            } else if (c == '(' || c == '[' || c == '{') {
+                depth++;
+                current.append(c);
+            } else if (c == ')' || c == ']' || c == '}') {
+                depth--;
+                current.append(c);
+            } else if (c == ',' && depth == 0) {
+                out.add(current.toString().trim());
+                current.setLength(0);
+            } else {
+                current.append(c);
+            }
+        }
+        if (!current.toString().isBlank()) {
+            out.add(current.toString().trim());
+        }
+        return out;
+    }
+
+    private static List<Object> filterElements(GremlinContext ctx, List<Object> in,
+                                               java.util.function.Predicate<GremlinElement> predicate) {
+        List<Object> out = new ArrayList<>();
+        for (Object o : in) {
+            GremlinElement element = requireElement(o);
+            if (predicate.test(element)) {
+                out.add(o);
+            } else {
+                ctx.dropElement(element);
+            }
+        }
+        return out;
+    }
+
+    private static Number asNumber(Object value) {
+        if (value instanceof Number number) {
+            return number;
+        }
+        try {
+            return Double.parseDouble(String.valueOf(value));
+        } catch (NumberFormatException e) {
+            throw new QueryException("Expected a number, got: " + value);
+        }
+    }
+
+    private static boolean isIntegral(Number number) {
+        return number instanceof Long || number instanceof Integer || number instanceof Short
+                || number instanceof Byte;
+    }
+
     // --- statistics / terminal ---
+
+    /**
+     * {@code path()}: the elements the traversal visited. The walk that builds a path is run by
+     * {@code GremlinGraphQuery#runPathCompiled}, which materialises a {@link GremlinPath} at this step; this
+     * resolved step is a pass-through so the compiler can treat {@code path} like any other name.
+     */
+    static GremlinStep path() {
+        return (ctx, in) -> in;
+    }
 
     static GremlinStep count() {
         return (ctx, in) -> List.of((long) in.size());
@@ -729,18 +1445,18 @@ final class GremlinSteps {
         };
     }
 
-    static GremlinStep dedup() {
+    /** {@code dedup()} / {@code dedup(key)}: the first traverser per element (or per property value). */
+    static GremlinStep dedup(String key) {
         return (ctx, in) -> {
             // Deduplicate by element identity (label + id): the same vertex reached twice is the same
             // traverser however its properties were projected. Scalars (e.g. after values()) dedupe by
-            // value. First-seen order is preserved.
+            // value. First-seen order is preserved. A key dedupes by that property instead.
             Set<Object> seen = new HashSet<>();
             List<Object> result = new ArrayList<>();
             for (Object element : in) {
-                Object key = element instanceof GremlinElement ge
-                        ? new ElementKey(ge.label(), ge.id())
-                        : element;
-                if (seen.add(key)) {
+                Object dedupKey = key != null ? orderKey(element, key)
+                        : element instanceof GremlinElement ge ? new ElementKey(ge.label(), ge.id()) : element;
+                if (seen.add(dedupKey)) {
                     result.add(element);
                 }
             }

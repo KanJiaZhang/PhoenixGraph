@@ -102,6 +102,9 @@
       builder: '图管理 · 建模',
       vertexIdPlaceholder: '输入顶点 ID，多个用逗号分隔，如 888, 1000, 1001',
       gremlinToggle: '切换 Gremlin 查询输入框',
+      scriptMode: '脚本',
+      scriptToggle: 'Groovy 脚本模式（def 变量 / print / 多条语句）',
+      gremlinScriptPlaceholder: "def ids = g.V(1001,'Account').values('id').toList()\nprint(ids)",
       query: '查询',
       rebalance: '自动平衡力图',
       brush: '框选过滤',
@@ -203,6 +206,9 @@
       builder: 'Graph builder',
       vertexIdPlaceholder: 'Vertex ID(s), comma separated, e.g. 888, 1000, 1001',
       gremlinToggle: 'Toggle Gremlin query input',
+      scriptMode: 'Script',
+      scriptToggle: 'Groovy script mode (def variables / print / several statements)',
+      gremlinScriptPlaceholder: "def ids = g.V(1001,'Account').values('id').toList()\nprint(ids)",
       query: 'Query',
       rebalance: 'Auto rebalance',
       brush: 'Box selection',
@@ -321,6 +327,8 @@
     vertexTypeSelect: document.getElementById('vertexTypeSelect'),
     vertexIdInput: document.getElementById('vertexIdInput'),
     gremlinInput: document.getElementById('gremlinInput'),
+    scriptToggle: document.getElementById('scriptToggle'),
+    scriptToggleWrap: document.getElementById('scriptToggleWrap'),
     idPanel: document.getElementById('idPanel'),
     gremlinPanel: document.getElementById('gremlinPanel'),
     modeToggle: document.getElementById('modeToggle'),
@@ -390,6 +398,13 @@
   // (GET /api/fuzzy/demo) and the pattern examples stay, only the button is off.
   const SHOW_FUZZY_EXAMPLE = false;
 
+  // The Groovy script mode of the query box: statements, variables and print over the same
+  // traversals. It is meant for administrators - IS_ADMIN is the gate and SHOW_SCRIPT_MODE the
+  // feature flag, and both are open while the feature settles. Flipping IS_ADMIN to false hides
+  // the toggle for everyone (the backend still auto-detects a script from its text).
+  const IS_ADMIN = true;
+  const SHOW_SCRIPT_MODE = IS_ADMIN;
+
   const EXAMPLES = {
     cypher: {
       'payment-graph': [
@@ -412,6 +427,51 @@
         ['关系与反向关系', 'Relation and its inverse', "MATCH (e:Entity {id:'concept_book_new_9'})-[r:Entity_Entity]->(x:Entity) RETURN r.relation AS relation, r.xrelation AS inverse, x.id LIMIT 10"],
         ['过滤某个关系', 'Filter by one relation', "MATCH (e:Entity {id:'concept_mammal_animals_2'})-[r:Entity_Entity]->(x:Entity) WHERE r.relation = 'concept:specializationof' RETURN x.id LIMIT 20"],
         ['两跳同 shard 关系', 'Two hops within shards', "MATCH (e:Entity {id:'concept_mammal_animals_2'})-[:Entity_Entity]->(:Entity)-[:Entity_Entity]->(y:Entity) RETURN DISTINCT y.id LIMIT 20"],
+      ],
+      'sanguo-kg': [
+        ['人物本体（曹操）', 'Person vertex (Cao Cao)', "MATCH (e:Entity {id:'曹操_3'}) RETURN e.name, e.entityType, e.gender, e.courtesyName"],
+        ['出边关系与中文关系名', 'Outgoing relations with the Chinese label', "MATCH (e:Entity {id:'曹操_3'})-[r:Entity_Entity]->(x:Entity) RETURN r.relation, r.relationLabel, x.name LIMIT 20"],
+        ['按关系过滤：曹操的主公关系', 'Filter by relation: Cao Cao as lord', "MATCH (e:Entity {id:'曹操_3'})-[r:Entity_Entity]->(x:Entity) WHERE r.relation = 'lord' RETURN x.name AS subject, r.relationLabel AS relation LIMIT 20"],
+        ['反向关系：谁效力曹操', 'Inverse: who serves Cao Cao', "MATCH (e:Entity {id:'曹操_9'})<-[r:Entity_Entity]-(x:Entity) WHERE r.relation = 'minister' RETURN x.name LIMIT 20"],
+        ['按关系家族聚合', 'Aggregate by relation family', "MATCH (e:Entity {id:'曹操_3'})-[r:Entity_Entity]->(x:Entity) RETURN r.relationFamily AS family, count(*) AS n ORDER BY n DESC"],
+        ['两跳：曹嵩 → 曹操 → 曹昂', 'Two hops: grandfather to grandson', "MATCH (a:Entity {id:'曹嵩_8'})-[:Entity_Entity]->(b:Entity)-[:Entity_Entity]->(c:Entity) RETURN DISTINCT b.name AS son, c.name AS grandson LIMIT 20"],
+        ['出场章回（诸葛亮）', 'Chapters Zhuge Liang appears in', "MATCH (p:Entity {id:'诸葛亮_3'})-[r:Entity_Entity]->(c:Entity) WHERE r.relation = 'appearsIn' RETURN c.name LIMIT 25"],
+        ['谁效力魏', 'Who serves the state of Wei', "MATCH (p:Entity)-[r:Entity_Entity]->(f:Entity {id:'魏_8'}) WHERE r.relation = 'serves' RETURN p.name, p.entityType LIMIT 20"],
+        ['曹操的同族（亲属家族）', 'Cao Cao\'s clan (kindship family)', "MATCH (e:Entity {id:'曹操_5'})-[r:Entity_Entity]->(x:Entity) WHERE r.relationFamily = '亲属' RETURN r.relationLabel AS relation, x.name LIMIT 20"],
+        ['曹操的子女（亲属家族）', 'Cao Cao\'s children (kindship family)', "MATCH (e:Entity {id:'曹操_6'})<-[r:Entity_Entity]-(x:Entity) WHERE r.relationFamily = '亲属' RETURN r.relationLabel AS relation, x.name LIMIT 20"],
+      ],
+      'sanguo-kg-text': [
+        ['方案 C：谁是五虎上将', 'Plan C: who are the Five Tiger Generals', "MATCH (p:Entity)-[r:Entity_Entity]->(f:Entity {id:'五虎上将'}) WHERE r.relation='holds' RETURN p.name AS general"],
+        ['方案 C：谁是五虎将之首', 'Plan C: who leads the Five Tiger Generals', "MATCH (p:Entity)-[r:Entity_Entity]->(f:Entity {id:'五虎上将之首'}) WHERE r.relation='holds' RETURN p.name"],
+        ['方案 C：刘备的军师（文本抽取）', 'Plan C: Liu Bei\'s strategists (text-extracted)', "MATCH (l:Entity {id:'刘备'})<-[r:Entity_Entity]-(p:Entity) WHERE r.relation='strategistOf' RETURN p.name AS strategist"],
+        ['方案 C：关羽斩杀过谁', 'Plan C: whom Guan Yu killed', "MATCH (p:Entity {id:'关羽'})-[r:Entity_Entity]->(x:Entity) WHERE r.relation='killed' RETURN x.name"],
+        ['方案 C：谁斩杀了关羽', 'Plan C: who killed Guan Yu', "MATCH (p:Entity {id:'关羽'})<-[r:Entity_Entity]-(x:Entity) WHERE r.relation='killed' RETURN x.name AS killer"],
+        ['方案 C：关羽的传记提到了谁', 'Plan C: who Guan Yu\'s biography mentions', "MATCH (p:Entity {id:'关羽'})-[r:Entity_Entity]->(x:Entity) WHERE r.relation='mentions' RETURN x.name LIMIT 12"],
+      ],
+      'sanguo-kg-rocksdb-edge': [
+        ['人物本体（属性）', 'Person vertex with its attributes', "MATCH (e:Entity {id:'曹操'}) RETURN e.name, e.entityType, e.gender, e.courtesyName"],
+        ['出边关系与中文关系名', 'Outgoing relations with the Chinese label', "MATCH (e:Entity {id:'曹操'})-[r:Entity_Entity]->(x:Entity) RETURN r.relation, r.relationLabel, x.name LIMIT 20"],
+        ['按关系过滤：曹操的主公关系', 'Filter by relation: Cao Cao as lord', "MATCH (e:Entity {id:'曹操'})-[r:Entity_Entity]->(x:Entity) WHERE r.relation = 'lord' RETURN x.name AS subject, r.relationLabel AS relation LIMIT 20"],
+        ['反向：马谡的主公（用 xrelation）', 'Inverse: Ma Su\'s lord (via xrelation)', "MATCH (e:Entity {id:'马谡'})-[r:Entity_Entity]->(x:Entity) WHERE r.xrelation = 'lord' RETURN x.name AS lord, r.relationLabel AS relation"],
+        ['按关系家族聚合', 'Aggregate by relation family', "MATCH (e:Entity {id:'曹操'})-[r:Entity_Entity]->(x:Entity) RETURN r.relationFamily AS family, count(*) AS n ORDER BY n DESC"],
+        ['两跳邻居：曹嵩 → 曹操 → X', 'Two hops from Cao Song through Cao Cao', "MATCH (a:Entity {id:'曹嵩'})-[:Entity_Entity]->(b:Entity)-[:Entity_Entity]->(c:Entity) RETURN DISTINCT b.name AS middle, c.name AS twoHop LIMIT 20"],
+        ['出场章回（诸葛亮）', 'Chapters Zhuge Liang appears in', "MATCH (p:Entity {id:'诸葛亮'})-[r:Entity_Entity]->(c:Entity) WHERE r.relation = 'appearsIn' RETURN c.name LIMIT 25"],
+        ['谁效力魏（跨类型：人物 → 势力）', 'Who serves Wei (person -> faction)', "MATCH (p:Entity)-[r:Entity_Entity]->(f:Entity {id:'魏'}) WHERE r.relation = 'serves' RETURN p.name, p.entityType LIMIT 20"],
+        ['两个实体之间有什么关系', 'What relates two entities', "MATCH (a:Entity {id:'刘备'})-[r:Entity_Entity]-(b:Entity {id:'诸葛亮'}) RETURN r.relation AS relation, r.relationLabel AS label"],
+        ['曹操的子女（亲属家族）', 'Cao Cao\'s children (kindship family)', "MATCH (e:Entity {id:'曹操'})<-[r:Entity_Entity]-(x:Entity) WHERE r.relationFamily = '亲属' RETURN r.relationLabel AS relation, x.name LIMIT 20"],
+        ['两次：指定关系链 刘备-主公-诸葛亮-师傅-姜维', 'Two hops: a named relation chain', "MATCH (a:Entity {id:'刘备'})-[r1:Entity_Entity]->(b:Entity)-[r2:Entity_Entity]->(c:Entity) WHERE r1.relation='lord' AND r2.relation='master' RETURN b.name AS mid, c.name AS end"],
+        ['两次：共同邻居（刘备与曹操）', 'Two hops: a common neighbour', "MATCH (a:Entity {id:'刘备'})-[:Entity_Entity]-(m:Entity)-[:Entity_Entity]-(b:Entity {id:'曹操'}) RETURN DISTINCT m.name"],
+        ['两次：同势力同僚（徐庶）', 'Two hops: colleagues in the same faction', "MATCH (a:Entity {id:'徐庶'})-[r1:Entity_Entity]->(f:Entity)<-[r2:Entity_Entity]-(b:Entity) WHERE r1.relation='serves' AND r2.relation='serves' RETURN count(DISTINCT b.name) AS colleagues"],
+        ['两次：同回出场（诸葛亮）', 'Two hops: co-appearance in a chapter', "MATCH (a:Entity {id:'诸葛亮'})-[r1:Entity_Entity]->(ch:Entity)<-[r2:Entity_Entity]-(b:Entity) WHERE r1.relation='appearsIn' AND r2.relation='appearsIn' RETURN count(DISTINCT b.name) AS sameChapter"],
+        ['两次：路径强度 Top10', 'Two hops: paths per entity (top 10)', "MATCH (a:Entity {id:'刘备'})-[:Entity_Entity]-(b:Entity)-[:Entity_Entity]-(c:Entity) RETURN c.name AS name, count(*) AS paths ORDER BY paths DESC LIMIT 10"],
+        ['三次：刘备三跳到曹操的路径数', 'Three hops: walks from Liu Bei to Cao Cao', "MATCH (a:Entity {id:'刘备'})-[:Entity_Entity]-(b:Entity)-[:Entity_Entity]-(c:Entity)-[:Entity_Entity]-(d:Entity {id:'曹操'}) RETURN count(*) AS paths"],
+        ['三次：祖孙三代（司马懿→司马昭→司马炎）', 'Three hops: three generations', "MATCH (a:Entity {id:'司马懿'})<-[r1:Entity_Entity]-(s:Entity)<-[r2:Entity_Entity]-(g:Entity) WHERE r1.relation='son' AND r2.relation='son' RETURN DISTINCT g.name"],
+        ['问答：关羽和曹操是什么关系？', 'Q: how are Guan Yu and Cao Cao related?', "MATCH (a:Entity {id:'关羽'})-[r1:Entity_Entity]->(f:Entity)<-[r2:Entity_Entity]-(b:Entity {id:'曹操'}) WHERE r1.relation='serves' AND r2.relation='serves' RETURN DISTINCT f.name"],
+        ['问答：刘备和曹操是什么关系？', 'Q: how are Liu Bei and Cao Cao related?', "MATCH (a:Entity {id:'刘备'})-[r1:Entity_Entity]->(p:Entity)<-[r2:Entity_Entity]-(b:Entity {id:'曹操'}) WHERE r1.relation='lord' AND r2.relation='lord' RETURN DISTINCT p.name"],
+        ['问答：刘备手下谁是从曹操那过来的？', 'Q: who under Liu Bei came from Cao Cao?', "MATCH (a:Entity {id:'曹操'})-[r1:Entity_Entity]->(p:Entity)<-[r2:Entity_Entity]-(b:Entity {id:'刘备'}) WHERE r1.relation='lord' AND r2.relation='lord' RETURN DISTINCT p.name AS defector"],
+        ['问答：曹操的同族有谁？', 'Q: who is in Cao Cao\'s clan?', "MATCH (e:Entity {id:'曹操'})-[r:Entity_Entity]-(x:Entity) WHERE r.relation='same_clan' RETURN DISTINCT x.name"],
+        ['问答：诸葛亮的哥哥在哪个国家？', 'Q: which state is Zhuge Liang\'s brother in?', "MATCH (e:Entity {id:'诸葛亮'})-[r:Entity_Entity]-(x:Entity)<-[:Entity_Entity]-(l:Entity {id:'孙权'}) WHERE r.relationFamily='亲属' RETURN DISTINCT x.name"],
+        ['问答：谁效力魏（魏国阵营人数）', 'Q: how many people serve Wei?', "MATCH (p:Entity)-[r:Entity_Entity]->(f:Entity {id:'魏'}) WHERE r.relation='serves' RETURN count(*) AS members"],
       ],
       'hnsw-sift': [
         ['4242 向量本体', 'Vector 4242 itself', "MATCH (v:Vector {id:'4242'}) RETURN v.name, v.bucket, v.category"],
@@ -473,20 +533,85 @@
         ['模糊关联①→账户→出款→收款方', 'Fuzzy link 1 -> account -> payment -> receiver', "g.V().fuzzyLink(0, '{\"email\":\"19880101@mail.ru\",\"phone\":\"+8613800138001\",\"ip\":\"10.20.31.7\",\"username\":\"zhang1988\"}').out('FuzzyLinkedTo').outE('Payment').otherV()"],
         ['模糊关联②：同/24+卡BIN+邮箱前四位', 'Fuzzy link 2: same /24 + card BIN + first four mail characters', "g.V().fuzzyLink(1, '{\"email\":\"44100101@qq.com\",\"ip\":\"10.30.40.11\",\"cardNumber\":\"6217000090009001\"}').out('FuzzyLinkedTo')"],
       // the event sequence patterns: the event list goes in, the group (the pattern id and its key) comes out.
-      // ev_a1 and ev_a2 share the session, ev_a4 is the same /24 with a step past 100s (pattern 3 still
-      // takes it), ev_a5 disputes for another reason.
+      // ev_a1 and ev_a2 share the ordered session; ev_a6 satisfies the two-sided-window patterns, ev_a7 is tied
+      // by the reason (pattern 4 only), ev_a8 by the cookie (pattern 4 only) and ev_a9 is a web login (pattern 3
+      // only); ev_a1/a2/a5 also carry the three fields anyFields links on (pattern 5).
       ['事件序列②：事件列表 → 行为组', 'Event sequence 2: an event list -> the group it belongs to',
         "g.V().fuzzyLink(2, '{\"Login\":{\"ID\":\"ev_a1\",\"IP\":\"10.122.13.14\",\"Type\":\"Mobile\",\"EventTime\":1790147176281},\"BalanceCheck\":{\"ID\":\"ev_a1\",\"IP\":\"10.122.13.14\",\"EventTime\":1790147177281},\"Payment\":{\"ID\":\"ev_a1\",\"USD\":1000,\"CBIN\":\"035\",\"EventTime\":1790147178281},\"Dispute\":{\"ID\":\"ev_a1\",\"DisputeReason\":\"NotMyCard\",\"IP\":\"10.122.13.14\",\"EventTime\":1790147179281},\"Logout\":{\"ID\":\"ev_a1\",\"EventTime\":1790147239281}}').values('id')"],
       ['事件序列②：这一组里的账号', 'Event sequence 2: the accounts in that group',
         "g.V().fuzzyLink(2, '{\"Login\":{\"ID\":\"ev_a1\",\"IP\":\"10.122.13.14\",\"Type\":\"Mobile\",\"EventTime\":1790147176281},\"BalanceCheck\":{\"ID\":\"ev_a1\",\"IP\":\"10.122.13.14\",\"EventTime\":1790147177281},\"Payment\":{\"ID\":\"ev_a1\",\"USD\":1000,\"CBIN\":\"035\",\"EventTime\":1790147178281},\"Dispute\":{\"ID\":\"ev_a1\",\"DisputeReason\":\"NotMyCard\",\"IP\":\"10.122.13.14\",\"EventTime\":1790147179281},\"Logout\":{\"ID\":\"ev_a1\",\"EventTime\":1790147239281}}').out('FuzzyLinkedTo').values('id')"],
-      ['事件序列③：/24 + 只有 NotMyCard（reason 是条件）', 'Event sequence 3: same /24, NotMyCard only (the reason is a condition)',
-        "g.V().fuzzyLink(3, '{\"Login\":{\"ID\":\"ev_a1\",\"IP\":\"10.122.13.14\",\"Type\":\"Mobile\",\"EventTime\":1790147176281},\"BalanceCheck\":{\"ID\":\"ev_a1\",\"IP\":\"10.122.13.14\",\"EventTime\":1790147177281},\"Payment\":{\"ID\":\"ev_a1\",\"USD\":1000,\"CBIN\":\"035\",\"EventTime\":1790147178281},\"Dispute\":{\"ID\":\"ev_a1\",\"DisputeReason\":\"NotMyCard\",\"IP\":\"10.122.13.14\",\"EventTime\":1790147179281},\"Logout\":{\"ID\":\"ev_a1\",\"EventTime\":1790147239281}}').values('id')"],
+      ['事件序列③：双向窗口 + 争议地址=登录地址', 'Event sequence 3: two-sided window, the dispute from the login address',
+        "g.V().fuzzyLink(3, '{\"Login\":{\"ID\":\"ev_a6\",\"IP\":\"10.141.20.30\",\"Type\":\"Mobile\",\"EventTime\":1790147176281},\"BalanceCheck\":{\"ID\":\"ev_a6\",\"IP\":\"10.141.20.30\",\"EventTime\":1790147177281},\"Payment\":{\"ID\":\"ev_a6\",\"USD\":1000,\"CBIN\":\"035\",\"Cookie\":\"ck_a6\",\"EventTime\":1790147176781},\"Dispute\":{\"ID\":\"ev_a6\",\"DisputeReason\":\"NotMyCard\",\"IP\":\"10.141.20.30\",\"Cookie\":\"ck_a6\",\"EventTime\":1790147179781}}').values('id')"],
+      ['事件序列③：这一组里的账号', 'Event sequence 3: the accounts in that group',
+        "g.V().fuzzyLink(3, '{\"Login\":{\"ID\":\"ev_a6\",\"IP\":\"10.141.20.30\",\"Type\":\"Mobile\",\"EventTime\":1790147176281},\"BalanceCheck\":{\"ID\":\"ev_a6\",\"IP\":\"10.141.20.30\",\"EventTime\":1790147177281},\"Payment\":{\"ID\":\"ev_a6\",\"USD\":1000,\"CBIN\":\"035\",\"Cookie\":\"ck_a6\",\"EventTime\":1790147176781},\"Dispute\":{\"ID\":\"ev_a6\",\"DisputeReason\":\"NotMyCard\",\"IP\":\"10.141.20.30\",\"Cookie\":\"ck_a6\",\"EventTime\":1790147179781}}').out('FuzzyLinkedTo').values('id')"],
+      ['事件序列④：Mobile + (地址或 Cookie 或 NotMyCard)', 'Event sequence 4: mobile login, dispute tied by address, cookie or reason',
+        "g.V().fuzzyLink(4, '{\"Login\":{\"ID\":\"ev_a6\",\"IP\":\"10.141.20.30\",\"Type\":\"Mobile\",\"EventTime\":1790147176281},\"BalanceCheck\":{\"ID\":\"ev_a6\",\"IP\":\"10.141.20.30\",\"EventTime\":1790147177281},\"Payment\":{\"ID\":\"ev_a6\",\"USD\":1000,\"CBIN\":\"035\",\"Cookie\":\"ck_a6\",\"EventTime\":1790147176781},\"Dispute\":{\"ID\":\"ev_a6\",\"DisputeReason\":\"NotMyCard\",\"IP\":\"10.141.20.30\",\"Cookie\":\"ck_a6\",\"EventTime\":1790147179781}}').out('FuzzyLinkedTo').values('id')"],
+      ['事件序列⑤：anyFields 找出三个事件共有的字段', 'Event sequence 5: anyFields, the fields the three events agree on',
+        "g.V().fuzzyLink(5, '{\"Login\":{\"ID\":\"ev_a1\",\"IP\":\"10.122.13.14\",\"Type\":\"Mobile\",\"Cookie\":\"ck_a1\",\"EventTime\":1790147176281},\"BalanceCheck\":{\"ID\":\"ev_a1\",\"IP\":\"10.122.13.14\",\"EventTime\":1790147177281},\"Payment\":{\"ID\":\"ev_a1\",\"IP\":\"10.122.13.14\",\"Type\":\"Mobile\",\"USD\":1000,\"CBIN\":\"035\",\"Cookie\":\"ck_a1\",\"EventTime\":1790147178281},\"Dispute\":{\"ID\":\"ev_a1\",\"DisputeReason\":\"NotMyCard\",\"IP\":\"10.122.13.14\",\"Type\":\"Mobile\",\"Cookie\":\"ck_a1\",\"EventTime\":1790147179281}}').values('id')"],
+      ['事件序列⑤：这一组里的账号', 'Event sequence 5: the accounts in that group',
+        "g.V().fuzzyLink(5, '{\"Login\":{\"ID\":\"ev_a1\",\"IP\":\"10.122.13.14\",\"Type\":\"Mobile\",\"Cookie\":\"ck_a1\",\"EventTime\":1790147176281},\"BalanceCheck\":{\"ID\":\"ev_a1\",\"IP\":\"10.122.13.14\",\"EventTime\":1790147177281},\"Payment\":{\"ID\":\"ev_a1\",\"IP\":\"10.122.13.14\",\"Type\":\"Mobile\",\"USD\":1000,\"CBIN\":\"035\",\"Cookie\":\"ck_a1\",\"EventTime\":1790147178281},\"Dispute\":{\"ID\":\"ev_a1\",\"DisputeReason\":\"NotMyCard\",\"IP\":\"10.122.13.14\",\"Type\":\"Mobile\",\"Cookie\":\"ck_a1\",\"EventTime\":1790147179281}}').out('FuzzyLinkedTo').values('id')"],
       ['事件序列：某账号属于哪些行为组', 'Event sequence: which behaviour groups an account belongs to',
         "g.V('ev_a1','Account').in('FuzzyLinkedTo').values('id')"],
+      ['脚本：先取一批 id，再统计', 'Script: keep the ids, then count them',
+        "def ids = g.V(1001, 'Account').nearest(5).values('id').toList()\nprint(ids)\nprint(ids.size())"],
+      ['两跳路径 path()', 'Two-hop paths with path()',
+        "g.V(1001,'Account').out('Payment').out('Payment').path()"],
+      ['脚本：for + if + 闭包', 'Script: for, if and a closure',
+        "def ids = [1000, 1001, 1002]\ndef out = []\nfor (id in ids) {\n  def n = g.V(id, 'Account').outE('Payment').count()\n  if (n.get(0) > 0) { out = out.add(id + ':' + n.get(0)) }\n}\ndef edges = g.V('1000','Account').outE('Payment').toList()\ndef statuses = edges.collect { it.value('status') }\nprint('out: ' + out)\nprint('statuses: ' + statuses)\nout"],
+      ['脚本：sender→receiver 的 4 跳路径（双向 both）',
+        'Script: the four-hop paths between a sender and a receiver (both directions)',
+        "def sender = 1000\ndef receiver = 1006\n\ndef sPaths = g.V(sender, 'Account').both('Payment').bothE('Payment').path().toList()\ndef rPaths = g.V(receiver, 'Account').both('Payment').bothE('Payment').path().toList()\n\ndef common = sPaths.endIds().retainAll(rPaths.endIds())\ndef midObjects = g.V(common, 'Account').toList()\n\ndef four = sPaths.joinOnEnd(rPaths, midObjects)\n\ndef answer = []\nanswer = answer.addAll(sPaths)\nanswer = answer.addAll(rPaths)\nanswer = answer.addAll(four)\nprint('sender two-hop paths: ' + sPaths.size())\nprint('receiver two-hop paths: ' + rPaths.size())\nprint('common mids: ' + common)\nprint('middle objects: ' + midObjects.size())\nprint('four-hop paths: ' + four.size())\nanswer"],
       ],
       'kg-entity-graph': [
         ['概念书的全部关系', 'All relations of concept_book_new_9', "g.V('concept_book_new_9','Entity').bothE().limit(20)"],
         ['按关系过滤再跳一跳', 'Filter by relation, then one hop', "g.V('concept_mammal_animals_2','Entity').bothE().filter(relation.equals('concept:specializationof') || xrelation.equals('concept:specializationof')).otherV()"],
+      ],
+      'sanguo-kg': [
+        ['一个分片的全部关系（曹操_3）', 'All relations of one shard', "g.V('曹操_3','Entity').bothE()"],
+        ['一个人全部分片的关系', 'Every shard of one person', "g.V('曹操_2','曹操_3','曹操_5','曹操_6','曹操_7','曹操_8','曹操_9','Entity').batch(20).bothE()"],
+        ['按关系过滤（主公）', 'Filter by relation (lord)', "g.V('曹操_3','Entity').bothE().filter(relation.equals('lord') || xrelation.equals('lord'))"],
+        ['过滤后跳一跳（去重）', 'Filter, then one hop, deduplicated', "g.V('曹操_3','Entity').bothE().filter(relation.equals('lord')).otherV().dedup()"],
+        ['反向：谁是曹操的臣子', 'Inverse: who serves Cao Cao', "g.V('曹操_9','Entity').inE().filter(relation.equals('minister')).otherV().dedup()"],
+        ['姜维的师傅（师承家族）', 'Jiang Wei and his master', "g.V('姜维_7','Entity').bothE().filter(relation.equals('apprentice') || xrelation.equals('apprentice')).otherV().dedup()"],
+        ['诸葛亮出场章回数', 'How many chapters Zhuge Liang appears in', "g.V('诸葛亮_3','Entity').bothE().filter(relation.equals('appearsIn')).otherV().count()"],
+        ['按关系家族聚合', 'Count the relations by family', "g.V('曹操_2','曹操_3','曹操_5','曹操_6','曹操_7','曹操_8','曹操_9','Entity').bothE().groupCount('relationFamily')"],
+        ['魏有多少人效力', 'How many people serve Wei', "g.V('魏_8','Entity').inE().filter(relation.equals('serves')).otherV().dedup().count()"],
+        ['两跳：曹嵩 → 曹操 → 曹昂', 'Two hops: grandfather to grandson', "g.V('曹嵩_8','Entity').bothE().filter(relation.equals('father')).otherV().bothE().filter(relation.equals('father')).otherV().dedup()"],
+      ],
+      'sanguo-kg-rocksdb-edge': [
+        ['实体属性（点查）', 'Entity with its attributes (point lookup)', "g.V('曹操','Entity').values('name','entityType','gender','courtesyName')"],
+        ['一个人的全部关系（一条记录，不再分片）', 'Every relation of one person, in one record', "g.V('曹操','Entity').bothE()"],
+        ['邻居去重（社交圈）', 'Distinct neighbours (the person\'s circle)', "g.V('曹操','Entity').bothE().otherV().dedup()"],
+        ['按关系过滤：曹操的主公关系', 'Filter by relation: Cao Cao as lord', "g.V('曹操','Entity').outE().filter(relation.equals('lord'))"],
+        ['一跳：曹操手下的将领', 'One hop: the generals under Cao Cao', "g.V('曹操','Entity').outE().filter(relation.equals('lord')).otherV().dedup()"],
+        ['反向惯用法：刘备的臣属', 'Inverse idiom: who serves Liu Bei', "g.V('刘备','Entity').bothE().filter(relation.equals('lord') || xrelation.equals('lord')).otherV().dedup()"],
+        ['师承：姜维的师傅', 'Mentorship: Jiang Wei\'s master', "g.V('姜维','Entity').bothE().filter(relation.equals('master') || xrelation.equals('master')).otherV().dedup()"],
+        ['按关系家族聚合', 'Relations grouped by family', "g.V('曹操','Entity').bothE().groupCount('relationFamily')"],
+        ['两跳：曹嵩 → 曹操 → 曹昂（祖孙）', 'Two hops: grandfather to grandson', "g.V('曹嵩','Entity').outE().filter(relation.equals('father')).otherV().outE().filter(relation.equals('father')).otherV().dedup()"],
+        ['势力成员数：魏', 'Faction size: how many serve Wei', "g.V('魏','Entity').inE().filter(relation.equals('serves')).otherV().dedup().count()"],
+        ['两次：指定关系链 刘备-主公-诸葛亮-师傅-姜维', 'Two hops: a named relation chain', "g.V('刘备','Entity').outE().filter(relation.equals('lord')).otherV().outE().filter(relation.equals('master')).otherV().dedup().values('name')"],
+        ['两次：共同邻居（刘备与曹操）', 'Two hops: a common neighbour', "g.V('刘备','Entity').both('Entity_Entity').dedup().where(both('Entity_Entity').hasId('曹操')).values('name')"],
+        ['两次：同势力同僚（徐庶）', 'Two hops: colleagues in the same faction', "g.V('徐庶','Entity').outE().filter(relation.equals('serves')).otherV().inE().filter(relation.equals('serves')).otherV().dedup().count()"],
+        ['两次：同回出场（诸葛亮）', 'Two hops: co-appearance in a chapter', "g.V('诸葛亮','Entity').outE().filter(relation.equals('appearsIn')).otherV().inE().filter(relation.equals('appearsIn')).otherV().dedup().count()"],
+        ['两次：路径强度（刘备两跳能到谁）', 'Two hops: paths per entity', "g.V('刘备','Entity').both('Entity_Entity').both('Entity_Entity').groupCount().by('name')"],
+        ['三次：刘备三跳到曹操的路径数', 'Three hops: walks from Liu Bei to Cao Cao', "g.V('刘备','Entity').repeat(both('Entity_Entity')).times(3).hasId('曹操').count()"],
+        ['三次：祖孙三代（司马懿→司马昭→司马炎）', 'Three hops: three generations', "g.V('司马懿','Entity').inE().filter(relation.equals('son')).otherV().inE().filter(relation.equals('son')).otherV().dedup().values('name')"],
+        ['问答：关羽和曹操是什么关系？', 'Q: how are Guan Yu and Cao Cao related?', "g.V('关羽','Entity').outE().filter(relation.equals('serves')).otherV().dedup().where(inE().filter(relation.equals('serves')).otherV().hasId('曹操')).values('name')"],
+        ['问答：刘备和曹操是什么关系？', 'Q: how are Liu Bei and Cao Cao related?', "g.V('刘备','Entity').outE().filter(relation.equals('lord')).otherV().dedup().where(inE().filter(relation.equals('lord')).otherV().hasId('曹操')).values('name')"],
+        ['问答：三国三大主公是谁？', 'Q: who are the three lords?', "g.V('Entity').inE().filter(relation.equals('lord')).otherV().groupCount().by('name')"],
+        ['问答：刘备手下谁是从曹操那过来的？', 'Q: who under Liu Bei came from Cao Cao?', "g.V('曹操','Entity').outE().filter(relation.equals('lord')).otherV().dedup().where(inE().filter(relation.equals('lord')).otherV().hasId('刘备')).values('name')"],
+        ['问答：曹操的同族有谁？', 'Q: who is in Cao Cao\'s clan?', "g.V('曹操','Entity').bothE().filter(relation.equals('same_clan')).otherV().values('name')"],
+        ['问答：诸葛亮和司马懿相隔多远？', 'Q: how far apart are Zhuge Liang and Sima Yi?', "g.V('诸葛亮','Entity').repeat(both('Entity_Entity')).times(2).hasId('司马懿').count()"],
+      ],
+      'sanguo-kg-text': [
+        ['方案 C：谁是五虎上将（自动抽到）', 'Plan C: who are the Five Tiger Generals (auto-extracted)', "g.V('五虎上将','Entity').inE().filter(relation.equals('holds')).otherV().values('name')"],
+        ['方案 C：五虎将之首', 'Plan C: the head of the Five Tiger Generals', "g.V('五虎上将之首','Entity').inE().filter(relation.equals('holds')).otherV().values('name')"],
+        ['方案 C：刘备的军师是谁', 'Plan C: Liu Bei\'s strategist', "g.V('刘备','Entity').inE().filter(relation.equals('strategistOf')).otherV().values('name')"],
+        ['方案 C：曹操的谋士是谁', 'Plan C: Cao Cao\'s advisor', "g.V('曹操','Entity').inE().filter(relation.equals('advisorOf')).otherV().values('name')"],
+        ['方案 C：关羽斩杀过谁', 'Plan C: whom Guan Yu killed', "g.V('关羽','Entity').outE().filter(relation.equals('killed')).otherV().values('name')"],
+        ['方案 C：谁斩杀了关羽', 'Plan C: who killed Guan Yu', "g.V('关羽','Entity').inE().filter(relation.equals('killed')).otherV().values('name')"],
+        ['方案 C：关羽与谁交战', 'Plan C: whom Guan Yu fought', "g.V('关羽','Entity').bothE().filter(relation.equals('fought')).otherV().dedup().values('name')"],
+        ['方案 C：关羽的传记提到了谁', 'Plan C: who Guan Yu\'s biography mentions', "g.V('关羽','Entity').outE().filter(relation.equals('mentions')).limit(12).otherV().values('name')"],
       ],
       'hnsw-sift': [
         ['4242 最近的 20 个向量', '20 nearest vectors to 4242', "g.V('4242','Vector').nearest(20)"],
@@ -544,6 +669,7 @@
         returnSubgraph: true,
         includeResult: true, // the answer (a count, values, rows) next to the graph
         source: 'ui',        // the dashboard wants to see where its queries come from
+        script: scriptModeOn() ? true : undefined, // undefined = the backend decides from the text
       }),
     });
     if (!res.ok) throw await queryError(res, query);
@@ -2279,8 +2405,9 @@
     const cypher = currentLanguage() === 'cypher';
     el.gremlinInput.placeholder = cypher
       ? "MATCH (a:Account {id:'135'})-[p:Payment]->(b:Account) RETURN b.id, p.status LIMIT 10"
-      : "g.V(888,'Account').batch(40).both('Payment').both('Payment')";
+      : "";
     el.gremlinInput.classList.toggle('cypher', cypher);
+    if (!cypher) applyScriptMode(); // the groovy subset is for Gremlin only
     clearRows(); // also hides the result tab: it belongs to Cypher answers
     refreshRowsTab();
     refreshExamples();
@@ -2329,6 +2456,18 @@
       onGraphChange(graphs.find((g) => g.name === el.graphSelect.value));
     });
     el.modeToggle.addEventListener('change', onModeChange);
+    // the Groovy script toggle is an administrator affordance, open while the feature settles
+    if (el.scriptToggleWrap) {
+      el.scriptToggleWrap.hidden = !SHOW_SCRIPT_MODE;
+    }
+    if (el.scriptToggle) {
+      el.scriptToggle.checked = localStorage.getItem('pg.script') === '1';
+      el.scriptToggle.addEventListener('change', () => {
+        localStorage.setItem('pg.script', el.scriptToggle.checked ? '1' : '0');
+        applyScriptMode();
+        el.gremlinInput.focus();
+      });
+    }
     el.languageSelect.addEventListener('change', onLanguageChange);
     el.examplesBtn.addEventListener('click', toggleExamples);
     el.fuzzyBtn.addEventListener('click', runFuzzyExample);
@@ -2437,7 +2576,20 @@
     const gremlin = el.modeToggle.checked;
     el.idPanel.hidden = gremlin;
     el.gremlinPanel.hidden = !gremlin;
-    if (gremlin) { autoGrowGremlin(); el.gremlinInput.focus(); }
+    if (gremlin) { autoGrowGremlin(); applyScriptMode(); el.gremlinInput.focus(); }
+  }
+
+  /** Whether the query box is in Groovy script mode (the toggle, when the feature is shown). */
+  function scriptModeOn() {
+    return !!(SHOW_SCRIPT_MODE && el.scriptToggle && el.scriptToggle.checked);
+  }
+
+  /** The placeholder follows the mode: the script example when it is on, a traversal when it is off. */
+  function applyScriptMode() {
+    if (!el.gremlinInput || currentLanguage() === 'cypher') return;
+    el.gremlinInput.placeholder = scriptModeOn()
+      ? t('gremlinScriptPlaceholder')
+      : "g.V(888,'Account').batch(40).both('Payment').both('Payment')";
   }
 
   // grow the Gremlin textarea with its content (Enter / new lines) up to the CSS max-height
