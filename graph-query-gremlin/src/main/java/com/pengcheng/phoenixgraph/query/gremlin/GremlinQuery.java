@@ -56,7 +56,19 @@ public final class GremlinQuery {
             /** {@code g.V()}: no ids and no type yet - a first step naming a vertex type says which. */
             NO_VERTICES,
             /** {@code g.E()}: no ids and no class yet - a first step naming an edge class says which. */
-            NO_EDGES
+            NO_EDGES,
+            /**
+             * {@code g.V(DIST)}: every vertex, scanned in partitions by one mapper each. The flag says
+             * <em>where</em> the scan runs; the rows it returns are the same ones {@code g.V()} returns,
+             * so a query can be run both ways and compared.
+             */
+            NO_VERTICES_DIST,
+            /** {@code g.V(DIST, 'Account')}: one vertex type, scanned in partitions. */
+            VERTEX_TYPE_DIST,
+            /** {@code g.E(DIST)}: every edge of every class, scanned in partitions. */
+            NO_EDGES_DIST,
+            /** {@code g.E(DIST, 'Payment')}: one edge class, scanned in partitions. */
+            EDGE_TYPE_DIST
         }
 
         public Source {
@@ -83,6 +95,45 @@ public final class GremlinQuery {
             return new Source(Kind.NONE, List.of(), null);
         }
 
+        /** {@code g.V(DIST)}: the whole vertex space, scanned in partitions. */
+        static Source distributedVertices() {
+            return new Source(Kind.NO_VERTICES_DIST, List.of(), null);
+        }
+
+        /** {@code g.V(DIST, 'Account')}: one vertex type, scanned in partitions. */
+        static Source vertexTypeDistributed(String name) {
+            return new Source(Kind.VERTEX_TYPE_DIST, List.of(), name);
+        }
+
+        /** {@code g.E(DIST)}: the whole edge space, scanned in partitions. */
+        static Source distributedEdges() {
+            return new Source(Kind.NO_EDGES_DIST, List.of(), null);
+        }
+
+        /** {@code g.E(DIST, 'Payment')}: one edge class, scanned in partitions. */
+        static Source edgeTypeDistributed(String name) {
+            return new Source(Kind.EDGE_TYPE_DIST, List.of(), name);
+        }
+
+        /** Whether the start asks for a distributed (partitioned) scan. */
+        public boolean distributed() {
+            return kind == Kind.NO_VERTICES_DIST || kind == Kind.VERTEX_TYPE_DIST
+                    || kind == Kind.NO_EDGES_DIST || kind == Kind.EDGE_TYPE_DIST;
+        }
+
+        /** Whether the start is a vertex-side scan (distributed or not). */
+        public boolean vertices() {
+            return kind == Kind.NO_VERTICES || kind == Kind.NO_VERTICES_DIST
+                    || kind == Kind.VERTICES || kind == Kind.VERTEX_TYPE
+                    || kind == Kind.VERTEX_TYPE_DIST;
+        }
+
+        /** Whether the start is an edge-side scan (distributed or not). */
+        public boolean edges() {
+            return kind == Kind.NO_EDGES || kind == Kind.NO_EDGES_DIST
+                    || kind == Kind.EDGES || kind == Kind.EDGE_TYPE || kind == Kind.EDGE_TYPE_DIST;
+        }
+
         static Source noVertices() {
             return new Source(Kind.NO_VERTICES, List.of(), null);
         }
@@ -93,7 +144,8 @@ public final class GremlinQuery {
 
         /** Whether this source walks a whole type (and therefore needs a store that can scan). */
         public boolean scans() {
-            return kind == Kind.VERTEX_TYPE || kind == Kind.EDGE_TYPE;
+            return kind == Kind.VERTEX_TYPE || kind == Kind.EDGE_TYPE
+                    || kind == Kind.VERTEX_TYPE_DIST || kind == Kind.EDGE_TYPE_DIST;
         }
     }
 
@@ -120,12 +172,14 @@ public final class GremlinQuery {
     /** The vertex type of a {@code g.V(...)} start, or {@code null} (an edge start names an edge class). */
     public String vertexName() {
         return source.kind() == Source.Kind.VERTICES || source.kind() == Source.Kind.VERTEX_TYPE
+                || source.kind() == Source.Kind.VERTEX_TYPE_DIST
                 ? source.name() : null;
     }
 
     /** The edge class of a {@code g.E(...)} start (a whole-class scan or named ids), or {@code null}. */
     public String edgeName() {
         return source.kind() == Source.Kind.EDGE_TYPE || source.kind() == Source.Kind.EDGES
+                || source.kind() == Source.Kind.EDGE_TYPE_DIST
                 ? source.name() : null;
     }
 
@@ -233,10 +287,15 @@ public final class GremlinQuery {
      * it), or nothing at all.
      */
     private static Source vertexSource(List<String> parts, String args) {
+        boolean distributed = !parts.isEmpty() && isDistributionFlag(parts.get(0));
+        if (distributed) {
+            // the flag says where the scan runs, it is not an id or a type
+            parts = List.copyOf(parts.subList(1, parts.size()));
+        }
         if (parts.isEmpty()) {
             // 'g.V()' starts from nothing: a step that produces its own vertices (fuzzyLink) then
             // decides what the traversal walks, so the prefix carries neither an id nor a name
-            return Source.noVertices();
+            return distributed ? Source.distributedVertices() : Source.noVertices();
         }
         if (parts.size() == 1) {
             // one argument is a vertex type, not an id: without a name there is nothing to read the id
@@ -250,7 +309,12 @@ public final class GremlinQuery {
                 throw new QueryException("Expected 'g.V(vertexId..., vertexName)' or 'g.V(vertexName)' -"
                         + " a trailing comma means the vertex name is missing in: g.V(" + args + ")");
             }
-            return Source.vertexType(vertexName);
+            return distributed ? Source.vertexTypeDistributed(vertexName) : Source.vertexType(vertexName);
+        }
+        if (distributed) {
+            throw new QueryException("g.V(DIST, ...) scans a whole type in partitions, so it takes a"
+                    + " vertex name and no ids; named ids are read by key in one process. Got: g.V("
+                    + args + ")");
         }
         String vertexName = parts.get(parts.size() - 1);
         if (vertexName.isBlank()) {
@@ -268,6 +332,12 @@ public final class GremlinQuery {
         return Source.vertices(vertexIds, vertexName);
     }
 
+    /** Whether a start argument is the distribution flag: {@code DIST} (any case). */
+    private static boolean isDistributionFlag(String argument) {
+        String text = argument == null ? "" : argument.trim();
+        return text.equalsIgnoreCase("DIST") || text.equalsIgnoreCase("DISTRIBUTED");
+    }
+
     /**
      * The start of a {@code g.E(...)} traversal: one edge class, which stands for every edge of it.
      *
@@ -276,9 +346,13 @@ public final class GremlinQuery {
      * them". The direction is the one the class stores its edges under.
      */
     private static Source edgeSource(List<String> parts, String args) {
+        boolean distributed = !parts.isEmpty() && isDistributionFlag(parts.get(0));
+        if (distributed) {
+            parts = List.copyOf(parts.subList(1, parts.size()));
+        }
         if (parts.isEmpty()) {
             // 'g.E()' starts from nothing, like 'g.V()': a first step naming an edge class says which
-            return Source.noEdges();
+            return distributed ? Source.distributedEdges() : Source.noEdges();
         }
         if (parts.size() == 1) {
             String edgeName = parts.get(0);
@@ -290,7 +364,11 @@ public final class GremlinQuery {
                 throw new QueryException("Expected 'g.E(edgeId..., edgeName)' or 'g.E(edgeName)' -"
                         + " a trailing comma means the edge class is missing in: g.E(" + args + ")");
             }
-            return Source.edgeType(edgeName);
+            return distributed ? Source.edgeTypeDistributed(edgeName) : Source.edgeType(edgeName);
+        }
+        if (distributed) {
+            throw new QueryException("g.E(DIST, ...) scans a whole class in partitions, so it takes an"
+                    + " edge class name and no ids. Got: g.E(" + args + ")");
         }
         String edgeName = parts.get(parts.size() - 1);
         if (edgeName.isBlank()) {

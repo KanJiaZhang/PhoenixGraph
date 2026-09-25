@@ -6239,3 +6239,97 @@ for (long day = firstDay; day <= to; day += dayMillis) { ... }
 
 修完：近线窗口 901 条（含被更新的 `bv_all_c_0`）、开区间窗口不再挂、跨自然日的窗口能把两天都读到。
 `AerospikeEdgeBigVertexIntegrationTest` 里 ②③⑤⑥⑦ 这几个用例正是钉住这两点的。
+## 85. RocksDB-Edge 的按属性查找：分布式（MapReduce）执行
+
+需求：把 `g.V('Account').has('accountStatus','FROZEN')` 这类**按属性的查找**从"单进程全表扫描"扩展成可扩展的分布式执行——
+① 用基本 MapReduce 划分数据，每个 mapper 内做属性查找与后续 `outE` 等遍历；② mapper 内可多线程；③ reducer 收到对各 mapper 输出的迭代器
+（纯分布式计算时结果只留在各 mapper 输出）；④ Gremlin 里加一个 `g.V(DIST)` 参数在分布式/单机之间切换。
+
+### 85.1 为什么这里能切分：hash 前缀
+
+RocksDB-Edge 的 key 一律是 `hash(id) : id`（`RocksDbHash`：**定长 8 字节大端 FNV-1a**），所以
+**一个 hash 区间就是一个连续 key 区间**，一个分片就是一次 `RocksDbHandle.iterator(cf, from, to)` 的范围扫描：
+
+* 点表 `vertex:<Type>`、边表 `edge:<Class>` 都是 hash 前缀打头（`RocksDbKeys.vertexKey` / `edgeKey`）→ 同一个切分对点和边都成立；
+* `RocksDbHash.partitionBoundary(p, n) = floor(p * 2^64 / n)`（用 `BigInteger` 算 128 位，取低 64 位当无符号值），
+  `partitionKeyRange(p, n)` 把最后一个分片的上界设成 **开区间**（否则 `2^64` 折回 0）；
+* 分片数取 `RocksDbStoreConfig.regionCount()`——它本来就是"把 key 空间切成几块物理分离的区域"的那个数（`regionOf = hash % regionCount`）。
+
+新增的存储接口（`GraphQuery` 的默认方法，老 store 不受影响）：
+`supportsPartitionedScan()`、`scanPartitionCount()`、`scanVerticesPartition(...)`、`scanEdgesPartition(...)`；
+`RocksDbVertexTable.forEachRange(...)` 与 `RocksDbEdgeStore.forEachEdgeRange(...)` 是范围扫描的实现
+（`scanEdges` 现在就是"全范围 + 收集"，两者共用同一段解码逻辑）。
+
+### 85.2 引擎侧：`g.V(DIST)` / `g.E(DIST)`
+
+语法（`GremlinQuery`）：`DIST`（或 `DISTRIBUTED`，大小写不限）作为**第一个参数**：
+
+```groovy
+g.V(DIST,'Account').has('accountStatus','FROZEN')     // 一个类型的分布式扫描
+g.V(DIST).has('Account','accountStatus','FROZEN')     // 类型由 has 给（typedStart 认得 DIST）
+g.E(DIST,'Payment').has('status','SUCCESS').outE(...) // 边表同理
+g.E(DIST).has('Payment','status','FAILED').groupCount('status')
+```
+
+`g.V(DIST, id, 'T')` 明确报错（"takes a vertex name and no ids"）：带 id 的读是按 key 的单点读，分布式没有意义。
+
+执行（`GremlinGraphQuery.runDistributed`）：
+
+1. **map**：`scanPartitionCount()` 个分片，每个一个任务、跑在线程池上（线程数 = `min(分片数, parallelism)`，
+   线程名 `phoenixgraph-map-*`，daemon）。每个 mapper 有自己的 `GremlinContext`，先 `partitionStart(...)` 把自己那段
+   hash 区间的点/边扫出来（`g.V(DIST)` 不带类型时按 schema 里每个类型各扫一段），然后跑**局部步骤前缀**——
+   属性条件（`has`/`filter`）、投影（`values`）、跳步（`outE`/`out`/`both`…）都在 mapper 里做完，过滤贴着数据发生。
+2. **reduce**：把各 mapper 的输出按分片顺序串起来，再由**一个** context 跑**全集步骤**（`order/limit/skip/range/tail/sample/
+   dedup/count/sum/mean/max/min/groupCount/fold/cap/group/aggregate/timeLimit`，见 `GLOBAL_STEPS`）。
+   切分点就是"第一个全集步骤"（`mapStepCount`）。**没有全集步骤时 reducer 就是拼接**——正是需求③说的
+   "不是计算结果就只留在各 mapper 输出"。答案与单进程**完全一致**（这就是测试比较的东西）。
+3. 子图：各 mapper 的 `buildSubgraph()` 通过 `replay(...)` 回放进 reduce 的 context，画布看到的是它们的并集。
+4. `path()` 与 `DIST` 明确互斥并报错（一条 walk 在一个分片里按元素构建，跨分片的 walk 这个引擎不保存）。
+
+失败与中断：任一 mapper 抛 QueryException 就原样上抛（`ExecutionException` 解包）；被中断则 `QueryException("…interrupted")`，
+线程池 `shutdownNow()`。
+
+### 85.3 验证
+
+**存储层单测** `RocksDbEdgePartitionedScanTest`（`graph-storage-rocksdb-edge`，3 个用例）：300 点/400 边，
+分片数 1/2/3/4/8/16 时**每个分片的并集都等于全表、且每行只出现一次**；一个"每分片一个线程、并发跑再 reduce"的用例
+（`invokeAll`）得到同样的并集，且**与分片完成顺序无关**；分片边界的无符号单调性与最后一段的开区间。
+`graph-storage-rocksdb-edge` 共 **24** 用例绿。
+
+**引擎单测** `GremlinDistributedScanTest`（`graph-query-gremlin`，3 个用例）：用一个可切分的 in-memory store，
+把用户给的四种形式逐一对比 `DIST` 与单机（结果集合与条数都相等），再加 `outE` 后续跳、`count`/`groupCount` 归约、
+以及两条错误路径（不可切分的 store、`DIST` 带 id）。`graph-query-gremlin` 共 **250** 用例绿。
+
+**线上实测**（`.logs/verify-dist.js`，`payment-graph-rocksdb-edge`，7 组对比全部一致）：
+
+```
+same  g.V('Account').has('accountStatus','FROZEN').count()             -> [17]
+same  g.V().has('Account','accountStatus','FROZEN').outE('Payment').count()  -> [51]
+same  g.E('Payment').has('status','SUCCESS').count()                   -> [65]
+same  g.E().has('Payment','status','FAILED').count()                   -> [67]
+same  g.V('Account').has(...).outE('Payment').values('status')         -> 同一批
+same  g.E('Payment').has('status','SUCCESS').groupCount('status')      -> [{"SUCCESS":65}]
+7/7 pairs agree
+```
+
+**注意**：这个演示图只有几十个点、上百条边，`DIST` 在这里**不会更快**（延迟同为几十毫秒级，分片线程的调度开销相当）；
+它验证的是**切分正确、答案一致、可切换**。收益要在成规模的表上才体现（分片扫描把一次全表扫描换成 N 个并发范围扫描）。
+
+### 85.4 UI 例子与复现
+
+`payment-graph-rocksdb-edge` 的例子列表新增 6 条（单机 vs 分布式成对，中英双语）。
+
+```bash
+node .logs/verify-dist.js                          # 线上 7 组 DIST/单机对比
+./mvnw -o -pl graph-storage-rocksdb-edge test      # 分片扫描（含并发 mapper）3 个用例
+./mvnw -o -pl graph-query-gremlin test             # DIST vs 单机 3 个用例
+```
+
+### 85.5 已知边界
+
+* `DIST` + `path()`：不支持（报错说明原因）；
+* `limit`/`sample` 这类"无序的全局裁剪"在分布式下的**具体子集**取决于分片拼接顺序（条数一致）——要确定性子集就配 `order`；
+* 分片数就是 store 的 `regionCount`（当前演示图是默认值），要更细的并行度得改配置；
+* 每个 mapper 一个 `GremlinContext`（自己的边缓存/投影计划），所以 **mapper 内的迭代是有界的**：一个分片里的点/边仍然按批量读走
+  （`readAllEdgesBatchCached` 等），"mapper 内多线程"目前体现为 **mapper 之间并行**；
+  单 mapper 内部再切子任务（同一分片再分几段给子线程）是下一步可选项。

@@ -146,8 +146,18 @@ public final class RocksDbVertexTable {
 
     /** Scans a vertex type, projecting the requested properties. */
     public void forEach(String vertexName, List<Integer> propertyIds, Consumer<RocksDbStoredVertex> consumer) {
+        forEachRange(vertexName, propertyIds, null, null, consumer);
+    }
+
+    /**
+     * Scans the vertices of a type whose key falls in {@code [fromKey, toKey)} - a {@code null} bound is
+     * open. The keys start with the fixed-width hash, so a hash range is a contiguous key range: this is
+     * how one partition of a distributed scan is read, with {@link RocksDbHash#partitionKeyRange}.
+     */
+    public void forEachRange(String vertexName, List<Integer> propertyIds, byte[] fromKey, byte[] toKey,
+                             Consumer<RocksDbStoredVertex> consumer) {
         Objects.requireNonNull(consumer, "consumer");
-        try (RocksDbHandle.RocksDbRange range = handle.iterator(familyOf(vertexName), null, null)) {
+        try (RocksDbHandle.RocksDbRange range = handle.iterator(familyOf(vertexName), fromKey, toKey)) {
             while (range.isValid()) {
                 Record record = decodeRecord(range.value());
                 if (record != null) {

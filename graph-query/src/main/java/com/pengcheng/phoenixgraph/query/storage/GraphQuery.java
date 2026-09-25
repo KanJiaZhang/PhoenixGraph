@@ -449,6 +449,61 @@ public interface GraphQuery {
     }
 
     /**
+     * Whether {@link #scanVerticesPartition} / {@link #scanEdgesPartition} can split a scan: a store
+     * whose rows live in ordered ranges can hand each range to a mapper of its own, which is what turns
+     * {@code g.V(DIST).has('Account','accountStatus','FROZEN')} into one scan per worker instead of one
+     * scan for the whole table.
+     *
+     * <p>Like {@link #supportsScan()}, asking is the caller's job; a traversal reports that the flag
+     * needs a partitioned store instead of failing inside a mapper.
+     */
+    default boolean supportsPartitionedScan() {
+        return false;
+    }
+
+    /**
+     * How many partitions a distributed scan uses. One mapper per partition, so this is the width the
+     * scan can be spread over - a store that keeps its rows in {@code regionCount} physically separate
+     * key ranges answers with that count.
+     */
+    default int scanPartitionCount() {
+        return 0;
+    }
+
+    /**
+     * Walks one partition of a vertex type: the same rows {@link #scanVertices} would return, cut into
+     * {@code partitions} disjoint slices, of which this call hands over slice {@code partition}.
+     *
+     * <p>The slices must cover every row exactly once - the caller concatenates them in partition order
+     * and treats the result as the scan - so a store reports how it splits (a hash range, a region, a
+     * table's pages) and keeps the union stable across calls.
+     *
+     * @param vertexName    the vertex type to walk
+     * @param propertyNames the properties to project; empty means all
+     * @param partition     the slice to hand over, in {@code [0, partitions)}
+     * @param partitions    how many slices the scan is cut into
+     * @param consumer      receives the vertices of the slice, in storage order
+     */
+    default void scanVerticesPartition(String vertexName, List<String> propertyNames, int partition,
+                                       int partitions, java.util.function.Consumer<VertexQueryResult> consumer) {
+        throw new QueryException("Scanning a vertex type in partitions is not supported by "
+                + getClass().getSimpleName());
+    }
+
+    /**
+     * Walks one partition of an edge class, the edge-side twin of
+     * {@link #scanVerticesPartition(String, List, int, int, java.util.function.Consumer)}.
+     *
+     * @param maxResults how many edges of the slice to stop after ({@code 0} = no cap)
+     */
+    default void scanEdgesPartition(String edgeName, List<String> propertyNames, int partition,
+                                    int partitions, int maxResults,
+                                    java.util.function.Consumer<ScannedEdge> consumer) {
+        throw new QueryException("Scanning an edge class in partitions is not supported by "
+                + getClass().getSimpleName());
+    }
+
+    /**
      * Windowed read that keeps at most {@code maxResults} edges ({@code 0} = all of them).
      *
      * <p>The cap is what makes "expand this hub in the UI" cheap: the aggregated tables are

@@ -89,6 +89,39 @@ public final class RocksDbHash {
         return (int) Math.floorMod(hash, regionCount);
     }
 
+    /**
+     * The first hash of partition {@code partition} when the whole 64-bit space is cut into
+     * {@code partitions} equal slices: {@code floor(partition * 2^64 / partitions)}, read as unsigned.
+     *
+     * <p>Because every key starts with the fixed-width hash, a slice of the hash space is a contiguous
+     * range of the key space - which is what lets one partition be scanned by one iterator, and one
+     * mapper of a distributed scan own it. The boundary is computed in 128-bit arithmetic because
+     * {@code 2^64} does not fit a long; the result is the low 64 bits, which is the unsigned value.
+     */
+    public static long partitionBoundary(int partition, int partitions) {
+        if (partitions <= 0) {
+            throw new IllegalArgumentException("partitions must be positive, got " + partitions);
+        }
+        if (partition < 0 || partition > partitions) {
+            throw new IllegalArgumentException("partition must be in [0, " + partitions + "], got "
+                    + partition);
+        }
+        java.math.BigInteger total = java.math.BigInteger.ONE.shiftLeft(64);
+        return total.multiply(java.math.BigInteger.valueOf(partition))
+                .divide(java.math.BigInteger.valueOf(partitions)).longValue();
+    }
+
+    /**
+     * The key range of one partition: {@code [from, to)} with {@code to == null} on the last one, so an
+     * open upper bound means "to the end of the key space" instead of wrapping to hash 0.
+     */
+    public static byte[][] partitionKeyRange(int partition, int partitions) {
+        byte[] from = hashBytes(partitionBoundary(partition, partitions));
+        byte[] to = partition == partitions - 1 ? null
+                : hashBytes(partitionBoundary(partition + 1, partitions));
+        return new byte[][]{from, to};
+    }
+
     /** Reads the big-endian long stored at {@code offset}. */
     public static long readLong(byte[] bytes, int offset) {
         long value = 0;

@@ -195,6 +195,49 @@ public class RocksDbEdgeGraphQuery implements GraphQuery {
         return store.vertices().count(vertexName);
     }
 
+    // --- a scan cut into partitions: one mapper of a distributed scan owns one of these ---
+
+    /**
+     * The vertex/edge tables are keyed by {@code hash(id):id}, so a hash range is a key range and a
+     * partition is one iterator - the split a distributed scan hands to its mappers.
+     */
+    @Override
+    public boolean supportsPartitionedScan() {
+        return supportsScan();
+    }
+
+    /** One partition per region of the store: the number of physically separate key ranges it has. */
+    @Override
+    public int scanPartitionCount() {
+        return Math.max(1, store.config().regionCount());
+    }
+
+    /** Walks one hash range of a vertex type; {@code partition == partitions - 1} has an open end. */
+    @Override
+    public void scanVerticesPartition(String vertexName, List<String> propertyNames, int partition,
+                                      int partitions, java.util.function.Consumer<VertexQueryResult> consumer) {
+        VertexSchema vertexSchema = SchemaProjections.requireVertex(schema, vertexName);
+        Map<Integer, String> requested = SchemaProjections.vertexProperties(vertexSchema, propertyNames);
+        byte[][] range = com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbHash
+                .partitionKeyRange(partition, partitions);
+        store.vertices().forEachRange(vertexName, List.copyOf(requested.keySet()), range[0], range[1],
+                vertex -> consumer.accept(toVertexResult(vertexName, vertex, requested)));
+    }
+
+    /** Walks one hash range of an edge class, every edge of the range once. */
+    @Override
+    public void scanEdgesPartition(String edgeName, List<String> propertyNames, int partition,
+                                   int partitions, int maxResults,
+                                   java.util.function.Consumer<ScannedEdge> consumer) {
+        EdgeSchema edgeSchema = SchemaProjections.requireEdge(schema, edgeName);
+        Map<Integer, String> requested = SchemaProjections.edgeProperties(edgeSchema, propertyNames);
+        byte[][] range = com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbHash
+                .partitionKeyRange(partition, partitions);
+        store.forEachEdgeRange(edgeName, List.copyOf(requested.keySet()), range[0], range[1], maxResults,
+                row -> consumer.accept(new ScannedEdge(row.ownerVertexId(), row.peerVertexId(),
+                        toEdgeResult(edgeName, row.edge(), EdgeSide.BOTH, requested))));
+    }
+
     // --- vertices ---
 
     @Override

@@ -1274,14 +1274,28 @@ public class GremlinGraphQuery {
     }
 
     private List<Object> runCompiled(GremlinContext context, CompiledQuery compiled) {
+        if (compiled.source.distributed()) {
+            // a partitioned scan: mappers in parallel, then the whole-set steps once (see runDistributed)
+            return runDistributed(context, compiled).values();
+        }
         if (compiled.stepNames.contains("path")) {
             return runPathCompiled(context, compiled);
         }
         List<Object> current = start(context, compiled.source, compiled.startProperties, compiled.verifySeeds);
+        return applySteps(context, compiled, current, 0, compiled.steps.size());
+    }
+
+    /**
+     * Applies {@code steps[from, to)} to the traversers, with the adaptive batch tuning the whole
+     * pipeline uses. One loop, so a distributed run walks exactly the steps a single-process run walks.
+     */
+    private List<Object> applySteps(GremlinContext context, CompiledQuery compiled, List<Object> in,
+                                    int from, int to) {
+        List<Object> current = in;
         int hopsDone = 0;
         int hopFanOut = 0;
         boolean filterSinceHop = false;
-        for (int i = 0; i < compiled.steps.size(); i++) {
+        for (int i = from; i < to; i++) {
             String name = compiled.stepNames.get(i);
             if (isHop(name)) {
                 // Adaptive batch tuning: scale the next hop's batch size to the previous
@@ -1303,6 +1317,169 @@ public class GremlinGraphQuery {
             }
         }
         return current;
+    }
+
+    /**
+     * The steps that need the whole answer, so a distributed run does them in its reduce phase: an
+     * order, a global cap, or an aggregation over every mapper's output. Everything before the first of
+     * them runs inside the mappers (the attribute condition, the projections, the hops).
+     */
+    private static final Set<String> GLOBAL_STEPS = Set.of("order", "limit", "skip", "range", "tail",
+            "sample", "dedup", "count", "sum", "mean", "max", "min", "groupCount", "fold", "cap",
+            "group", "aggregate", "timeLimit", "path", "simplePath", "cyclicPath");
+
+    /** Where the map phase ends: the first step that needs the whole set. */
+    private static int mapStepCount(CompiledQuery compiled) {
+        for (int i = 0; i < compiled.stepNames.size(); i++) {
+            if (GLOBAL_STEPS.contains(compiled.stepNames.get(i))) {
+                return i;
+            }
+        }
+        return compiled.stepNames.size();
+    }
+
+    /** The answer of a distributed run. */
+    private record DistributedRun(List<Object> values) {
+    }
+
+    /**
+     * Runs a traversal whose start is a partitioned scan: {@code g.V(DIST)...} / {@code g.E(DIST)...}.
+     *
+     * <p>The <b>map</b> phase is one task per partition of the store, run in parallel: each scans its own
+     * hash range (the attribute condition and the per-element steps run there, so the filtering happens
+     * next to the data) and produces its own output. The <b>reduce</b> phase runs the remaining steps -
+     * the ones that need the whole answer, such as {@code order}, {@code limit} or {@code count} - once
+     * over the concatenation of the mappers' outputs, which keeps the answer identical to a single-process
+     * run: that is what the tests compare.
+     *
+     * <p>With no global step the mappers are the whole answer and the reduce is a concatenation - the
+     * shape a distributed computation wants, where nothing beyond the mapper outputs has to travel.
+     */
+    private DistributedRun runDistributed(GremlinContext reduceContext, CompiledQuery compiled) {
+        GraphQuery store = graphQuery;
+        if (!store.supportsPartitionedScan()) {
+            throw new QueryException("g.V(DIST) needs a store that can scan in partitions, and "
+                    + store.getClass().getSimpleName() + " cannot: it answers by key, so a whole-type"
+                    + " scan stays in this process. Use a store whose tables are ordered ranges (the"
+                    + " RocksDB-Edge scheme) or drop the DIST flag.");
+        }
+        if (compiled.stepNames.contains("path")) {
+            throw new QueryException("g.V(DIST) and path() do not go together: a walk is built element by"
+                    + " element inside one partition, and this engine does not keep a walk that crosses"
+                    + " partitions. Drop the DIST flag or drop path().");
+        }
+        int partitions = Math.max(1, store.scanPartitionCount());
+        int split = mapStepCount(compiled);
+        boolean wantSubgraph = reduceContext.collectSubgraph();
+        List<List<Object>> mapped = new ArrayList<>(Collections.nCopies(partitions, List.of()));
+        List<Subgraph> subgraphs = new ArrayList<>(Collections.nCopies(partitions, Subgraph.EMPTY));
+        int workers = Math.max(1, Math.min(partitions, Math.max(1, parallelism)));
+        java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(workers,
+                runnable -> {
+                    Thread thread = new Thread(runnable, "phoenixgraph-map-" + System.nanoTime());
+                    thread.setDaemon(true);
+                    return thread;
+                });
+        try {
+            List<java.util.concurrent.Future<List<Object>>> futures =
+                    new ArrayList<>(partitions);
+            for (int p = 0; p < partitions; p++) {
+                final int partition = p;
+                futures.add(pool.submit(() -> {
+                    GremlinContext mapper = newContext();
+                    mapper.collectSubgraph(wantSubgraph);
+                    List<Object> elements = partitionStart(mapper, compiled.source, compiled.startProperties,
+                            partition, partitions);
+                    List<Object> out = split == 0 ? elements
+                            : applySteps(mapper, compiled, elements, 0, split);
+                    if (wantSubgraph) {
+                        subgraphs.set(partition, mapper.buildSubgraph());
+                    }
+                    return out;
+                }));
+            }
+            for (int p = 0; p < partitions; p++) {
+                mapped.set(p, futures.get(p).get());
+            }
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new QueryException("The distributed scan was interrupted");
+        } catch (java.util.concurrent.ExecutionException failed) {
+            Throwable cause = failed.getCause() == null ? failed : failed.getCause();
+            throw cause instanceof QueryException query ? query
+                    : new QueryException("A mapper of the distributed scan failed: " + cause.getMessage(),
+                            cause);
+        } finally {
+            pool.shutdownNow();
+        }
+
+        // the mappers' subgraphs belong to the answer the caller builds from this context
+        if (wantSubgraph) {
+            for (Subgraph subgraph : subgraphs) {
+                replay(reduceContext, subgraph);
+            }
+        }
+        List<Object> merged = new ArrayList<>();
+        for (List<Object> part : mapped) {
+            merged.addAll(part);
+        }
+        if (split >= compiled.steps.size()) {
+            return new DistributedRun(merged);
+        }
+        return new DistributedRun(applySteps(reduceContext, compiled, merged, split,
+                compiled.steps.size()));
+    }
+
+    /** Replays a mapper's subgraph into the reducing context, so the drawn graph is their union. */
+    private static void replay(GremlinContext context, Subgraph subgraph) {
+        for (Subgraph.Vertex vertex : subgraph.vertices()) {
+            context.recordVertex(vertex.label(), vertex.id());
+        }
+        for (Subgraph.Edge edge : subgraph.edges()) {
+            context.recordEdge(edge.label(), edge.id(), edge.source(), edge.target(), edge.properties(),
+                    edge.createdTime(), edge.lastUpdatedTime());
+        }
+    }
+
+    /**
+     * The elements of one partition of a scan: the vertices or edges the mapper starts from, read with
+     * the projection the rest of the traversal needs.
+     *
+     * <p>A start that names no type ({@code g.V(DIST)} without a {@code has('Account', ...)} step) walks
+     * every type of the schema, one after another - the partition is still one hash range, so the mappers
+     * together cover the whole space.
+     */
+    private List<Object> partitionStart(GremlinContext context, GremlinQuery.Source source,
+                                        List<String> properties, int partition, int partitions) {
+        GraphQuery store = context.graphQuery();
+        List<Object> out = new ArrayList<>();
+        if (source.vertices()) {
+            List<String> types = source.name() != null ? List.of(source.name())
+                    : schema == null ? List.of()
+                    : schema.vertexSchemas().stream().map(VertexSchema::name).toList();
+            for (String vertexName : types) {
+                store.scanVerticesPartition(vertexName, properties == null ? List.of() : properties,
+                        partition, partitions, vertex -> {
+                            context.recordVertex(vertex.vertexName(), vertex.vertexId());
+                            out.add(new GremlinVertex(vertex.vertexName(), vertex.vertexId(),
+                                    vertex.properties(), vertex.createdTime(), vertex.lastUpdatedTime()));
+                        });
+            }
+            return out;
+        }
+        List<String> classes = source.name() != null ? List.of(source.name())
+                : schema == null ? List.of()
+                : schema.edgeSchemas().stream().map(EdgeSchema::name).toList();
+        for (String edgeName : classes) {
+            store.scanEdgesPartition(edgeName, properties == null ? List.of() : properties, partition,
+                    partitions, context.scanLimit(), scanned -> {
+                        EdgeQueryResult edge = scanned.edge();
+                        out.add(new GremlinEdge(edge.edgeName(), edge.edgeId(), edge.side(),
+                                edge.otherVertexId(), edge.properties(), edge.createdTime(),
+                                edge.lastUpdatedTime(), scanned.source()));
+                    });
+        }
+        return out;
     }
 
     /**
@@ -1828,6 +2005,9 @@ public class GremlinGraphQuery {
             case VERTEX_TYPE -> startVertexScan(context, source.name(), properties);
             case EDGE_TYPE -> startEdgeScan(context, source.name(), properties);
             case EDGES -> startEdges(context, source.ids(), source.name(), properties);
+            // a distributed start is materialised by its mappers (runDistributed), never by this switch
+            case NO_VERTICES_DIST, VERTEX_TYPE_DIST, NO_EDGES_DIST, EDGE_TYPE_DIST -> throw new QueryException(
+                    "A distributed start is read by its mappers, not in this process");
         };
     }
 
@@ -1874,8 +2054,10 @@ public class GremlinGraphQuery {
     private TypedStart typedStart(GremlinQuery query) {
         GremlinQuery.Source source = query.source();
         List<GremlinQuery.Step> steps = query.steps();
-        boolean vertices = source.kind() == GremlinQuery.Source.Kind.NO_VERTICES;
-        boolean edges = source.kind() == GremlinQuery.Source.Kind.NO_EDGES;
+        boolean vertices = source.kind() == GremlinQuery.Source.Kind.NO_VERTICES
+                || source.kind() == GremlinQuery.Source.Kind.NO_VERTICES_DIST;
+        boolean edges = source.kind() == GremlinQuery.Source.Kind.NO_EDGES
+                || source.kind() == GremlinQuery.Source.Kind.NO_EDGES_DIST;
         if (!vertices && !edges || steps.isEmpty()) {
             return new TypedStart(source, steps);
         }
@@ -1907,7 +2089,12 @@ public class GremlinGraphQuery {
         rest.add(new GremlinQuery.Step("has",
                 List.of(first.args().get(1), first.args().get(2))));
         rest.addAll(steps.subList(1, steps.size()));
-        return new TypedStart(vertices ? GremlinQuery.Source.vertexType(type)
+        boolean distributed = source.distributed();
+        if (vertices) {
+            return new TypedStart(distributed ? GremlinQuery.Source.vertexTypeDistributed(type)
+                    : GremlinQuery.Source.vertexType(type), List.copyOf(rest));
+        }
+        return new TypedStart(distributed ? GremlinQuery.Source.edgeTypeDistributed(type)
                 : GremlinQuery.Source.edgeType(type), List.copyOf(rest));
     }
 

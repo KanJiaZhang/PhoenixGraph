@@ -31,6 +31,7 @@ import com.pengcheng.phoenixgraph.storage.TimeRange;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashSet;
+import java.util.function.Consumer;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -529,6 +530,21 @@ public final class RocksDbEdgeStore implements AutoCloseable {
      * walking the rest of the table.
      */
     public List<ScannedEdgeRow> scanEdges(String edgeName, List<Integer> propertyIds, int maxResults) {
+        List<ScannedEdgeRow> out = new ArrayList<>();
+        forEachEdgeRange(edgeName, propertyIds, null, null, maxResults, out::add);
+        return out;
+    }
+
+    /**
+     * Walks the edges of one class whose key falls in {@code [fromKey, toKey)} - a {@code null} bound is
+     * open - and hands each row to the consumer. The keys start with the hash of the vertex that owns the
+     * row, so a hash range is a contiguous key range: one partition of a distributed edge scan is one
+     * iterator, without materialising the class.
+     */
+    public void forEachEdgeRange(String edgeName, List<Integer> propertyIds, byte[] fromKey, byte[] toKey,
+                                 int maxResults, Consumer<ScannedEdgeRow> consumer) {
+        Objects.requireNonNull(edgeName, "edgeName");
+        Objects.requireNonNull(consumer, "consumer");
         EdgeSchema edgeSchema = requireEdge(edgeName);
         Set<Integer> requested = propertyIds == null || propertyIds.isEmpty()
                 ? Set.of() : Set.copyOf(propertyIds);
@@ -537,8 +553,8 @@ public final class RocksDbEdgeStore implements AutoCloseable {
         // destination) and an undirected one has a row on each endpoint under the same direction, so
         // a scan has to pick one row per edge - otherwise every edge would be read twice
         byte scannedDirection = directed ? RocksDbKeys.DIRECTION_OUT : RocksDbKeys.DIRECTION_UNDIRECTED;
-        List<ScannedEdgeRow> out = new ArrayList<>();
-        try (RocksDbHandle.RocksDbRange range = handle.iterator(familyOf(edgeSchema), null, null)) {
+        int written = 0;
+        try (RocksDbHandle.RocksDbRange range = handle.iterator(familyOf(edgeSchema), fromKey, toKey)) {
             while (range.isValid()) {
                 byte[] key = range.key();
                 if (RocksDbKeys.directionOfKey(key) == scannedDirection) {
@@ -547,17 +563,17 @@ public final class RocksDbEdgeStore implements AutoCloseable {
                     if (directed || isTheNearEndpoint(parts.ownerVertexId(), row.otherVertexId())) {
                         RocksDbStoredEdge edge = new RocksDbStoredEdge(parts.edgeId(), row.otherVertexId(),
                                 row.createdTime(), row.lastUpdatedTime(), row.properties());
-                        out.add(new ScannedEdgeRow(ownerId(edgeSchema, parts.ownerVertexId(), row.otherVertexId()),
-                                edge));
+                        consumer.accept(new ScannedEdgeRow(
+                                ownerId(edgeSchema, parts.ownerVertexId(), row.otherVertexId()), edge));
+                        written++;
                     }
                 }
-                if (maxResults > 0 && out.size() >= maxResults) {
+                if (maxResults > 0 && written >= maxResults) {
                     break;
                 }
                 range.next();
             }
         }
-        return out;
     }
 
     /**

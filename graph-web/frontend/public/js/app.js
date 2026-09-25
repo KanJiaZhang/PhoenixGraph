@@ -553,6 +553,29 @@
         ['GEO · 这 10 个账户的出款', 'GEO - the outgoing payments of those 10 accounts', "g.V(1001,'Account').circle('{\"lat\":31.2304,\"lon\":121.4737,\"radius\":5000}').limit(10).outE('Payment')"],
         ['GEO · 这 10 个账户的收款方', 'GEO - the receivers those 10 accounts pay', "g.V(1001,'Account').circle('{\"lat\":31.2304,\"lon\":121.4737,\"radius\":5000}').limit(10).out('Payment').dedup().limit(10)"],
         ['GEO · 带距离（米）', 'GEO - with the distance in metres', "g.V(1001,'Account').circle('{\"lat\":31.2304,\"lon\":121.4737,\"radius\":5000}').limit(5).values('id','distanceMeters')"],
+        // --- 按属性的查找：单机 vs 分布式 -----------------------------------------------------------
+        // 这个图的表是 hash(id):id 的有序表，所以一个 hash 区间就是一个连续 key 区间：g.V(DIST)/g.E(DIST)
+        // 把整个扫描按区间切成 N 份，每份一个 mapper 线程（属性条件与后续遍历都在 mapper 里做，再 outE 等），
+        // 需要全集的步骤（order/limit/count/groupCount…）由 reducer 在多份输出上做一次。
+        // 同一条查询去掉 DIST 就是单进程全表扫描，两者答案一致（已由 GremlinDistributedScanTest 逐个对比）。
+        ['属性查找 · 单机扫描（全部 FROZEN 账户）',
+          'Attribute lookup - in-process scan (every FROZEN account)',
+          "g.V('Account').has('accountStatus','FROZEN').values('id')"],
+        ['属性查找 · 分布式（g.V(DIST)，每个 mapper 一个分区）',
+          'Attribute lookup - distributed (g.V(DIST), one mapper per partition)',
+          "g.V(DIST,'Account').has('accountStatus','FROZEN').values('id')"],
+        ['属性查找 · 分布式 + 后续遍历（FROZEN 账户的出款）',
+          'Attribute lookup - distributed scan, then a hop (what the FROZEN accounts pay)',
+          "g.V(DIST,'Account').has('accountStatus','FROZEN').outE('Payment').values('id','status')"],
+        ['属性查找 · 类型由 has 给出（分布式）',
+          'Attribute lookup - the type comes from has(...), distributed',
+          "g.V(DIST).has('Account','accountStatus','FROZEN').count()"],
+        ['属性查找 · 边属性（分布式，成功后接 outE）',
+          'Attribute lookup on edges - distributed, then another hop',
+          "g.E(DIST,'Payment').has('status','SUCCESS').limit(20).values('id','amount')"],
+        ['属性查找 · 边属性（类型由 has 给出的分布式形式）',
+          'Attribute lookup on edges - type given by has(...), distributed',
+          "g.E(DIST).has('Payment','status','FAILED').groupCount('status')"],
       ],
       'geo-merchants-rocksdb-inline': [
         ['GEO · 1km 内最近的 10 家商户', 'GEO - 10 nearest merchants within 1 km', "g.V('1','Merchant').circle('{\"lat\":31.2304,\"lon\":121.4737,\"radius\":1000}').limit(10)"],
