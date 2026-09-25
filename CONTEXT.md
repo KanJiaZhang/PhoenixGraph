@@ -5810,3 +5810,124 @@ node .logs/bench-path-both.js 100    # §77 的 A/B 交错基准（B kv 从 59 �
 **延迟 −32.78 ms（mean，−46.5%）／−31.29 ms（median，−45.3%）；p95 −40.6 ms、p99 −66.8 ms；响应从 1.73 MB 降到 60 B。**
 存储计数两边完全一致（kv 23 / 点读 220 / 边读 32 / 边解码 285）——遍历与 join 的工作量没变，省的正是那 1.7 MB 的
 序列化 + 传输 + 客户端解析，以及它带来的 GC 抖动（p99 从 120 ms 掉到 54 ms）。
+## 79. 四跳 path 两个口径：不看方向 vs 看交易方向（一次调用返回两个结果）
+
+需求：在 §77/§78 那条 `both` 四跳脚本的基础上，同时给出
+**(1) 不看方向的四跳 path** 与 **(2) 看交易方向的四跳 path**，一个脚本一次调用返回两个结果，并给出性能指标。
+
+### 79.1 两个口径各怎么拼
+
+| 口径 | sender 半边 | receiver 半边 | 拼出来的 walk |
+|---|---|---|---|
+| 不看方向 | `both('Payment').bothE('Payment')` | `both('Payment').bothE('Payment')` | 不区分谁是付款方 |
+| 看交易方向 | `out('Payment').outE('Payment')` | `in('Payment').inE('Payment')` | 每一跳都 payer→payee |
+
+关键在 `joinOnEnd` 右侧会被**反转**拼上：sender 半边是 `[sender, e1, v1, e2]`（e2 的远端是 M），
+receiver 半边是 `[receiver, e3, v3, e4]`（e3: v3→receiver，e4: M→v3），反转后接在中间点后面，
+得到 `sender -e1-> v1 -e2-> M -e4-> v3 -e3-> receiver` —— **e1..e4 全部沿付款方向**（e4 是 M→v3、e3 是 v3→receiver）。
+`in/inE` 走的是 `EdgeSide.IN`，`readPathEdges` 一样批量读，所以有向那半同样吃到 §78 的批量跳读优化。
+
+### 79.2 数据说了什么（结论本身是答案的一部分）
+
+**1000 → 1006 之间不存在有向四跳。** 有向四跳必然在中间点分成 2+2，于是要求 `out²(1000) ∩ in²(1006) ≠ ∅`：
+
+```
+out²(1000) = {1002,1008,1014,1020,1026}
+in²(1006)  = {135,1004,1048,1042,1036,1030}     交集 = ∅
+```
+
+但两人之间有**有向 8 跳**：`out⁴(1000) ∩ in⁴(1006) = {1002,1004,1010,1016,1022,1028,1034,1040,1046}`（非空）。
+即 1000/1006 只能靠不看方向的路（经共享对手方 135 之类）或更长的有向链相连。演示时另取 **1000 → 1022**（有向四跳非空）。
+
+**正确性对照**：有向 join 得到的四跳数，与直接 `out⁴` 落在 receiver 的 walk 数逐字相等 ——
+`1000→1006: 0 vs 0`，`1000→1022: 74 vs 74`。
+
+### 79.3 脚本（`.logs/scripts/four-hop-two-ways.groovy`，也加进了 UI 示例）
+
+```groovy
+def sender = 1000
+def receiver = 1006
+
+// (1) 不看方向
+def sAny = g.V(sender, 'Account').both('Payment').bothE('Payment').path().toList()
+def rAny = g.V(receiver, 'Account').both('Payment').bothE('Payment').path().toList()
+def anyMids = sAny.endIds().retainAll(rAny.endIds())
+def anyObjs = []
+if (anyMids.size() > 0) { anyObjs = g.V(anyMids, 'Account').toList() }
+def anyFour = sAny.joinOnEnd(rAny, anyObjs)
+
+// (2) 看交易方向：付款方正着走、收款方倒着走
+def sOut = g.V(sender, 'Account').out('Payment').outE('Payment').path().toList()
+def rIn = g.V(receiver, 'Account').in('Payment').inE('Payment').path().toList()
+def dirMids = sOut.endIds().retainAll(rIn.endIds())
+def dirObjs = []
+if (dirMids.size() > 0) { dirObjs = g.V(dirMids, 'Account').toList() }
+def dirFour = sOut.joinOnEnd(rIn, dirObjs)
+
+print('direction ignored, four-hop: ' + anyFour.size())
+print('payer -> payee, four-hop:    ' + dirFour.size())
+[anyFour, dirFour]        // 两个结果，一次返回
+```
+
+`if (...size() > 0)` 那个守卫是必要的：`g.V(空列表,'Account')` 会抛
+"The script variable 'mids' is empty, so there is no id to walk from"（§71 的变量代入语义），
+而有向那半在 1000→1006 上正好为空。
+
+### 79.4 测量（40 轮**交错**，每轮跑全部 6 个变体；`.logs/bench-path-two-ways.js`）
+
+**Pair 1：1000 → 1006（不看方向有、有向为空）**
+
+| 变体 | mean | median | p95 | p99 | kv | 点读 | 边读 | 边解码 | 答案 |
+|---|---|---|---|---|---|---|---|---|---|
+| OLD 两侧两跳半程 + 四跳（1042 条） | 70.9 | 71.5 | 94.3 | 100.2 | 23 | 220 | 32 | 285 | 1728 KB |
+| U 只看方向（返回四跳） | 63.7 | 60.6 | 91.2 | 163.3 | 23 | 220 | 32 | 285 | 1016 KB |
+| U-COUNT 只看方向（只返回数） | 42.2 | 40.5 | 57.4 | 72.5 | 23 | 220 | 32 | 285 | 0.1 KB |
+| D 只看交易方向（返回四跳） | 26.7 | 28.8 | 34.6 | 40.6 | **10** | 28 | 9 | 52 | 0.1 KB |
+| **BOTH 两个结果（脚本）** | **73.3** | **73.5** | **92.4** | **93.3** | **33** | 248 | 41 | 337 | 1016 KB |
+| BOTH-COUNT 两个数 | 53.5 | 56.0 | 69.2 | 70.3 | 33 | 248 | 41 | 337 | 0.1 KB |
+
+**Pair 2：1000 → 1022（两个口径都非空：不看方向 553 条、有向 74 条）**
+
+| 变体 | mean | median | p95 | p99 | kv | 点读 | 边读 | 边解码 | 答案 |
+|---|---|---|---|---|---|---|---|---|---|
+| OLD（1199 条） | 61.5 | 61.5 | 81.3 | 87.3 | 23 | 220 | 32 | 285 | 2133 KB |
+| U（553 条） | 52.1 | 51.9 | 64.7 | 66.1 | 23 | 220 | 32 | 285 | 1421 KB |
+| U-COUNT | 29.5 | 29.2 | 37.3 | 44.0 | 23 | 220 | 32 | 285 | 0.1 KB |
+| D（74 条） | 24.6 | 25.0 | 31.3 | 32.8 | 15 | 36 | 9 | 52 | 191 KB |
+| **BOTH** | **65.9** | **66.7** | **77.9** | **83.5** | **38** | 256 | 41 | 337 | 1611 KB |
+| BOTH-COUNT | 40.2 | 40.4 | 54.9 | 55.9 | 38 | 256 | 41 | 337 | 0.1 KB |
+
+### 79.5 怎么读这组数
+
+* **存储计数正好相加**：U 的 kv 23 + D 的 kv 10 = BOTH 的 kv 33（pair 1）；23 + 15 = 38（pair 2）。
+  两个口径是**四条独立的 path 遍历**，没有共享——`bothE` 读出来的边 `side` 是 BOTH，
+  丢掉了方向信息，所以不能"算一次不看方向的、再筛出有向的"。
+* **有向那半很便宜**：D 的 kv 只有 10/15（`out`/`in` 的扇出远小于 `both`），
+  在 BOTH 里只多花约 13–15 ms（`BOTH - max(U,D)`）。
+* **答案体积仍是主要成本**：BOTH-COUNT 比 BOTH 少 17.5–26.3 ms（−24%～−39%），省的就是那 1.0–1.6 MB 的序列化与传输。
+* **一次调用拿两个结果更划算**：把 U 和 D 分两次 HTTP 调用合计 89.5/76.8 ms，BOTH 一次 73.5/66.7 ms，
+  省 ~10–16 ms（省的是每请求的固定开销），且两个结果出自同一份快照。
+* **和旧脚本基本同价**：BOTH 比 OLD 只差 +2.0 / +5.2 ms——多算了一个口径，但少返回了 646 条两跳半程（1.7–2.1 MB → 1.0–1.6 MB）。
+* 与 §78.6 一致：真正的大头是**答案形状**，不是遍历。
+
+### 79.6 复现
+
+```bash
+node .logs/scripts/run-two-ways.sh          # 起服务 + 两个 pair 的 40 轮交错基准（一条命令，见 79.7 的原因）
+node .logs/bench-path-two-ways.js 40 1000 1006
+node .logs/bench-path-two-ways.js 40 1000 1022
+node .logs/run-script.js .logs/scripts/four-hop-two-ways.groovy   # 只看脚本输出
+```
+
+### 79.7 环境提示（这次测量踩到的两个坑）
+
+1. **服务会在工具调用之间被外部回收**：JVMs（8081/8080/8083）会在两次工具调用之间整批消失，
+   `nohup` 也留不住，日志里没有 shutdown 记录、也没有新的 `hs_err`。
+   所以**起服务与跑基准必须在同一次调用里完成**，否则会拿到 ECONNREFUSED。
+   基准脚本已改成"崩了就打印已收集的部分"，不会整轮作废。
+2. **`.rocksdb/sanguo-kg-text` 会被打断的 Sanguo 测试写坏**：遗留的
+   `mvn -pl graph-integration-test test -Dtest=SanguoRocksDbEdgeTest,SanguoTextGraphTest -Dsanguo.queries.write=true`
+   被杀在写一半时，`MANIFEST-000018` 缺失，graph-http 启动时抛
+   `RocksDBException: Failed to open NewSequentialFile.rocksdb\sanguo-kg-text/MANIFEST-...`，**8081 起不来**。
+   等那次测试自己跑完会重建 store；否则删掉 `.rocksdb/sanguo-kg-text` 也能让服务起来（只是那个图变空）。
+   **别在 `-Dsanguo.queries.write=true` 的测试跑到一半时杀它。**
