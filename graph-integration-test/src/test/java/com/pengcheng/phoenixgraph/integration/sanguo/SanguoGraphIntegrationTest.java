@@ -117,8 +117,10 @@ class SanguoGraphIntegrationTest {
         assertEquals(1, schema.edgeSchemas().size());
         EdgeSchema edge = schema.edgeSchema(SanguoGraphIds.EDGE_LABEL);
         assertNotNull(edge, "missing the Entity_Entity edge schema");
-        assertEquals(List.of("relation", "xrelation", "relationLabel", "relationFamily"),
-                edge.properties().stream().map(p -> p.name()).toList());
+        assertEquals(List.of("relation", "xrelation", "relationLabel", "relationFamily",
+                        "year", "chapter", "seq", "provenance"),
+                edge.properties().stream().map(p -> p.name()).toList(),
+                "every relation carries its Chinese label, its family and its time dimension");
         assertEquals(2000, edge.maxOutgoingEdges());
         assertEquals(2000, edge.maxIncomingEdges());
         assertEquals(SanguoGraphIds.VERTEX_LABEL, edge.source().vertexName());

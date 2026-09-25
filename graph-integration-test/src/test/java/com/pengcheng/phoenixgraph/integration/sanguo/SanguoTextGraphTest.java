@@ -17,6 +17,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -69,14 +70,80 @@ class SanguoTextGraphTest {
                 + String.join(" ", extraction.newPositions()));
         System.out.println(" 新增人物(" + extraction.newPersons().size() + "): "
                 + String.join(" ", extraction.newPersons()));
+        System.out.println(" 典故/事件(" + extraction.allusions().size() + "):");
+        extraction.allusions().entrySet().stream()
+                .collect(Collectors.groupingBy(e -> e.getValue().rdfClass(), LinkedHashMap::new, Collectors.toList()))
+                .forEach((type, entries) -> System.out.printf("   %-9s %2d  %s%n", type, entries.size(),
+                        entries.stream().map(Map.Entry::getKey).collect(Collectors.joining(" "))));
 
         assertTrue(built.dataset().entities().size() > base.entities().size(),
                 "方案 C must find more entities: " + built.dataset().entities().size() + " vs " + base.entities().size());
         assertTrue(built.dataset().relations().size() > base.relations().size(),
                 "方案 C must find more relations");
-        assertEquals(902, extraction.countByRule().getOrDefault("mentions", 0), "mentions is the bulk");
+        assertEquals(22_951, extraction.countByRule().getOrDefault("mentions", 0),
+                "mentions is the bulk: known entity names + the 方案 ③ allusions");
         assertTrue(!extraction.newPositions().isEmpty(), "new offices must be discovered");
         assertTrue(!extraction.newPersons().isEmpty(), "new people must be discovered");
+
+        // 方案 ③: the allusion is recorded as a node; its participants are never invented
+        assertEquals(SanguoDataset.EntityType.EVENT, extraction.allusions().get("过五关斩六将"),
+                "过五关斩六将 must become an Event");
+        assertTrue(extraction.relations().stream().anyMatch(r -> r.relation().equals("mentions")
+                        && r.head().equals("关羽") && r.tail().equals("过五关斩六将")),
+                "关羽 --mentions--> 过五关斩六将");
+        assertEquals(SanguoDataset.EntityType.EVENT,
+                built.dataset().entities().get("过五关斩六将").type(), "the node must be typed Event");
+        assertEquals(SanguoDataset.EntityType.ARTIFACT,
+                built.dataset().entities().get("赤兔马").type(), "赤兔马 is an object");
+        assertEquals(SanguoDataset.EntityType.IDIOM,
+                built.dataset().entities().get("刮目相看").type(), "刮目相看 is a set phrase");
+        // 方案 ③ still refuses to invent: 六将 is a count, not a name
+        assertTrue(!built.dataset().entities().containsKey("六将"),
+                "六将 must not be invented — it is the allusion's name, not a person");
+        // ...but the full 4,487-person export documents all six of them, so they are real
+        // entities now (the truncated 331-person copy stopped before any of them)
+        for (String general : List.of("孔秀", "韩福", "孟坦", "卞喜", "王植", "秦琪", "蔡阳")) {
+            assertTrue(built.dataset().entities().containsKey(general),
+                    general + " is documented by the full export");
+        }
+        // and their biographies narrate the kills. Two of the seven are reachable by rule:
+        // 卞喜 ("最后被关羽斩杀") and 蔡阳 ("为羽所杀", the one-character alias 羽 = 关羽).
+        // The other five are told in narrative prose that needs coreference, not a pattern —
+        // 孔秀 "羽怒，举刀杀秀", 韩福 "挥刀斩于马下", 孟坦 "砍为两段", 秦琪 "琪头落",
+        // 王植 "被关公拦腰一刀，砍为两段". They stay in the data as nodes; the edge is the gap.
+        for (String general : List.of("卞喜", "蔡阳")) {
+            assertTrue(extraction.of("killed").stream().anyMatch(r -> r.head().equals("关羽")
+                            && r.tail().equals(general)),
+                    "关羽 --killed--> " + general + " must be extracted from that biography");
+        }
+        for (String allusion : extraction.allusionNames()) {
+            assertTrue(!base.entities().containsKey(allusion),
+                    allusion + " must not collide with a base entity");
+        }
+
+        // 方案 ④ (SANGUO-KG.md §7.8): the time dimension on the relations.
+        // The question it is meant to answer: was 徐庶 刘备's strategist before he served 曹操?
+        SanguoDataset.RelationTime toLiuBei = time(built.dataset(), "徐庶", "mentions", "刘备");
+        SanguoDataset.RelationTime toCaoCao = time(built.dataset(), "徐庶", "mentions", "曹操");
+        // both windows are the same: 刘备 and 曹操 each appear in nearly every chapter, so the
+        // intersection is just 徐庶's own range. 时间/回数 alone CANNOT order the two relations.
+        assertEquals("196-208", toLiuBei.year(), "the year window of 徐庶's 刘备 relations");
+        assertEquals("35-48", toLiuBei.chapter(), "the chapter window of 徐庶's 刘备 relations");
+        assertEquals(toLiuBei.year(), toCaoCao.year(), "the same year window for 曹操");
+        assertEquals(toLiuBei.chapter(), toCaoCao.chapter(), "the same chapter window for 曹操");
+        // the narrative order does: in 徐庶's 历史 column he 效力于刘备 (sentence 2) long before he
+        // 北投曹操 (sentence 3). seq = field*1000 + sentence, so 1002 < 1003 — 刘备 first.
+        assertEquals(1002L, toLiuBei.seq(), "刘备 is named in the 2nd sentence of 徐庶's 历史");
+        assertEquals(1003L, toCaoCao.seq(), "曹操 in the 3rd — he 北投曹操 after 长坂");
+        assertTrue(toLiuBei.seq() < toCaoCao.seq(), "徐庶 was 刘备's first");
+        // and the 小说 column agrees (a different retelling, compared within itself)
+        assertTrue(time(built.dataset(), "徐庶", "strategistOf", "刘备").seq()
+                        < time(built.dataset(), "徐庶", "mentions", "赤壁之战").seq(),
+                "in the 小说 column 被拜为军师 (sentence 3) precedes 赤壁之战 (sentence 6)");
+        // every document-derived relation carries the window; only extracted ones carry a seq
+        assertTrue(built.dataset().times().values().stream().filter(SanguoDataset.RelationTime::ordered).count()
+                        > 20_000,
+                "the extracted relations must all be ordered");
 
         // it rediscovers what 方案 B was told by hand
         assertTrue(extraction.of("holds").stream()
@@ -88,10 +155,14 @@ class SanguoTextGraphTest {
                                 && (r.head().equals("徐庶") || r.head().equals("庞统"))),
                 "the text says 徐庶/庞统 are 刘备's 军师");
 
-        // the RDF view of the text graph is consistent with its ontology (text profile included)
+        // the RDF view of the text graph is consistent with its ontology (text profile included).
+        // The only violation is the same upstream one the base graph carries (刘建[安国侯]'s 母亲
+        // names a male) — asserting it exactly means a new extraction-induced violation fails.
         SanguoRdfValidator.Report report = SanguoRdfValidator.validate(built.dataset());
-        report.violations().forEach(System.out::println);
-        assertTrue(report.valid(), "the text graph must validate too: " + report.violations().size());
+        assertEquals(List.of("domain: 刘英 --mother--> 刘建[安国侯] (刘英 should be female but is Male, 男)"),
+                report.violations().stream().map(Object::toString).toList(),
+                "the text extraction must not add violations — in particular `killed` is "
+                        + "owl:AsymmetricProperty, so the 衣带诏 conspirators must not be both killer and victim");
         System.out.printf(" 校验      : PASS（%d 条 domain/range 检查，%d 条无法判定）%n",
                 report.domainRangeChecked(), report.domainRangeUnverifiable());
     }
@@ -142,6 +213,31 @@ class SanguoTextGraphTest {
                     {"关羽和马超是什么关系（共同主公）",
                             "g.V('关羽','Entity').inE().filter(relation.equals('lord')).otherV().dedup()"
                                     + ".where(outE().filter(relation.equals('lord')).otherV().hasId('马超')).values('name')"},
+                    // 方案 ③ — the allusion as a node. NOTE: `has('entityType','Event')` must be an
+                    // equality test; the engine does not implement `within(...)` and returns empty for it.
+                    {"关羽的传记提到哪些典故/事件",
+                            "g.V('关羽','Entity').outE().filter(relation.equals('mentions')).otherV()"
+                                    + ".has('entityType','Event').values('name')"},
+                    {"关羽的传记提到哪些器物",
+                            "g.V('关羽','Entity').outE().filter(relation.equals('mentions')).otherV()"
+                                    + ".has('entityType','Artifact').values('name')"},
+                    {"过五关斩六将是什么类型的节点",
+                            "g.V('过五关斩六将','Entity').values('entityType')"},
+                    {"谁的传记提到过五关斩六将",
+                            "g.V('过五关斩六将','Entity').inE().filter(relation.equals('mentions')).otherV().values('name')"},
+                    {"诸葛亮提到了哪些事件",
+                            "g.V('诸葛亮','Entity').outE().filter(relation.equals('mentions')).otherV()"
+                                    + ".has('entityType','Event').values('name')"},
+                    {"赤兔马是谁的（器物反向）",
+                            "g.V('赤兔马','Entity').inE().filter(relation.equals('mentions')).otherV().values('name')"},
+                    // 方案 ④ — the time dimension. `seq` is the narrative position inside the biography
+                    // (field*1000 + sentence): order by it to get "who came first".
+                    {"方案 ④：徐庶的关系按叙述序排（谁在先）",
+                            "g.V('徐庶','Entity').outE().filter(relation.equals('mentions')).order().by('seq')"
+                                    + ".limit(4).values('seq')"},
+                    {"方案 ④：徐庶关系的年份/回数区间",
+                            "g.V('徐庶','Entity').outE().filter(relation.equals('mentions')).limit(4)"
+                                    + ".values('year','chapter','seq')"},
             };
             for (String[] question : questions) {
                 List<Object> rows = gremlin.execute(question[1]);
@@ -218,7 +314,29 @@ class SanguoTextGraphTest {
         out.append(String.join("  ", extraction.newPersons()));
         out.append("\n```\n\n");
 
-        out.append("## 每个规则的样本（带 provenance）\n\n");
+        out.append("\n## 方案 ③：典故 / 事件节点（").append(extraction.allusions().size()).append(" 个）\n\n");
+        out.append("只记录**典故本身**，不虚构它的参与者（`过五关斩六将` 不产生任何六将姓名 —— 语料从未给出）。\n\n");
+        out.append("| 类型 | 中文 | 数量 | 典故 |\n|---|---|---|---|\n");
+        extraction.allusions().entrySet().stream()
+                .collect(Collectors.groupingBy(e -> e.getValue().rdfClass(), LinkedHashMap::new, Collectors.toList()))
+                .forEach((type, entries) -> out.append("| `").append(type).append("` | ")
+                        .append(built.dataset().ontology().classLabel(type)).append(" | ")
+                        .append(entries.size()).append(" | ")
+                        .append(entries.stream().map(Map.Entry::getKey).collect(Collectors.joining("、")))
+                        .append(" |\n"));
+
+        out.append("\n### 谁提到了哪个典故（`mentions` 边，带 provenance）\n\n");
+        extraction.relations().stream()
+                .filter(r -> extraction.allusions().containsKey(r.tail()))
+                .limit(20)
+                .forEach(r -> out.append("- ").append(r.head()).append(" --mentions--> ").append(r.tail())
+                        .append("  («").append(r.sentence().length() > 70
+                                ? r.sentence().substring(0, 70) + "…" : r.sentence()).append("»)\n"));
+        out.append("\n全部 ").append(extraction.relations().stream()
+                .filter(r -> extraction.allusions().containsKey(r.tail())).count())
+                .append(" 条边；查询：`g.V('过五关斩六将','Entity').inE().filter(relation.equals('mentions')).otherV().values('name')`\n");
+
+        out.append("\n## 每个规则的样本（带 provenance）\n\n");
         for (Map.Entry<String, Integer> entry : extraction.countByRule().entrySet()) {
             out.append("### `").append(entry.getKey()).append("` （").append(entry.getValue()).append(" 条）\n\n");
             for (String sample : extraction.samplesByRule().getOrDefault(entry.getKey(), List.of())) {
@@ -232,6 +350,8 @@ class SanguoTextGraphTest {
         out.append("- `holds`/`fought`/`killed` 是**远程监督**：句子的主语未必是文档本人，噪声按规则逐条记录在样本里。\n");
         out.append("- 地点抽取刻意没做（没有词典会太脏）；`军师`/`谋士` 只连**人物**。\n");
         out.append("- 新增人物名来自关系槽（如 `为X所杀`、`X谋士Y`），可能有 `曹将吕旷` 这类带前缀的噪声。\n");
+        out.append("- 方案 ③ 的典故归到**传记主人**名下（与 `mentions` 一致）：\n");
+        out.append("  郭常子的传记提到「关羽过五关斩六将」时，这条就归给郭常子而不是关羽 —— owner-scoped 抽取的固有边界，原句保留供核对。\n");
 
         Path outDir = Path.of("target", "sanguo-rdf");
         SanguoRdf.write(outDir.resolve("TEXT-EXTRACTION.md"), out.toString());
@@ -239,6 +359,14 @@ class SanguoTextGraphTest {
             SanguoRdf.write(Path.of("..", "SANGUO-KG-TEXT-EXTRACTION.md"), out.toString());
         }
         System.out.printf("%n[text] 抽取报告已写出：%s%n", outDir.toAbsolutePath().resolve("TEXT-EXTRACTION.md"));
+    }
+
+    private static SanguoDataset.RelationTime time(SanguoDataset dataset, String head, String relation, String tail) {
+        SanguoDataset.Relation found = dataset.relations().stream()
+                .filter(r -> r.head().equals(head) && r.relation().equals(relation) && r.tail().equals(tail))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("no relation " + head + "-" + relation + "->" + tail));
+        return dataset.timeOf(found);
     }
 
     private static String summarise(List<Object> rows) {

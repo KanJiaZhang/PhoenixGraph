@@ -65,6 +65,14 @@ final class SanguoGraphSeeder {
     private static final int EDGE_PROPERTY_XRELATION = 4;
     private static final int EDGE_PROPERTY_RELATION_LABEL = 5;
     private static final int EDGE_PROPERTY_RELATION_FAMILY = 6;
+    /** 边属性 id：年份区间（见 generate-sanguo-schema.js）。 */
+    private static final int EDGE_PROPERTY_YEAR = 7;
+    /** 边属性 id：回数区间。 */
+    private static final int EDGE_PROPERTY_CHAPTER = 8;
+    /** 边属性 id：叙述序。 */
+    private static final int EDGE_PROPERTY_SEQ = 9;
+    /** 边属性 id：边的来源。 */
+    private static final int EDGE_PROPERTY_PROVENANCE = 10;
 
     private SanguoGraphSeeder() {
     }
@@ -187,6 +195,19 @@ final class SanguoGraphSeeder {
                     new EdgePropertyValue(ontology.label(relation.relation()), timestamp, timestamp));
             properties.put(EDGE_PROPERTY_RELATION_FAMILY,
                     new EdgePropertyValue(ontology.relationFamilyLabel(relation.relation()), timestamp, timestamp));
+            // the time dimension (SANGUO-KG.md §7.8), same as the RocksDB-Edge loader
+            SanguoDataset.RelationTime interval = dataset.timeOf(relation);
+            if (interval.year() != null) {
+                properties.put(EDGE_PROPERTY_YEAR, new EdgePropertyValue(interval.year(), timestamp, timestamp));
+            }
+            if (interval.chapter() != null) {
+                properties.put(EDGE_PROPERTY_CHAPTER, new EdgePropertyValue(interval.chapter(), timestamp, timestamp));
+            }
+            if (interval.ordered()) {
+                properties.put(EDGE_PROPERTY_SEQ, new EdgePropertyValue(interval.seq(), timestamp, timestamp));
+            }
+            properties.put(EDGE_PROPERTY_PROVENANCE,
+                    new EdgePropertyValue(relation.source().name(), timestamp, timestamp));
             edges.add(new EdgeUpsert(edgeId(relation), edgeSchema,
                     SanguoGraphIds.composeId(relation.head(), relation.relation()),
                     SanguoGraphIds.composeId(relation.tail(), relation.relation()),

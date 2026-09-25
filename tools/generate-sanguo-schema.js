@@ -83,6 +83,14 @@ function entityEdge() {
       { id: 4, name: 'xrelation', description: 'Reverse relation name; equals relation when it has no inverse', type: 'STRING' },
       { id: 5, name: 'relationLabel', description: '中文关系名 (e.g. 父亲)', type: 'STRING' },
       { id: 6, name: 'relationFamily', description: '关系家族 (e.g. 亲属)', type: 'STRING' },
+      // 时间维度：见 SANGUO-KG.md §7.8。两个端点的文档都带 `年代列表` / `章节列表`，
+      // 它们的交集就是“这条关系被共同见证”的窗口 —— 一个下界，不是关系的起止年代。
+      { id: 7, name: 'year', description: '年份区间：两端点共现的公元年，如 196-208', type: 'STRING' },
+      { id: 8, name: 'chapter', description: '回数区间：两端点共现的章回号，如 35-48', type: 'STRING' },
+      // 叙述序才是能排序的信号：传记是编年叙述。历史/小说是两套平行叙述，
+      // 所以 seq = 字段序*1000 + 句子序（历史=1xxx，小说=2xxx），只能在同一字段内比较。
+      { id: 9, name: 'seq', description: '叙述序：字段序*1000+句子序，越小越早；同字段内可比', type: 'LONG' },
+      { id: 10, name: 'provenance', description: '边的来源：CURATED/EXTRA/DOCUMENT/INVERSE/SYMMETRIC', type: 'STRING' },
     ],
   };
 }

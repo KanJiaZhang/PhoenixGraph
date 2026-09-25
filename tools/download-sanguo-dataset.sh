@@ -7,8 +7,11 @@
 #
 #   ./tools/download-sanguo-dataset.sh
 #
-# Contents: 331 person documents (renwu_process_v1.csv), the OWL ontology
-# (theory.owl) and the curated relation triples (triples.csv); ~80 KB gzipped.
+# Contents: 4,487 person documents (renwu_process_v1.csv), the OWL ontology
+# (theory.owl) and the curated relation triples (triples.csv); ~1 MB gzipped.
+#
+# Every download is shape-checked (line count + newline-terminated), because a
+# truncated file is still valid gzip — see verify() below.
 set -euo pipefail
 
 BASE_URL="https://raw.githubusercontent.com/wcswcswcs/sgyy/master"
@@ -19,18 +22,37 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
 download() {
-  local url="$1" out="$2"
+  local url="$1" out="$2" expected="$3"
   echo "downloading $(basename "$url")"
   curl -fsSL --retry 3 --retry-delay 2 -o "$tmp/$(basename "$out")" "$url"
   gzip -9 -c "$tmp/$(basename "$out")" > "$TARGET_DIR/$out"
   echo "  -> $TARGET_DIR/$out ($(wc -c < "$TARGET_DIR/$out") bytes)"
+  verify "$out" "$expected"
 }
 
-# the person documents (the "文档数据集": one record per 三国演义 person)
-download "$BASE_URL/data/renwu_process_v1.csv" "renwu_process_v1.csv.gz"
+# A truncated download is valid gzip but half a dataset: an interrupted `curl` once left
+# renwu_process_v1.csv at 331 of 4,487 persons and every test still passed. Check the
+# shape, not just the exit code.
+verify() {
+  local out="$1" expected="$2" actual
+  actual="$(gzip -dc "$TARGET_DIR/$out" | wc -l | tr -d ' ')"
+  if [ "$actual" != "$expected" ]; then
+    echo "ERROR: $out has $actual lines, expected $expected" >&2
+    exit 1
+  fi
+  if [ "$(gzip -dc "$TARGET_DIR/$out" | tail -c 1 | od -An -c | tr -d ' ')" != '\n' ]; then
+    echo "ERROR: $out does not end with a newline (truncated download)" >&2
+    exit 1
+  fi
+  echo "  ok: $actual lines, newline-terminated"
+}
+
+# the person documents (the "文档数据集": one record per 三国演义 person).
+# 4,488 lines = header + 4,487 persons; the file is ~2.7 MB raw, ~1 MB gzipped.
+download "$BASE_URL/data/renwu_process_v1.csv" "renwu_process_v1.csv.gz" 4488
 # the curated relation triples extracted upstream
-download "$BASE_URL/data/data/%E4%B8%89%E5%9B%BD%E6%BC%94%E4%B9%89/triples.csv" "triples.csv.gz"
+download "$BASE_URL/data/data/%E4%B8%89%E5%9B%BD%E6%BC%94%E4%B9%89/triples.csv" "triples.csv.gz" 154
 # the OWL ontology (entity / relation split)
-download "$BASE_URL/data/data/%E4%B8%89%E5%9B%BD%E6%BC%94%E4%B9%89/theory.owl" "theory.owl.gz"
+download "$BASE_URL/data/data/%E4%B8%89%E5%9B%BD%E6%BC%94%E4%B9%89/theory.owl" "theory.owl.gz" 823
 
 echo "done"

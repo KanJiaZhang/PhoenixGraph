@@ -177,6 +177,21 @@ public final class SanguoRocksDbLoader {
             values.put("relationLabel", new RocksDbEdgeProperty(ontology.label(relation.relation()), time, time));
             values.put("relationFamily",
                     new RocksDbEdgeProperty(ontology.relationFamilyLabel(relation.relation()), time, time));
+            // the time dimension (SANGUO-KG.md §7.8): when both endpoints are attested, and where in
+            // the biography the relation was read
+            SanguoDataset.RelationTime interval = dataset.timeOf(relation);
+            if (interval.year() != null) {
+                values.put("year", new RocksDbEdgeProperty(interval.year(), time, time));
+            }
+            if (interval.chapter() != null) {
+                values.put("chapter", new RocksDbEdgeProperty(interval.chapter(), time, time));
+            }
+            if (interval.ordered()) {
+                values.put("seq", new RocksDbEdgeProperty(interval.seq(), time, time));
+            }
+            if (!relation.source().name().equals("CURATED")) {
+                values.put("provenance", new RocksDbEdgeProperty(relation.source().name(), time, time));
+            }
             edges.add(new RocksDbEdgeUpsert(edgeId(relation), edgeSchema, relation.head(), relation.tail(),
                     indexed(edgeSchema, values), time, time));
         }

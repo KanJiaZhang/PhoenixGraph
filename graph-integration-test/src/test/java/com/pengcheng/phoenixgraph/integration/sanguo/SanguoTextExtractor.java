@@ -1,6 +1,7 @@
 package com.pengcheng.phoenixgraph.integration.sanguo;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -48,7 +49,8 @@ import java.util.regex.Pattern;
 public final class SanguoTextExtractor {
 
     /** One extracted triple with its provenance. */
-    public record Extracted(String relation, String head, String tail, String source, String sentence) {
+    public record Extracted(String relation, String head, String tail, String source, String sentence,
+                            long seq) {
 
         /** {@code document}:{@code field} — which free-text column it came from. */
         public String provenance() {
@@ -59,11 +61,27 @@ public final class SanguoTextExtractor {
     /** What a run found. */
     public record Result(List<Extracted> relations, Map<String, Integer> countByRule,
                          Map<String, List<String>> samplesByRule,
-                         Set<String> newPositions, Set<String> newPersons) {
+                         Set<String> newPositions, Set<String> newPersons,
+                         Map<String, SanguoDataset.EntityType> allusions) {
 
         /** The relations of one rule. */
         public List<Extracted> of(String relation) {
             return relations.stream().filter(r -> r.relation().equals(relation)).toList();
+        }
+
+        /** The allusions the documents actually name, in table order. */
+        public List<String> allusionNames() {
+            return List.copyOf(allusions.keySet());
+        }
+
+        /** {@code head\u0000relation\u0000tail} key to the narrative position it was read at. */
+        public Map<String, Long> narrativeOrder() {
+            Map<String, Long> order = new LinkedHashMap<>();
+            for (Extracted extracted : relations) {
+                order.putIfAbsent(SanguoDataset.key(extracted.head(), extracted.relation(), extracted.tail()),
+                        extracted.seq());
+            }
+            return Collections.unmodifiableMap(new LinkedHashMap<>(order));
         }
     }
 
@@ -84,7 +102,11 @@ public final class SanguoTextExtractor {
     /** A name candidate must not start with a collective prefix or a fragment. */
     private static final Pattern BAD_NAME_HEAD =
             Pattern.compile("^(将|军|兵|众|大小|前|后|左|右|东|西|南|北|上|下|中|其|此|各|诸|"
-                    + "一|二|三|四|五|六|七|八|九|十|百|千|万|数|几|于|在|至|自|从|由|因)");
+                    + "一|二|三|四|五|六|七|八|九|十|百|千|万|数|几|于|在|至|自|从|由|因|"
+                    + "又|再|遂|乃|亦|竟|果|终|复|却|已|即|方|才|先|随|共|同|"
+                    // the 13x bigger corpus makes the loose verbs bite: 「斩首万级」 must not create a
+                    // person called 首万级, 「获三千级」/「贼大」/「而走」 are not names either
+                    + "首|级|获|贼|多|而|及|予|了|请|命|职|妻|他|们|地方|他们|各个)");
 
     /** A title candidate must not start with one of these (it would be a verb or a fragment). */
     private static final Pattern BAD_TITLE_HEAD =
@@ -94,16 +116,47 @@ public final class SanguoTextExtractor {
             "(?:为|拜|封|迁|领|任|加|授|表|除)([\\u4e00-\\u9fa5]{2,6}?(?:" + TITLE_SUFFIX + "))");
 
     private static final Pattern STRATEGIST_JOIN = Pattern.compile("投效(?:与|于)([\\u4e00-\\u9fa5]{2,4})");
+    /** The words that may stand between a lord and {@code 谋士}/{@code 军师}. */
+    private static final String BEFORE_ROLE = "帐下|麾下|手下|部下|之|的";
+
     /** Right after a known person: {@code 谋士<name>} — the <em>name</em> is the advisor. */
     private static final Pattern ADVISOR_OTHER_AFTER =
-            Pattern.compile("^(?:帐下|之|的)?谋士([\\u4e00-\\u9fa5]{2,4})");
+            Pattern.compile("^(?:" + BEFORE_ROLE + ")?谋士([\\u4e00-\\u9fa5]{2,4})");
     /** Right after a known person: {@code 谋士} with no name after — the document's own person advises. */
     private static final Pattern ADVISOR_OWN_AFTER =
-            Pattern.compile("^(?:帐下|之|的)?谋士(?:之一|其中)?(?![\\u4e00-\\u9fa5])");
+            Pattern.compile("^(?:" + BEFORE_ROLE + ")?谋士(?:之一|其中)?(?![\\u4e00-\\u9fa5])");
+    /** Right after a known person: {@code 军师<name>} — the <em>name</em> is the strategist. */
+    private static final Pattern STRATEGIST_AFTER =
+            Pattern.compile("^(?:" + BEFORE_ROLE + ")?军师(?:之)?([\\u4e00-\\u9fa5]{2,4})");
     private static final Pattern FOUGHT_WITH = Pattern.compile("(?:与|和)([\\u4e00-\\u9fa5]{2,4}?)(?:大战|交战|决战|战)");
     private static final Pattern FOUGHT_BEAT = Pattern.compile("(?:大破|击败|大败|攻破)([\\u4e00-\\u9fa5]{2,4}?)(?=[，。、]|$)");
-    private static final Pattern KILLED_BY = Pattern.compile("为([\\u4e00-\\u9fa5]{2,4})所杀");
-    private static final Pattern KILLED = Pattern.compile("(?:斩杀|斩|诛杀|诛|刺杀|杀死|诱杀)([\\u4e00-\\u9fa5]{2,4}?)(?=[，。、]|$)");
+    /**
+     * Passive voice with an explicitly named agent: {"为X所杀"} / {"被X(所)斩|杀|诛"}. The agent may
+     * be the biography's one-character abbreviation ({"为羽所杀"} = 关羽), so one character is enough —
+     * {@link #normaliseName} expands it.
+     */
+    private static final Pattern KILLED_BY = Pattern.compile("为([\\u4e00-\\u9fa5]{1,4})所杀");
+    /**
+     * Active voice: the owner of the biography is the killer. The negative look-behind blocks the
+     * markers of an <em>intention</em>, because a plan is not a fact: 种辑's biography says
+     * {"俱受献帝密诏诛曹操…事泄，为操所杀"} — the 密诏 was an order to kill 曹操 and it failed, so the
+     * only true edge is the passive one. Same for {"当诛曹操"} and {"企图刺杀曹操"}.
+     */
+    private static final Pattern KILLED =
+            Pattern.compile("(?<![当欲谋图拟密诏请劝谏令])(?:斩杀|斩|诛杀|诛|刺杀|杀死|诱杀)([\\u4e00-\\u9fa5]{2,4}?)(?=[，。、]|$)");
+    /**
+     * Passive voice: {"潘凤又被华雄斩了"} means <em>华雄</em> killed the owner. Without this rule the
+     * very same biography yields a reversed edge (see {@link #QUOTED}).
+     */
+    private static final Pattern KILLED_PASSIVE =
+            Pattern.compile("被([\\u4e00-\\u9fa5]{2,5}?)(?:所)?(?:斩|杀|诛)");
+
+    /**
+     * Reported speech / quotation. {"韩馥曰：‘吾有上将潘凤，可斩华雄’"} asserts nothing — it is a
+     * <em>claim</em>, and here it is also merely potential ({@code 可} = "could"). The conflict rules
+     * skip such sentences rather than record a reversed fact.
+     */
+    private static final Pattern QUOTED = Pattern.compile("[“”「」‘’\"]|曰|云：|云,");
 
     /**
      * The biographies abbreviate a person to one character once the surname is clear
@@ -121,9 +174,17 @@ public final class SanguoTextExtractor {
     private static final Pattern VERB_START = Pattern.compile(
             "^(连|又|遂|乃|大|与|和|战|破|攻|围|退|走|率|引|自|从|为|以|于|在|至|入|出|降|死|亡|军|兵|众|等|亦|不|即|所|因|由|欲|将|使|令|屯|守|据|奔|袭|击|败|胜|杀|斩|诛|弃|归|投|请|遣|召|拜|封|迁|领|任|加|授|表|除).*");
 
+    /** Strips a leading adverb ({@code 又被华雄斩} must not become a person called 又华雄). */
+    private static final Pattern LEADING_PARTICLE =
+            Pattern.compile("^(?:又|再|遂|乃|亦|竟|果|后|终|复|却|已|即|方|才|先|随|共|同|先)");
+
     /** Strips a collective prefix and resolves a one-character alias back to the full name. */
     private String normaliseName(String name) {
-        String stripped = name.replaceFirst("^[曹魏吴蜀汉]将", "");
+        String stripped = LEADING_PARTICLE.matcher(name).replaceFirst("").replaceFirst("^[曹魏吴蜀汉]将", "");
+        // a bare alias is the whole capture ("为羽所杀" -> 关羽), so it needs no VERB_START guard
+        if (stripped.length() == 1 && ALIAS.containsKey(stripped.charAt(0))) {
+            return ALIAS.get(stripped.charAt(0));
+        }
         if (stripped.length() >= 2 && ALIAS.containsKey(stripped.charAt(0))
                 && VERB_START.matcher(stripped.substring(1)).find()) {
             return ALIAS.get(stripped.charAt(0));
@@ -131,9 +192,80 @@ public final class SanguoTextExtractor {
         return stripped;
     }
 
+    /**
+     * <b>方案 ③</b>: the famous episodes and set phrases the biographies allude to, with the class
+     * each one deserves.
+     *
+     * <p>The table is <em>data-driven</em>: every entry genuinely occurs in the 331 documents (the
+     * longest match wins, so {@code 败走麦城} never degrades to the sub-string {@code 走麦城}).
+     * Recording an allusion is the whole point — the corpus never names its participants, so
+     * {@code 过五关斩六将} yields <em>no</em> {@code 孔秀}/{@code 韩福}/… nodes. Inventing them would
+     * be external knowledge, not extraction.
+     */
+    private static final Map<String, SanguoDataset.EntityType> ALLUSIONS = allusions();
+
+    /** The table's keys, longest first — the order the matcher must try. */
+    private static final List<String> ALLUSION_ORDER = ALLUSIONS.keySet().stream()
+            .sorted(Comparator.comparingInt(String::length).reversed().thenComparing(name -> name))
+            .toList();
+
+    private static Map<String, SanguoDataset.EntityType> allusions() {
+        Map<String, SanguoDataset.EntityType> table = new LinkedHashMap<>();
+        // episodes
+        for (String name : List.of("过五关斩六将", "挟天子以令诸侯", "温酒斩华雄", "三英战吕布",
+                "刮骨疗伤", "放水淹七军", "三顾茅庐", "舌战群儒", "败走麦城", "割须弃袍",
+                "六出祁山", "七进七出", "桃园结义", "赤壁之战", "官渡之战", "夷陵之战",
+                "长阪之战", "隆中对", "借东风", "八阵图", "托孤")) {
+            table.put(name, SanguoDataset.EntityType.EVENT);
+        }
+        // objects of legend
+        for (String name : List.of("青龙偃月刀", "赤兔马", "木牛流马")) {
+            table.put(name, SanguoDataset.EntityType.ARTIFACT);
+        }
+        // set phrases with no single happening behind them
+        for (String name : List.of("刮目相看", "一身是胆", "连环计", "美人计")) {
+            table.put(name, SanguoDataset.EntityType.IDIOM);
+        }
+        return Collections.unmodifiableMap(new LinkedHashMap<>(table));
+    }
+
+    /**
+     * The allusions of one sentence, longest match first, each span claimed once so that an
+     * inner sub-string ({@code 走麦城} inside {@code 败走麦城}) cannot fire as well.
+     */
+    private static List<String> allusionsIn(String sentence) {
+        List<String> found = new ArrayList<>();
+        boolean[] claimed = new boolean[sentence.length()];
+        for (String idiom : ALLUSION_ORDER) {
+            for (int at = sentence.indexOf(idiom); at >= 0; at = sentence.indexOf(idiom, at + 1)) {
+                boolean free = true;
+                for (int i = at; i < at + idiom.length(); i++) {
+                    if (claimed[i]) {
+                        free = false;
+                    }
+                }
+                if (!free) {
+                    continue;
+                }
+                for (int i = at; i < at + idiom.length(); i++) {
+                    claimed[i] = true;
+                }
+                found.add(idiom);
+            }
+        }
+        return found;
+    }
+
     private final SanguoDataset base;
     private final List<String> gazetteer;
     private final Map<String, SanguoDataset.EntityType> types;
+
+    /**
+     * The narrative position of the sentence being scanned: {@code fieldOrder * 1000 + sentenceIndex}
+     * (历史 = 1xxx, 小说 = 2xxx). Instance state, so {@link #add} does not need the parameter at each
+     * of its call sites.
+     */
+    private long seq;
 
     private SanguoTextExtractor(SanguoDataset base) {
         this.base = base;
@@ -156,31 +288,50 @@ public final class SanguoTextExtractor {
         Map<String, List<String>> samples = new LinkedHashMap<>();
         Set<String> newPositions = new LinkedHashSet<>();
         Set<String> newPersons = new LinkedHashSet<>();
+        Map<String, SanguoDataset.EntityType> allusions = new LinkedHashMap<>();
         Set<String> seen = new LinkedHashSet<>();
 
         for (SanguoDataset.Document document : base.documents()) {
-            for (String[] field : new String[][] {{"历史", document.history()}, {"小说", document.novel()}}) {
-                if (field[1] == null || field[1].isEmpty()) {
+            int field = 0;
+            for (String[] column : new String[][] {{"历史", document.history()}, {"小说", document.novel()}}) {
+                field++;
+                if (column[1] == null || column[1].isEmpty()) {
                     continue;
                 }
-                for (String sentence : field[1].split("[。！？；]")) {
-                    String text = sentence.strip();
+                int sentence = 0;
+                for (String raw : column[1].split("[。！？；]")) {
+                    sentence++;
+                    this.seq = field * 1000L + sentence;
+                    String text = raw.strip();
                     if (text.isEmpty()) {
                         continue;
                     }
-                    scan(document.name(), field[0], text, relations, counts, samples, newPositions, newPersons, seen);
+                    scan(document.name(), column[0], text, relations, counts, samples, newPositions, newPersons,
+                            allusions, seen);
                 }
             }
         }
         return new Result(List.copyOf(relations), Map.copyOf(counts), Map.copyOf(samples),
-                Set.copyOf(newPositions), Set.copyOf(newPersons));
+                Set.copyOf(newPositions), Set.copyOf(newPersons),
+                // LinkedHashMap, not Map.copyOf: this map's order decides the order in which the
+                // allusion entities enter the ABox, and a salted order would break the frozen RDF
+                Collections.unmodifiableMap(new LinkedHashMap<>(allusions)));
     }
 
     private void scan(String owner, String field, String sentence, List<Extracted> relations,
                       Map<String, Integer> counts, Map<String, List<String>> samples,
-                      Set<String> newPositions, Set<String> newPersons, Set<String> seen) {
+                      Set<String> newPositions, Set<String> newPersons,
+                      Map<String, SanguoDataset.EntityType> allusions, Set<String> seen) {
         String source = owner + ":" + field;
         List<String> mentioned = mention(sentence, owner);
+
+        // 0) allusions — 方案 ③. The relation is `mentions` (the biography names the episode); the
+        //    episode itself becomes an Event/Artifact/Idiom node instead of six invented generals
+        for (String allusion : allusionsIn(sentence)) {
+            allusions.putIfAbsent(allusion, ALLUSIONS.get(allusion));
+            add("mentions", owner, allusion, source, sentence, relations, counts, samples, seen, false,
+                    newPositions, newPersons);
+        }
 
         // 1) mentions — a known entity name occurs in the sentence
         for (String other : mentioned) {
@@ -188,13 +339,27 @@ public final class SanguoTextExtractor {
                     newPositions, newPersons);
         }
 
-        // 2) 五虎 — the pattern the manual supplement (方案 B) had to be told by hand
+        // 2) 五虎 — the pattern the manual supplement (方案 B) had to be told by hand.
+        //    «封关羽为五虎大将之首» names the member right before 五虎; when nobody is named
+        //    («五虎上将之一») the biography's own person is the member. A quotation is nobody's
+        //    appointment: «刘备进位汉中王，封"五虎上将"» is 费诗's biography, and 费诗 was the envoy
+        //    who carried the title, not one of the five.
         if (sentence.contains("五虎")) {
-            add("holds", owner, "五虎上将", source, sentence, relations, counts, samples, seen, true,
-                    newPositions, newPersons);
-            if (sentence.matches(".*(之首|为首|第一|居首).*")) {
-                add("holds", owner, "五虎上将之首", source, sentence, relations, counts, samples, seen, true,
+            String member = memberNamedBefore(sentence, "五虎");
+            if (member != null) {
+                add("holds", member, "五虎上将", source, sentence, relations, counts, samples, seen, true,
                         newPositions, newPersons);
+                if (sentence.matches(".*(之首|为首|第一|居首).*")) {
+                    add("holds", member, "五虎上将之首", source, sentence, relations, counts, samples, seen, true,
+                            newPositions, newPersons);
+                }
+            } else if (!QUOTED.matcher(sentence).find()) {
+                add("holds", owner, "五虎上将", source, sentence, relations, counts, samples, seen, true,
+                        newPositions, newPersons);
+                if (sentence.matches(".*(之首|为首|第一|居首).*")) {
+                    add("holds", owner, "五虎上将之首", source, sentence, relations, counts, samples, seen, true,
+                            newPositions, newPersons);
+                }
             }
         }
 
@@ -207,14 +372,30 @@ public final class SanguoTextExtractor {
             int at = sentence.indexOf(lord);
             while (at >= 0) {
                 String after = sentence.substring(at + lord.length());
-                if (after.startsWith("辟为军师") || after.startsWith("拜为军师")
-                        || after.matches("^(之|帐下|的)?军师.*")) {
+                if (after.startsWith("辟为军师") || after.startsWith("拜为军师")) {
                     add("strategistOf", owner, lord, source, sentence, relations, counts, samples, seen, false,
                             newPositions, newPersons);
+                } else {
+                    // {"X军师Y"} names Y as X's strategist; {"X之军师中郎将"} has no name after 军师, so
+                    // the biography's own person is the strategist. Without the first branch,
+                    // 邓贤[刘璋]'s biography ("后刘备军师庞统命魏延于宴中舞剑") makes 邓贤 刘备's strategist.
+                    Matcher strategist = STRATEGIST_AFTER.matcher(after);
+                    String named = strategist.find() ? personTarget(strategist.group(1)) : null;
+                    if (named != null) {
+                        add("strategistOf", named, lord, source, sentence, relations, counts, samples, seen, true,
+                                newPositions, newPersons);
+                    } else if (after.matches("^(?:" + BEFORE_ROLE + ")?军师.*")) {
+                        add("strategistOf", owner, lord, source, sentence, relations, counts, samples, seen, false,
+                                newPositions, newPersons);
+                    }
                 }
                 Matcher other = ADVISOR_OTHER_AFTER.matcher(after);
-                if (other.find() && plausibleName(other.group(1))) {
-                    add("advisorOf", other.group(1), lord, source, sentence, relations, counts, samples, seen, true,
+                // The capture is greedy ({@code 谋士程昱识破…}), so it goes through personTarget like the
+                // killed/fought rules. When it resolves to nobody ({@code 谋士之一} is no name), the
+                // fallback below still runs — 曹操帐下谋士之一 names the document's own person.
+                String advisor = other.find() ? personTarget(other.group(1)) : null;
+                if (advisor != null) {
+                    add("advisorOf", advisor, lord, source, sentence, relations, counts, samples, seen, true,
                             newPositions, newPersons);
                 } else if (ADVISOR_OWN_AFTER.matcher(after).find()) {
                     add("advisorOf", owner, lord, source, sentence, relations, counts, samples, seen, false,
@@ -251,26 +432,31 @@ public final class SanguoTextExtractor {
                     newPositions, newPersons);
         }
 
-        // 5) fought
-        for (Matcher m = FOUGHT_WITH.matcher(sentence); m.find(); ) {
-            String other = m.group(1);
-            String preceding = knownPersonAt(sentence, m.start());
-            if (PRONOUN.matcher(other).find() || (preceding != null && !preceding.equals(owner))) {
-                continue;
+        // 5) fought — the owner is the assumed agent, so reported speech is not trustworthy here
+        if (!QUOTED.matcher(sentence).find()) {
+            for (Matcher m = FOUGHT_WITH.matcher(sentence); m.find(); ) {
+                String other = m.group(1);
+                String preceding = knownPersonAt(sentence, m.start());
+                if (PRONOUN.matcher(other).find() || (preceding != null && !preceding.equals(owner))) {
+                    continue;
+                }
+                add("fought", owner, personTarget(other), source, sentence, relations, counts, samples, seen, true,
+                        newPositions, newPersons);
             }
-            add("fought", owner, personTarget(other), source, sentence, relations, counts, samples, seen, true,
-                    newPositions, newPersons);
-        }
-        for (Matcher m = FOUGHT_BEAT.matcher(sentence); m.find(); ) {
-            String other = m.group(1);
-            if (PRONOUN.matcher(other).find() || isKnownNonPerson(other)) {
-                continue;
+            for (Matcher m = FOUGHT_BEAT.matcher(sentence); m.find(); ) {
+                String other = m.group(1);
+                if (PRONOUN.matcher(other).find() || isKnownNonPerson(other)) {
+                    continue;
+                }
+                add("fought", owner, personTarget(other), source, sentence, relations, counts, samples, seen, true,
+                        newPositions, newPersons);
             }
-            add("fought", owner, personTarget(other), source, sentence, relations, counts, samples, seen, true,
-                    newPositions, newPersons);
         }
 
-        // 6) killed — "为X所杀" puts X first, "斩杀X" keeps the owner first
+        // 6) killed — "为X所杀"/"被X斩" put X first, "斩杀X" keeps the owner first.
+        //    The passive forms are grammatically unambiguous, so they are trusted even inside a
+        //    quotation ("飞马来报：‘潘凤又被华雄斩了’"). The active form is not: the sentence may only
+        //    *report* what somebody said ("韩馥曰：‘吾有上将潘凤，可斩华雄’" — a claim, and potential).
         for (Matcher m = KILLED_BY.matcher(sentence); m.find(); ) {
             String other = m.group(1);
             if (PRONOUN.matcher(other).find()) {
@@ -279,14 +465,42 @@ public final class SanguoTextExtractor {
             add("killed", personTarget(other), owner, source, sentence, relations, counts, samples, seen, true,
                     newPositions, newPersons);
         }
-        for (Matcher m = KILLED.matcher(sentence); m.find(); ) {
+        for (Matcher m = KILLED_PASSIVE.matcher(sentence); m.find(); ) {
             String other = m.group(1);
             if (PRONOUN.matcher(other).find()) {
                 continue;
             }
-            add("killed", owner, personTarget(other), source, sentence, relations, counts, samples, seen, true,
+            add("killed", personTarget(other), owner, source, sentence, relations, counts, samples, seen, true,
                     newPositions, newPersons);
         }
+        if (!QUOTED.matcher(sentence).find()) {
+            for (Matcher m = KILLED.matcher(sentence); m.find(); ) {
+                String other = m.group(1);
+                if (PRONOUN.matcher(other).find()) {
+                    continue;
+                }
+                add("killed", owner, personTarget(other), source, sentence, relations, counts, samples, seen, true,
+                        newPositions, newPersons);
+            }
+        }
+    }
+
+    /**
+     * The person a sentence names just before {@code marker} — {"封关羽为五虎大将之首"} names 关羽.
+     * The window is short on purpose: a name further away belongs to another clause.
+     */
+    private String memberNamedBefore(String sentence, String marker) {
+        for (int at = sentence.indexOf(marker); at > 0; at = sentence.indexOf(marker, at + 1)) {
+            for (int start = Math.max(0, at - 6); start < at; start++) {
+                for (int end = Math.min(at, start + 4); end > start; end--) {
+                    String candidate = sentence.substring(start, end);
+                    if (types.containsKey(candidate) && isPerson(candidate)) {
+                        return candidate;
+                    }
+                }
+            }
+        }
+        return null;
     }
 
     private void add(String relation, String head, String tail, String source, String sentence,
@@ -298,7 +512,7 @@ public final class SanguoTextExtractor {
         if (!seen.add(relation + "|" + head + "|" + tail)) {
             return;
         }
-        relations.add(new Extracted(relation, head, tail, source, sentence));
+        relations.add(new Extracted(relation, head, tail, source, sentence, seq));
         counts.merge(relation, 1, Integer::sum);
         List<String> sample = samples.computeIfAbsent(relation, key -> new ArrayList<>());
         if (sample.size() < 8) {
@@ -382,9 +596,15 @@ public final class SanguoTextExtractor {
         return type != null && !type.isPerson();
     }
 
-    /** A title must not swallow a known entity name (e.g. {@code 荆州牧刘表从事}). */
+    /**
+     * A title must not swallow a known entity name (e.g. {@code 荆州牧刘表从事}) nor a verb or a
+     * particle: the bigger corpus yields candidates like {@code 仲爽为令}, {@code 竺领嬴郡太守},
+     * {@code 先主为汉中王}, {@code 他们的各个王}, which are clauses, not offices.
+     */
+    private static final Pattern BAD_TITLE_PART = Pattern.compile("[为领的他们各个请命了职予强妻]|先主|他们");
+
     private boolean plausibleTitle(String title) {
-        if (title.length() < 2) {
+        if (title.length() < 2 || title.length() > 7 || BAD_TITLE_PART.matcher(title).find()) {
             return false;
         }
         for (String name : types.keySet()) {

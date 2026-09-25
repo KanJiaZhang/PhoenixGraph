@@ -51,7 +51,7 @@ public final class SanguoDataset {
     public static final String DEFAULT_DIRECTORY = "/kg/sanguo";
 
     /** Values that mean "the document does not say". */
-    private static final Set<String> PLACEHOLDERS = Set.of("未知", "暂无相关记载", "？", "");
+    private static final Set<String> PLACEHOLDERS = Set.of("未知", "无", "暂无相关记载", "不详", "？", "");
 
     /** The kind of a knowledge-graph entity. */
     public enum EntityType {
@@ -62,7 +62,14 @@ public final class SanguoDataset {
         FACTION("Faction"),
         PLACE("Place"),
         POSITION("Position"),
-        CHAPTER("Chapter");
+        CHAPTER("Chapter"),
+        /** 方案 ③: a famous episode a biography alludes to ({@code 过五关斩六将}). Its participants
+         *  are <em>not</em> invented — the biography only ever gives the allusion, never the names. */
+        EVENT("Event"),
+        /** 方案 ③: an object of legend the allusion names ({@code 赤兔马}, {@code 青龙偃月刀}). */
+        ARTIFACT("Artifact"),
+        /** 方案 ③: a set phrase with no single happening behind it ({@code 刮目相看}). */
+        IDIOM("Idiom");
 
         private final String rdfClass;
 
@@ -113,7 +120,7 @@ public final class SanguoDataset {
     /** One person document: the raw field values, placeholders already removed. */
     public record Document(String id, String name, String gender, String courtesyName, String historicity,
                            String nativePlace, String father, String mother, String brothers, String spouses,
-                           String children, String offices, String allegiance, String chapters,
+                           String children, String offices, String allegiance, String chapters, String years,
                            String history, String novel) {
 
         /** The RDF class of this person. */
@@ -135,22 +142,98 @@ public final class SanguoDataset {
     public record Entity(String name, EntityType type) {
     }
 
+    /**
+     * When a relation is attested (see {@code SANGUO-KG.md} §7.8).
+     *
+     * <p>{@code year} / {@code chapter} are the {@code min-max} spans of the values <em>both</em>
+     * endpoints list in their document ({@code 年代列表} / {@code 章节列表}) — a real lower bound on
+     * "these two were contemporaries who appear together", not the relation's own start date: the
+     * documents date people, never relations.
+     *
+     * <p>{@code seq} is the narrative position the relation was read at,
+     * {@code fieldOrder * 1000 + sentenceIndex} (历史 = 1xxx, 小说 = 2xxx). A biography is written in
+     * chronological order, so a smaller {@code seq} is earlier — <em>within the same field</em>: 历史
+     * and 小说 are two parallel retellings of one life and must not be compared against each other.
+     */
+    public record RelationTime(String year, String chapter, long seq) {
+
+        /** No time information (a relation whose endpoints share no year/chapter, or a mirror edge). */
+        public static final RelationTime NONE = new RelationTime(null, null, 0L);
+
+        /** The narrative order, or 0 when the relation was not read out of a biography. */
+        public boolean ordered() {
+            return seq > 0;
+        }
+    }
+
+    /** The time window and narrative order of one relation. */
+    public RelationTime timeOf(Relation relation) {
+        RelationTime time = times.get(key(relation));
+        return time == null ? RelationTime.NONE : time;
+    }
+
+    /** Every relation's time window (keyed by {@code head|relation|tail}). */
+    public Map<String, RelationTime> times() {
+        return times;
+    }
+
+    /**
+     * The {@code min-max} span of the values both endpoints list, or {@code null} when either has no
+     * list or the two share none. Both lists come out of a document already in order, so the first
+     * and last shared value are the bounds.
+     */
+    private static String window(Map<String, List<Integer>> values, String left, String right) {
+        List<Integer> a = values.get(left);
+        List<Integer> b = values.get(right);
+        if (a == null || b == null) {
+            return null;
+        }
+        List<Integer> shared = a.stream().filter(b::contains).toList();
+        if (shared.isEmpty()) {
+            return null;
+        }
+        int min = shared.get(0);
+        int max = shared.get(shared.size() - 1);
+        return min == max ? String.valueOf(min) : min + "-" + max;
+    }
+
+    /** The numbers a {@code |}-separated field lists ({@code 第35回} -&gt; 35, {@code 公元207年} -&gt; 207). */
+    private static Map<String, List<Integer>> numberLists(List<Document> documents,
+                                                          java.util.function.Function<Document, String> field) {
+        Map<String, List<Integer>> out = new LinkedHashMap<>();
+        for (Document document : documents) {
+            List<Integer> numbers = new ArrayList<>();
+            for (String raw : field.apply(document).split("[|\\s\\u3000]+")) {
+                String digits = raw.replaceAll("[^0-9]", "");
+                if (!digits.isEmpty()) {
+                    numbers.add(Integer.parseInt(digits));
+                }
+            }
+            if (!numbers.isEmpty()) {
+                out.put(document.name(), numbers);
+            }
+        }
+        return out;
+    }
+
     private final List<Document> documents;
     private final List<Relation> curatedRelations;
     private final List<Relation> extraRelations;
     private final List<Relation> relations;
     private final List<Relation> closedRelations;
     private final Map<String, Entity> entities;
+    private final Map<String, RelationTime> times;
     private final SanguoOntology ontology;
 
     private SanguoDataset(List<Document> documents, List<Relation> curatedRelations, List<Relation> extraRelations,
                           List<Relation> relations, List<Relation> closedRelations, Map<String, Entity> entities,
-                          SanguoOntology ontology) {
+                          SanguoOntology ontology, Map<String, RelationTime> times) {
         this.documents = List.copyOf(documents);
         this.curatedRelations = List.copyOf(curatedRelations);
         this.extraRelations = List.copyOf(extraRelations);
         this.relations = List.copyOf(relations);
         this.closedRelations = List.copyOf(closedRelations);
+        this.times = Collections.unmodifiableMap(new LinkedHashMap<>(times));
         // insertion order, not Map.copyOf: the RDF writers iterate the entities, and a
         // salted iteration order would make the generated files differ between JVM runs
         this.entities = Collections.unmodifiableMap(new LinkedHashMap<>(entities));
@@ -193,12 +276,39 @@ public final class SanguoDataset {
      * The whole parse: documents + curated triples + the local supplement + document-derived
      * links + closures. Precedence is curated &gt; extra &gt; document.
      */
+    /**
+     * Builds the dataset: documents + curated triples + the extra relations, with the entity set
+     * derived from them. Allusion entities (方案 ③) are not implied by any relation, so their types
+     * travel in {@code typedEntities}.
+     */
     public static SanguoDataset of(List<Document> documents, List<Relation> curated, List<Relation> extra,
                                    SanguoOntology ontology) {
+        return of(documents, curated, extra, ontology, Map.of());
+    }
+
+    /**
+     * The full form: {@code typedEntities} names entities whose type no relation implies — the
+     * 事件/器物/成语 an allusion points at. They are created before the person–person pass, so
+     * {@code mentions} cannot turn {@code 过五关斩六将} into a {@code Person}.
+     */
+    public static SanguoDataset of(List<Document> documents, List<Relation> curated, List<Relation> extra,
+                                   SanguoOntology ontology, Map<String, EntityType> typedEntities) {
+        return of(documents, curated, extra, ontology, typedEntities, Map.of());
+    }
+
+    /**
+     * The full form: {@code narrativeOrder} maps {@code head|relation|tail} to the position the
+     * relation was read at ({@code fieldOrder*1000 + sentenceIndex}), which only the text extractor
+     * knows. The {@code year}/{@code chapter} windows are derived here from the two endpoints.
+     */
+    public static SanguoDataset of(List<Document> documents, List<Relation> curated, List<Relation> extra,
+                                   SanguoOntology ontology, Map<String, EntityType> typedEntities,
+                                   Map<String, Long> narrativeOrder) {
         Map<String, String> gender = new LinkedHashMap<>();
         for (Document document : documents) {
             gender.put(document.name(), document.gender());
         }
+        Map<String, String> references = references(documents);
 
         // dedupe by (head, relation, tail): the curated extraction wins, so a relation
         // confirmed by both the file and a document keeps its CURATED provenance
@@ -213,7 +323,7 @@ public final class SanguoDataset {
 
         List<Relation> documentRelations = new ArrayList<>();
         for (Document document : documents) {
-            documentRelations.addAll(deriveRelations(document, gender));
+            documentRelations.addAll(deriveRelations(document, gender, references));
         }
 
         // 效力 names a power, and some powers are named after their lord (袁绍, 刘表,
@@ -250,6 +360,7 @@ public final class SanguoDataset {
         for (Document document : documents) {
             entities.put(document.name(), new Entity(document.name(), document.entityType()));
         }
+        typedEntities.forEach((name, type) -> entities.putIfAbsent(name, new Entity(name, type)));
         // two passes: an attribute relation (holds/serves/nativePlace/appearsIn) decides the type of
         // its target first, so a later person-person relation (mentions, fought, …) cannot turn
         // 中郎将 / 第1回 / 乌戈国 into a Person before the schema has had its say
@@ -290,7 +401,23 @@ public final class SanguoDataset {
                 }
             }
         }
-        return new SanguoDataset(documents, curated, extra, relations, closed, entities, ontology);
+        // --- the time dimension (SANGUO-KG.md §7.8) -------------------------------------------------
+        // The documents date people, never relations, so a relation's year/chapter is the window in
+        // which both endpoints are attested. The narrative order comes from the extractor.
+        Map<String, List<Integer>> yearsOf = numberLists(documents, Document::years);
+        Map<String, List<Integer>> chaptersOf = numberLists(documents, Document::chapters);
+        Map<String, RelationTime> times = new LinkedHashMap<>();
+        for (Relation relation : closed) {
+            long seq = narrativeOrder.getOrDefault(key(relation), 0L);
+            if (seq == 0L) {
+                // a materialized inverse/symmetric mirror is the same event, read at the same point
+                String inverse = ontology.inverse(relation.relation());
+                seq = narrativeOrder.getOrDefault(key(relation.tail(), inverse, relation.head()), 0L);
+            }
+            times.put(key(relation), new RelationTime(window(yearsOf, relation.head(), relation.tail()),
+                    window(chaptersOf, relation.head(), relation.tail()), seq));
+        }
+        return new SanguoDataset(documents, curated, extra, relations, closed, entities, ontology, times);
     }
 
     /** The person documents, in file order. */
@@ -381,22 +508,39 @@ public final class SanguoDataset {
                     Csv.cell(row, header, "官职"),
                     Csv.cell(row, header, "效力"),
                     Csv.cell(row, header, "章节列表"),
+                    Csv.cell(row, header, "年代列表"),
                     clean(Csv.cell(row, header, "历史")),
                     clean(Csv.cell(row, header, "小说"))));
         }
         return documents;
     }
 
+    /**
+     * How a relation value names a person: the upstream {@code 名字[势力]} tag is what tells its
+     * 359 homonyms apart, so it stays part of the entity name ({@code 曹节[献穆皇后]} is the
+     * empress, {@code 曹节[东汉]} the eunuch). A bare reference resolves to the first homonym, which
+     * is what an untagged value in the source can only mean.
+     */
+    private static Map<String, String> references(List<Document> documents) {
+        Map<String, String> references = new LinkedHashMap<>();
+        for (Document document : documents) {
+            String name = document.name();
+            int bracket = name.indexOf('[');
+            if (bracket > 0 && name.endsWith("]")) {
+                references.putIfAbsent(name, name);
+                references.putIfAbsent(name.substring(0, bracket), name);
+            }
+        }
+        return references;
+    }
+
     /** The entity name of a document: the bracket suffix becomes a parenthesized tag on a homonym. */
     private static String uniqueName(String rawName, String id, Set<String> usedNames) {
-        int bracket = rawName.indexOf('[');
-        String base = bracket > 0 ? rawName.substring(0, bracket).trim() : rawName.trim();
-        String tag = bracket > 0 && rawName.endsWith("]")
-                ? rawName.substring(bracket + 1, rawName.length() - 1).trim() : "";
-        if (usedNames.add(base)) {
-            return base;
+        String name = rawName.trim();
+        if (usedNames.add(name)) {
+            return name;
         }
-        String candidate = base + "（" + (tag.isEmpty() ? id : tag) + "）";
+        String candidate = name + "（" + id + "）";
         while (!usedNames.add(candidate)) {
             candidate = candidate + "·";
         }
@@ -441,40 +585,44 @@ public final class SanguoDataset {
     }
 
     /** The relation triples a single person document implies. */
-    private static List<Relation> deriveRelations(Document document, Map<String, String> gender) {
+    private static List<Relation> deriveRelations(Document document, Map<String, String> gender,
+                                                  Map<String, String> references) {
         List<Relation> relations = new ArrayList<>();
         String self = document.name();
-        for (String father : values(document.father())) {
+        for (String father : values(document.father(), references)) {
             relations.add(new Relation(father, "father", self, RelationSource.DOCUMENT));
         }
-        for (String mother : values(document.mother())) {
+        for (String mother : values(document.mother(), references)) {
             relations.add(new Relation(mother, "mother", self, RelationSource.DOCUMENT));
         }
-        for (String sibling : values(document.brothers())) {
+        for (String sibling : values(document.brothers(), references)) {
             // the documents do not order siblings; the gender picks brother/sister
             boolean sister = "女".equals(gender.get(sibling));
             relations.add(new Relation(sibling, sister ? "sister" : "brother", self, RelationSource.DOCUMENT));
         }
-        for (String spouse : values(document.spouses())) {
+        for (String spouse : values(document.spouses(), references)) {
             boolean male = !"女".equals(document.gender());
             relations.add(new Relation(self, male ? "husband" : "wife", spouse, RelationSource.DOCUMENT));
         }
-        for (String child : values(document.children())) {
+        for (String child : values(document.children(), references)) {
             boolean daughter = "女".equals(gender.get(child));
             relations.add(new Relation(child, daughter ? "daughter" : "son", self, RelationSource.DOCUMENT));
         }
-        for (String faction : values(document.allegiance())) {
+        for (String faction : values(document.allegiance(), references)) {
             relations.add(new Relation(self, "serves", faction, RelationSource.DOCUMENT));
         }
-        for (String office : values(document.offices())) {
+        for (String office : values(document.offices(), references)) {
             relations.add(new Relation(self, "holds", office, RelationSource.DOCUMENT));
         }
         if (!PLACEHOLDERS.contains(document.nativePlace())) {
             relations.add(new Relation(self, "nativePlace", placeName(document.nativePlace()), RelationSource.DOCUMENT));
         }
-        for (String chapter : values(document.chapters())) {
+        for (String chapter : values(document.chapters(), references)) {
             relations.add(new Relation(self, "appearsIn", chapter, RelationSource.DOCUMENT));
         }
+        // a person whose 官职 repeats their own name would become a self-loop
+        // (宣阳乡君 --holds--> 宣阳乡君), which no domain/range check can satisfy
+        relations.removeIf(relation -> relation.head().equals(relation.tail()));
         return relations;
     }
 
@@ -482,18 +630,21 @@ public final class SanguoDataset {
      * Splits a {@code |}-separated document field, dropping placeholders, posthumous
      * names ({@code 谥曰…}) and the upstream {@code 名字[势力]} disambiguation suffix.
      */
-    private static List<String> values(String field) {
+    /**
+     * Splits a document field into entity references. The separator is {@code |} — except that a
+     * handful of upstream cells (曹茂/荀粲/刘瓒 {@code 兄弟}, 卢植/陈登 {@code 官职}) use spaces or
+     * ideographic spaces instead, sometimes mixed with {@code |} in the same cell, so all of them
+     * separate. The {@code 名字[势力]} tag stays: it is what tells two homonyms apart. Placeholders
+     * and the posthumous {@code 谥曰…} notes are dropped.
+     */
+    private static List<String> values(String field, Map<String, String> references) {
         List<String> values = new ArrayList<>();
-        for (String raw : field.split("\\|")) {
+        for (String raw : field.split("[|\\s\\u3000]+")) {
             String value = raw.trim();
-            int bracket = value.indexOf('[');
-            if (bracket > 0) {
-                value = value.substring(0, bracket).trim();
-            }
             if (value.isEmpty() || PLACEHOLDERS.contains(value) || value.startsWith("谥曰")) {
                 continue;
             }
-            values.add(value);
+            values.add(references.getOrDefault(value, value));
         }
         return values;
     }
@@ -536,8 +687,13 @@ public final class SanguoDataset {
         entities.putIfAbsent(name, new Entity(name, type));
     }
 
+    /** The map key of a triple. Public so the text graph can build the narrative-order map. */
+    public static String key(String head, String relation, String tail) {
+        return head + "\u0000" + relation + "\u0000" + tail;
+    }
+
     private static String key(Relation relation) {
-        return relation.head() + "\u0000" + relation.relation() + "\u0000" + relation.tail();
+        return key(relation.head(), relation.relation(), relation.tail());
     }
 
     private static String readText(String resource) {

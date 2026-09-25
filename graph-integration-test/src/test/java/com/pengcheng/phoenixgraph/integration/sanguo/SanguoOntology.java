@@ -71,10 +71,18 @@ public final class SanguoOntology {
     public static final List<String> CLASSES =
             List.of("Person", "Male", "Female", "Faction", "Place", "Position", "Chapter");
 
+    /**
+     * The classes only the text extraction introduces (方案 ③). Like {@link #TEXT_PROPERTIES}
+     * they are declared by {@link #withTextProfile()} alone, so the base graph's TBox is untouched.
+     */
+    private static final List<String> TEXT_CLASSES = List.of("Event", "Artifact", "Idiom");
+
     /** Chinese labels of {@link #CLASSES}. */
-    private static final Map<String, String> CLASS_LABELS = Map.of(
-            "Person", "人物", "Male", "男性人物", "Female", "女性人物", "Faction", "势力",
-            "Place", "籍贯地", "Position", "官职", "Chapter", "章回");
+    private static final Map<String, String> CLASS_LABELS = Map.ofEntries(
+            Map.entry("Person", "人物"), Map.entry("Male", "男性人物"), Map.entry("Female", "女性人物"),
+            Map.entry("Faction", "势力"), Map.entry("Place", "籍贯地"), Map.entry("Position", "官职"),
+            Map.entry("Chapter", "章回"),
+            Map.entry("Event", "事件"), Map.entry("Artifact", "器物"), Map.entry("Idiom", "成语"));
 
     /** Properties derived from the person documents rather than from {@code theory.owl}. */
     private static final Map<String, String[]> EXTENSION_PROPERTIES = new LinkedHashMap<>();
@@ -168,6 +176,9 @@ public final class SanguoOntology {
             new String[] {"fought", "交战", "Person", "Person"},
             new String[] {"killed", "斩杀", "Person", "Person"});
 
+    /** The family of the 方案 ③ allusion edges. They reuse the {@code mentions} relation. */
+    public static final String ALLUSION_FAMILY = "allusion";
+
     /**
      * Preference when two properties claim the same inverse: the first name in
      * this list wins. {@code husband} is the inverse of {@code wife} (the primary
@@ -215,12 +226,18 @@ public final class SanguoOntology {
     }
 
     private final List<Property> properties;
+    private final List<String> classes;
     private final Map<String, Property> byName;
     private final Map<String, String> inverse;
     private final Map<String, String> declaredInverse;
 
     private SanguoOntology(List<Property> properties, Map<String, String> declaredInverse) {
+        this(properties, CLASSES, declaredInverse);
+    }
+
+    private SanguoOntology(List<Property> properties, List<String> classes, Map<String, String> declaredInverse) {
         this.properties = List.copyOf(properties);
+        this.classes = List.copyOf(classes);
         Map<String, Property> index = new LinkedHashMap<>();
         for (Property property : properties) {
             index.put(property.name(), property);
@@ -343,8 +360,8 @@ public final class SanguoOntology {
     }
 
     /**
-     * The same ontology plus the relations the text extraction introduces (方案 C).
-     * The base graph's TBox is untouched — only the text graph declares these five.
+     * The same ontology plus what the text extraction introduces (方案 C): five relations and
+     * 方案 ③'s three classes. The base graph's TBox is untouched — only the text graph declares them.
      */
     public SanguoOntology withTextProfile() {
         List<Property> all = new ArrayList<>(properties);
@@ -356,7 +373,13 @@ public final class SanguoOntology {
             };
             all.add(new Property(spec[0], List.of(spec[1]), null, spec[2], spec[3], characteristics));
         }
-        return new SanguoOntology(all, declaredInverse);
+        List<String> withClasses = new ArrayList<>(classes);
+        for (String name : TEXT_CLASSES) {
+            if (!withClasses.contains(name)) {
+                withClasses.add(name);
+            }
+        }
+        return new SanguoOntology(all, withClasses, declaredInverse);
     }
 
     /** A relation by local name, or {@code null}. */
@@ -410,7 +433,7 @@ public final class SanguoOntology {
     }
 
     public List<String> classes() {
-        return CLASSES;
+        return classes;
     }
 
     /** The declared datatype properties (person attributes), name -> Chinese label. */

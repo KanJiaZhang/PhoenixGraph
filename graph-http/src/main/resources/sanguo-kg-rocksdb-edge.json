@@ -39,7 +39,11 @@
         { "id": 3, "name": "relation", "description": "Forward relation name (e.g. father)", "type": "STRING" },
         { "id": 4, "name": "xrelation", "description": "Reverse relation name; equals relation when it has no inverse", "type": "STRING" },
         { "id": 5, "name": "relationLabel", "description": "中文关系名 (e.g. 父亲)", "type": "STRING" },
-        { "id": 6, "name": "relationFamily", "description": "关系家族 (e.g. 亲属)", "type": "STRING" }
+        { "id": 6, "name": "relationFamily", "description": "关系家族 (e.g. 亲属)", "type": "STRING" },
+        { "id": 7, "name": "year", "description": "年份区间：两端点共现的公元年，如 196-208", "type": "STRING" },
+        { "id": 8, "name": "chapter", "description": "回数区间：两端点共现的章回号，如 35-48", "type": "STRING" },
+        { "id": 9, "name": "seq", "description": "叙述序：字段序*1000+句子序，越小越早；同字段内可比", "type": "LONG" },
+        { "id": 10, "name": "provenance", "description": "边的来源：CURATED/EXTRA/DOCUMENT/INVERSE/SYMMETRIC", "type": "STRING" }
       ]
     }
   ],

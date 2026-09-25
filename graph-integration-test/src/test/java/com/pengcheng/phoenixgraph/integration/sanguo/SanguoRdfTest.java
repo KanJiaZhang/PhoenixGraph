@@ -49,9 +49,9 @@ class SanguoRdfTest {
     @Test
     void parsesThePersonDocuments() {
         List<SanguoDataset.Document> documents = DATASET.documents();
-        assertEquals(331, documents.size());
-        assertEquals(315, documents.stream().filter(d -> d.gender().equals("男")).count());
-        assertEquals(16, documents.stream().filter(d -> d.gender().equals("女")).count());
+        assertEquals(4487, documents.size());
+        assertEquals(4241, documents.stream().filter(d -> d.gender().equals("男")).count());
+        assertEquals(246, documents.stream().filter(d -> d.gender().equals("女")).count());
 
         // the fields the RDF turns into attributes are read, not dropped
         SanguoDataset.Document caoCao = DATASET.documentsByName().get("曹操");
@@ -60,15 +60,17 @@ class SanguoRdfTest {
         assertEquals("male", caoCao.ontologyGender());
         assertFalse(caoCao.historicity().isEmpty());
 
-        // 刘备 has no document of his own (the upstream export is partial): he stays a
-        // relation-only Person, which is exactly what the validator reports as
-        // "unverifiable gender" instead of silently assuming one
-        assertFalse(DATASET.documentsByName().containsKey("刘备"));
-        assertEquals(SanguoDataset.EntityType.PERSON, DATASET.entities().get("刘备").type());
+        // the full export documents 刘备; the earlier 331-row copy stopped before him
+        assertTrue(DATASET.documentsByName().containsKey("刘备"));
+        assertEquals(SanguoDataset.EntityType.MALE, DATASET.entities().get("刘备").type());
 
-        // the upstream 名字[势力] disambiguation suffix is stripped
-        assertTrue(documents.stream().noneMatch(d -> d.name().contains("[")),
-                "entity names must not keep the [势力] suffix");
+        // the upstream 名字[势力] tag is KEPT — it is what tells the 359 homonyms apart, and it is
+        // the only way 刘协's 配偶 resolves to the empress 曹节[献穆皇后] rather than to the eunuch
+        assertEquals(359, documents.stream().filter(d -> d.name().contains("[")).count(),
+                "the upstream disambiguation tag stays part of the name");
+        assertTrue(DATASET.entities().containsKey("曹节[献穆皇后]"),
+                "the empress and the eunuch 曹节 stay distinct entities");
+        assertTrue(DATASET.entities().containsKey("曹节[东汉]"));
         // 谥曰… is a posthumous name, not an office
         assertTrue(DATASET.relations().stream().noneMatch(r -> r.tail().startsWith("谥曰")));
         // 籍贯 keeps the historical part only
@@ -82,20 +84,21 @@ class SanguoRdfTest {
         for (SanguoDataset.Entity entity : DATASET.entities().values()) {
             byType.merge(entity.type().rdfClass(), 1, Integer::sum);
         }
-        assertEquals(315, byType.get("Male"));
-        assertEquals(16, byType.get("Female"));
+        assertEquals(4241, byType.get("Male"));
+        assertEquals(246, byType.get("Female"));
+        assertEquals(237, byType.get("Person"), "relation-only persons");
         assertEquals(120, byType.get("Chapter"), "三国演义 has 120 章回");
         assertTrue(byType.get("Faction") >= 11, "the 11 generic powers plus the warlord regimes");
         assertTrue(byType.get("Place") > 60);
         assertTrue(byType.get("Position") > 50);
-        assertTrue(DATASET.entities().size() > 1_000);
+        assertTrue(DATASET.entities().size() > 6_000);
 
         // every relation of the ABox is declared by the ontology (TBox)
         for (SanguoDataset.Relation relation : DATASET.relations()) {
             assertTrue(DATASET.ontology().isDeclared(relation.relation()),
                     "undeclared relation: " + relation.relation());
         }
-        assertEquals(2_298, DATASET.relations().size());
+        assertEquals(21_050, DATASET.relations().size());
         assertEquals(153, DATASET.curatedRelations().size());
         assertEquals(8, DATASET.extraRelations().size(),
                 "the local supplement: 6 五虎上将 offices + 2 关羽/张飞 臣属 edges");
@@ -174,10 +177,14 @@ class SanguoRdfTest {
     @Test
     void validatesTheParse() {
         SanguoRdfValidator.Report report = SanguoRdfValidator.validate(DATASET);
-        if (!report.valid()) {
-            report.violations().forEach(System.out::println);
-        }
-        assertTrue(report.valid(), "the parse must satisfy the ontology: " + report.violations().size() + " violation(s)");
+        report.violations().forEach(System.out::println);
+        // One known upstream inconsistency survives the full 4,487-person dataset: 刘建[安国侯]'s
+        // 母亲 field names 刘英, and the only 刘英 in the data is documented as 男 — so the `mother`
+        // edge contradicts the ontology's domain (female). It is asserted byte-for-byte instead of
+        // filtered out, so a *new* violation still fails the build.
+        assertEquals(List.of("domain: 刘英 --mother--> 刘建[安国侯] (刘英 should be female but is Male, 男)"),
+                report.violations().stream().map(Object::toString).toList(),
+                "only the documented upstream inconsistency may violate the ontology");
         assertTrue(report.domainRangeChecked() > 100,
                 "domain/range must actually be checked: " + report.domainRangeChecked());
         assertTrue(report.domainRangeUnverifiable() > 0,

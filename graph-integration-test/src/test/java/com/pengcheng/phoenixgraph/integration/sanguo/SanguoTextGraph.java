@@ -46,10 +46,10 @@ public final class SanguoTextGraph {
         /** How many entities/relations the text graph adds on top of the base graph. */
         public String describe() {
             return String.format("%d entities, %d relations (%d materialized) — extracted %d relations, "
-                            + "%d new offices, %d new people",
+                            + "%d new offices, %d new people, %d allusions",
                     dataset.entities().size(), dataset.relations().size(), dataset.closedRelations().size(),
                     extraction.relations().size(), extraction.newPositions().size(),
-                    extraction.newPersons().size());
+                    extraction.newPersons().size(), extraction.allusions().size());
         }
     }
 
@@ -70,7 +70,11 @@ public final class SanguoTextGraph {
         }
 
         SanguoOntology ontology = base.ontology().withTextProfile();
-        SanguoDataset dataset = SanguoDataset.of(base.documents(), base.curatedRelations(), supplements, ontology);
+        // 方案 ③'s allusion entities carry a class no relation implies, so their types travel separately;
+        // the narrative order (which sentence each relation was read at) travels with them, so a
+        // relation can be ordered in time — see SANGUO-KG.md §7.8
+        SanguoDataset dataset = SanguoDataset.of(base.documents(), base.curatedRelations(), supplements, ontology,
+                extraction.allusions(), extraction.narrativeOrder());
         return new Built(dataset, extraction);
     }
 
