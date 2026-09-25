@@ -447,6 +447,8 @@
         ['方案 C：关羽斩杀过谁', 'Plan C: whom Guan Yu killed', "MATCH (p:Entity {id:'关羽'})-[r:Entity_Entity]->(x:Entity) WHERE r.relation='killed' RETURN x.name"],
         ['方案 C：谁斩杀了关羽', 'Plan C: who killed Guan Yu', "MATCH (p:Entity {id:'关羽'})<-[r:Entity_Entity]-(x:Entity) WHERE r.relation='killed' RETURN x.name AS killer"],
         ['方案 C：关羽的传记提到了谁', 'Plan C: who Guan Yu\'s biography mentions', "MATCH (p:Entity {id:'关羽'})-[r:Entity_Entity]->(x:Entity) WHERE r.relation='mentions' RETURN x.name LIMIT 12"],
+        ['方案 ③：关羽提到哪些事件', 'Plan C-3: which events Guan Yu names', "MATCH (p:Entity {id:'关羽'})-[r:Entity_Entity]->(e:Entity) WHERE r.relation='mentions' AND e.entityType='Event' RETURN e.name"],
+        ['方案 ③：谁提到过五关斩六将', 'Plan C-3: who names the five passes', "MATCH (p:Entity)-[r:Entity_Entity]->(e:Entity {id:'过五关斩六将'}) WHERE r.relation='mentions' RETURN p.name"],
       ],
       'sanguo-kg-rocksdb-edge': [
         ['人物本体（属性）', 'Person vertex with its attributes', "MATCH (e:Entity {id:'曹操'}) RETURN e.name, e.entityType, e.gender, e.courtesyName"],
@@ -561,6 +563,9 @@
       ['脚本：sender→receiver 的 4 跳路径（双向 both）',
         'Script: the four-hop paths between a sender and a receiver (both directions)',
         "def sender = 1000\ndef receiver = 1006\n\ndef sPaths = g.V(sender, 'Account').both('Payment').bothE('Payment').path().toList()\ndef rPaths = g.V(receiver, 'Account').both('Payment').bothE('Payment').path().toList()\n\ndef common = sPaths.endIds().retainAll(rPaths.endIds())\ndef midObjects = g.V(common, 'Account').toList()\n\ndef four = sPaths.joinOnEnd(rPaths, midObjects)\n\ndef answer = []\nanswer = answer.addAll(sPaths)\nanswer = answer.addAll(rPaths)\nanswer = answer.addAll(four)\nprint('sender two-hop paths: ' + sPaths.size())\nprint('receiver two-hop paths: ' + rPaths.size())\nprint('common mids: ' + common)\nprint('middle objects: ' + midObjects.size())\nprint('four-hop paths: ' + four.size())\nanswer"],
+      ['脚本：四跳 path —— 不看方向 vs 看交易方向（一次返回两个结果）',
+        'Script: four-hop paths, direction ignored vs payer-to-payee (two results in one call)',
+        "def sender = 1000\ndef receiver = 1006\n\n// (1) direction ignored: both halves walk both ways\ndef sAny = g.V(sender, 'Account').both('Payment').bothE('Payment').path().toList()\ndef rAny = g.V(receiver, 'Account').both('Payment').bothE('Payment').path().toList()\ndef anyMids = sAny.endIds().retainAll(rAny.endIds())\ndef anyObjs = []\nif (anyMids.size() > 0) { anyObjs = g.V(anyMids, 'Account').toList() }\ndef anyFour = sAny.joinOnEnd(rAny, anyObjs)\n\n// (2) payer -> payee at every hop: the sender half forward, the receiver half backwards\ndef sOut = g.V(sender, 'Account').out('Payment').outE('Payment').path().toList()\ndef rIn = g.V(receiver, 'Account').in('Payment').inE('Payment').path().toList()\ndef dirMids = sOut.endIds().retainAll(rIn.endIds())\ndef dirObjs = []\nif (dirMids.size() > 0) { dirObjs = g.V(dirMids, 'Account').toList() }\ndef dirFour = sOut.joinOnEnd(rIn, dirObjs)\n\nprint('direction ignored, four-hop: ' + anyFour.size())\nprint('payer -> payee, four-hop:    ' + dirFour.size())\n\n[anyFour, dirFour]"],
       ],
       'kg-entity-graph': [
         ['概念书的全部关系', 'All relations of concept_book_new_9', "g.V('concept_book_new_9','Entity').bothE().limit(20)"],
@@ -612,6 +617,9 @@
         ['方案 C：谁斩杀了关羽', 'Plan C: who killed Guan Yu', "g.V('关羽','Entity').inE().filter(relation.equals('killed')).otherV().values('name')"],
         ['方案 C：关羽与谁交战', 'Plan C: whom Guan Yu fought', "g.V('关羽','Entity').bothE().filter(relation.equals('fought')).otherV().dedup().values('name')"],
         ['方案 C：关羽的传记提到了谁', 'Plan C: who Guan Yu\'s biography mentions', "g.V('关羽','Entity').outE().filter(relation.equals('mentions')).limit(12).otherV().values('name')"],
+        ['方案 ③：关羽提到哪些典故/事件', 'Plan C-3: which episodes Guan Yu\'s biography names', "g.V('关羽','Entity').outE().filter(relation.equals('mentions')).otherV().has('entityType','Event').values('name')"],
+        ['方案 ③：谁的传记提到过五关斩六将', 'Plan C-3: whose biography names the five passes', "g.V('过五关斩六将','Entity').inE().filter(relation.equals('mentions')).otherV().values('name')"],
+        ['方案 ③：关羽的器物（青龙偃月刀）', 'Plan C-3: Guan Yu\'s weapon', "g.V('关羽','Entity').outE().filter(relation.equals('mentions')).otherV().has('entityType','Artifact').values('name')"],
       ],
       'hnsw-sift': [
         ['4242 最近的 20 个向量', '20 nearest vectors to 4242', "g.V('4242','Vector').nearest(20)"],
