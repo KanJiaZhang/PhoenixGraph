@@ -290,7 +290,7 @@ public class QueryService {
             Object result = capValue(response.result(), truncated);
             Subgraph subgraph = (Subgraph) capValue(response.subgraph(), truncated);
             return result == response.result() && subgraph == response.subgraph()
-                    ? response : new ScriptResponse(result, response.output(), subgraph);
+                    ? response : new ScriptResponse(result, response.output(), subgraph, response.compile());
         }
         if (body instanceof Subgraph subgraph) {
             List<Subgraph.Vertex> vertices = capList(subgraph.vertices(), truncated);
@@ -327,10 +327,17 @@ public class QueryService {
                 // say so, and when it does not the text decides
                 boolean asScript = script != null ? script : GremlinScript.looksLikeScript(substituted);
                 if (asScript) {
-                    GremlinScript.Result result = GremlinScript.parse(substituted)
-                            .execute(engineFor(graphName)::executeWithSubgraph);
+                    GremlinGraphQuery engine = engineFor(graphName);
+                    // the script is parsed once per text and each of its traversals is compiled once per
+                    // text: the counters around the run say how much of that this call had to do
+                    GremlinGraphQuery.CompileStats before = engine.compileStats();
+                    GremlinGraphQuery.ScriptPlan plan = engine.script(substituted);
+                    GremlinScript.Result result = plan.script().execute(engine::executeWithSubgraph);
+                    GremlinGraphQuery.CompileStats spent = engine.compileStats().minus(before);
                     yield new ScriptResponse(result.value(), result.output(),
-                            returnSubgraph ? result.subgraph() : Subgraph.EMPTY);
+                            returnSubgraph ? result.subgraph() : Subgraph.EMPTY,
+                            new ScriptResponse.Compile(plan.parseNanos() / 1e6, plan.parsed(),
+                                    (int) spent.traversalCompiles(), spent.traversalCompileNanos() / 1e6));
                 }
                 if (!returnSubgraph) {
                     yield engineFor(graphName).execute(substituted);

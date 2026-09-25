@@ -6037,3 +6037,78 @@ bash .logs/scripts/run-two-ways.sh 30         # 起服务 + 两个 pair 的 BOTH
 node .logs/run-script.js .logs/scripts/four-hop-two-ways.groovy
 ./mvnw -o -pl graph-query-gremlin test        # 245 用例（新增 side/&&/||/缓存复用各一）
 ```
+## 81. 脚本与遍历的"编译一次"：现在有指标可查
+
+### 81.1 改了什么
+
+| 层 | 之前 | 现在 |
+|---|---|---|
+| 遍历（`g.V(...)...`） | `compiledCache` 按**整段文本**缓存（上限 `MAX_COMPILED_QUERIES=512`，满了整体清空），已经只编译一次 | 不变；新增 `traversalCompiles` / `traversalCompileNanos` 计数，`compiled(text)` 统一入口（超限清空也从 `execute` 挪进来，两条入口都受保护） |
+| 脚本（`def ...\nprint(...)`） | HTTP 每来一次请求就 `GremlinScript.parse(...)` 一次（**没有缓存**） | 新增 `GremlinGraphQuery.script(text)`：按整段脚本文本缓存解析结果（同一个 512 上限），返回 `ScriptPlan{script, parsed, parseNanos}` |
+
+调用链：`QueryService` 现在 `engine.script(substituted)` → 记录前后 `engine.compileStats()` 差值 → 响应里带上
+`ScriptResponse.compile{parseMillis, parsedNow, traversalsCompiled, compileMillis}`，**每次调用都能看到这次的准备成本**。
+
+### 81.2 实测（`.logs/bench-script-compile.js`，sender 1000 → receiver 1022）
+
+| | parse | 编译的遍历数 | compile |
+|---|---|---|---|
+| 第 1 次（这个脚本文本对这个引擎是新的） | **3.165 ms**（冷 JVM：首次解析 + 类加载/JIT） | **4**（脚本里有 4 段遍历） | **4.000 ms** |
+| 第 2..30 次（同一段文本） | **0.000 ms** | **0**（最大也是 0） | **0.000 ms** |
+| 对照：20 次**每次换一段文本**（引擎没见过） | **0.187 ms** 均值（0.117–0.276） | 0（遍历文本相同，仍命中） | 0.000 ms |
+
+结论：**是编译/解析一次，后续不再做**。脚本缓存省下的就是对照那一列：**~0.19 ms/次 ≈ 一次调用的 0.23%**
+（`.logs/pair2-results.txt` 的 "preparation as a share of a call: cached 0.000%, uncached text 0.226%"）。
+和遍历缓存同一个取舍：**把 id 写进脚本文本，每个文本就是一次新的解析**（所以仪表盘按 id 拼脚本时，缓存等于没有）。
+
+### 81.3 复现
+
+```bash
+node .logs/bench-script-compile.js 30 1000 1022    # 需要一个刚启动、还没跑过这段脚本的 JVM
+./mvnw -o -pl graph-query-gremlin,graph-http test  # 新增 GremlinCompiledQueryCacheTest#aScriptIsParsedOnceAndItsTraversalsCompiledOnce
+```
+
+## 82. 脚本能力边界：不是任意 Groovy，是有意的子集（附探针证据）
+
+`.logs/probe-script-support.js` 把 68 个 Groovy 片段真跑一遍（`.logs/script-coverage.txt`），**44 个接受 / 24 个拒绝**。
+"拒绝"不是猜的：下面每条都是引擎自己吐的消息。
+
+### 82.1 接受（查询脚本需要的部分）
+
+* 语句：`def`、赋值/重新赋值、`return`、`print`/`println`、`//` `/* */` 注释、分号或多行分隔、空行
+* 控制流：`if` / `else if` / `else`、`for (x in 集合)`、`while`、`break` / `continue`、嵌套块
+* 表达式：`+ - * / %`、`!`、`&&` `||`（本次新加）、比较 `== != < <= > >=`、整数与**小数**（本次修好 `1.5`）、字符串拼接
+* 集合：列表字面量（含空表、嵌套）、`size() count() toList() toSet() isEmpty() get(i) first() last() start() end() reverse() contains() indexOf() add() addAll() retainAll() intersect() endIds() joinOnEnd()`
+* 闭包：`collect {} findAll {} find {} any {} every {} count {} each {} eachWithIndex { x, i -> }`，**闭包体可以多行**；闭包里用 `it.value('k')/id()/label()`（含本次新增的 `it.value('side')`）
+* 遍历：`g.V(变量, 'Schema')`、链式 step、把遍历结果当 id 列表再喂给 `g.V(...)`、`toList()` 之后当普通列表用
+
+### 82.2 拒绝（Groovy 语言本身的大半）
+
+| 类别 | 例子 | 引擎的回答 |
+|---|---|---|
+| 列表聚合方法 | `xs.sum()` `xs.max()` `xs.min()` `xs.sort()` | `Unknown script method '.sum'. Supported: size(), count(), ...`（**可用 `g.inject(xs).sum()` 走 step**，或 `count { }` 这类闭包形式） |
+| 字符串方法 | `'abc'.toUpperCase()` `.length()` `.substring()` `.replace()` `.split()` | 同上（`'abc'.size()` 可以；大小写/子串用遍历里的 `toUpper/substring/...` step） |
+| 类型转换方法 | `s.asNumber()` | 同上（`asNumber` 是 step，不是值方法） |
+| Map 字面量 | `[a: 1, b: 2]` | `Cannot read the script value 'a: 1'. A value is a traversal (g.V(...)), a variable, a list, a string, a number, true/false or null` |
+| Range | `1..3` | `Expected '(' after '..3'` |
+| 三元 / elvis | `x > 0 ? 'a' : 'b'`、`x ?: 'd'` | `Cannot read the script value ...`（用 `if/else` 代替） |
+| 复合赋值 / 自增 | `x += 1`、`x++` | 同上（写 `x = x + 1`） |
+| GString | `"value=${x}"` | **`Missing value for query parameter 'x'`** —— `${...}` 在更早的 HTTP 参数替换那一步就被吃掉了，**永远到不了脚本解析器** |
+| 异常处理 | `try { } catch (e) { }` | `Cannot read the script value 'try { ... }'` |
+| 分支语句 | `switch (1) { case 1: ... }` | 同上（用 `if/else if`） |
+| 类型声明 | `class Foo { }`、`import ...`、`def f(x) { }` | 同上（**没有函数定义**；重复逻辑用闭包 + 集合方法表达） |
+| 一等闭包 | `def f = { x -> x*2 }` 然后 `f(3)` | 同上（闭包只能当参数传给上面列的集合方法） |
+| 断言 / 新对象 / 类型判断 / 正则 | `assert x`、`new Date()`、`x instanceof Number`、`'abc' =~ 'b'` | 同上；**`=~` 尤其危险：它不报错，被当成字符串字面量**（实测返回 `abc' =~ 'b`），属于"静默给错"，不要在脚本里用 |
+
+### 82.3 两个已知的毛刺（写脚本时会踩）
+
+1. **遍历结果是 List，不是标量**：`g.V(...).count() + g.V(...).count()` 得到的是**文本** `[3][9]`（`+` 只在两侧都是数字时相加，
+   否则拼字符串）。要算术就先取标量：`g.V(...).count().get(0) + g.V(...).count().get(0)`，或 `first()` / `start()`。
+2. **`=~` 静默变成字符串**（见上表）。凡是引擎不认识的写法，**多数**会明确报错并列出可用的方法，但这个是个例外。
+
+### 82.4 结论
+
+**不支持任意 Groovy，也不打算支持**：引擎里没有 Groovy（没有 `GroovyShell`、没有 `GroovyClassLoader`），
+脚本模式是**自己解析器上的"Groovy 形状的子集"**。取舍写在这里：脚本要能表达"多段遍历 + 变量 + 条件 + 循环 + 闭包筛选"，
+查询就够用了；反过来，类/导入/函数/异常/线程/IO 这类东西既不是查询需要的，也会把执行面放大（任意代码执行 + 新依赖）。
+**读不出来的写法会带消息拒绝**（82.2 里 24 条都能看到引擎的原话），除了 82.3 的两个例外。

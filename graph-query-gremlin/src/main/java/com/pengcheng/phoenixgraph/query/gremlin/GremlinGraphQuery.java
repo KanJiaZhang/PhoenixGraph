@@ -85,6 +85,15 @@ public class GremlinGraphQuery {
     public static final int MAX_COMPILED_QUERIES = 512;
 
     private final Map<String, CompiledQuery> compiledCache = new ConcurrentHashMap<>();
+    private final Map<String, GremlinScript> scriptCache = new ConcurrentHashMap<>();
+    private final java.util.concurrent.atomic.AtomicLong scriptParses =
+            new java.util.concurrent.atomic.AtomicLong();
+    private final java.util.concurrent.atomic.AtomicLong scriptParseNanos =
+            new java.util.concurrent.atomic.AtomicLong();
+    private final java.util.concurrent.atomic.AtomicLong traversalCompiles =
+            new java.util.concurrent.atomic.AtomicLong();
+    private final java.util.concurrent.atomic.AtomicLong traversalCompileNanos =
+            new java.util.concurrent.atomic.AtomicLong();
     private boolean cacheEnabled = true;
     private int scanLimit = 0;
     private boolean adaptiveBatchEnabled = true;
@@ -626,25 +635,93 @@ public class GremlinGraphQuery {
      */
     public List<Object> execute(String gremlin) {
         Objects.requireNonNull(gremlin, "gremlin");
-        if (compiledCache.size() >= MAX_COMPILED_QUERIES) {
-            // Every distinct text adds an entry, so a client that generates a query per id (a dashboard
-            // does) must not grow the cache forever. Dropping all of them costs one recompile each, which
-            // is a small fraction of executing the query; keeping them costs memory for the process' life.
-            compiledCache.clear();
-        }
-        CompiledQuery compiled = compiledCache.computeIfAbsent(gremlin, this::compile);
-        return executeCompiled(compiled);
+        return executeCompiled(compiled(gremlin));
     }
-
     /** How many query texts are compiled and held ({@link #MAX_COMPILED_QUERIES} is the bound). */
     public int compiledQueryCount() {
         return compiledCache.size();
+    }
+
+    /** How many script texts are parsed and held (the same bound as the compiled queries). */
+    public int parsedScriptCount() {
+        return scriptCache.size();
+    }
+
+    /**
+     * A script and how this call obtained it: parsed now (with the time that took) or out of the cache.
+     *
+     * <p>A script is parsed once per text, like a traversal is compiled once per text. Writing the seed
+     * id into the script text turns that into one parse per distinct text - the same trade the compiled
+     * queries make, and the reason both caches are keyed by the whole text.
+     */
+    public record ScriptPlan(GremlinScript script, boolean parsed, long parseNanos) {
+    }
+
+    /** The cumulative parse/compile work of this engine; subtract two readings for one call's share. */
+    public record CompileStats(long scriptParses, long scriptParseNanos, long traversalCompiles,
+                               long traversalCompileNanos) {
+
+        /** What the later reading did that the earlier one had not yet done. */
+        public CompileStats minus(CompileStats before) {
+            return new CompileStats(scriptParses - before.scriptParses,
+                    scriptParseNanos - before.scriptParseNanos,
+                    traversalCompiles - before.traversalCompiles,
+                    traversalCompileNanos - before.traversalCompileNanos);
+        }
+    }
+
+    /** The parse/compile work done so far, for a caller that wants the share of one call. */
+    public CompileStats compileStats() {
+        return new CompileStats(scriptParses.get(), scriptParseNanos.get(), traversalCompiles.get(),
+                traversalCompileNanos.get());
+    }
+
+    /**
+     * The parsed form of a script: parsed once per text and kept, so a UI that repeats the same script
+     * pays the parse once. The text is keyed whole, as compiled queries are.
+     */
+    public ScriptPlan script(String text) {
+        Objects.requireNonNull(text, "script");
+        GremlinScript cached = scriptCache.get(text);
+        if (cached != null) {
+            return new ScriptPlan(cached, false, 0L);
+        }
+        if (scriptCache.size() >= MAX_COMPILED_QUERIES) {
+            // same bound and same reason as the compiled queries: a cache that grows per text is a leak
+            scriptCache.clear();
+        }
+        long start = System.nanoTime();
+        GremlinScript parsed = GremlinScript.parse(text);
+        long nanos = System.nanoTime() - start;
+        scriptCache.put(text, parsed);
+        scriptParses.incrementAndGet();
+        scriptParseNanos.addAndGet(nanos);
+        return new ScriptPlan(parsed, true, nanos);
     }
 
     /** Executes an already-parsed traversal query (compiled on each call). */
     public List<Object> execute(GremlinQuery query) {
         Objects.requireNonNull(query, "query");
         return executeCompiled(compile(query));
+    }
+
+    private CompiledQuery compiled(String gremlin) {
+        CompiledQuery cached = compiledCache.get(gremlin);
+        if (cached != null) {
+            return cached;
+        }
+        if (compiledCache.size() >= MAX_COMPILED_QUERIES) {
+            // Every distinct text adds an entry, so a client that generates a query per id (a dashboard
+            // does) must not grow the cache forever. Dropping all of them costs one recompile each, which
+            // is a small fraction of executing the query; keeping them costs memory for the process' life.
+            compiledCache.clear();
+        }
+        long start = System.nanoTime();
+        CompiledQuery fresh = compile(gremlin);
+        traversalCompiles.incrementAndGet();
+        traversalCompileNanos.addAndGet(System.nanoTime() - start);
+        compiledCache.put(gremlin, fresh);
+        return fresh;
     }
 
     private CompiledQuery compile(String gremlin) {
@@ -1137,7 +1214,7 @@ public class GremlinGraphQuery {
      */
     public Result executeWithSubgraph(String gremlin) {
         Objects.requireNonNull(gremlin, "gremlin");
-        CompiledQuery compiled = compiledCache.computeIfAbsent(gremlin, this::compile);
+        CompiledQuery compiled = compiled(gremlin);
         GremlinContext context = newContext();
         context.collectSubgraph(true);
         List<Object> values = runCompiled(context, compiled);

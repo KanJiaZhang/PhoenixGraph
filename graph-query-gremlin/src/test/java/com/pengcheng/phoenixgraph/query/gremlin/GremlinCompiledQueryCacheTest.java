@@ -12,6 +12,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -120,6 +121,38 @@ class GremlinCompiledQueryCacheTest {
         assertEquals(List.of("one"), engine.execute("g.V('1','Thing').values('name')"));
         assertEquals(List.of("one", "two", "three"), engine.execute("g.V('1','Thing','2','Thing','3','Thing')"
                 + ".values('name')"));
+    }
+
+    /**
+     * A script is parsed once per text ({@link GremlinGraphQuery#script(String)}) and each traversal it
+     * runs is compiled once per text, so a repeated script pays neither - which is what the per-call
+     * counters in {@code ScriptResponse.compile} report over HTTP.
+     */
+    @Test
+    void aScriptIsParsedOnceAndItsTraversalsCompiledOnce() {
+        GremlinGraphQuery engine = new GremlinGraphQuery(store());
+        String script = "def one = g.V('1','Thing').values('name').toList()\n"
+                + "def two = g.V('2','Thing').values('name').toList()\n"
+                + "one";
+
+        GremlinGraphQuery.CompileStats before = engine.compileStats();
+        GremlinGraphQuery.ScriptPlan first = engine.script(script);
+        assertEquals(List.of("one"), first.script().execute(engine::executeWithSubgraph).value());
+        GremlinGraphQuery.CompileStats firstCall = engine.compileStats().minus(before);
+        assertTrue(first.parsed(), "the first call parses the script");
+        assertEquals(1, firstCall.scriptParses(), "one parse");
+        assertEquals(2, firstCall.traversalCompiles(), "the script's two traversals are compiled");
+
+        GremlinGraphQuery.ScriptPlan second = engine.script(script);
+        assertFalse(second.parsed(), "the second call takes the parsed script from the cache");
+        assertEquals(0L, second.parseNanos(), "and pays no parse");
+        assertEquals(1, engine.parsedScriptCount());
+
+        GremlinGraphQuery.CompileStats beforeRepeat = engine.compileStats();
+        second.script().execute(engine::executeWithSubgraph);
+        GremlinGraphQuery.CompileStats repeat = engine.compileStats().minus(beforeRepeat);
+        assertEquals(0, repeat.scriptParses());
+        assertEquals(0, repeat.traversalCompiles(), "a repeat neither parses nor compiles");
     }
 
     /**

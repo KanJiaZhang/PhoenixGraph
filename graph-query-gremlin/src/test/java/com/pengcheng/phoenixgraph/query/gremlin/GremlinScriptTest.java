@@ -85,6 +85,12 @@ class GremlinScriptTest {
     }
 
     @Test
+    void aDecimalIsOneNumberAndNotAChain() {
+        GremlinScript.Result result = GremlinScript.parse("def x = 1.5 + 1\nx * 2").execute(new Stub(values()));
+        assertEquals(5.0, result.value(), "the dot in 1.5 starts no method chain");
+    }
+
+    @Test
     void aValueIsKeptAndPrinted() {
         Stub stub = new Stub(values(1001L, 1004L));
         GremlinScript.Result result = GremlinScript.parse(

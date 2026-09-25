@@ -627,6 +627,15 @@ public final class GremlinScript {
                 || text.charAt(end) == '$')) {
             end++;
         }
+        if (end > 0 && Character.isDigit(text.charAt(0))) {
+            // a decimal literal is one token: the dot in 1.5 starts no method chain, the one in 1.5.size() does
+            while (end + 1 < text.length() && text.charAt(end) == '.' && Character.isDigit(text.charAt(end + 1))) {
+                end++;
+                while (end < text.length() && Character.isDigit(text.charAt(end))) {
+                    end++;
+                }
+            }
+        }
         if (end == 0 || end == text.length() || text.charAt(end) != '.') {
             return -1;
         }
