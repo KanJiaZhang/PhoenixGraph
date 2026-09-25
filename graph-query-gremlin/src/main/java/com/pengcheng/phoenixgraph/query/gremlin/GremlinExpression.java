@@ -1052,6 +1052,12 @@ public final class GremlinExpression {
                         if (variable != null) {
                             return variable; // a name the closure bound earlier
                         }
+                        // an edge's side is read off the element, not pushed into the store as a
+                        // property condition (a `both()` read answers both halves, tagged out/in)
+                        if (GremlinElementExpression.SIDE_KEY.equals(GremlinElementExpression.resolveKey(word))) {
+                            elementIdentity = true;
+                            return element -> GremlinElementExpression.value(element, word);
+                        }
                         keys.add(word);
                         return element -> element.properties().get(word);
                 }

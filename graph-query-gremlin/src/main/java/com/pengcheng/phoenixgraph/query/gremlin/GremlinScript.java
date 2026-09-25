@@ -498,6 +498,17 @@ public final class GremlinScript {
         if (text.isEmpty()) {
             throw new QueryException("A script statement has no expression");
         }
+        // boolean logic is a value too, and it short-circuits: `p.get(1).value('side') == 'out' && ...`
+        int or = indexOfTopLevelWord(text, "||");
+        if (or >= 0) {
+            return truthy(evaluate(text.substring(0, or).trim(), state, runner))
+                    || truthy(evaluate(text.substring(or + 2).trim(), state, runner));
+        }
+        int and = indexOfTopLevelWord(text, "&&");
+        if (and >= 0) {
+            return truthy(evaluate(text.substring(0, and).trim(), state, runner))
+                    && truthy(evaluate(text.substring(and + 2).trim(), state, runner));
+        }
         // a comparison is a value too (Groovy returns a boolean): `findAll { it % 2 == 0 }`
         for (String operator : new String[]{"==", "!=", "<=", ">=", "<", ">"}) {
             int index = indexOfTopLevelWord(text, operator);
@@ -957,7 +968,9 @@ public final class GremlinScript {
                 if (!(value instanceof GremlinElement element)) {
                     throw new QueryException(".value(key) needs a vertex or an edge, got " + text(value));
                 }
-                return element.properties().get(text(evaluate(args, state, runner)));
+                // the same resolver the traversal language uses, so the pseudo keys (id, label,
+                // createdTime, source, target, side) read here too
+                return GremlinElementExpression.value(element, text(evaluate(args, state, runner)));
             }
             case "values": {
                 if (!(value instanceof GremlinElement element)) {
@@ -965,7 +978,7 @@ public final class GremlinScript {
                 }
                 List<Object> out = new ArrayList<>();
                 for (String key : splitArgs(args)) {
-                    out.add(element.properties().get(text(evaluate(key, state, runner))));
+                    out.add(GremlinElementExpression.value(element, text(evaluate(key, state, runner))));
                 }
                 return out;
             }

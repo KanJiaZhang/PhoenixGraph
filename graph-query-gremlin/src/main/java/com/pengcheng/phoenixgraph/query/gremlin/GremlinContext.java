@@ -854,6 +854,12 @@ public final class GremlinContext {
         EdgeCacheKey key = new EdgeCacheKey(vertexId, edgeName, direction);
         if (cacheEnabled) {
             List<EdgeQueryResult> cached = edgeCache.get(key);
+            if (cached == null) {
+                cached = fromTheOtherDirection(vertexId, edgeName, direction);
+                if (cached != null) {
+                    edgeCache.put(key, cached);
+                }
+            }
             if (cached != null) {
                 return cached;
             }
@@ -897,6 +903,12 @@ public final class GremlinContext {
         for (Object id : uniqueIds) {
             EdgeCacheKey key = new EdgeCacheKey(id, edgeName, direction);
             List<EdgeQueryResult> cached = edgeCache.get(key);
+            if (cached == null) {
+                cached = fromTheOtherDirection(id, edgeName, direction);
+                if (cached != null) {
+                    edgeCache.put(key, cached);
+                }
+            }
             if (cached != null) {
                 byKey.put(key, cached);
             } else {
@@ -921,5 +933,64 @@ public final class GremlinContext {
             out.add(edges == null ? List.of() : edges);
         }
         return out;
+    }
+
+    /**
+     * The edges of this vertex for a direction that is <b>already known</b> in another one.
+     *
+     * <p>A {@code both()} read holds the out half and the in half of every directed edge, each tagged
+     * with {@link EdgeQueryResult#side() the side it was read from} - that is what makes a both() hop a
+     * superset of an out() and an in() hop. The cache used to be keyed by direction, so a script that
+     * walked {@code both('E').bothE('E')} and then {@code out('E').outE('E')} read the same edges from
+     * the store twice; now the second direction is answered from the first.
+     *
+     * <p>An undirected (or bidirectional) schema answers every direction with the same list, tagged
+     * {@code both}, so its out and in halves are not two disjoint sets and must not be concatenated.
+     *
+     * <p>Only the plain read is reused: with a time range or a read limit the store decides how much of
+     * each bin to return, and that decision belongs to the direction that was asked for.
+     */
+    private List<EdgeQueryResult> fromTheOtherDirection(Object vertexId, String edgeName, EdgeSide direction) {
+        if (hasEdgeTimeRange() || edgeReadLimit > 0) {
+            return null;
+        }
+        EdgeCacheKey outKey = new EdgeCacheKey(vertexId, edgeName, EdgeSide.OUT);
+        EdgeCacheKey inKey = new EdgeCacheKey(vertexId, edgeName, EdgeSide.IN);
+        EdgeCacheKey bothKey = new EdgeCacheKey(vertexId, edgeName, EdgeSide.BOTH);
+        if (direction == EdgeSide.BOTH) {
+            List<EdgeQueryResult> out = edgeCache.get(outKey);
+            List<EdgeQueryResult> in = edgeCache.get(inKey);
+            if (out == null || in == null) {
+                return null;
+            }
+            if (isUndirected(out)) {
+                return out;
+            }
+            List<EdgeQueryResult> both = new ArrayList<>(out.size() + in.size());
+            both.addAll(out);
+            both.addAll(in);
+            return both;
+        }
+        List<EdgeQueryResult> both = edgeCache.get(bothKey);
+        if (both == null || isUndirected(both)) {
+            return both;
+        }
+        List<EdgeQueryResult> one = new ArrayList<>(both.size());
+        for (EdgeQueryResult edge : both) {
+            if (edge.side() == direction) {
+                one.add(edge);
+            }
+        }
+        return one;
+    }
+
+    /** Whether these edges come from an undirected schema, which answers every direction alike. */
+    private static boolean isUndirected(List<EdgeQueryResult> edges) {
+        for (EdgeQueryResult edge : edges) {
+            if (edge.side() != EdgeSide.BOTH) {
+                return false;
+            }
+        }
+        return true;
     }
 }

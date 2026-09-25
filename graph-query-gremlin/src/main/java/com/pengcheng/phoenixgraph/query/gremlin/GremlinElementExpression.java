@@ -37,6 +37,13 @@ final class GremlinElementExpression {
 
     static final String TARGET_KEY = "@target";
 
+    /**
+     * The pseudo key standing for the side an edge was read from ({@code values('side')}), which is
+     * how a walk knows whether it moved with or against the edge: {@code both('E')} answers both
+     * halves of a directed edge, tagged {@code out} or {@code in}.
+     */
+    static final String SIDE_KEY = "@side";
+
     /** An accessor found at a position: the property (or pseudo) key it reads and where it ends. */
     record Accessor(String key, int end) {
     }
@@ -92,7 +99,7 @@ final class GremlinElementExpression {
     static boolean isPseudo(String key) {
         return LABEL_KEY.equals(key) || ID_KEY.equals(key) || ELEMENT_KEY.equals(key)
                 || CREATED_KEY.equals(key) || UPDATED_KEY.equals(key)
-                || SOURCE_KEY.equals(key) || TARGET_KEY.equals(key);
+                || SOURCE_KEY.equals(key) || TARGET_KEY.equals(key) || SIDE_KEY.equals(key);
     }
 
     /**
@@ -112,6 +119,7 @@ final class GremlinElementExpression {
             case "lastupdatedtime", "$lastupdatedtime" -> UPDATED_KEY;
             case "source", "$source" -> SOURCE_KEY;
             case "target", "$target" -> TARGET_KEY;
+            case "side", "direction", "$side", "$direction" -> SIDE_KEY;
             default -> key;
         };
     }
@@ -162,7 +170,15 @@ final class GremlinElementExpression {
         if (TARGET_KEY.equals(key)) {
             return element instanceof GremlinEdge edge ? edge.targetEndpoint() : null;
         }
+        if (SIDE_KEY.equals(key)) {
+            return element instanceof GremlinEdge edge ? sideName(edge.side()) : null;
+        }
         return element.properties().get(key);
+    }
+
+    /** The side an edge was read from, spelled like the step that reads it: {@code out}, {@code in}, {@code both}. */
+    static String sideName(com.pengcheng.phoenixgraph.query.storage.EdgeSide side) {
+        return side == null ? null : side.name().toLowerCase(java.util.Locale.ROOT);
     }
 
     /**

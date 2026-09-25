@@ -43,6 +43,30 @@ class GremlinScriptTest {
     }
 
     @Test
+    void aScriptPicksTheDirectedHalfOutOfABothWalk() {
+        // both('knows').bothE('knows') already holds the out/out and the in/in halves; the edge says
+        // which side it was read from, so the payer-to-payee half is a filter, not another traversal
+        GremlinPath outOut = new GremlinPath(List.of(vertex("p1"), sidedEdge("e1", EdgeSide.OUT, "p2"),
+                vertex("p2"), sidedEdge("e2", EdgeSide.OUT, "p3")));
+        GremlinPath outIn = new GremlinPath(List.of(vertex("p1"), sidedEdge("e1", EdgeSide.OUT, "p2"),
+                vertex("p2"), sidedEdge("e3", EdgeSide.IN, "p0")));
+        Stub stub = new Stub(values(outOut, outIn));
+
+        GremlinScript.Result result = GremlinScript.parse("""
+                def sAny = g.V('p1', 'person').both('knows').bothE('knows').path().toList()
+                def sOut = sAny.findAll { p -> p.get(1).value('side') == 'out' && p.get(3).value('side') == 'out' }
+                sOut.size()
+                """).execute(stub);
+
+        assertEquals(1L, result.value(),
+                "only the walk whose two hops both leave their vertex is the payer-to-payee half");
+    }
+
+    private static GremlinEdge sidedEdge(String id, EdgeSide side, String other) {
+        return new GremlinEdge("knows", id, side, other, Map.of(), 1L, 2L);
+    }
+
+    @Test
     void aScriptIsToldApartFromATraversal() {
         assertTrue(GremlinScript.looksLikeScript(
                 "def ids = g.V(1001, 'Account').values('id').toList()\nprint(ids)"));

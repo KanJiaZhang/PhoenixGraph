@@ -113,6 +113,40 @@ class GremlinPathTest {
     }
 
     @Test
+    void aBothReadAnswersALaterOutReadOfTheSameVertex() {
+        when(graphQuery.readEdges(eq("v1"), anyString(), eq("knows"), eq(EdgeSide.BOTH), anyList()))
+                .thenReturn(List.of(
+                        new EdgeQueryResult("knows", "e1", EdgeSide.OUT, "v2", Map.of(), 1L, 2L),
+                        new EdgeQueryResult("knows", "e2", EdgeSide.IN, "v0", Map.of(), 1L, 2L)));
+
+        // both first, then out of the same vertex: the second hop is answered out of the first read
+        List<Object> sides = gremlin.execute(
+                "g.V('v1','person').union(bothE('knows'), outE('knows')).values('side')");
+
+        assertEquals(java.util.Arrays.asList("out", "in", "out"), sides,
+                "both answers the out half and the in half, and out is the out half again");
+        verify(graphQuery, org.mockito.Mockito.never())
+                .readEdgesBatch(anyString(), eq(EdgeSide.OUT), anyList(), anyList());
+    }
+
+    @Test
+    void anEdgeAnswersTheSideItWasReadFrom() {
+        when(graphQuery.readEdges(eq("v1"), anyString(), eq("knows"), eq(EdgeSide.BOTH), anyList()))
+                .thenReturn(List.of(
+                        new EdgeQueryResult("knows", "e1", EdgeSide.OUT, "v2", Map.of(), 1L, 2L),
+                        new EdgeQueryResult("knows", "e2", EdgeSide.IN, "v0", Map.of(), 1L, 2L)));
+
+        assertEquals(java.util.Arrays.asList("out", "in"),
+                gremlin.execute("g.V('v1','person').bothE('knows').values('side')"),
+                "both() answers the out half and the in half, each tagged with the side it was read from");
+        assertEquals(List.of("e1"),
+                gremlin.execute("g.V('v1','person').bothE('knows').filter(side.equals('out')).values('id')"),
+                "so the out half can be read out of the same both() read, without going back to storage");
+        assertEquals(List.of("e2"),
+                gremlin.execute("g.V('v1','person').bothE('knows').filter(direction.equals('in')).values('id')"));
+    }
+
+    @Test
     void aHopAfterPathIsRefusedWithAMessage() {
         QueryException error = assertThrows(QueryException.class,
                 () -> gremlin.execute("g.V('v1','person').out('knows').path().out('knows')"));

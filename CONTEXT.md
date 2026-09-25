@@ -5931,3 +5931,109 @@ node .logs/run-script.js .logs/scripts/four-hop-two-ways.groovy   # 只看脚本
    `RocksDBException: Failed to open NewSequentialFile.rocksdb\sanguo-kg-text/MANIFEST-...`，**8081 起不来**。
    等那次测试自己跑完会重建 store；否则删掉 `.rocksdb/sanguo-kg-text` 也能让服务起来（只是那个图变空）。
    **别在 `-Dsanguo.queries.write=true` 的测试跑到一半时杀它。**
+## 80. 只用 both 两跳：把有向那一半从同一批 walk 里筛出来，以及 both→out/in 的缓存
+
+§79 用了四条 path 遍历（both×2 + out/in×2）。两条更正：
+
+* `both('Payment').bothE('Payment')` **已经包含**了 out 两跳和 in 两跳——只不过 `bothE` 的每一条边
+  都带着**它被读到时的那一侧**（`sides()` 对 `BOTH` 请求返回 `OUT, IN` 两类，`toResult(...)` 逐条打上 side）；
+* 所以有向那一半**不需要再查一次**，只要按边上的 side 把 out 半和 in 半**筛**出来。
+
+### 80.1 暴露边的方向：`side` / `direction`
+
+`GremlinElementExpression` 新增伪键 `SIDE_KEY = "@side"`，`resolveKey` 把 `side` / `direction`（含 `$` 前缀）
+解析过去，`read` 返回 **小写**的 `out` / `in` / `both`（与 step 名一致）。存了同名属性则属性优先（与 `value(...)` 的既有规则一致）。
+
+两个入口都通了：
+
+| 入口 | 写法 | 说明 |
+|---|---|---|
+| 遍历 | `values('side')`、`filter(side.equals('out'))` | 表达式里裸写 `side` 也会解析到伪键，**不进 pushdown**（不能被当成存储属性条件推下去，否则静默返回空） |
+| 脚本 | `p.get(1).value('side')` | `GremlinScript` 的 `value`/`values` 改为走 `GremlinElementExpression.value(...)`，与遍历同一套解析 |
+
+脚本层还补了布尔运算：`&&`、`||`（短路），在比较之前结合，`||` 优先级低于 `&&`——
+`p.get(1).value('side') == 'out' && p.get(3).value('side') == 'out'` 这种写法才成立（之前只支持 `!`）。
+
+### 80.2 改写后的脚本（两条遍历，两个结果）
+
+```groovy
+def sAny = g.V(sender, 'Account').both('Payment').bothE('Payment').path().toList()
+def rAny = g.V(receiver, 'Account').both('Payment').bothE('Payment').path().toList()
+def anyFour = sAny.joinOnEnd(rAny, anyObjs)                    // 全部 walk
+
+def sOut = sAny.findAll { p -> p.get(1).value('side') == 'out' && p.get(3).value('side') == 'out' }
+def rIn  = rAny.findAll { p -> p.get(1).value('side') == 'in'  && p.get(3).value('side') == 'in'  }
+def dirFour = sOut.joinOnEnd(rIn, dirObjs)                     // 同一批 walk，筛出来的有向半程
+[anyFour, dirFour]
+```
+
+**筛选与真实遍历逐字一致**（`p.get(1)`/`p.get(3)` 是四元素 walk 的两条边）：
+
+```
+sizes: undirected=396 directed-from-filter=0  directed-from-traversal=0   out-half=33/33 in-half=12/12
+sizes: undirected=553 directed-from-filter=74 directed-from-traversal=74  out-half=33/33 in-half=12/12
+```
+
+### 80.3 实测（30 轮交错；`.logs/bench-both-only.js`，`.logs/both-only-results.txt`）
+
+**Pair 1 · 1000 → 1006（不看方向 396，有向 0）**
+
+| 变体 | mean | median | p95 | p99 | kv | 点读 | 边读 | 边解码 | 答案 |
+|---|---|---|---|---|---|---|---|---|---|
+| **BOTH-ONLY（2 条遍历）** | **40.4** | **39.0** | 52.3 | 52.9 | **23** | 220 | 32 | 285 | 1016 KB |
+| BOTH+OUT/IN（4 条遍历，§79 的写法） | 48.3 | 50.0 | 58.4 | 61.1 | **33** | 248 | 41 | 337 | 1016 KB |
+| OUT/IN-ONLY（2 条遍历，只有有向） | 18.5 | 17.1 | 28.2 | 29.0 | 10 | 28 | 9 | 52 | 0.1 KB |
+| BOTH-ONLY-COUNT | 26.0 | 25.2 | 33.6 | 42.2 | 23 | — | — | — | 0.1 KB |
+| BOTH+OUT/IN-COUNT | 36.7 | 37.1 | 44.8 | 49.9 | 33 | — | — | — | 0.1 KB |
+
+**Pair 2 · 1000 → 1022（不看方向 553，有向 74）**
+
+| 变体 | mean | median | p95 | p99 | kv | 点读 | 边读 | 边解码 | 答案 |
+|---|---|---|---|---|---|---|---|---|---|
+| **BOTH-ONLY（2 条遍历）** | **46.8** | **45.0** | 60.3 | 64.3 | **28** | 228 | 32 | 285 | 1611 KB |
+| BOTH+OUT/IN（4 条遍历） | 53.0 | 51.7 | 67.5 | 72.5 | **38** | 256 | 41 | 337 | 1611 KB |
+| OUT/IN-ONLY | 20.1 | 18.8 | 29.3 | 29.8 | 15 | 36 | 9 | 52 | 191 KB |
+| BOTH-ONLY-COUNT | 28.8 | 27.1 | 40.8 | 41.6 | 28 | — | — | — | 0.1 KB |
+| BOTH+OUT/IN-COUNT | 35.8 | 34.7 | 42.6 | 79.4 | 38 | — | — | — | 0.1 KB |
+
+**读次数**：BOTH-ONLY 的 kv 是 23 / 28，而 BOTH+OUT/IN 是 33 / 38 —— 正好多出 out/in 那两条遍历的
+10 / 15（`edge.read` 与 `edge.decode` 也是**逐字相加**：32+9=41、285+52=337）。延迟差 **11.0 / 6.7 ms**。
+
+### 80.4 缓存验证：both 之后走 out/in，会命中吗？
+
+**在同一**条**遍历里**：会（本次修好了）。`EdgeCacheKey` 原来是 `(vertexId, edgeName, direction)`，
+`both` 与 `out` 是两个键，所以会**重新读**。现在 `GremlinContext` 增加
+`fromTheOtherDirection(...)`：一条 `BOTH` 缓存能回答 `OUT`/`IN`（按 `side` 筛），两条 `OUT`+`IN` 缓存能合成 `BOTH`
+（**undirected/bidirectional schema 的每条边 side 都是 `BOTH`，各方向答案相同，不能拼接，要特判**；
+有时间窗或读上限时不做复用，那种读由存储按方向决定返回多少）。两个读入口
+（`readEdgesCached` 单点、`readAllEdgesBatchCached` 批量）都接上了。
+
+实测（`.logs/cache-proof.js`，同一个顶点 1000 的 Payment 边）：
+
+| 一条遍历 | kv | 边读调用 | 解码边数 |
+|---|---|---|---|
+| `bothE` | 2 | 2 | 12 |
+| `outE` | 1 | 1 | 3 |
+| **`union(bothE, outE)`** | **3** | **2** | **12** |
+| `union(bothE, bothE)`（必然命中，对照） | 3 | 2 | 12 |
+| `union(outE, bothE)`（out 在前，无法复用） | **4** | **3** | **15** |
+| `union(outE, inE)`（out+in 是两次读） | 3 | 2 | 12 |
+
+`union(bothE, outE)` 与 `union(bothE, bothE)` 完全相同（3/2/12），而 `union(outE, bothE)` 是
+`bothE + outE` 叠加（4/3/15）—— 修复前 `union(bothE, outE)` 就是后者那个数。
+
+**在脚本的不同语句之间：不会，也不该指望。** `GremlinQueryService` 里每一句脚本走的是
+`engine::executeWithSubgraph`，而它每次都 `newContext()`：**每条语句一个全新的 GremlinContext**，
+边缓存、点缓存、子图都不共享。所以 §79 那种"both 语句 + out/in 语句"的写法，
+即使缓存按方向复用了也仍然要重读——**这正是 §80.2 用筛选改写（一条语句解决）的根本原因**。
+若要让脚本的语句共享读，需要给 `GremlinGraphQuery` 一个 session（一个 context 串起多条遍历，
+并在每条语句前把 `createdBetween` 留下的时间窗/读上限复位），这是下一步可选项。
+
+### 80.5 复现
+
+```bash
+node .logs/cache-proof.js                     # 80.4 的缓存对照
+bash .logs/scripts/run-two-ways.sh 30         # 起服务 + 两个 pair 的 BOTH-ONLY/BOTH+OUT-IN 交错基准
+node .logs/run-script.js .logs/scripts/four-hop-two-ways.groovy
+./mvnw -o -pl graph-query-gremlin test        # 245 用例（新增 side/&&/||/缓存复用各一）
+```
