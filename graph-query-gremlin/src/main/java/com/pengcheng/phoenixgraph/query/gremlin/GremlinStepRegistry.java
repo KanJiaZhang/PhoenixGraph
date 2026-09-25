@@ -103,13 +103,19 @@ public class GremlinStepRegistry {
                 throw new QueryException("createdBetween expects createdBetween(from, to), got "
                         + args.size() + " arguments");
             }
-            try {
-                TimeRange range = TimeRange.parse(args.get(0), args.get(1));
-                int cap = args.size() > 2 ? positiveInt(args.get(2)) : 0;
-                return GremlinSteps.createdBetween(range, cap);
-            } catch (IllegalArgumentException e) {
-                throw new QueryException(e.getMessage(), e);
-            }
+            // the bounds are read when the step runs, not when the query is compiled: a compiled query
+            // is cached and reused, and a relative bound such as -2h must count back from that moment
+            List<String> bounds = List.copyOf(args);
+            return (ctx, in) -> {
+                try {
+                    TimeRange range = TimeRange.parse(bounds.get(0), bounds.get(1),
+                            System.currentTimeMillis());
+                    ctx.edgeTimeRange(range, bounds.size() > 2 ? positiveInt(bounds.get(2)) : 0);
+                } catch (IllegalArgumentException e) {
+                    throw new QueryException(e.getMessage(), e);
+                }
+                return in;
+            };
         });
         register("elementMap", args -> GremlinSteps.elementMap());
         register("map", args -> GremlinSteps.map(single(args, "map")));

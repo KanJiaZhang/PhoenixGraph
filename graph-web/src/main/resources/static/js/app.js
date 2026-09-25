@@ -494,6 +494,45 @@
         ['大点 · 一天窗口内的前 500 笔支付（Aerospike-Edge）', 'Hub - first 500 payments in a one-day window (Aerospike-Edge)', "g.V('9000001','Account').createdBetween('2025-06-01','2025-06-02').inE('Payment').limit(500)"],
         ['大点 · 某周窗口的笔数', 'Hub - payments in a one-week window', "g.V('9000001','Account').createdBetween('2025-11-01','2025-11-07').inE('Payment').count()"],
         ['大点 · 不限时间会被提示加窗口', 'Hub - without a window it asks for one', "g.V('9000001','Account').inE('Payment').count()"],
+        // --- the big-vertex demo: the three tiers of a big vertex -----------------------------------
+        // cold (the aggregated Edge_Out / Edge_In tables, older than 25h), near-line (the last day, in
+        // TTL'd KVs pre-partitioned from the volume) and online (the inline tail, under the schema's
+        // degree cap). A read is routed by the spans its window overlaps and the tiers are merged by
+        // edge id, newest copy winning. Written by AerospikeBigVertexDemoTest; the relative bounds
+        // (-10m / -23h / -400d) are resolved when the query runs, so they always mean "the last ...".
+        ['大点① · 不带时间窗：读被拒绝并要求加窗口',
+          'Big vertex 1 - no window: the read is refused and asks for one',
+          "g.V('9000002','Account').inE('Payment')"],
+        ['大点② · 只看在线（最近 10 分钟）',
+          'Big vertex 2 - online only (the last 10 minutes)',
+          "g.V('9000002','Account').createdBetween('-10m','*').inE('Payment').values('id','status')"],
+        ['大点③ · 近线 + 在线（最近 23 小时，两处合并）',
+          'Big vertex 3 - near-line + online (the last 23 hours, merged)',
+          "g.V('9000002','Account').createdBetween('-23h','*').inE('Payment').values('id')"],
+        ['大点④ · 只看冷数据（离线聚合表）',
+          'Big vertex 4 - a cold window (the offline aggregated tables alone)',
+          "g.V('9000002','Account').createdBetween('-360d','-330d').inE('Payment').limit(20).values('id','status')"],
+        ['大点⑤ · 冷 + 近线 + 在线（全合并，同一 id 取最新）',
+          'Big vertex 5 - cold + near-line + online merged, newest copy of an id wins',
+          "g.V('9000002','Account').createdBetween('-400d','*').inE('Payment').limit(10).values('id','status')"],
+        ['大点⑥ · 三处合并后的总数',
+          'Big vertex 6 - how many edges the merged window holds',
+          "g.V('9000002','Account').createdBetween('-400d','*').inE('Payment').count()"],
+        ['大点⑦ · 还没有冷数据的大点（近线 + 在线）',
+          'Big vertex 7 - a big vertex that has nothing cold yet',
+          "g.V('9000003','Account').createdBetween('-23h','*').inE('Payment').values('id')"],
+        ['大点⑧ · 安静的大点：全在冷数据里',
+          'Big vertex 8 - a big and quiet vertex: everything is cold',
+          "g.V('9000004','Account').createdBetween('-400d','*').inE('Payment').count()"],
+        ['大点⑨ · 出度方向的大点（付款方，三处合并）',
+          'Big vertex 9 - the outgoing side tiers the same way (a big payer)',
+          "g.V('9000005','Account').createdBetween('-400d','*').outE('Payment').limit(10).values('id')"],
+        ['大点⑩ · 未超过出/入度上限的点：不需要时间窗',
+          'Big vertex 10 - a vertex under the cap needs no window',
+          "g.V('9000006','Account').inE('Payment').values('id')"],
+        ['大点⑪ · 近线按 volume 预划分（按状态分组）',
+          'Big vertex 11 - the near-line day is pre-partitioned from the volume (grouped by status)',
+          "g.V('9000002','Account').createdBetween('-23h','*').inE('Payment').groupCount('status')"],
       ],
       // the same payment data in RocksDB-Edge: every account carries a location (an S2 geo index) and
       // a behaviour profile. The geo step answers here; the vector step needs the HNSW index, which

@@ -6112,3 +6112,130 @@ node .logs/bench-script-compile.js 30 1000 1022    # 需要一个刚启动、还
 脚本模式是**自己解析器上的"Groovy 形状的子集"**。取舍写在这里：脚本要能表达"多段遍历 + 变量 + 条件 + 循环 + 闭包筛选"，
 查询就够用了；反过来，类/导入/函数/异常/线程/IO 这类东西既不是查询需要的，也会把执行面放大（任意代码执行 + 新依赖）。
 **读不出来的写法会带消息拒绝**（82.2 里 24 条都能看到引擎的原话），除了 82.3 的两个例外。
+## 83. 大点（Aerospike-Edge 三层）的演示数据、测试与 UI 查询
+
+需求：按"大点方案"（冷/近线/在线三层 + 大点判定 maxInDegree/maxOutDegree + 读必须带时间窗）造测试用例，
+生成**多个大点**写进 UI 那个图实例，并给出能在 UI 直接跑的 Gremlin 语句。
+
+**实现早就在**（`EdgeTiering` + `AerospikeEdgeChunkStore`（冷）+ `AerospikeNearlineStore`/`AerospikeVolumeStore`（近线）
++ `AerospikeEdgeStore` 的在线邻接表 + `AerospikeEdgeOfflineJob`），这次的产出是**数据、用例、查询和两个真 bug 的修复**。
+
+### 83.1 五个大点，一个口径一个点
+
+`AerospikeBigVertexDemoLoader`（`graph-integration-test`）把 5 个大点写进 **`payment-graph-as-edge` 的图实例**
+（vertex-set `payment_as_edge_v1`；注：用户说的 `payment-graph-aerospike-edge` 在本仓库里的实际名字是
+`payment-graph-as-edge`）。时间锚点都是"装载的那一刻"：
+
+```
+cold     (-inf, now-25h]      离线聚合表 Edge_Out / Edge_In（AerospikeEdgeBulkImporter，6000 条/点）
+nearline (now-23h, now-1h]    近线 KV（TTL 7 天，按 volume 预划分：声明月量 1e8 → 834 个 KV/天）
+online   [now-10m, now]       点记录里的内联邻接表（5 条，schema 上限 in/out 各 1000）
+```
+
+| 大点 | 方向 | 有哪几层 | 演示的读 |
+|---|---|---|---|
+| `9000002` | in | 冷 + 近线 + 在线 | 三种窗口：只在线 / 近线+在线 / 冷+近线+在线 |
+| `9000003` | in | 近线 + 在线 | 还没有冷数据的大点 |
+| `9000004` | in | 冷 | 安静的大点：全部早于近线窗口 |
+| `9000005` | out | 冷 + 近线 + 在线 | 出度方向同样分层（一个大付款方） |
+| `9000006` | in | 在线（5 条） | 未超过出/入度上限：**不需要时间窗** |
+
+两个 id 故意写两次，用来演示"同一 id 取最新副本"：`bv_all_c_0`（冷 + 近线，近线更新，状态 REFUNDED）、
+`bv_all_n_0`（近线 + 在线，在线更新）。写入口：`AerospikeBigVertexDemoTest`
+（`-Daerospike.bigVertex.demo=true`，加 `-Daerospike.bigVertex.reset=true` 先 truncate demo 自己的 set）：
+
+```bash
+./mvnw -pl graph-integration-test -am test -Dtest=AerospikeBigVertexDemoTest \
+       -Daerospike.bigVertex.demo=true -Daerospike.bigVertex.reset=true -Dsurefire.failIfNoSpecifiedTests=false
+```
+
+### 83.2 六个读场景的用例（`.logs/probe`→`AerospikeEdgeBigVertexIntegrationTest`，11 个用例全绿）
+
+测试写进自己的 vertex-set（默认 `payment_as_edge_bv_it`，先 truncate），所以**计数是精确的**：
+
+```
+loaded the big-vertex demo into test/payment_as_edge_bv_it in 3100 ms: 15 vertices,
+  {9000002=6907, 9000003=905, 9000004=6000, 9000005=6905, 9000006=5}
+  all-three window -> 6905 edges (cold=6000, nearline=900+1, online=5)
+  near-line + online window -> 906 edges
+  online window -> 6 edges
+  cold-only window -> 495 edges
+  quiet hub -> 6000 edges, 0 in the last day;  near-line-only hub -> 905
+  outgoing side -> 6905 over all three tiers
+```
+
+对应到方案的六条：不带窗口 → `QueryException`（"…needs a creation-time window…"）；窗口只落在在线 →
+只读内联；落在最近一天 → 近线+在线合并；落在冷区间 → 只读聚合表；跨三段 → 三段合并；同一 id 出现在多层 →
+**按 id 合并取最新**（`lastUpdatedTime` 大的赢，冷窗口单独看仍是冷的旧副本）。另有两条边界：未超上限的点/window 可省，
+近线一天按 volume 切成 834 个 KV（`ceil(1e8/30/4000)`，正是 spec 里"1亿/30/4000…约 1000"的算法）。
+
+### 83.3 UI 上直接跑的 11 条（`payment-graph-as-edge`，已实测）
+
+`app.js` 的 `payment-graph-as-edge` 例子列表里新增 11 条（中英双语）；窗口用**相对时间**（见 §84.1），
+所以语句不用改，「最近 10 分钟」永远是最近 10 分钟。实测输出（`.logs/verify-big-vertex-ui.js`，服务 8081）：
+
+| # | 查询 | 结果 |
+|---|---|---|
+| ① | `g.V('9000002','Account').inE('Payment')` | 被拒：`…has 6000 edges … needs a creation-time window…` |
+| ② | `.createdBetween('-10m','*').inE('Payment').values('id','status')` | 5 条（含 `bv_all_n_0`=REFUNDED，即在线更新的副本） |
+| ③ | `.createdBetween('-23h','*').inE('Payment').values('id')` | **906**（近线 901 + 在线 6 − 1 合并） |
+| ④ | `.createdBetween('-360d','-330d').inE('Payment').limit(20)` | 冷区间 30 天（每页 20 条） |
+| ⑤ | `.createdBetween('-400d','*').inE('Payment').limit(10).values('id','status')` | 三段合并 |
+| ⑥ | 同上的 `.count()` | **6905** |
+| ⑦ | `g.V('9000003',…)` 同上 | **904**（无冷数据） |
+| ⑧ | `g.V('9000004',…'-400d','*')….count()` | **6000**（近线窗口内 0 条） |
+| ⑨ | `g.V('9000005',…).outE('Payment')` | 出度方向三段合并 |
+| ⑩ | `g.V('9000006','Account').inE('Payment').values('id')` | 5 条，**不需要窗口** |
+| ⑪ | `.groupCount('status')` | `{PENDING:300, FAILED:300, SUCCESS:299, REFUNDED:2, NEW:5}` = 906 ✓ |
+
+（同时把原有的 `9000001` 大点演示重新装载回同一个 set：`AerospikeEdgeLiveLoadTest -Daerospike.asEdge.set=payment_as_edge_v1`。）
+
+### 83.4 复现
+
+```bash
+# 数据（写进 UI 的图实例；reset 会先清掉 demo 自己的 set）
+./mvnw -pl graph-integration-test -am test -Dtest=AerospikeBigVertexDemoTest \
+       -Daerospike.bigVertex.demo=true -Daerospike.bigVertex.reset=true -Dsurefire.failIfNoSpecifiedTests=false
+# 用例（自己的 set，先 truncate，计数精确）
+./mvnw -pl graph-integration-test -am test -Dtest=AerospikeEdgeBigVertexIntegrationTest
+# UI 逐条验证
+node .logs/verify-big-vertex-ui.js
+```
+
+## 84. 这次修掉的两个真 bug（都是"大点 + 时间窗"踩出来的）
+
+### 84.1 相对时间窗：`createdBetween('-2h','*')`
+
+`TimeRange.parse` 原来只认 epoch millis / UTC 日期；大点的窗口几乎都是"最近 N 小时"，写死日期在 UI 例子里第二天就失效。
+新增 `TimeRange.relativeToNow(value, nowMillis)`：`-30m` `-2h` `-25h` `-7d` `-2w` `-90s` `-500ms`（也接受 **只有一个 `-` 但没有单位**之类就不是相对值，原样去按日期解析）。
+
+关键点：**在 step 执行时解析，不在编译时**。`GremlinStepRegistry` 的 `createdBetween` 原来在编译期就把 range 解析好，
+而编译结果是缓存的（§81），`-2h` 会被冻在第一次编译那一刻；现在把原始文本留到 `apply` 时用当时的时钟解析。
+`TimeRange.parse(from,to,now)` 也提供了显式时钟的重载，测试可以给固定时钟。
+
+### 84.2 近线读：开区间窗口会**死循环**，且会漏掉最后一个自然日
+
+`AerospikeNearlineStore.readWindow` 是按天循环读当天的 KV：
+
+```java
+for (long day = range.fromTime(); day <= range.toTime(); day += dayMillis)   // 旧代码
+```
+
+两个问题，都是这次大点用例才暴露出来的：
+
+1. **`toTime = Long.MAX_VALUE`**（`createdBetween(from,'*')`）→ 循环要跑 ~10^14 次，查询**永不返回**（实测挂死 >25 分钟）。
+2. 即使有界，循环从 `fromTime` 起跳 24h，**日键是自然日**：窗口 `[now-23h, now]` 只读了 `dayOf(now-23h)` 那一天，
+   `dayOf(now)`（今天，装着最新的一批近线边）被跳过了 —— 902 条里只读到 655 条。
+
+修法：把窗口按 TTL 截断（近线最多留 7 天，不可能更多），`toTime` 开区间时取 now，并把起点**对齐到 UTC 零点**再按天步进：
+
+```java
+long to = range.toTime() == Long.MAX_VALUE ? now : range.toTime();
+long from = range.fromTime() == Long.MIN_VALUE ? to - dayMillis : range.fromTime();
+long earliestKept = Math.max(from, to - AerospikeNearline.TTL_SECONDS * 1000L - dayMillis);
+long firstDay = earliestKept - Math.floorMod(earliestKept, dayMillis);
+for (long day = firstDay; day <= to; day += dayMillis) { ... }
+```
+
+修完：近线窗口 901 条（含被更新的 `bv_all_c_0`）、开区间窗口不再挂、跨自然日的窗口能把两天都读到。
+`AerospikeEdgeBigVertexIntegrationTest` 里 ②③⑤⑥⑦ 这几个用例正是钉住这两点的。

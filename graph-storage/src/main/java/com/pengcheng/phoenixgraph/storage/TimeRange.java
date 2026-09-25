@@ -72,15 +72,65 @@ public record TimeRange(long fromTime, long toTime) {
      * @throws IllegalArgumentException when a bound cannot be read
      */
     public static TimeRange parse(String fromText, String toText) {
-        return new TimeRange(parseBound(fromText, Long.MIN_VALUE, true),
-                parseBound(toText, Long.MAX_VALUE, false));
+        return parse(fromText, toText, System.currentTimeMillis());
     }
 
-    private static long parseBound(String text, long fallback, boolean from) {
+    /**
+     * The same, with the instant a relative bound counts back from - so a caller that has its own
+     * clock (a test, a tiering demo) can pass it, and a query that says "the last two hours" is read
+     * the same way everywhere.
+     */
+    public static TimeRange parse(String fromText, String toText, long nowMillis) {
+        return new TimeRange(parseBound(fromText, Long.MIN_VALUE, true, nowMillis),
+                parseBound(toText, Long.MAX_VALUE, false, nowMillis));
+    }
+
+    /**
+     * A bound written relative to now: {@code -30m}, {@code -2h}, {@code -25h}, {@code -7d} (also
+     * {@code -90s} and {@code -500ms}), or {@code null} when the text is not one.
+     *
+     * <p>A window a client repeats - "the last two hours" - cannot be written as a date, and it must
+     * not be frozen when the query is compiled (a compiled query is cached and reused), so a relative
+     * bound is resolved when the step runs, against the clock of that moment.
+     */
+    public static Long relativeToNow(String value, long nowMillis) {
+        if (value == null || value.length() < 3 || value.charAt(0) != '-') {
+            return null;
+        }
+        int digits = 1;
+        while (digits < value.length() && Character.isDigit(value.charAt(digits))) {
+            digits++;
+        }
+        if (digits == 1 || digits >= value.length()) {
+            return null;
+        }
+        long amount;
+        try {
+            amount = Long.parseLong(value.substring(1, digits));
+        } catch (NumberFormatException notANumber) {
+            return null;
+        }
+        long unitMillis = switch (value.substring(digits).toLowerCase(java.util.Locale.ROOT)) {
+            case "ms" -> 1L;
+            case "s" -> 1_000L;
+            case "m" -> 60_000L;
+            case "h" -> 3_600_000L;
+            case "d" -> 86_400_000L;
+            case "w" -> 7L * 86_400_000L;
+            default -> -1L;
+        };
+        return unitMillis < 0 ? null : nowMillis - amount * unitMillis;
+    }
+
+    private static long parseBound(String text, long fallback, boolean from, long nowMillis) {
         if (text == null || text.isBlank() || text.equals("*")) {
             return fallback;
         }
         String value = text.trim();
+        Long relative = relativeToNow(value, nowMillis);
+        if (relative != null) {
+            return relative;
+        }
         try {
             return Long.parseLong(value);
         } catch (NumberFormatException ignored) {
@@ -95,8 +145,8 @@ public record TimeRange(long fromTime, long toTime) {
             return LocalDateTime.parse(value).toInstant(ZoneOffset.UTC).toEpochMilli();
         } catch (DateTimeParseException e) {
             throw new IllegalArgumentException("Cannot read '" + text
-                    + "' as a time; use epoch millis or a UTC date such as 2025-01-01 or"
-                    + " 2025-01-01T12:30", e);
+                    + "' as a time; use epoch millis, a UTC date such as 2025-01-01 or"
+                    + " 2025-01-01T12:30, or a relative bound such as -2h or -7d", e);
         }
     }
 

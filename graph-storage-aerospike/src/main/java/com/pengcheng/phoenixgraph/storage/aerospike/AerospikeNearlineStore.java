@@ -167,8 +167,19 @@ public class AerospikeNearlineStore {
             return List.of();
         }
         long dayMillis = 24L * 60 * 60 * 1000;
+        long now = System.currentTimeMillis();
+        // An open-ended bound (createdBetween(from, '*') is toTime = Long.MAX_VALUE) must not make the
+        // day loop run forever, and the tier keeps nothing older than its TTL: the walk covers the
+        // window's calendar days, but never more days than can still be there.
+        long to = range.toTime() == Long.MAX_VALUE ? now : range.toTime();
+        long from = range.fromTime() == Long.MIN_VALUE ? to - dayMillis : range.fromTime();
+        long earliestKept = Math.max(from, to - AerospikeNearline.TTL_SECONDS * 1000L - dayMillis);
+        // start on a UTC midnight: the day keys are calendar days, so stepping from the window start
+        // would skip the last day whenever the window does not begin at one (a window ending now covers
+        // two days, and the second one holds the newest edges)
+        long firstDay = earliestKept - Math.floorMod(earliestKept, dayMillis);
         List<StoredEdgeValue> edges = new ArrayList<>();
-        for (long day = range.fromTime(); day <= range.toTime(); day += dayMillis) {
+        for (long day = firstDay; day <= to; day += dayMillis) {
             edges.addAll(readDay(vertexId, edgeSchemaId, directionCode, AerospikeNearline.dayOf(day)));
         }
         // the last partial day is already covered by the day it belongs to
