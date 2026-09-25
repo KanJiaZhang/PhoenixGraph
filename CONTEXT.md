@@ -19,7 +19,7 @@
   - **大图 hub 150**（5000 点压测）→ 100 个一跳 Account（2000..2099），每账户 39 IP + 10 Phone（`AccountToPhone` 出度上限 10）；`g.V('150','Account').both().both()` = **5000** 跳 / 子图 **5001 点 / 5000 边**（JSON ~1.5MB，后端 ~0.5s）。
 - **旧数据**：set `http_rich_v2`（由 `layeredBothHopQueryViaApi` 播种）：888 分层图，两跳 `both()` 子图 421 点 / 430 边。
 - **知识图谱数据**：set `kg_nell995_v2` + schema `kg-entity-graph`（NELL-995，113,553 点 / 149,678 边，按 relation 分片，见第 12/13 节）。**默认 `application.yml` 同时加载 payment-graph 与 kg-entity-graph**，UI 下拉框可切换。
-- **中文知识图谱数据**：set `kg_sanguo_v1` + schema `sanguo-kg`（《三国演义》OpenKG 文档数据集：331 篇人物文档 + OWL 本体 + 本地补充三元组 `triples-extra.csv` → RDF → 1,102 实体 / 2,447 边，同样按 relation 分片，但边上带中文关系名/关系家族）。**见 [SANGUO-KG.md](SANGUO-KG.md)**，默认 `application.yml` 也已挂上。
+- **中文知识图谱数据**：set `kg_sanguo_v1` + schema `sanguo-kg`（《三国演义》OpenKG 文档数据集：**4,487 篇**人物文档 + OWL 本体 + 本地补充三元组 `triples-extra.csv` → RDF → 6,202 实体 / 21,162 边，同样按 relation 分片，但边上带中文关系名/关系家族）。**见 [SANGUO-KG.md](SANGUO-KG.md)**，默认 `application.yml` 也已挂上。
 - **Account 节点含 List/Map 属性**（见第 9 节踩坑）：`accountUsage`(id=4, list<string>) 与 `accountLimited`(id=5, map<string>)。
 
 ---
@@ -289,7 +289,7 @@ KG_TRIPLE_LIMIT=5000 ... 同上
 
 第二套知识图谱，数据与管线都与 NELL 那套独立，完整说明见 [SANGUO-KG.md](SANGUO-KG.md)。
 
-- **数据**：OpenKG《三国演义》部分，三个文档文件（331 篇人物文档 `renwu_process_v1.csv`、60 个关系的
+- **数据**：OpenKG《三国演义》部分，三个文档文件（**4,487 篇**人物文档 `renwu_process_v1.csv`、60 个关系的
   OWL 本体 `theory.owl`、153 条 curated 三元组 `triples.csv`），gzip 在
   `graph-integration-test/src/test/resources/kg/sanguo/`，重下：`tools/download-sanguo-dataset.sh`。
 - **解析成 RDF**：`SanguoOntology`（解析 OWL 的类/关系/逆关系/domain/range/OWL 特性，并归纳出 11 个
@@ -322,17 +322,45 @@ KG_TRIPLE_LIMIT=5000 ... 同上
   同势力、同回出场、路径强度、可达性、三跳环、跨势力、祖孙三代、混合关系链）。测试把两种语言的
   计数对齐断言（刘备两跳邻居 202、徐庶同僚 124、诸葛亮同回 46、刘备→曹操 2 跳 1 条 / 3 跳 295 条）。
   例句也进了 UI；两份 Markdown 表由测试写到 `target/sanguo-rdf/`。详见 [SANGUO-KG.md](SANGUO-KG.md) §5.7/§5.8。
+- **⚠ 数据集原来是截断的**：仓库里的 `renwu_process_v1.csv.gz` 只有上游**前 331 行**（截断在半行，
+  合法 gzip 所以测试全过）。上游同文件有 **4,487 人**。补齐后 base 1,102→**6,202** 实体、2,298→**21,050** 关系，
+  RDF 4,946→**46,632** 三元组；补回来的是**刘备**、**整个曹操谋士群**（郭嘉/荀彧/荀攸/贾诩/刘晔/董昭…）
+  与**过五关六将**。`tools/download-sanguo-dataset.sh` 现在**校验行数与结尾换行**。
+  同时暴露并修掉 4 个真 bug（`无` 占位符、自环、同名人 `[势力]` 后缀被剥、单元格空格/`|` 混用）
+  和 2 类抽取误报（密诏/企图等**意图**被当成事实、`X军师Y` 取错人）。详见 [SANGUO-KG.md](SANGUO-KG.md) §0。
+- **方案 ④：关系的时间维度**（`year`/`chapter`/`seq`/`provenance` 四个边属性，三个图都加）：
+  `year`/`chapter` 是**两个端点共现的区间**（文档只给人时间，不给关系时间），`seq` 是**叙述序**
+  （`字段序*1000+句子序`）。实测：徐庶∩刘备 与 徐庶∩曹操 的回数区间**完全相同**（35-48），
+  所以“先刘备还是先曹操”**只能由 `seq` 回答**：1002（效力于刘备）< 1003（北投曹操）。详见 [SANGUO-KG.md](SANGUO-KG.md) §7.8。
 - **方案 C（新图 `sanguo-kg-text`，RocksDB-Edge）**：读被结构化解析忽略的两列（`历史`/`小说`），用
-  **词典 + 正则**抽取（无模型，可复现）：`mentions`(902) / `holds`(22) / `fought`(18) / `killed`(17) /
-  `strategistOf`(3) / `advisorOf`(1) = **963 条关系**，另新增 **18 个职衔 + 7 个人物**（颜良/文丑/华雄/麹义/章邯/吕旷/杨怀/杨骏）。
-  图规模：**1,135 实体 / 3,257 关系**（base 为 1,102/2,298，**+33 / +959**）。两个新关系家族：`提及`、`冲突`。
+  **词典 + 正则**抽取（无模型，可复现）：`mentions`(22,951, 含 42 条典故边) / `holds`(111) / `killed`(300) / `fought`(136) /
+  `strategistOf`(5) / `advisorOf`(27) = **23,530 条关系**，另新增 **100 个职衔 + 75 个人物 + 28 个典故**。
+  图规模：**6,444 实体 / 44,576 关系**（base 为 6,202/21,050，**+242 / +23,526**）。两个新关系家族：`提及`、`冲突`。
+  **方案 ③（同一张 text 图）**：把传记里的**典故**建成节点而不虚构参与者 —— 新增 3 个类型
+  `Event`(事件,21) / `Artifact`(器物,3) / `Idiom`(成语,4) 共 **28 个节点**，边是 `传记主人 --mentions--> 典故`。
+  一张**数据驱动**的典故表（每个条目都真的出现，**最长匹配优先**，`败走麦城` 不会退化成 `走麦城`）。
+  `过五关斩六将` 因此成为节点，而 `孔秀/韩福/孟坦/卞喜/王植/秦琪/六将` **一律没有虚构**（测试断言它们不在实体表里，
+  且 28 个典故名与 base 实体零碰撞）—— 这就是方案 ③（抽取）与方案 ②（引入外部知识）的分界线。
+  > ⚠ Gremlin 引擎没实现 `within(...)`，写了会**静默返回空**：筛类型要用 `has('entityType','Event')`。
+  > ⚠ RocksDB-Edge **只存源方向边、不存逆边**（44,576 而非闭包 44,820）：`司马懿` 的臣边要用
+  > `inE().filter(relation.equals('lord'))`，用 `outE().filter(relation.equals('minister'))` 会空 ——
+  > 曹操 --lord--> 司马懿 是存了的（臣共 22 人），且 `advisorOf`(谋士,师承) 与 `minister`(臣,君臣)
+  > 是**两个关系族**，不能互推。郭嘉则有 curated 的 `lord` 但**没有传记**（荀彧/贾诩/刘晔/蒋济/董昭 也没有），
+  > 全库「谋士」只出现 5 次。详见 [SANGUO-KG.md](SANGUO-KG.md) §7.2.3。
   它**自动**抽到了方案 B 手工加的「五虎上将」（含之首），并回答了 base 图答不了的：刘备的军师=**徐庶/庞统**、
   曹操的谋士=**司马懿**、关羽斩杀过**颜良/文丑/华雄**、谁杀了关羽=**孙权**、关羽传记提到了谁。
   单字简称（「忠与**羽**连战」）用 `ALIAS` 表还原；带 provenance 的报告在
   [SANGUO-KG-TEXT-EXTRACTION.md](SANGUO-KG-TEXT-EXTRACTION.md)。详见 [SANGUO-KG.md](SANGUO-KG.md) §7。
-  > 过程中又修了一个真 bug：`SanguoDataset.of()` 原来只转一次关系，`mentions` 会先把 `中郎将`/`第1回`/`乌戈国`
-  > 建成 `Person`，后面的 `holds`/`appearsIn` 就改不过来了（93 条 `range` 违反）。改成**两趟：先把属性关系
-  > 的目标定型，再处理人物–人物关系**。
+  > 过程中修了两个真 bug：① `SanguoDataset.of()` 原来只转一次关系，`mentions` 会先把 `中郎将`/`第1回`/`乌戈国`
+  > 建成 `Person`，后面的 `holds`/`appearsIn` 就改不过来了（93 条 `range` 违反）→ 改成**两趟：先把属性关系的
+  > 目标定型，再处理人物–人物关系**。② `mentions` 会把势力名（东汉/魏）塞进「人物名集合」，触发“势力与人物同名
+  > 就加 `势力` 后缀”的规则，把 `东汉` 拆成 `东汉(Person)`+`东汉势力(Faction)` → 构建“人物名集合”时**只认人物–人物关系**。
+  > ③ `韩馥曰：“吾有上将潘凤，可斩华雄。”`（未然转述）会产生反向的 `潘凤--killed-->华雄`，
+  > 而真正的 `华雄--killed-->潘凤`（`被华雄斩了`）反而漏了 → 新增**被动式规则** `被X（所）斩|杀|诛`，
+  > 并让**转述/引语句不认主动式**（被动式方向语法确定，仍保留）。`killed` 17→19（多出 华雄→潘凤、曹操→高顺）。
+  > ④ `曹操手下谋士程昱` 里「手下」不在允许前缀（只有 `帐下|之|的`）→ 程昱漏了；补上 `麾下|手下|部下`
+  > 后又修两个副作用：贪婪捕获 `程昱识破` 要走 `personTarget()` 归一；`if/else` 会把 `谋士之一`（解析不出人名）
+  > 当成命中而吃掉兜底，使 司马懿 的边消失 → 改成「先试他指，解析不出再试自指」。`advisorOf` 1→2。
 - **本地补充三元组（上游缺口）**：`kg/sanguo/triples-extra.csv`（8 条，明文）补的是「本体有类型、上游没写事实」
   那类缺口 —— 方案 B 把「五虎上将」当成职位（`关羽 --holds--> 五虎上将之首`、张飞/赵云/马超/黄忠 → `五虎上将`），
   另补 `刘备 --lord--> 关羽/张飞`（上游只记了「义弟」）。层因分析、诊断查询、三种修复方案都在
@@ -5810,6 +5838,7 @@ node .logs/bench-path-both.js 100    # §77 的 A/B 交错基准（B kv 从 59 �
 **延迟 −32.78 ms（mean，−46.5%）／−31.29 ms（median，−45.3%）；p95 −40.6 ms、p99 −66.8 ms；响应从 1.73 MB 降到 60 B。**
 存储计数两边完全一致（kv 23 / 点读 220 / 边读 32 / 边解码 285）——遍历与 join 的工作量没变，省的正是那 1.7 MB 的
 序列化 + 传输 + 客户端解析，以及它带来的 GC 抖动（p99 从 120 ms 掉到 54 ms）。
+
 ## 79. 四跳 path 两个口径：不看方向 vs 看交易方向（一次调用返回两个结果）
 
 需求：在 §77/§78 那条 `both` 四跳脚本的基础上，同时给出
@@ -5931,6 +5960,7 @@ node .logs/run-script.js .logs/scripts/four-hop-two-ways.groovy   # 只看脚本
    `RocksDBException: Failed to open NewSequentialFile.rocksdb\sanguo-kg-text/MANIFEST-...`，**8081 起不来**。
    等那次测试自己跑完会重建 store；否则删掉 `.rocksdb/sanguo-kg-text` 也能让服务起来（只是那个图变空）。
    **别在 `-Dsanguo.queries.write=true` 的测试跑到一半时杀它。**
+
 ## 80. 只用 both 两跳：把有向那一半从同一批 walk 里筛出来，以及 both→out/in 的缓存
 
 §79 用了四条 path 遍历（both×2 + out/in×2）。两条更正：
@@ -6037,6 +6067,7 @@ bash .logs/scripts/run-two-ways.sh 30         # 起服务 + 两个 pair 的 BOTH
 node .logs/run-script.js .logs/scripts/four-hop-two-ways.groovy
 ./mvnw -o -pl graph-query-gremlin test        # 245 用例（新增 side/&&/||/缓存复用各一）
 ```
+
 ## 81. 脚本与遍历的"编译一次"：现在有指标可查
 
 ### 81.1 改了什么
@@ -6112,6 +6143,7 @@ node .logs/bench-script-compile.js 30 1000 1022    # 需要一个刚启动、还
 脚本模式是**自己解析器上的"Groovy 形状的子集"**。取舍写在这里：脚本要能表达"多段遍历 + 变量 + 条件 + 循环 + 闭包筛选"，
 查询就够用了；反过来，类/导入/函数/异常/线程/IO 这类东西既不是查询需要的，也会把执行面放大（任意代码执行 + 新依赖）。
 **读不出来的写法会带消息拒绝**（82.2 里 24 条都能看到引擎的原话），除了 82.3 的两个例外。
+
 ## 83. 大点（Aerospike-Edge 三层）的演示数据、测试与 UI 查询
 
 需求：按"大点方案"（冷/近线/在线三层 + 大点判定 maxInDegree/maxOutDegree + 读必须带时间窗）造测试用例，
@@ -6239,6 +6271,7 @@ for (long day = firstDay; day <= to; day += dayMillis) { ... }
 
 修完：近线窗口 901 条（含被更新的 `bv_all_c_0`）、开区间窗口不再挂、跨自然日的窗口能把两天都读到。
 `AerospikeEdgeBigVertexIntegrationTest` 里 ②③⑤⑥⑦ 这几个用例正是钉住这两点的。
+
 ## 85. RocksDB-Edge 的按属性查找：分布式（MapReduce）执行
 
 需求：把 `g.V('Account').has('accountStatus','FROZEN')` 这类**按属性的查找**从"单进程全表扫描"扩展成可扩展的分布式执行——
