@@ -6366,3 +6366,58 @@ node .logs/verify-dist.js                          # 线上 7 组 DIST/单机对
 * 每个 mapper 一个 `GremlinContext`（自己的边缓存/投影计划），所以 **mapper 内的迭代是有界的**：一个分片里的点/边仍然按批量读走
   （`readAllEdgesBatchCached` 等），"mapper 内多线程"目前体现为 **mapper 之间并行**；
   单 mapper 内部再切子任务（同一分片再分几段给子线程）是下一步可选项。
+## 86. 分布式扫描 + 分布式算法：一个 `DIST` 管整条查询
+
+用法（用户给的形状）：
+
+```groovy
+g.V(DIST).has('Account','accountStatus','FROZEN').bothE('Payment').cc()
+```
+
+前半段（**分区扫描 + 属性条件 + `bothE` 扩展**）在 mapper 里跑（§85）；后半段的 `cc` 是**全局步骤**，交给 **Gemini 集群**
+（`graph-gemini`，服务默认 4 worker / 19100 端口起 / local 模式）；输入是 mapper 展开出来的那张子图（`GremlinDistAlgorithms.dist`
+的 `scopeOf` 从 edge traverser 取两端点与边类，`GeminiGraph.of(graphQuery, scope, directed)` 构造诱导子图）。
+`cc/louvain/pagerank/sssp/bfs` 五个都适用——**算法步骤本来就是全局步骤**。
+
+### 86.1 两处改动
+
+1. **起点 `DIST` 传播到算法步骤**：`GremlinContext.distributedAlgorithms()` 标志，由 `runDistributed` 在 mapper 与 reduce 的
+   context 上置位；算法步骤的注册从"`(DIST)` 才用集群、否则内存"改成三态：
+   * 显式 `cc(DIST)` → 集群（**没有集群就直接报错**，这条既有语义不变）；
+   * 起点 `DIST`（无 `(DIST)` 标记）→ 集群（懒构造，无集群时在执行到那一步才报错）；
+   * 否则 → 内存实现。
+   `g.V(DIST)` 因此表达的是"**这条查询跑在分布式上**"，不用在每一步重复 `(DIST)`。
+2. **算法步骤进了全局步骤表**：`GLOBAL_STEPS` 原来漏了 `cc/louvain/pagerank/sssp/bfs`，于是 `g.V(DIST)…cc()` 会**每个 mapper 各算一份**
+   （4 个分片就返回 4 个 map）。补进去之后它们落在 reduce 段：**一张图、一次计算**。
+
+### 86.2 验证（`.logs/verify-dist-cc.js`，`payment-graph-rocksdb-edge`）
+
+组件号只是标签（两个引擎按各自遍历顺序编号），所以对比的是**等价类**（哪些点同组）：
+
+| 查询 | 单机 | 分布式 |
+|---|---|---|
+| `g.V().has('Account','accountStatus','FROZEN').bothE('Payment').cc()` | 263 ms，**51 点 / 1 个连通分量** | 884 ms，**51 点 / 1 个连通分量**，**同组** ✓ |
+| `g.V('Account').bothE('Payment').cc()` | 24 ms，51 点 / 1 分量 | 359 ms，51 点 / 1 分量，**同组** ✓ |
+
+单测：`GremlinDistributedScanTest#aDistributedStartRunsItsAlgorithmOnTheClusterToo`（用 `GeminiCluster.local()` 真起集群，
+对比 `g.V('Account').has(...).bothE('Payment').cc()` 与 `g.V(DIST)…cc()` 的等价类，并断言算法步骤只回一个 map）。
+`graph-query-gremlin` 共 **251** 用例绿；`GremlinDistStepsTest` 14 个（既有 `(DIST)` 形式）不变。
+
+### 86.3 三点要说清楚的
+
+1. **小图上分布式更慢**：上表 884/359 ms vs 263/24 ms。集群有 4 个 worker 的起停与超步同步开销，50 个点的图吃不到并行收益；
+   `DIST` 的价值在成规模的数据上（分片扫描 + 集群算法），这里验证的是**正确性、可切换与端到端组合**。
+2. **组件号不可跨引擎比较**，要比就比等价类；要稳定编号得自己在结果上再排一次。
+3. **未知属性在分布式下会报错**：用户原始形状里 `filter(status.equals('active'))` 用了 `Account` 上不存在的 `status`
+   （应为 `accountStatus`；边类是 `Payment`，不是小写 `payment`）。单机下这个 `filter` 会被下推成条件而**静默返回空**，
+   分布式下分区扫描要把该 key 投影出来 → 报 `Unknown property 'status' in vertex schema 'Account'`。
+   **行为差异是有意的**（报错比静默空好），但也算是两套路径的一个不一致点，记在这里。
+
+### 86.4 UI 与复现
+
+`payment-graph-rocksdb-edge` 例子列表新增 3 条（单机 cc / `DIST` 版 cc / 同 `DIST` 换 pagerank）。
+
+```bash
+node .logs/verify-dist-cc.js                       # 线上等价类对比
+./mvnw -o -pl graph-query-gremlin test             # 251 用例（含集群算法那条）
+```

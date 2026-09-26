@@ -79,6 +79,12 @@ public final class GremlinContext {
     private int scanLimit = 0;
     private boolean collectSubgraph = false;
     /**
+     * Whether the algorithm steps of this run go to a Gemini cluster. A distributed start
+     * ({@code g.V(DIST)...}) sets it, so the marker at the start says where the whole query runs - the
+     * scan, the expansions and the algorithm - instead of having to repeat {@code (DIST)} on the step.
+     */
+    private boolean distributedAlgorithms = false;
+    /**
      * Edge classes an unnamed hop ({@code out()}, {@code bothE()}) must not read: the HNSW layer edges of a
      * vector index are the index' own machinery, not a relationship of the data, so a normal traversal over
      * "every edge" would otherwise walk them and a UI would draw them. A hop that names one explicitly still
@@ -298,6 +304,20 @@ public final class GremlinContext {
     /** Whether the execution is collecting an induced subgraph (see {@link #executeSubgraph}). */
     public boolean collectSubgraph() {
         return collectSubgraph;
+    }
+
+    /**
+     * Asks this run's algorithm steps to use the distributed engine (a Gemini cluster). Set by the
+     * distributed runner, so a query that starts with {@code g.V(DIST)} runs its algorithm steps on the
+     * cluster too - the explicit {@code cc(DIST)} form is for a query that runs in this process.
+     */
+    public boolean distributedAlgorithms() {
+        return distributedAlgorithms;
+    }
+
+    /** @see #distributedAlgorithms() */
+    public void distributedAlgorithms(boolean distributedAlgorithms) {
+        this.distributedAlgorithms = distributedAlgorithms;
     }
 
     /** Records a vertex touched by the traversal (deduplicated by label + id). */

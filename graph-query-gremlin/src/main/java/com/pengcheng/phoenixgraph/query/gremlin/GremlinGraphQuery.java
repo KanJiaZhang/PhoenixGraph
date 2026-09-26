@@ -128,9 +128,18 @@ public class GremlinGraphQuery {
         // no cluster is an error, never a quiet fallback - the marker is there to say which engine runs.
         for (String algorithm : new String[]{GeminiAlgorithms.PAGERANK, GeminiAlgorithms.LOUVAIN,
                 GeminiAlgorithms.CONNECTED_COMPONENTS, GeminiAlgorithms.SSSP, GeminiAlgorithms.BFS}) {
-            registry.register(algorithm, args -> GremlinDistAlgorithms.wantsDistributed(args)
-                    ? GremlinDistAlgorithms.dist(geminiCluster, algorithm, args)
-                    : inMemoryAlgorithm(algorithm, args));
+            registry.register(algorithm, args -> {
+                if (GremlinDistAlgorithms.wantsDistributed(args)) {
+                    return GremlinDistAlgorithms.dist(geminiCluster, algorithm, args);
+                }
+                // no marker: the run decides. A distributed start (g.V(DIST)...) asks for the cluster, so
+                // "where does this query run" is answered once, at the start, and an algorithm in the
+                // middle of it runs there too; a query that runs in this process uses the in-memory step.
+                GremlinStep local = inMemoryAlgorithm(algorithm, args);
+                return (ctx, in) -> ctx.distributedAlgorithms()
+                        ? GremlinDistAlgorithms.dist(geminiCluster, algorithm, args).apply(ctx, in)
+                        : local.apply(ctx, in);
+            });
         }
         // the fuzzyLink step turns a context into the key of a link node: patterns are data, so the
         // registry is consulted per execution (a pattern added in the builder page is used at once)
@@ -1326,7 +1335,10 @@ public class GremlinGraphQuery {
      */
     private static final Set<String> GLOBAL_STEPS = Set.of("order", "limit", "skip", "range", "tail",
             "sample", "dedup", "count", "sum", "mean", "max", "min", "groupCount", "fold", "cap",
-            "group", "aggregate", "timeLimit", "path", "simplePath", "cyclicPath");
+            "group", "aggregate", "timeLimit", "path", "simplePath", "cyclicPath",
+            // an algorithm runs over the whole reached subgraph: pagerank/louvain/cc/sssp/bfs are the
+            // cluster's steps in a distributed run and the reduce phase's in any case
+            "pagerank", "louvain", "cc", "sssp", "bfs");
 
     /** Where the map phase ends: the first step that needs the whole set. */
     private static int mapStepCount(CompiledQuery compiled) {
@@ -1371,6 +1383,9 @@ public class GremlinGraphQuery {
         int partitions = Math.max(1, store.scanPartitionCount());
         int split = mapStepCount(compiled);
         boolean wantSubgraph = reduceContext.collectSubgraph();
+        // the algorithm steps of this run are the cluster's (a distributed query runs distributed end to
+        // end); without a cluster configured GremlinDistAlgorithms says so when such a step is reached
+        reduceContext.distributedAlgorithms(true);
         List<List<Object>> mapped = new ArrayList<>(Collections.nCopies(partitions, List.of()));
         List<Subgraph> subgraphs = new ArrayList<>(Collections.nCopies(partitions, Subgraph.EMPTY));
         int workers = Math.max(1, Math.min(partitions, Math.max(1, parallelism)));
@@ -1388,6 +1403,7 @@ public class GremlinGraphQuery {
                 futures.add(pool.submit(() -> {
                     GremlinContext mapper = newContext();
                     mapper.collectSubgraph(wantSubgraph);
+                    mapper.distributedAlgorithms(true);
                     List<Object> elements = partitionStart(mapper, compiled.source, compiled.startProperties,
                             partition, partitions);
                     List<Object> out = split == 0 ? elements

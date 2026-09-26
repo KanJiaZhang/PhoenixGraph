@@ -576,6 +576,19 @@
         ['属性查找 · 边属性（类型由 has 给出的分布式形式）',
           'Attribute lookup on edges - type given by has(...), distributed',
           "g.E(DIST).has('Payment','status','FAILED').groupCount('status')"],
+        // --- 分布式扫描 + 分布式算法（一个 DIST 管整条查询） ---------------------------------------
+        // g.V(DIST) 在起点说了“这条查询跑在分布式上”：前半段（分区扫描、属性条件、bothE 扩展）在 mapper 里，
+        // 后半段的算法（cc/louvain/pagerank/sssp/bfs 都是全局步骤）交给 Gemini 集群，输入是 mapper 展开出来的子图。
+        // 去掉 DIST 就是单机：扫描在本进程、算法用内存实现，两者答案一致（组件号只是标签，按“哪些点同组”对比）。
+        ['分布式算法 · 单机：FROZEN 账户的支付图连通分量',
+          'Distributed algorithm - in-process: connected components of the FROZEN accounts payments',
+          "g.V().has('Account','accountStatus','FROZEN').bothE('Payment').cc()"],
+        ['分布式算法 · 分布式：DIST 管扫描+扩展+cc（一个 DIST 到底）',
+          'Distributed algorithm - DIST covers the scan, the expansion and cc',
+          "g.V(DIST).has('Account','accountStatus','FROZEN').bothE('Payment').cc()"],
+        ['分布式算法 · 同一个 DIST 换成 pagerank',
+          'Distributed algorithm - the same DIST with pagerank',
+          "g.V(DIST,'Account').bothE('Payment').pagerank().unfold().limit(10)"],
       ],
       'geo-merchants-rocksdb-inline': [
         ['GEO · 1km 内最近的 10 家商户', 'GEO - 10 nearest merchants within 1 km', "g.V('1','Merchant').circle('{\"lat\":31.2304,\"lon\":121.4737,\"radius\":1000}').limit(10)"],

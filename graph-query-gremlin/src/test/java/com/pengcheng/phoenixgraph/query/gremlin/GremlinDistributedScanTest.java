@@ -83,6 +83,44 @@ class GremlinDistributedScanTest {
     }
 
     @Test
+    void aDistributedStartRunsItsAlgorithmOnTheClusterToo() {
+        // The start's DIST is the whole query's: cc() here runs on the cluster without writing cc(DIST),
+        // over the subgraph the mappers expanded (the frozen accounts and their payments).
+        GremlinGraphQuery plain = new GremlinGraphQuery(new PartitionedStore(4), NeighborVertexResolver.of(
+                Map.of("Payment", "Account"), Map.of("Payment", "Account")));
+        List<Object> inProcess = plain.execute(
+                "g.V('Account').has('accountStatus','FROZEN').bothE('Payment').cc()");
+
+        try (com.pengcheng.phoenixgraph.gemini.GeminiCluster cluster =
+                     com.pengcheng.phoenixgraph.gemini.GeminiCluster.local().start()) {
+            GremlinGraphQuery distributed = new GremlinGraphQuery(new PartitionedStore(4),
+                    NeighborVertexResolver.of(Map.of("Payment", "Account"), Map.of("Payment", "Account")))
+                    .geminiCluster(cluster);
+            List<Object> onCluster = distributed.execute(
+                    "g.V(DIST,'Account').has('accountStatus','FROZEN').bothE('Payment').cc()");
+
+            assertEquals(1, onCluster.size(), "an algorithm step answers with one map");
+            assertEquals(components(inProcess), components(onCluster),
+                    "the same vertices end up in the same components, whichever engine ran it");
+            assertFalse(components(onCluster).isEmpty(), "the fixture has components to compare");
+        }
+    }
+
+    /**
+     * An algorithm answer as equivalence classes: the component ids are labels, and the two engines
+     * number them from their own traversal order, so what must match is which vertices share one.
+     */
+    private static Set<Set<String>> components(List<Object> answer) {
+        Map<?, ?> values = (Map<?, ?>) answer.get(0);
+        Map<String, Set<String>> byLabel = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> entry : values.entrySet()) {
+            byLabel.computeIfAbsent(String.valueOf(entry.getValue()), key -> new LinkedHashSet<>())
+                    .add(String.valueOf(entry.getKey()));
+        }
+        return new LinkedHashSet<>(byLabel.values());
+    }
+
+    @Test
     void aDistributedScanCannotRunOnAStoreThatCannotSplit() {
         GremlinGraphQuery gremlin = new GremlinGraphQuery(new PartitionedStore(0, false),
                 NeighborVertexResolver.none());
@@ -201,6 +239,12 @@ class GremlinDistributedScanTest {
                 }
             }
             return out;
+        }
+
+        @Override
+        public List<List<EdgeQueryResult>> readAllEdgesBatch(List<Object> vertexIds, EdgeSide direction,
+                                                             List<String> propertyNames) {
+            return readEdgesBatched("Payment", direction, vertexIds, propertyNames);
         }
 
         @Override
