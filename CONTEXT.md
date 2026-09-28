@@ -6851,3 +6851,14 @@ node .logs/probe-predicates.js           # 谓词对照（before/after 两份 co
 
 **第三批仍未做**：`match(...)`（多模式 + 共享变量绑定）、`emit` / `until` / `loops`（循环执行 + per-traverser 计数）、
 `subgraph` / `tree`、`path().from()/to()`、状态路径上的 `simplePath/cyclicPath`。
+
+## 99. `Traverser` 第三批（四）：状态路径上的 `simplePath` / `cyclicPath`
+
+上一轮这一步**失败并被我整体撤销**：`repeatsAVertex(path)` 的语义是"**有顶点重复吗**"，我写成 `repeatsAVertex(path) == simple`（反了），
+于是 `a→b→c` 这样的简单 walk 被 `simplePath()` 丢掉、答案变成 `[]`（静默错答，故撤销而不提交）。正确条件是 `!= simple`。
+
+* 两者读 walk → 也置 `pathAware`（与 `path()` 同代价：跳步多一次批量化边读）；
+* **不进 `STATEFUL_STEPS`**：无标签查询仍走列表路径（报错信息不变），只有查询已因别的 step 走状态路径时才接管 —— 零回归面（与 `union` 同手法）；
+* 因此"状态路径上不带 `path()` 也能用"是**有意增强**，不能用两条路径对照钉，改用**差分对**钉：同一 walk 上 `simplePath()` 留 1、`cyclicPath()` 留 0，极性写反立刻翻掉。
+
+验证：`graph-query-gremlin` **291 用例绿**（既有 275 个未改）。

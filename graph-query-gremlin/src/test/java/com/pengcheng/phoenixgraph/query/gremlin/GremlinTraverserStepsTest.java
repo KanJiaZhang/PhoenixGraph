@@ -290,6 +290,23 @@ class GremlinTraverserStepsTest {
                 "and the stateful path puts them in the same order");
     }
 
+    @Test
+    void simpleAndCyclicPathReadTheWalkTheTraverserCarries() {
+        String twoHops = ".out('knows').out('knows')";
+        assertEquals(List.of("c"), ids("g.V('a','Account').as('v')" + twoHops + ".simplePath()"
+                + ".values('id')"), "a->b->c visits no vertex twice, so it survives simplePath()");
+        assertEquals(List.of(), gremlin.execute("g.V('a','Account').as('v')" + twoHops + ".cyclicPath()"),
+                "and nothing in it is cyclic");
+        // the two must not be the same filter: invert the repeat check and this pair flips
+        assertEquals(1, gremlin.execute("g.V('a','Account').as('v')" + twoHops + ".simplePath()").size());
+        assertEquals(0, gremlin.execute("g.V('a','Account').as('v')" + twoHops + ".cyclicPath()").size());
+        // the list path refuses simplePath() without path(); the stateful path has the walk already, so it
+        // answers without one - a deliberate improvement, which is why the two paths are not compared here
+        QueryException needsPath = assertThrows(QueryException.class,
+                () -> gremlin.execute("g.V('a','Account')" + twoHops + ".simplePath()"));
+        assertTrue(needsPath.getMessage().contains("path()"), needsPath.getMessage());
+    }
+
     /** The ids in a collected container (a list of vertices). */
     private static List<String> collectedIds(Object container) {
         List<String> out = new ArrayList<>();

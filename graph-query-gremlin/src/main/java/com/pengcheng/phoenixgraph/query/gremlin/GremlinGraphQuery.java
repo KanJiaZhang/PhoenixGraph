@@ -1370,6 +1370,8 @@ public class GremlinGraphQuery {
                 case "where" -> GremlinTraverserSteps.whereLabel(traversers, planned.args().get(0),
                         planned.args().get(1));
                 case "path" -> pathStep(traversers, planned.args());
+                case "simplePath" -> walkFilter(traversers, true);
+                case "cyclicPath" -> walkFilter(traversers, false);
                 case "branch" -> branchStep(context, planned.args(), traversers);
                 // union is an ordinary step on the list path; with labels it needs the traversers, so the
                 // stateful path handles it here and the list path keeps running exactly what it ran before
@@ -1395,6 +1397,21 @@ public class GremlinGraphQuery {
             answer.add(traverser.value());
         }
         return answer;
+    }
+
+    /**
+     * {@code simplePath()}/{@code cyclicPath()}: keep the traversers whose walk visits no vertex twice, or
+     * the ones that do - {@code repeatsAVertex} answers "does it repeat", so a simple walk is the one where
+     * that is <b>false</b>. Both read the walk, so asking for them costs the same as asking for path().
+     */
+    private static List<GremlinTraverser> walkFilter(List<GremlinTraverser> traversers, boolean simple) {
+        List<GremlinTraverser> out = new ArrayList<>();
+        for (GremlinTraverser traverser : traversers) {
+            if (repeatsAVertex(traverser.path()) != simple) {
+                out.add(traverser);
+            }
+        }
+        return out;
     }
 
     /**
@@ -2162,7 +2179,9 @@ public class GremlinGraphQuery {
             this.steps = steps;
             this.plan = plan;
             this.traverserMode = needsTraverserState(plan);
-            this.pathAware = stepNames.contains("path");
+            // the walk is also what simplePath()/cyclicPath() read, so they ask for it too
+            this.pathAware = stepNames.contains("path") || stepNames.contains("simplePath")
+                    || stepNames.contains("cyclicPath");
         }
     }
 
