@@ -1,6 +1,7 @@
 package com.pengcheng.phoenixgraph.query.gremlin;
 
 import com.pengcheng.phoenixgraph.query.QueryException;
+import com.pengcheng.phoenixgraph.query.result.Subgraph;
 import com.pengcheng.phoenixgraph.query.storage.EdgeQueryResult;
 import com.pengcheng.phoenixgraph.query.storage.EdgeSide;
 import com.pengcheng.phoenixgraph.query.storage.GraphQuery;
@@ -187,6 +188,77 @@ class GremlinTraverserStepsTest {
     }
 
     @Test
+    void untilStopsTheLoopWhenItsConditionHolds() {
+        assertEquals(List.of("c"), ids("g.V('a','Account').repeat(out('knows'))"
+                        + ".until(has('name','cid')).values('id')"),
+                "repeat(out()).until(...) is a do/while: the body runs, then the condition is tested");
+        assertEquals(List.of("b"), ids("g.V('a','Account').repeat(out('knows'))"
+                        + ".until(has('name','bob')).values('id')"),
+                "the first body run already satisfies it, so the loop stops there");
+        assertEquals(List.of(), gremlin.execute("g.V('a','Account').repeat(out('knows'))"
+                        + ".until(has('name','nobody'))"),
+                "a condition that never holds leaves no traverser: the frontier dies at the end of the chain");
+        assertEquals(List.of(), gremlin.execute("g.V('a','Account').repeat(out('knows'))"
+                        + ".until(has('name','ann'))"),
+                "and the start is not tested before the body, so the start itself is not the answer");
+    }
+
+    @Test
+    void loopsCountsTheIterationsAndCanBeTheUntilCondition() {
+        assertEquals(gremlin.execute("g.V('a','Account').repeat(out('knows')).times(2).values('id')"),
+                gremlin.execute("g.V('a','Account').repeat(out('knows')).until(loops().is(2)).values('id')"),
+                "until(loops().is(2)) is the same bound as times(2)");
+        assertEquals(List.of("c"), ids("g.V('a','Account').repeat(out('knows'))"
+                        + ".until(loops().is(2)).values('id')"),
+                "and it reaches the end of the chain");
+        assertEquals(List.of(2), gremlin.execute(
+                        "g.V('a','Account').repeat(out('knows')).times(2).loops()"),
+                "loops() answers how many times the traverser went through the body");
+        assertEquals(List.of("a"), ids("g.V('a','Account').as('v').repeat(out('knows')).times(1)"
+                        + ".loops().is(1).select('v')"),
+                "a loop count can be tested with is(), and the label survives the loop");
+    }
+
+    @Test
+    void emitHandsOnEveryIterationItAsksFor() {
+        assertEquals(List.of("b", "c"), ids("g.V('a','Account').repeat(out('knows')).emit().times(2)"),
+                "emit() with no condition hands on every iteration, the last one included");
+        assertEquals(List.of("b", "c"), ids("g.V('a','Account').repeat(out('knows'))"
+                        + ".emit().until(has('name','cid'))"),
+                "and the traverser that satisfies until() is one of the emitted ones");
+        assertEquals(List.of("b", "c"), ids("g.V('a','Account').repeat(out('knows'))"
+                        + ".emit(has('name','bob')).until(has('name','cid'))"),
+                "a traverser that satisfies both emit() and until() is emitted once, not twice");
+        assertEquals(List.of("b"), ids("g.V('a','Account').repeat(out('knows'))"
+                        + ".emit(has('status','FROZEN')).times(2)"),
+                "emit(c) hands on only the iterations whose traverser satisfies c");
+        assertEquals(List.of("b", "c"), ids("g.V('a','Account').repeat(out('knows'))"
+                        + ".emit(has('status','FROZEN')).until(has('name','cid'))"),
+                "and a traverser that satisfies until() is the answer whether or not emit(c) matched it");
+        // emit on a plain times() loop must not change what the loop reaches, only what is handed on
+        assertEquals(gremlin.execute("g.V('a','Account').repeat(out('knows')).times(2).values('id')"),
+                List.of(gremlin.execute("g.V('a','Account').repeat(out('knows')).emit().times(2)"
+                        + ".values('id')").get(1)),
+                "the emitted answer ends at the last iteration, which is where the plain loop ends");
+    }
+
+    @Test
+    void aRepeatModulatorOutsideARepeatIsRefused() {
+        QueryException noRepeat = assertThrows(QueryException.class,
+                () -> gremlin.execute("g.V('a','Account').until(has('name','bob'))"));
+        assertTrue(noRepeat.getMessage().contains("must follow repeat"), noRepeat.getMessage());
+        QueryException unbounded = assertThrows(QueryException.class,
+                () -> gremlin.execute("g.V('a','Account').repeat(out('knows'))"));
+        assertTrue(unbounded.getMessage().contains("needs a bound"), unbounded.getMessage());
+        QueryException blankUntil = assertThrows(QueryException.class,
+                () -> gremlin.execute("g.V('a','Account').repeat(out('knows')).until()"));
+        assertTrue(blankUntil.getMessage().contains("needs a condition"), blankUntil.getMessage());
+        QueryException orphanLoops = assertThrows(QueryException.class,
+                () -> gremlin.execute("g.V('a','Account').as('v').loops()"));
+        assertTrue(orphanLoops.getMessage().contains("needs a repeat"), orphanLoops.getMessage());
+    }
+
+    @Test
     void repeatWithLabelsRunsTheSameLoopAsTheListPath() {
         String twoHops = ".out('knows').out('knows')";
         assertEquals(gremlin.execute("g.V('a','Account')" + twoHops + ".values('id')"),
@@ -310,6 +382,246 @@ class GremlinTraverserStepsTest {
         QueryException needsPath = assertThrows(QueryException.class,
                 () -> gremlin.execute("g.V('a','Account')" + twoHops + ".simplePath()"));
         assertTrue(needsPath.getMessage().contains("path()"), needsPath.getMessage());
+    }
+
+    @Test
+    void mathReadsVariablesAndByModulators() {
+        // _ with a by(): the property of the traverser's own element
+        assertEquals(List.of(31L), gremlin.execute(
+                "g.V('a','Account').math('_ + 1').by('age')"),
+                "by('age') feeds the _ variable the element's age");
+        // two variables, one by() cycled over both (TinkerPop's traversal ring)
+        assertEquals(List.of(50L), gremlin.execute(
+                "g.V('a','Account').as('x').out('knows').as('y').math('x + y').by('age')"),
+                "x is a's age (30) and y is b's age (20), the one by() reused for both");
+        assertEquals(List.of(600L), gremlin.execute(
+                "g.V('a','Account').as('x').out('knows').as('y').math('x * y').by('age')"),
+                "the same two variables in a product");
+        // a by() child traversal instead of a property key
+        assertEquals(List.of(2L), gremlin.execute(
+                "g.V('a','Account').math('_ + 1').by(out('knows').count())"),
+                "a's one knows edge becomes 1, plus 1");
+        // a modulator that produces nothing filters the traverser (z has no age), not an error
+        assertEquals(List.of(31L), gremlin.execute(
+                "g.V('a','z','Account').math('_ + 1').by('age')"),
+                "a vertex without the property is dropped, the others answer");
+    }
+
+    @Test
+    void mathSupportsFunctionsPowerAndConstants() {
+        assertEquals(List.of(900L), gremlin.execute(
+                "g.V('a','Account').values('age').math('_ ^ 2')"), "power is right there in the language");
+        assertEquals(List.of(3L), gremlin.execute("g.V('a','Account').math('1 + 2')"),
+                "an expression with no _ answers every traverser the same");
+        List<Object> rooted = gremlin.execute("g.V('a','Account').values('age').math('sqrt(_)')");
+        assertEquals(1, rooted.size());
+        assertEquals(Math.sqrt(30), ((Number) rooted.get(0)).doubleValue(), 1e-9);
+        // the TinkerPop spelling without parentheses works too
+        assertEquals(Math.sqrt(30), ((Number) gremlin.execute(
+                "g.V('a','Account').values('age').math('sqrt _')").get(0)).doubleValue(), 1e-9);
+    }
+
+    @Test
+    void mathRefusesAnUnboundVariableOrANonNumber() {
+        QueryException unbound = assertThrows(QueryException.class,
+                () -> gremlin.execute("g.V('a','Account').math('nope + 1')"));
+        assertTrue(unbound.getMessage().contains("not bound"), unbound.getMessage());
+        QueryException notANumber = assertThrows(QueryException.class,
+                () -> gremlin.execute("g.V('a','Account').as('x').math('x + 1')"));
+        assertTrue(notANumber.getMessage().contains("must be a number"), notANumber.getMessage());
+        QueryException text = assertThrows(QueryException.class,
+                () -> gremlin.execute("g.V('a','Account').as('x').math('x + 1').by('name')"));
+        assertTrue(text.getMessage().contains("must be a number"), text.getMessage());
+    }
+
+    @Test
+    void selectAndProjectRunAChildTraversalOnTheLabel() {
+        assertEquals(List.of(1L), gremlin.execute(
+                "g.V('a','Account').as('x').select('x').by(out('knows').count())"),
+                "select('x').by(childTraversal) runs the child on the labelled value");
+        assertEquals(List.of("ann"), gremlin.execute(
+                "g.V('a','Account').as('x').select('x').by(values('name'))"));
+        // the same for project: by(childTraversal) used to answer null, now it runs the child
+        assertEquals(List.of(Map.of("n", "ann")), gremlin.execute(
+                "g.V('a','Account').project('n').by(values('name'))"));
+    }
+
+    @Test
+    void whereComparesLabelsThroughAByModulator() {
+        assertEquals(List.of("a"), ids("g.V('a','b','Account').as('x')"
+                        + ".where('x', eq('ACTIVE')).by('status').select('x')"),
+                "the stored label value is mapped through by('status') before the test (a is ACTIVE, b is FROZEN)");
+        assertEquals(List.of("a"), ids("g.V('a','Account').as('x').out('knows').as('y')"
+                        + ".where('x', neq('y')).by('name').select('x')"),
+                "and a label named by the predicate is mapped too: ann != bob");
+        assertEquals(List.of(), ids("g.V('a','Account').as('x').out('knows').as('y')"
+                        + ".where('x', eq('y')).by('name').select('x')"),
+                "the same comparison with eq matches nothing because the names differ");
+    }
+
+    @Test
+    void flatMapFlattensTheChildTraversal() {
+        assertEquals(gremlin.execute("g.V('a','b','Account').out('knows').values('id')"),
+                gremlin.execute("g.V('a','b','Account').flatMap(out('knows')).values('id')"),
+                "flatMap(child) is the child with its answers concatenated");
+        List<Object> flattened = gremlin.execute(
+                "g.V('a','Account').flatMap(def xs = new ArrayList(); xs.add(9); xs)");
+        assertEquals(1, flattened.size());
+        assertEquals(9L, ((Number) flattened.get(0)).longValue(),
+                "an expression body is evaluated per element and its list is flattened");
+    }
+
+    @Test
+    void pathFromAndToKeepThePartBetweenTwoLabels() {
+        String walk = "g.V('a','Account').as('v').out('knows').as('u')";
+        assertEquals(gremlin.execute(walk + ".path()"),
+                gremlin.execute(walk + ".path().from('v').to('u')"),
+                "the whole walk, when the two labels are its two ends");
+
+        List<Object> fromU = gremlin.execute(walk + ".path().from('u')");
+        assertEquals(1, ((GremlinPath) fromU.get(0)).size(), "from('u') keeps the walk from u on");
+        assertEquals("b", ((GremlinVertex) ((GremlinPath) fromU.get(0)).start()).id());
+
+        List<Object> toV = gremlin.execute(walk + ".path().to('v')");
+        assertEquals(1, ((GremlinPath) toV.get(0)).size(), "to('v') keeps the walk up to v");
+        assertEquals("a", ((GremlinVertex) ((GremlinPath) toV.get(0)).start()).id());
+
+        // two labels in the middle of a longer walk
+        String two = "g.V('a','Account').as('v').out('knows').as('u').out('knows').as('w')";
+        GremlinPath middle = (GremlinPath) gremlin.execute(two + ".path().from('v').to('u')").get(0);
+        assertEquals(3, middle.size(), "v -> edge -> u: " + middle);
+        assertEquals("a", ((GremlinVertex) middle.start()).id());
+        assertEquals("b", ((GremlinVertex) middle.end()).id());
+        assertEquals(gremlin.execute(two + ".path()"),
+                gremlin.execute(two + ".path().from('v').to('w')"),
+                "from the first to the last label is the whole walk again");
+        // the by() mapping runs after the slice, on the elements that survived it
+        List<Object> names = ((GremlinPath) gremlin.execute(
+                walk + ".path().by('name').from('v').to('u')").get(0)).objects();
+        assertEquals(java.util.Arrays.asList("ann", null, "bob"), names);
+
+        QueryException unknown = assertThrows(QueryException.class,
+                () -> gremlin.execute(walk + ".path().from('nope')"));
+        assertTrue(unknown.getMessage().contains("no such label"), unknown.getMessage());
+        QueryException noPath = assertThrows(QueryException.class,
+                () -> gremlin.execute("g.V('a','Account').from('a')"));
+        assertTrue(noPath.getMessage().contains("must follow path"), noPath.getMessage());
+    }
+
+    @Test
+    void subgraphCollectsTheWalkAndCapReadsItBack() {
+        List<Object> answer = gremlin.execute(
+                "g.V('a','Account').out('knows').subgraph('sg').cap('sg')");
+        assertEquals(1, answer.size(), "cap ends the traversal with the subgraph");
+        Subgraph subgraph = (Subgraph) answer.get(0);
+        assertEquals(List.of("a", "b"), vertexIds(subgraph), "the walk visited a and b");
+        assertEquals(List.of("e_ab"), edgeIds(subgraph), "and walked the edge between them");
+        assertEquals(1, edgeIds(subgraph).size(), "the edge is collected once");
+
+        // a two-hop walk collects both edges and all three vertices
+        Subgraph two = (Subgraph) gremlin.execute("g.V('a','Account').out('knows').out('knows')"
+                + ".subgraph('sg').cap('sg')").get(0);
+        assertEquals(List.of("a", "b", "c"), vertexIds(two));
+        assertEquals(List.of("e_ab", "e_bc"), edgeIds(two));
+
+        // the step is a side effect: without cap the traversers carry on
+        assertEquals(List.of("b"), ids("g.V('a','Account').out('knows').subgraph('sg').values('id')"));
+
+        QueryException empty = assertThrows(QueryException.class,
+                () -> gremlin.execute("g.V('a','Account').cap('nope')"));
+        assertTrue(empty.getMessage().contains("nothing filled"), empty.getMessage());
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void treeMergesTheWalksIntoOneNestedMap() {
+        List<Object> answer = gremlin.execute("g.V('a','Account').out('knows').tree()");
+        assertEquals(1, answer.size(), "tree() answers one tree");
+        Map<Object, Object> tree = (Map<Object, Object>) answer.get(0);
+        assertEquals(1, tree.size(), "one root");
+        Map<Object, Object> underA = (Map<Object, Object>) tree.get("Account#a");
+        Map<Object, Object> underEdge = (Map<Object, Object>) underA.get("knows#e_ab");
+        assertTrue(underEdge.containsKey("Account#b"), "a -> edge -> b: " + tree);
+        assertEquals(0, ((Map<Object, Object>) underEdge.get("Account#b")).size(), "b is a leaf");
+
+        // the named form is read back by cap()
+        List<Object> capped = gremlin.execute(
+                "g.V('a','Account').out('knows').tree('t').values('id').cap('t')");
+        assertEquals(1, capped.size());
+        assertEquals(tree, capped.get(0), "the same tree, whether it is the answer or a side effect");
+    }
+
+    @Test
+    void matchJoinsPatternsThatShareALabel() {
+        // the canonical join: x -knows-> y, and y is bob
+        Object joined = gremlin.execute("g.V('a','Account').match("
+                + "as('x').out('knows').as('y'),"
+                + "as('y').has('name','bob')).select('x','y')").get(0);
+        assertEquals(Map.of("x", "a", "y", "b"), selectedIds(joined));
+
+        // the same query with the patterns written the other way round: the join decides, not the order
+        Object reversed = gremlin.execute("g.V('a','Account').match("
+                + "as('y').has('name','bob'),"
+                + "as('x').out('knows').as('y')).select('x','y')").get(0);
+        assertEquals(selectedIds(joined), selectedIds(reversed),
+                "a pattern that reads a bound label can be written before the one that binds it");
+
+        // a two-step chain: x -> y -> z
+        Object chain = gremlin.execute("g.V('a','b','c','Account').match("
+                + "as('x').out('knows').as('y'),"
+                + "as('y').out('knows').as('z')).select('x','z')").get(0);
+        assertEquals(Map.of("x", "a", "z", "c"), selectedIds(chain));
+
+        // a condition on an already-bound label is a filter, not a re-bind
+        Object filtered = gremlin.execute("g.V('a','b','c','Account').match("
+                + "as('x').out('knows').as('y'),"
+                + "as('y').has('status','FROZEN')).select('x','y')").get(0);
+        assertEquals(Map.of("x", "a", "y", "b"), selectedIds(filtered));
+    }
+
+    @Test
+    void matchAnswersNothingWhenNoBindingSetHolds() {
+        assertEquals(List.of(), gremlin.execute("g.V('a','Account').match("
+                + "as('x').out('knows').as('y'),"
+                + "as('y').has('name','nobody'))"));
+        assertEquals(List.of(), gremlin.execute("g.V('c','Account').match("
+                + "as('x').out('knows').as('y')).select('x','y')"),
+                "c has no outgoing edge, so the pattern cannot be satisfied");
+        QueryException empty = assertThrows(QueryException.class,
+                () -> gremlin.execute("g.V('a','Account').match()"));
+        assertTrue(empty.getMessage().contains("at least one pattern"), empty.getMessage());
+    }
+
+    /** A selected map of labelled elements as a map of their ids. */
+    @SuppressWarnings("unchecked")
+    private static Map<String, String> selectedIds(Object selected) {
+        Map<String, String> out = new java.util.LinkedHashMap<>();
+        for (Map.Entry<?, ?> entry : ((Map<Object, Object>) selected).entrySet()) {
+            Object value = entry.getValue();
+            out.put(String.valueOf(entry.getKey()),
+                    value instanceof GremlinVertex vertex ? String.valueOf(vertex.id())
+                            : value instanceof GremlinEdge edge ? String.valueOf(edge.id())
+                            : String.valueOf(value));
+        }
+        return out;
+    }
+
+    private static List<String> vertexIds(Subgraph subgraph) {
+        List<String> out = new ArrayList<>();
+        for (Subgraph.Vertex vertex : subgraph.vertices()) {
+            out.add(String.valueOf(vertex.id()));
+        }
+        java.util.Collections.sort(out);
+        return out;
+    }
+
+    private static List<String> edgeIds(Subgraph subgraph) {
+        List<String> out = new ArrayList<>();
+        for (Subgraph.Edge edge : subgraph.edges()) {
+            out.add(String.valueOf(edge.id()));
+        }
+        java.util.Collections.sort(out);
+        return out;
     }
 
     /** The ids in a collected container (a list of vertices). */

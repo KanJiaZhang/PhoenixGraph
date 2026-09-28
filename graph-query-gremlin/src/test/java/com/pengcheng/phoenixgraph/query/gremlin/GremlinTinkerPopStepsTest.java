@@ -345,6 +345,52 @@ class GremlinTinkerPopStepsTest {
         assertEquals(List.of(1, 2, 3), gremlin.execute("g.V('a','b','c','Account').values('age').inject(1, 2, 3).limit(3)"));
     }
 
+    @Test
+    void groupCountsAndValuesByKey() {
+        List<Object> grouped = gremlin.execute(
+                "g.V('a','b','c','d','Account').group().by('status').by('name')");
+        assertEquals(1, grouped.size(), "group() answers one map");
+        assertEquals(Map.of("ACTIVE", List.of("ann", "dee"), "FROZEN", List.of("cid"),
+                "(none)", List.of("bob")), grouped.get(0),
+                "the value spec maps each element; a missing key groups under (none)");
+        assertEquals(Map.of("ACTIVE", 2L, "FROZEN", 1L, "(none)", 1L),
+                gremlin.execute("g.V('a','b','c','d','Account').group().by('status').by(count())").get(0),
+                "a reducing value spec (count) answers one number per group");
+        assertEquals(Map.of("ACTIVE", 55L, "FROZEN", 40L, "(none)", 20L),
+                gremlin.execute("g.V('a','b','c','d','Account').group().by('status')"
+                        + ".by(values('age').sum())").get(0),
+                "a reducing child traversal runs over the whole group");
+        Map<?, ?> plain = (Map<?, ?>) gremlin.execute(
+                "g.V('a','b','c','d','Account').group().by('status')").get(0);
+        assertEquals(2, ((List<?>) plain.get("ACTIVE")).size(), "no value spec folds the elements");
+    }
+
+    @Test
+    void propertyMapIsValueMap() {
+        assertEquals(gremlin.execute("g.V('a','Account').valueMap()"),
+                gremlin.execute("g.V('a','Account').propertyMap()"));
+        assertEquals(gremlin.execute("g.V('a','Account').valueMap('age')"),
+                gremlin.execute("g.V('a','Account').propertyMap('age')"));
+    }
+
+    @Test
+    void chooseWithOptionsPicksByThePredicateValue() {
+        assertEquals(List.of("yes", "other", "no", "yes"), gremlin.execute(
+                "g.V('a','b','c','d','Account').choose(values('status'))"
+                + ".option('ACTIVE', constant('yes')).option('FROZEN', constant('no'))"
+                + ".option(constant('other'))"),
+                "each option value is compared with the predicate's answer; option(child) is the default");
+    }
+
+    @Test
+    void whereWithAPredicateAndAByModulator() {
+        assertEquals(List.of("a"), ids(gremlin.execute(
+                "g.V('a','c','Account').where(eq('ACTIVE')).by('status')")),
+                "where(P).by(key) tests the key's value, not the element");
+        assertEquals(List.of(), gremlin.execute("g.V('a','c','Account').where(eq('ACTIVE'))"),
+                "without by() the predicate sees the element and matches nothing");
+    }
+
     private static List<String> ids(List<Object> elements) {
         List<String> out = new ArrayList<>(elements.size());
         for (Object element : elements) {

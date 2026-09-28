@@ -75,6 +75,46 @@ public final class GremlinContext {
     public Map<String, List<Object>> sideEffects() {
         return sideEffects;
     }
+
+    /**
+     * The named subgraphs collected by {@code subgraph(name)} (element key to element), read back by
+     * {@code cap(name)}. Kept as the elements the step saw, assembled into a {@link Subgraph} only when
+     * read, so a later step that drops a traverser does not silently change what was collected before.
+     */
+    private final Map<String, Map<String, Object>> namedSubgraphs = new LinkedHashMap<>();
+
+    /** @see #namedSubgraphs */
+    public Map<String, Map<String, Object>> namedSubgraphs() {
+        return namedSubgraphs;
+    }
+
+    /** The named path trees collected by {@code tree(name)}, read back by {@code cap(name)}. */
+    private final Map<String, Map<Object, Object>> namedTrees = new LinkedHashMap<>();
+
+    /** @see #namedTrees */
+    public Map<String, Map<Object, Object>> namedTrees() {
+        return namedTrees;
+    }
+
+    /**
+     * Assembles the elements a {@code subgraph(name)} collected into the {@link Subgraph} the result
+     * carries: vertices and edges deduplicated by label and id, edges with their resolved endpoints.
+     */
+    public static Subgraph subgraphOf(java.util.Collection<Object> elements) {
+        Map<String, Subgraph.Vertex> vertices = new LinkedHashMap<>();
+        Map<String, Subgraph.Edge> edges = new LinkedHashMap<>();
+        for (Object element : elements) {
+            if (element instanceof GremlinVertex vertex) {
+                vertices.putIfAbsent(vertex.label() + "#" + vertex.id(), new Subgraph.Vertex(vertex.label(),
+                        vertex.id(), vertex.properties(), vertex.createdTime(), vertex.lastUpdatedTime()));
+            } else if (element instanceof GremlinEdge edge) {
+                edges.putIfAbsent(edge.label() + "#" + edge.id(), new Subgraph.Edge(edge.label(), edge.id(),
+                        edge.sourceEndpoint(), edge.targetEndpoint(), edge.properties(), edge.createdTime(),
+                        edge.lastUpdatedTime()));
+            }
+        }
+        return new Subgraph(List.copyOf(vertices.values()), List.copyOf(edges.values()));
+    }
     /** Neighbours read for a vertex hop: identity only, so it is cached apart from the edges. */
     private final Map<NeighbourCacheKey, List<NeighbourRef>> neighbourCache = new LinkedHashMap<>();
 

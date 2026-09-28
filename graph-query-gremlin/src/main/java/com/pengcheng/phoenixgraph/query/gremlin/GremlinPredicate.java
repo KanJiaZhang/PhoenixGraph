@@ -5,6 +5,7 @@ import com.pengcheng.phoenixgraph.query.QueryException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -59,6 +60,12 @@ final class GremlinPredicate {
     static final String SUPPORTED = "eq, neq, gt, gte, lt, lte, between, inside, outside, within,"
             + " without, containing, startingWith, endingWith, notContaining, notStartingWith,"
             + " notEndingWith, not, and, or";
+
+    /** The predicate names, lower-cased, so a caller can tell a predicate call from a step call. */
+    private static final Set<String> KNOWN = Set.of("eq", "neq", "not", "gt", "gte", "lt", "lte",
+            "between", "inside", "outside", "within", "without", "contains", "containing",
+            "notcontaining", "startswith", "startingwith", "notstartingwith", "endswith",
+            "endingwith", "notendingwith", "and", "or");
 
     /** What the predicate does with a stored value. */
     private enum Kind {
@@ -320,5 +327,16 @@ final class GremlinPredicate {
     /** The predicate this token names, or {@code null}; for the error message of a bad shape. */
     static boolean looksLikeCall(String token) {
         return token != null && SHAPE.matcher(token).matches();
+    }
+
+    /**
+     * Whether a token is a call to a predicate this engine knows ({@code eq('x')}, {@code within('a','b')}),
+     * as opposed to a step call such as {@code out('x')} or a plain value. Used to tell a
+     * {@code where(predicate)} from a {@code where(childTraversal)}.
+     */
+    static boolean isPredicate(String token) {
+        Matcher matcher = token == null ? null : SHAPE.matcher(token);
+        return matcher != null && matcher.matches()
+                && KNOWN.contains(matcher.group(1).toLowerCase(java.util.Locale.ROOT));
     }
 }

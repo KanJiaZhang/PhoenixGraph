@@ -6,7 +6,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.function.Function;
+import java.util.function.BiFunction;
 
 /**
  * The steps that need per-traverser state: {@code as}, {@code select}, {@code project} and
@@ -42,20 +42,21 @@ final class GremlinTraverserSteps {
      * <p>A {@code by()} modulator after the step picks the value out of what was selected (a property key
      * reads it off the element).
      */
-    static List<GremlinTraverser> select(List<GremlinTraverser> in, List<String> labels, List<String> byKeys) {
+    static List<GremlinTraverser> select(List<GremlinTraverser> in, List<String> labels, List<String> byKeys,
+                                         BiFunction<Object, String, List<Object>> childRunner) {
         List<GremlinTraverser> out = new ArrayList<>(in.size());
         for (GremlinTraverser traverser : in) {
             if (labels.isEmpty()) {
                 out.add(traverser.withValue(new LinkedHashMap<>(traverser.labels())));
             } else if (labels.size() == 1) {
                 Object bound = requireLabel(traverser, labels.get(0));
-                out.add(traverser.withValue(pick(bound, byKeys.isEmpty() ? null : byKeys.get(0), null)));
+                out.add(traverser.withValue(pick(bound, byKeys.isEmpty() ? null : byKeys.get(0), childRunner)));
             } else {
                 Map<String, Object> selected = new LinkedHashMap<>();
                 for (int i = 0; i < labels.size(); i++) {
                     Object bound = requireLabel(traverser, labels.get(i));
                     selected.put(labels.get(i),
-                            i < byKeys.size() ? pick(bound, byKeys.get(i), null) : bound);
+                            i < byKeys.size() ? pick(bound, byKeys.get(i), childRunner) : bound);
                 }
                 out.add(traverser.withValue(selected));
             }
@@ -69,7 +70,7 @@ final class GremlinTraverserSteps {
      * value. A key with no modulator takes the traverser's own value, as TinkerPop does.
      */
     static List<GremlinTraverser> project(List<GremlinTraverser> in, List<String> keys, List<String> bySpecs,
-                                          Function<String, List<Object>> childRunner) {
+                                          BiFunction<Object, String, List<Object>> childRunner) {
         if (bySpecs.size() > keys.size()) {
             throw new QueryException("project(" + String.join(", ", keys) + ") has " + bySpecs.size()
                     + " by(...) modulators but only " + keys.size() + " keys");
@@ -94,17 +95,46 @@ final class GremlinTraverserSteps {
      * falls back to the text when no label has that name).
      */
     static List<GremlinTraverser> whereLabel(List<GremlinTraverser> in, String label, String predicateText) {
+        return whereLabel(in, label, predicateText, null, null);
+    }
+
+    /** The folded {@code where(label, P[, by(spec)])} arguments. */
+    static List<GremlinTraverser> whereLabel(List<GremlinTraverser> in, List<String> args,
+                                             BiFunction<Object, String, List<Object>> childRunner) {
+        if (args.size() < 2) {
+            throw new QueryException("where(label, P) needs a label and a predicate");
+        }
+        String bySpec = null;
+        for (String arg : args) {
+            if (arg.startsWith("by:")) {
+                bySpec = arg.substring(3);
+            }
+        }
+        return whereLabel(in, args.get(0), args.get(1), bySpec, childRunner);
+    }
+
+    /**
+     * {@code where('a', P).by(spec)}: the by() modulator is applied to the labelled value and to every
+     * label the predicate names, so {@code where('a', eq('b')).by('name')} compares two names rather than
+     * two vertices.
+     */
+    static List<GremlinTraverser> whereLabel(List<GremlinTraverser> in, String label, String predicateText,
+                                             String bySpec,
+                                             BiFunction<Object, String, List<Object>> childRunner) {
         List<GremlinTraverser> out = new ArrayList<>(in.size());
         for (GremlinTraverser traverser : in) {
             Object stored = requireLabel(traverser, label);
+            Object tested = bySpec == null || bySpec.isBlank() ? stored
+                    : pick(stored, bySpec, childRunner);
             // the predicate is read with the bound labels written into it, so where('a', eq('b')) compares
             // two labelled values and where('a', eq('ACTIVE')) still compares against the literal
-            GremlinPredicate predicate = GremlinPredicate.parse(resolveLabels(predicateText, traverser));
+            GremlinPredicate predicate = GremlinPredicate.parse(
+                    resolveLabels(predicateText, traverser, bySpec, childRunner));
             if (predicate == null) {
                 throw new QueryException("where('" + label + "', ...) expects a predicate, got: "
                         + predicateText);
             }
-            if (predicate.test(stored)) {
+            if (tested != null && predicate.test(tested)) {
                 out.add(traverser);
             }
         }
@@ -116,6 +146,12 @@ final class GremlinTraverserSteps {
      * (text quoted, numbers bare, an element by its id). The predicate's own name is left alone.
      */
     private static String resolveLabels(String predicateText, GremlinTraverser traverser) {
+        return resolveLabels(predicateText, traverser, null, null);
+    }
+
+    /** As above, with a {@code by(spec)} applied to each labelled value before it is written in. */
+    private static String resolveLabels(String predicateText, GremlinTraverser traverser, String bySpec,
+                                        BiFunction<Object, String, List<Object>> childRunner) {
         java.util.Set<String> names = java.util.Set.of("eq", "neq", "gt", "gte", "lt", "lte", "between",
                 "inside", "outside", "within", "without", "containing", "startingwith", "endingwith",
                 "notcontaining", "notstartingwith", "notendingwith", "not", "and", "or");
@@ -135,6 +171,9 @@ final class GremlinTraverserSteps {
                 if (bound == null) {
                     out.append(word);
                     continue;
+                }
+                if (bySpec != null && !bySpec.isBlank()) {
+                    bound = pick(bound, bySpec, childRunner);
                 }
                 // the word may already be inside quotes (`eq('s')`): replace the quoted token as a whole,
                 // otherwise the value would end up quoted twice (`eq(''ACTIVE'')`)
@@ -172,7 +211,7 @@ final class GremlinTraverserSteps {
      * What a {@code by()} modulator produces for one value: a property of the element, or the first
      * element a child traversal reaches (when a runner was handed in).
      */
-    private static Object pick(Object value, String byKey, Function<String, List<Object>> childRunner) {
+    private static Object pick(Object value, String byKey, BiFunction<Object, String, List<Object>> childRunner) {
         if (byKey == null || byKey.isBlank()) {
             return value;
         }
@@ -180,7 +219,7 @@ final class GremlinTraverserSteps {
             return GremlinElementExpression.value(element, byKey);
         }
         if (childRunner != null) {
-            List<Object> reached = childRunner.apply(byKey);
+            List<Object> reached = childRunner.apply(value, byKey);
             return reached.isEmpty() ? null : reached.get(0);
         }
         return value;

@@ -198,6 +198,40 @@ public class GremlinGraphQuery {
                 return out;
             };
         });
+        // flatMap(child): run the child on each element and concatenate the answers (TinkerPop's flatMap,
+        // the flattened form of map). A closure/expression body is evaluated per element and its list
+        // result is flattened, so flatMap{ ... } answers a list the way flatMap(traversal) does.
+        registry.register("flatMap", args -> {
+            if (args.size() != 1) {
+                throw new QueryException("flatMap expects one child traversal or expression, got "
+                        + args.size());
+            }
+            String body = args.get(0).trim();
+            if (looksLikeTraversal(body)) {
+                return (ctx, in) -> {
+                    List<Object> out = new ArrayList<>();
+                    for (Object element : in) {
+                        out.addAll(runSubTraversal(ctx, body, List.of(element)));
+                    }
+                    return out;
+                };
+            }
+            GremlinExpression expression = GremlinExpression.parse(body);
+            return (ctx, in) -> {
+                List<Object> out = new ArrayList<>();
+                for (Object element : in) {
+                    flattenInto(out, expression.evaluate(GremlinSteps.requireElement(element)));
+                }
+                return out;
+            };
+        });
+        // group().by(key).by(value): group the traversers by a key and answer one map. The value spec is
+        // run over each group as a whole; a step that reduces (count/sum/mean/min/max/fold) answers one
+        // value, anything else (a property key, a child traversal) answers the list it produced.
+        registry.register("group", args -> {
+            List<String> specs = bySpecsOf(args);
+            return (ctx, in) -> groupStep(ctx, specs, in);
+        });
         registry.register("coalesce", args -> {
             List<String> subTraversals = requireSubTraversals(args, "coalesce");
             return (ctx, in) -> {
@@ -258,18 +292,48 @@ public class GremlinGraphQuery {
             };
         });
         registry.register("where", args -> {
-            if (args.size() == 2 && args.get(0).matches("[A-Za-z_$][A-Za-z0-9_$]*")) {
+            List<String> bodies = new ArrayList<>();
+            for (String arg : args) {
+                if (!arg.startsWith("by:")) {
+                    bodies.add(arg);
+                }
+            }
+            List<String> bySpecs = bySpecsOf(args);
+            if (bodies.size() == 2 && bodies.get(0).matches("[A-Za-z_$][A-Za-z0-9_$]*")) {
                 // where(label, P): a comparison over the labels, which only the stateful path can read
                 // (the compiler puts a query with this form on that path, so this step never runs here)
                 return (ctx, in) -> {
-                    throw new QueryException("where('" + args.get(0) + "', ...) needs the stateful path");
+                    throw new QueryException("where('" + bodies.get(0) + "', ...) needs the stateful path");
                 };
             }
-            String child = singleSubTraversal(args, "where");
+            if (bodies.size() != 1) {
+                throw new QueryException("where expects where(child), where(predicate) or"
+                        + " where(label, predicate), got " + bodies.size() + " arguments");
+            }
+            String body = childTraversal(bodies.get(0));
+            String spec = bySpecs.isEmpty() ? null : bySpecs.get(0);
+            if (GremlinPredicate.isPredicate(body)) {
+                // where(P).by(spec): the by-mapped value is tested against the predicate
+                GremlinPredicate predicate = GremlinPredicate.parse(body);
+                return (ctx, in) -> {
+                    List<Object> out = new ArrayList<>();
+                    for (Object element : in) {
+                        Object tested = byValue(ctx, element, spec);
+                        if (tested != null && predicate.test(tested)) {
+                            out.add(element);
+                        } else if (element instanceof GremlinElement e) {
+                            ctx.dropElement(e);
+                        }
+                    }
+                    return out;
+                };
+            }
+            // where(child).by(spec): the by-mapped value is what the child traversal runs on
             return (ctx, in) -> {
                 List<Object> out = new ArrayList<>();
                 for (Object element : in) {
-                    if (!runSubTraversal(ctx, child, List.of(element)).isEmpty()) {
+                    Object mapped = byValue(ctx, element, spec);
+                    if (mapped != null && !runSubTraversal(ctx, body, List.of(mapped)).isEmpty()) {
                         out.add(element);
                     } else if (element instanceof GremlinElement e) {
                         ctx.dropElement(e);
@@ -279,33 +343,77 @@ public class GremlinGraphQuery {
             };
         });
         registry.register("choose", args -> {
-            if (args.size() != 3) {
-                throw new QueryException("choose expects choose(predicate, trueChild, falseChild), got "
-                        + args.size());
+            // choose(pred, trueChild, falseChild): the predicate decides by answering something or not
+            if (args.size() == 3) {
+                return (ctx, in) -> {
+                    List<Object> out = new ArrayList<>();
+                    for (Object element : in) {
+                        boolean condition = !runSubTraversal(ctx, args.get(0), List.of(element)).isEmpty();
+                        out.addAll(runSubTraversal(ctx, condition ? args.get(1) : args.get(2),
+                                List.of(element)));
+                    }
+                    return out;
+                };
             }
+            // choose(pred).option(value, child)...: the predicate's answer is compared with each option's
+            // value; the first match runs, otherwise the option(child) with no value (the default), and a
+            // traverser no option matches is dropped
+            if (args.isEmpty()) {
+                throw new QueryException("choose expects a predicate, e.g. choose(values('status'))");
+            }
+            String predicate = args.get(0);
+            List<Object[]> choices = new ArrayList<>(); // {value or null, child}
+            String fallback = null;
+            for (int i = 1; i < args.size(); i++) {
+                String arg = args.get(i);
+                if (arg.startsWith("optionValue:")) {
+                    String value = arg.substring("optionValue:".length());
+                    if (i + 1 >= args.size() || !args.get(i + 1).startsWith("optionChild:")) {
+                        throw new QueryException("option(value, child) lost its child traversal");
+                    }
+                    choices.add(new Object[] {value, args.get(++i).substring("optionChild:".length())});
+                } else if (arg.startsWith("optionDefault:")) {
+                    fallback = arg.substring("optionDefault:".length());
+                } else {
+                    throw new QueryException("choose has an unexpected argument: " + arg);
+                }
+            }
+            if (choices.isEmpty() && fallback == null) {
+                throw new QueryException("choose(predicate) needs at least one option(...) or a"
+                        + " choose(predicate, trueChild, falseChild) form");
+            }
+            String defaultChild = fallback;
             return (ctx, in) -> {
                 List<Object> out = new ArrayList<>();
                 for (Object element : in) {
-                    boolean condition = !runSubTraversal(ctx, args.get(0), List.of(element)).isEmpty();
-                    out.addAll(runSubTraversal(ctx, condition ? args.get(1) : args.get(2), List.of(element)));
+                    List<Object> answered = runSubTraversal(ctx, predicate, List.of(element));
+                    Object key = answered.isEmpty() ? null : answered.get(0);
+                    String child = defaultChild;
+                    for (Object[] choice : choices) {
+                        if (sameElement(choice[0], key) || String.valueOf(choice[0]).equalsIgnoreCase(
+                                key == null ? null : String.valueOf(key))) {
+                            child = (String) choice[1];
+                            break;
+                        }
+                    }
+                    if (child != null) {
+                        out.addAll(runSubTraversal(ctx, child, List.of(element)));
+                    }
                 }
                 return out;
             };
         });
         registry.register("repeat", args -> {
-            if (args.size() != 2) {
-                throw new QueryException("repeat expects repeat(child).times(n)");
+            RepeatPlan plan = parseRepeat(args);
+            if (plan.until() != null || plan.emit() != null) {
+                // a loop with a condition runs on the stateful path, which is where the compiler puts a
+                // query that has one (needsTraverserState); this step is built but never applied there
+                return (ctx, in) -> {
+                    throw new QueryException("repeat with until()/emit() needs the stateful path");
+                };
             }
-            int times;
-            try {
-                times = Integer.parseInt(args.get(1).trim());
-            } catch (NumberFormatException e) {
-                throw new QueryException("times expects a number, got: " + args.get(1));
-            }
-            if (times < 0) {
-                throw new QueryException("times must not be negative, got: " + times);
-            }
-            String child = args.get(0);
+            int times = plan.times();
+            String child = plan.child();
             return (ctx, in) -> {
                 List<Object> current = in;
                 for (int i = 0; i < times; i++) {
@@ -388,12 +496,37 @@ public class GremlinGraphQuery {
     private static List<GremlinQuery.Step> foldModulators(List<GremlinQuery.Step> steps) {
         List<GremlinQuery.Step> out = new ArrayList<>();
         for (GremlinQuery.Step step : steps) {
-            if (step.name().equals("times") && !out.isEmpty()
-                    && out.get(out.size() - 1).name().equals("repeat")
-                    && out.get(out.size() - 1).args().size() == 1) {
-                GremlinQuery.Step repeat = out.get(out.size() - 1);
-                out.set(out.size() - 1, new GremlinQuery.Step("repeat",
-                        List.of(repeat.args().get(0), step.args().isEmpty() ? "1" : step.args().get(0))));
+            // times(n), until(c) and emit(c) are modulators on the repeat in front of them: they are
+            // folded into its arguments (times as the bare number, the two conditions marked) so the
+            // loop executor reads the whole loop from one step
+            if (isRepeatModulator(step.name()) && !out.isEmpty()
+                    && out.get(out.size() - 1).name().equals("repeat")) {
+                out.set(out.size() - 1, attachToRepeat(out.get(out.size() - 1), step));
+                continue;
+            }
+            if (step.name().equals("until") || step.name().equals("emit")) {
+                throw new QueryException(step.name() + "(...) must follow repeat(...): write"
+                        + " repeat(child)." + step.name() + "(...). The"
+                        + " " + step.name() + "(...).repeat(...) form is not supported yet.");
+            }
+            // from(x)/to(x) are modulators on path(): they keep the part of the walk between the two
+            // labels, which only the stateful path can resolve (a label lives on the traverser)
+            if ((step.name().equals("from") || step.name().equals("to"))
+                    && !out.isEmpty() && out.get(out.size() - 1).name().equals("path")) {
+                out.set(out.size() - 1, attachRangeToPath(out.get(out.size() - 1), step));
+                continue;
+            }
+            if (step.name().equals("from") || step.name().equals("to")) {
+                throw new QueryException(step.name() + "(...) must follow path(), e.g."
+                        + " path().from('a').to('b')");
+            }
+            // option(value, child) / option(child) are modulators on choose(...)
+            if (step.name().equals("option")) {
+                if (out.isEmpty() || !out.get(out.size() - 1).name().equals("choose")) {
+                    throw new QueryException("option(...) must follow choose(...), e.g."
+                            + " choose(values('status')).option('ACTIVE', out('x'))");
+                }
+                out.set(out.size() - 1, attachOption(out.get(out.size() - 1), step));
                 continue;
             }
             if (!step.name().equals("by")) {
@@ -402,12 +535,138 @@ public class GremlinGraphQuery {
             }
             GremlinQuery.Step folded = out.isEmpty() ? null : applyBy(out.get(out.size() - 1), step.args());
             if (folded == null) {
-                throw new QueryException("by(...) must follow order(...), groupCount(...), dedup() or path()");
+                throw new QueryException("by(...) must follow order(...), groupCount(...), dedup(), path(),"
+                        + " group(...), where(...), math(...), project(...), select(...) or sack(...)");
             }
             out.set(out.size() - 1, folded);
         }
         return out;
     }
+
+    /**
+     * Attaches a {@code choose(...).option(...)}: an {@code option(value, child)} is paired as
+     * {@code optionValue:} + {@code optionChild:}, a bare {@code option(child)} is the default
+     * ({@code optionDefault:}). The pairs are read back in order by the {@code choose} step.
+     */
+    private static GremlinQuery.Step attachOption(GremlinQuery.Step choose, GremlinQuery.Step option) {
+        List<String> args = new ArrayList<>(choose.args());
+        if (option.args().size() == 1) {
+            args.add("optionDefault:" + childTraversal(option.args().get(0)));
+        } else if (option.args().size() == 2) {
+            args.add("optionValue:" + option.args().get(0));
+            args.add("optionChild:" + childTraversal(option.args().get(1)));
+        } else {
+            throw new QueryException("option expects option(child) or option(value, child), got "
+                    + option.args().size() + " arguments");
+        }
+        return new GremlinQuery.Step("choose", List.copyOf(args));
+    }
+
+    /** The modulators a {@code repeat} absorbs: the loop bound and its two conditions. */
+    private static boolean isRepeatModulator(String name) {
+        return name.equals("times") || name.equals("until") || name.equals("emit");
+    }
+
+    /**
+     * Attaches one {@code repeat} modulator to the step that carries the loop. {@code times(n)} becomes
+     * the bare number right after the child; {@code until(c)} / {@code emit(c)} are appended marked, so
+     * the loop executor can tell them from the bound and from each other. A modulator that was written
+     * more than once replaces the earlier one, as TinkerPop does.
+     */
+    private static GremlinQuery.Step attachToRepeat(GremlinQuery.Step repeat, GremlinQuery.Step modulator) {
+        if (modulator.args().size() > 1) {
+            throw new QueryException(modulator.name() + " expects at most one child traversal, got "
+                    + modulator.args().size());
+        }
+        String text = modulator.args().isEmpty() ? "" : childTraversal(modulator.args().get(0));
+        List<String> args = new ArrayList<>(repeat.args());
+        if (modulator.name().equals("times")) {
+            String bound = text.isBlank() ? "1" : text;
+            if (args.size() >= 2 && !args.get(1).startsWith(UNTIL_MARKER)
+                    && !args.get(1).startsWith(EMIT_MARKER)) {
+                args.set(1, bound);
+            } else {
+                args.add(1, bound); // the bound sits before the conditions, however they were ordered
+            }
+            return new GremlinQuery.Step("repeat", List.copyOf(args));
+        }
+        String marker = modulator.name().equals("until") ? UNTIL_MARKER : EMIT_MARKER;
+        args.removeIf(arg -> arg.startsWith(marker));
+        args.add(marker + text);
+        return new GremlinQuery.Step("repeat", List.copyOf(args));
+    }
+
+    /** The marker that introduces a repeat's {@code until} condition in the folded arguments. */
+    private static final String UNTIL_MARKER = "until:";
+    /** The marker that introduces a repeat's {@code emit} condition in the folded arguments. */
+    private static final String EMIT_MARKER = "emit:";
+
+    /**
+     * What a folded {@code repeat} step says: the body, an optional {@code times} bound, and the
+     * {@code until} / {@code emit} conditions (an empty {@code emit} text means "emit every iteration").
+     */
+    private record RepeatPlan(String child, Integer times, String until, String emit) {
+    }
+
+    /** Reads the folded arguments of a {@code repeat} step, whichever modulators it carries. */
+    private static RepeatPlan parseRepeat(List<String> args) {
+        if (args.isEmpty() || args.get(0).isBlank()) {
+            throw new QueryException("repeat expects a child traversal, e.g. repeat(out('knows')).times(2)");
+        }
+        Integer times = null;
+        String until = null;
+        String emit = null;
+        for (int i = 1; i < args.size(); i++) {
+            String arg = args.get(i);
+            if (arg.startsWith(UNTIL_MARKER)) {
+                until = arg.substring(UNTIL_MARKER.length());
+            } else if (arg.startsWith(EMIT_MARKER)) {
+                emit = arg.substring(EMIT_MARKER.length());
+            } else {
+                try {
+                    times = Integer.parseInt(arg.trim());
+                } catch (NumberFormatException e) {
+                    throw new QueryException("times expects a number, got: " + arg);
+                }
+                if (times < 0) {
+                    throw new QueryException("times must not be negative, got: " + times);
+                }
+            }
+        }
+        if (times == null && until == null) {
+            throw new QueryException("repeat needs a bound: write repeat(child).times(n) or"
+                    + " repeat(child).until(...). (An unbounded repeat would run until the graph runs out,"
+                    + " which a cyclic graph never does.)");
+        }
+        if (until != null && until.isBlank()) {
+            throw new QueryException("until(...) needs a condition, e.g. until(has('name','x')) or"
+                    + " until(loops().is(3))");
+        }
+        return new RepeatPlan(args.get(0), times, until, emit);
+    }
+
+    /**
+     * Attaches a {@code path().from(x)} / {@code path().to(x)} modulator: the label is marked in the
+     * path step's arguments, so the stateful path can slice the walk between the two labels.
+     */
+    private static GremlinQuery.Step attachRangeToPath(GremlinQuery.Step path, GremlinQuery.Step modulator) {
+        if (modulator.args().size() != 1 || modulator.args().get(0).isBlank()) {
+            throw new QueryException(modulator.name() + "(...) expects one label, e.g. path()."
+                    + modulator.name() + "('a')");
+        }
+        String marker = (modulator.name().equals("from") ? FROM_MARKER : TO_MARKER)
+                + modulator.args().get(0).trim();
+        List<String> args = new ArrayList<>(path.args());
+        String prefix = marker.substring(0, marker.indexOf(':') + 1);
+        args.removeIf(arg -> arg.startsWith(prefix));
+        args.add(marker);
+        return new GremlinQuery.Step("path", List.copyOf(args));
+    }
+
+    /** The marker that introduces a path's {@code from} label in the folded arguments. */
+    static final String FROM_MARKER = "from:";
+    /** The marker that introduces a path's {@code to} label in the folded arguments. */
+    static final String TO_MARKER = "to:";
 
     /** The step a {@code by(...)} turns the step before it into, or {@code null} when it cannot attach. */
     private static GremlinQuery.Step applyBy(GremlinQuery.Step previous, List<String> byArgs) {
@@ -420,13 +679,28 @@ public class GremlinGraphQuery {
                     byArgs.size() > 1 ? List.of(key, byArgs.get(1)) : List.of(key));
             case "groupCount" -> new GremlinQuery.Step("groupCount", List.of(key));
             case "dedup" -> new GremlinQuery.Step("dedup", List.of(key));
-            case "path" -> new GremlinQuery.Step("path", List.of(key));
+            case "path" -> {
+                // path().by('name') keeps the by key; a from/to marker already on the step survives
+                List<String> args = new ArrayList<>(previous.args());
+                args.add(0, key);
+                yield new GremlinQuery.Step("path", List.copyOf(args));
+            }
             // project/select keep their keys and collect the by(...) specs after them, marked so the
             // step can tell a key from a modulator
-            case "project", "select", "sack" -> {
+            case "project", "select", "sack", "group", "where" -> {
                 List<String> args = new ArrayList<>(previous.args());
                 args.add("by:" + key);
                 yield new GremlinQuery.Step(previous.name(), List.copyOf(args));
+            }
+            // math('a + b').by('age') collects the modulator after the expression: the stateful path
+            // reads each variable's value (its label, or the traverser for _) and applies the spec
+            case "math" -> {
+                if (byArgs.size() > 1) {
+                    throw new QueryException("math().by(...) expects one modulator, got " + byArgs.size());
+                }
+                List<String> args = new ArrayList<>(previous.args());
+                args.add("by:" + key);
+                yield new GremlinQuery.Step("math", List.copyOf(args));
             }
             default -> null;
         };
@@ -917,6 +1191,12 @@ public class GremlinGraphQuery {
             plannedVertexCaps.add(null);
             i = next - 1; // the conditions became part of the nearest step
         }
+        if (plannedSteps.stream().anyMatch(step -> step.name().equals("loops"))
+                && plannedSteps.stream().noneMatch(step -> step.name().equals("repeat"))) {
+            // loops() outside a repeat would silently answer 0, which looks like data; TinkerPop refuses it
+            throw new QueryException("loops() answers how many times a traverser has been through a"
+                    + " repeat body, so it needs a repeat(...) in the query");
+        }
         List<String>[] properties = planProperties(plannedSteps);
         List<String> startProperties = startProperties(plannedSteps);
         if (plannedSteps.stream().anyMatch(step -> step.name().equals("path"))) {
@@ -1363,16 +1643,22 @@ public class GremlinGraphQuery {
             traversers = switch (name) {
                 case "as" -> GremlinTraverserSteps.as(traversers, planned.args());
                 case "select" -> GremlinTraverserSteps.select(traversers, keysOf(planned.args()),
-                        bySpecsOf(planned.args()));
+                        bySpecsOf(planned.args()),
+                        (value, child) -> runSubTraversal(context, child, List.of(value)));
                 case "project" -> GremlinTraverserSteps.project(traversers, keysOf(planned.args()),
                         bySpecsOf(planned.args()),
-                        child -> runSubTraversal(context, child, List.of()));
-                case "where" -> GremlinTraverserSteps.whereLabel(traversers, planned.args().get(0),
-                        planned.args().get(1));
+                        (value, child) -> runSubTraversal(context, child, List.of(value)));
+                case "where" -> GremlinTraverserSteps.whereLabel(traversers, planned.args(),
+                        (value, child) -> runSubTraversal(context, child, List.of(value)));
                 case "path" -> pathStep(traversers, planned.args());
                 case "simplePath" -> walkFilter(traversers, true);
                 case "cyclicPath" -> walkFilter(traversers, false);
                 case "repeat" -> repeatStep(context, planned.args(), traversers);
+                case "loops" -> loopsStep(traversers);
+                case "subgraph" -> subgraphStep(context, planned.args(), traversers);
+                case "tree" -> treeStep(context, planned.args(), traversers);
+                case "match" -> matchStep(context, planned.args(), traversers);
+                case "math" -> mathStep(context, planned.args(), traversers);
                 case "branch" -> branchStep(context, planned.args(), traversers);
                 // union is an ordinary step on the list path; with labels it needs the traversers, so the
                 // stateful path handles it here and the list path keeps running exactly what it ran before
@@ -1401,34 +1687,394 @@ public class GremlinGraphQuery {
     }
 
     /**
-     * {@code repeat(child).times(n)} on the stateful path: the same loop the list path runs, but on
-     * traversers, so a label bound before the loop stays readable after it. The args arrive folded as
-     * {@code [child, times]} - the {@code times} modulator is attached at compile time. A child that
-     * answers nothing empties the loop early. {@code until/emit/loops} are the rest of the executor.
+     * {@code repeat(child)} on the stateful path: the same loop the list path runs, but on traversers, so a
+     * label bound before the loop stays readable after it. The folded arguments carry the bound
+     * ({@code times(n)}) and the conditions ({@code until(c)} / {@code emit(c)}); a repeat that has neither a
+     * bound nor a condition is refused, because an unbounded loop over a cyclic graph never ends.
+     *
+     * <p>The semantics match TinkerPop's post-repeat forms: {@code repeat(child).until(c)} runs the body
+     * and then tests {@code c}, so it is a do/while and the traversers that satisfy {@code c} are the
+     * answer; {@code repeat(child).emit(c)} runs the body and hands on every reached traverser that
+     * satisfies {@code c} (all of them when {@code c} is empty) while the loop keeps going; with both, a
+     * traverser that satisfies {@code emit} is emitted and a traverser that satisfies {@code until} leaves
+     * the loop, and one that satisfies both is emitted once. {@code child} dying early ends the loop, and
+     * {@code times(n)} bounds it. The {@code loops()} count is carried on the traversers, so a condition
+     * may read it ({@code until(loops().is(3))}).
      */
     private List<GremlinTraverser> repeatStep(GremlinContext context, List<String> args,
                                               List<GremlinTraverser> traversers) {
-        int times;
-        try {
-            times = Integer.parseInt(args.get(1).trim());
-        } catch (NumberFormatException | IndexOutOfBoundsException e) {
-            throw new QueryException("repeat expects repeat(child).times(n)");
-        }
-        String child = args.get(0);
-        List<GremlinTraverser> current = traversers;
-        for (int i = 0; i < times; i++) {
+        RepeatPlan plan = parseRepeat(args);
+        String child = plan.child();
+        Integer times = plan.times();
+        String until = plan.until();
+        String emit = plan.emit();
+        List<GremlinTraverser> frontier = traversers;
+        List<GremlinTraverser> emitted = new ArrayList<>();
+        int loop = 0;
+        while (!frontier.isEmpty() && (times == null || loop < times)) {
+            loop++;
+            if (loop > MAX_REPEAT_ITERATIONS) {
+                throw new QueryException("A repeat ran " + MAX_REPEAT_ITERATIONS + " times without its"
+                        + " until() condition being met and without a times(n) bound: check the condition"
+                        + " (a cyclic graph keeps the loop alive forever)");
+            }
             List<GremlinTraverser> next = new ArrayList<>();
-            for (GremlinTraverser traverser : current) {
+            for (GremlinTraverser traverser : frontier) {
                 for (Object value : runSubTraversal(context, child, List.of(traverser.value()))) {
-                    next.add(traverser.withValue(value));
+                    next.add(traverser.withValue(value).withLoops(loop));
                 }
             }
-            current = next;
-            if (current.isEmpty()) {
-                break;
+            List<GremlinTraverser> continuing = new ArrayList<>();
+            for (GremlinTraverser traverser : next) {
+                boolean emittedHere = false;
+                if (emit != null && (emit.isEmpty() || predicateHolds(context, emit, traverser, loop))) {
+                    emitted.add(traverser);
+                    emittedHere = true;
+                }
+                if (until == null || !predicateHolds(context, until, traverser, loop)) {
+                    continuing.add(traverser);
+                } else if (!emittedHere) {
+                    emitted.add(traverser); // an until() result is the answer even without emit()
+                }
+            }
+            frontier = continuing;
+        }
+        // a plain times() loop answers with what it reached; one that asked for emit/until answers with
+        // what those steps collected (the terminal traversers and/or every emitted iteration)
+        return emit == null && until == null ? frontier : emitted;
+    }
+
+    /** How far an unbounded {@code repeat(child).until(...)} may go before the engine gives up. */
+    private static final int MAX_REPEAT_ITERATIONS = 100_000;
+
+    /**
+     * Whether a child traversal used as a loop condition reaches anything for this traverser. The loop
+     * count is handed in, so {@code until(loops().is(n))} can read it: {@code loops()} answers the count
+     * instead of the value for that step.
+     */
+    private boolean predicateHolds(GremlinContext context, String condition,
+                                   GremlinTraverser traverser, int loop) {
+        List<GremlinQuery.Step> steps = GremlinQuery.parseSteps("." + condition.trim());
+        List<Object> current = List.of(traverser.value());
+        for (GremlinQuery.Step step : steps) {
+            context.readProperties(List.of());
+            if (step.name().equals("loops")) {
+                List<Object> counts = new ArrayList<>(current.size());
+                for (int i = 0; i < current.size(); i++) {
+                    counts.add(loop);
+                }
+                current = counts;
+                continue;
+            }
+            current = registry.resolve(step.name(), step.args()).apply(context, current);
+        }
+        return !current.isEmpty();
+    }
+
+    /** {@code loops()}: the traverser's value becomes how many times it has been through its repeat body. */
+    private static List<GremlinTraverser> loopsStep(List<GremlinTraverser> traversers) {
+        List<GremlinTraverser> out = new ArrayList<>(traversers.size());
+        for (GremlinTraverser traverser : traversers) {
+            out.add(traverser.withValue(traverser.loops()));
+        }
+        return out;
+    }
+
+    /**
+     * {@code subgraph('x')}: collect every element each traverser has walked over - the whole walk, or the
+     * value itself when the query carries no walk - into a named subgraph, and hand the traverser on.
+     * {@code cap('x')} answers the assembled {@link Subgraph}. This is TinkerPop's subgraph side effect:
+     * the collection is the point, the traversal continues until something reads it.
+     */
+    private List<GremlinTraverser> subgraphStep(GremlinContext context, List<String> args,
+                                                List<GremlinTraverser> traversers) {
+        String name = sideEffectName(args, "subgraph");
+        Map<String, Object> collected = context.namedSubgraphs().computeIfAbsent(name,
+                key -> new LinkedHashMap<>());
+        for (GremlinTraverser traverser : traversers) {
+            List<Object> walk = traverser.path();
+            if (walk == null || walk.isEmpty()) {
+                collectElement(collected, traverser.value());
+            } else {
+                for (Object element : walk) {
+                    collectElement(collected, element);
+                }
             }
         }
-        return current;
+        return traversers;
+    }
+
+    /** Adds one element to a named subgraph, deduplicated by label and id. */
+    private static void collectElement(Map<String, Object> collected, Object element) {
+        if (element instanceof GremlinElement gremlinElement) {
+            collected.putIfAbsent(gremlinElement.label() + "#" + gremlinElement.id(), element);
+        }
+    }
+
+    /**
+     * {@code tree('x')}: merge the traversers' walks into one nested map (a path tree) and collect it
+     * under the name; {@code tree()} with no name answers the tree itself. A node is keyed by the element
+     * it stands for ({@code label#id}), so the same vertex reached twice becomes one node - which is what
+     * makes it a tree rather than a list of walks, and keeps the answer JSON-friendly.
+     */
+    @SuppressWarnings("unchecked")
+    private List<GremlinTraverser> treeStep(GremlinContext context, List<String> args,
+                                            List<GremlinTraverser> traversers) {
+        Map<Object, Object> tree = new LinkedHashMap<>();
+        for (GremlinTraverser traverser : traversers) {
+            List<Object> walk = traverser.path();
+            if (walk == null || walk.isEmpty()) {
+                walk = List.of(traverser.value());
+            }
+            Map<Object, Object> node = tree;
+            for (Object element : walk) {
+                Object nodeKey = treeKey(element);
+                Object child = node.get(nodeKey);
+                if (!(child instanceof Map)) {
+                    child = new LinkedHashMap<>();
+                    node.put(nodeKey, child);
+                }
+                node = (Map<Object, Object>) child;
+            }
+        }
+        if (args.isEmpty()) {
+            // tree() answers with the tree: one value, keeping the labels of the first traverser
+            return List.of(traversers.isEmpty() ? GremlinTraverser.of(tree)
+                    : traversers.get(0).withValue(tree));
+        }
+        context.namedTrees().put(sideEffectName(args, "tree"), tree);
+        return traversers;
+    }
+
+    /** How a tree names a node: an element by label and id, anything else by value. */
+    private static Object treeKey(Object element) {
+        return element instanceof GremlinElement gremlinElement
+                ? gremlinElement.label() + "#" + gremlinElement.id() : element;
+    }
+
+    /** The one name a side-effect step ({@code subgraph}, {@code tree}) expects. */
+    private static String sideEffectName(List<String> args, String stepName) {
+        if (args.size() != 1 || args.get(0).isBlank()) {
+            throw new QueryException(stepName + " expects one name, e.g. " + stepName + "('x')");
+        }
+        return args.get(0).trim();
+    }
+
+    /**
+     * Whether a {@code math(...)} step needs the stateful path: a {@code by(...)} modulator or a named
+     * variable reads the traverser's labels. {@code math('_ ...')} with no modulator stays on the list path.
+     */
+    static boolean mathNeedsTraverserState(List<String> args) {
+        String expression = null;
+        for (String arg : args) {
+            if (arg.startsWith("by:")) {
+                return true;
+            }
+            if (expression == null) {
+                expression = arg;
+            }
+        }
+        return expression != null
+                && GremlinNumbers.variables(expression).stream().anyMatch(name -> !name.equals("_"));
+    }
+
+    /**
+     * {@code math(expression).by(spec...)} on the stateful path: every variable the expression names is
+     * resolved to a number - {@code _} is the traverser's own value, any other name is a label bound with
+     * {@code as(name)} - and the {@code by()} modulators are applied to those values in the order the
+     * variables first appear, cycling when fewer modulators were written (as TinkerPop's ring does).
+     *
+     * <p>A value the modulator cannot produce filters the traverser (a missing property is not an error);
+     * a value that is not a number is an error, because a math on text has no meaning to return. An
+     * unbound variable is an error too: silently reading 0 would look like data.
+     */
+    private List<GremlinTraverser> mathStep(GremlinContext context, List<String> args,
+                                            List<GremlinTraverser> traversers) {
+        String expression = null;
+        List<String> specs = new ArrayList<>();
+        for (String arg : args) {
+            if (arg.startsWith("by:")) {
+                specs.add(arg.substring(3));
+            } else if (expression == null) {
+                expression = arg;
+            }
+        }
+        List<String> variables = GremlinNumbers.variables(expression == null ? "" : expression);
+        List<GremlinTraverser> out = new ArrayList<>(traversers.size());
+        for (GremlinTraverser traverser : traversers) {
+            Map<String, Double> bindings = new LinkedHashMap<>();
+            boolean productive = true;
+            for (int i = 0; i < variables.size(); i++) {
+                String variable = variables.get(i);
+                String spec = specs.isEmpty() ? null : specs.get(i % specs.size());
+                Object raw;
+                if (variable.equals("_")) {
+                    raw = traverser.value();
+                } else if (traverser.labels().containsKey(variable)) {
+                    raw = traverser.labels().get(variable);
+                } else {
+                    throw new QueryException("math('" + expression + "') uses the variable '" + variable
+                            + "', which is not bound: bind it with as('" + variable + "') before the step");
+                }
+                Object value = spec == null ? raw : byValue(context, raw, spec);
+                if (value == null) {
+                    productive = false; // a modulator that produced nothing filters the traverser
+                    break;
+                }
+                if (!(value instanceof Number number)) {
+                    throw new QueryException("math('" + expression + "') variable '" + variable + "' must be"
+                            + " a number, got: " + value);
+                }
+                bindings.put(variable, number.doubleValue());
+            }
+            if (productive) {
+                out.add(traverser.withValue(GremlinNumbers.math(expression, bindings)));
+            }
+        }
+        return out;
+    }
+
+    /** One {@code by()} spec applied to a resolved variable value (a property key, or a child traversal). */
+    private Object byValue(GremlinContext context, Object value, String spec) {
+        String by = spec == null ? "" : spec.trim();
+        if (by.isEmpty()) {
+            return value;
+        }
+        if (!by.contains("(") && !by.contains(".")) {
+            // a bare property key: read it off the element, or nothing when the value is not an element
+            return value instanceof GremlinElement element ? GremlinElementExpression.value(element, by) : null;
+        }
+        List<Object> reached = runSubTraversal(context, by, List.of(value));
+        return reached.isEmpty() ? null : reached.get(0);
+    }
+
+    /** How many patterns a single {@code match(...)} may carry (the solver explores their orders). */
+    private static final int MAX_MATCH_PATTERNS = 8;
+
+    /**
+     * {@code match(pattern...)}: a conjunction of patterns over the same traverser, sharing the labels they
+     * bind. Each pattern is a step chain such as {@code as('a').out('created').as('b')}; a leading
+     * {@code as(x)} whose label is already bound starts the pattern at that labelled value, otherwise it
+     * binds the current value. Every pattern that can be satisfied is; the answer is one traverser per
+     * complete binding set, carrying the incoming value and the union of the bindings, so
+     * {@code select(...)}/{@code where(...)} read them.
+     *
+     * <p>The solver tries the patterns in any order (the order they are written is tried first), which is
+     * what lets a pattern that reads {@code b} run after a pattern that binds it - the join, not the
+     * written order, decides. Duplicate binding sets are collapsed.
+     */
+    private List<GremlinTraverser> matchStep(GremlinContext context, List<String> args,
+                                             List<GremlinTraverser> traversers) {
+        if (args.isEmpty()) {
+            throw new QueryException("match expects at least one pattern, e.g."
+                    + " match(as('a').out('created').as('b'))");
+        }
+        if (args.size() > MAX_MATCH_PATTERNS) {
+            throw new QueryException("match supports up to " + MAX_MATCH_PATTERNS + " patterns, got "
+                    + args.size());
+        }
+        List<List<GremlinQuery.Step>> patterns = new ArrayList<>(args.size());
+        for (String pattern : args) {
+            List<GremlinQuery.Step> steps = GremlinQuery.parseSteps("." + childTraversal(pattern));
+            if (steps.isEmpty()) {
+                throw new QueryException("match pattern must not be empty: " + pattern);
+            }
+            patterns.add(steps);
+        }
+        List<GremlinTraverser> out = new ArrayList<>();
+        // one sequence of bindings is one answer, however many pattern orders found it
+        java.util.Set<Map<String, Object>> seen = new java.util.LinkedHashSet<>();
+        for (GremlinTraverser traverser : traversers) {
+            List<GremlinTraverser> solutions = new ArrayList<>();
+            solveMatch(context, traverser, patterns, solutions);
+            for (GremlinTraverser solution : solutions) {
+                // match answers the start value with the union of the bindings (TinkerPop's shape), so the
+                // value the last pattern happened to leave does not leak into the answer
+                GremlinTraverser merged = new GremlinTraverser(traverser.value(), solution.labels(),
+                        traverser.path(), traverser.sack(), traverser.loops());
+                if (seen.add(merged.labels())) {
+                    out.add(merged);
+                }
+            }
+        }
+        return out;
+    }
+
+    /** Recursive join: apply any remaining pattern and continue with the rest until all are satisfied. */
+    private void solveMatch(GremlinContext context, GremlinTraverser state,
+                            List<List<GremlinQuery.Step>> remaining, List<GremlinTraverser> out) {
+        if (remaining.isEmpty()) {
+            out.add(state);
+            return;
+        }
+        for (int i = 0; i < remaining.size(); i++) {
+            List<GremlinTraverser> answers = applyMatchPattern(context, state, remaining.get(i));
+            if (answers.isEmpty()) {
+                continue;
+            }
+            List<List<GremlinQuery.Step>> rest = new ArrayList<>(remaining);
+            rest.remove(i);
+            for (GremlinTraverser next : answers) {
+                solveMatch(context, next, rest, out);
+            }
+        }
+    }
+
+    /** Runs one pattern on one traverser, threading the bindings through every step. */
+    private List<GremlinTraverser> applyMatchPattern(GremlinContext context, GremlinTraverser start,
+                                                     List<GremlinQuery.Step> steps) {
+        List<GremlinTraverser> states = new ArrayList<>();
+        states.add(start);
+        for (int i = 0; i < steps.size() && !states.isEmpty(); i++) {
+            List<GremlinTraverser> next = new ArrayList<>();
+            for (GremlinTraverser state : states) {
+                next.addAll(applyMatchStep(context, state, steps.get(i), i == 0));
+            }
+            states = next;
+        }
+        return states;
+    }
+
+    /** One step of a match pattern: {@code as} binds or checks a label, everything else runs on the value. */
+    private List<GremlinTraverser> applyMatchStep(GremlinContext context, GremlinTraverser state,
+                                                  GremlinQuery.Step step, boolean first) {
+        String name = step.name();
+        if (name.equals("as")) {
+            GremlinTraverser current = state;
+            List<String> labels = step.args();
+            // a pattern that starts at an already-bound label begins from that label's value
+            if (first && !labels.isEmpty() && current.labels().containsKey(labels.get(0))) {
+                current = current.withValue(current.labels().get(labels.get(0)));
+                labels = labels.subList(1, labels.size());
+            }
+            for (String label : labels) {
+                if (current.labels().containsKey(label)) {
+                    if (!sameElement(current.value(), current.labels().get(label))) {
+                        return List.of(); // the label already holds another value: this pattern cannot hold
+                    }
+                } else {
+                    current = current.withLabel(label, current.value());
+                }
+            }
+            return List.of(current);
+        }
+        if (name.equals("where") && step.args().size() == 2
+                && step.args().get(0).matches("[A-Za-z_$][A-Za-z0-9_$]*")) {
+            return GremlinTraverserSteps.whereLabel(List.of(state), step.args().get(0), step.args().get(1));
+        }
+        if (name.equals("select")) {
+            return GremlinTraverserSteps.select(List.of(state), keysOf(step.args()), bySpecsOf(step.args()),
+                    (value, child) -> runSubTraversal(context, child, List.of(value)));
+        }
+        // every other step keeps its own implementation, run on this traverser's value; each value it
+        // reaches is one way the pattern can continue, so the pattern branches like the pipeline does
+        context.readProperties(List.of());
+        List<Object> reached = registry.resolve(name, step.args()).apply(context, List.of(state.value()));
+        List<GremlinTraverser> out = new ArrayList<>(reached.size());
+        for (Object value : reached) {
+            out.add(state.withValue(value));
+        }
+        return out;
     }
 
     /**
@@ -1482,9 +2128,24 @@ public class GremlinGraphQuery {
         return out;
     }
 
-    /** {@code path()}: the traverser's walk becomes its value, and its labels survive into the next step. */
+    /**
+     * {@code path()}: the traverser's walk becomes its value, and its labels survive into the next step.
+     * {@code path().from('a').to('b')} keeps only the part of the walk between the two labelled elements
+     * (both ends included), the labels having been bound by {@code as(...)} earlier in the chain.
+     */
     private static List<GremlinTraverser> pathStep(List<GremlinTraverser> traversers, List<String> args) {
-        String key = args.isEmpty() ? null : args.get(0);
+        String key = null;
+        String from = null;
+        String to = null;
+        for (String arg : args) {
+            if (arg.startsWith(FROM_MARKER)) {
+                from = arg.substring(FROM_MARKER.length());
+            } else if (arg.startsWith(TO_MARKER)) {
+                to = arg.substring(TO_MARKER.length());
+            } else if (key == null) {
+                key = arg;
+            }
+        }
         List<GremlinTraverser> out = new ArrayList<>(traversers.size());
         for (GremlinTraverser traverser : traversers) {
             List<Object> walk = traverser.path() == null ? new ArrayList<>()
@@ -1494,6 +2155,13 @@ public class GremlinGraphQuery {
             // the value the traverser stands on, which the list path shows as its last element too
             if (walk.isEmpty() || !java.util.Objects.equals(walk.get(walk.size() - 1), value)) {
                 walk.add(value);
+            }
+            if (from != null || to != null) {
+                // both ends are found on the full walk first, then the slice is taken: from(x).to(y) and
+                // to(y).from(x) are the same part of the walk
+                int start = from == null ? 0 : labelPosition(traverser, walk, from, "from");
+                int end = to == null ? walk.size() - 1 : labelPosition(traverser, walk, to, "to");
+                walk = start > end ? new ArrayList<>() : new ArrayList<>(walk.subList(start, end + 1));
             }
             if (key != null) {
                 // path().by('name'): the walk of what each element carries under that key, as path().by does
@@ -1507,6 +2175,39 @@ public class GremlinGraphQuery {
             out.add(traverser.withValue(new GremlinPath(walk)));
         }
         return out;
+    }
+
+    /**
+     * Where a {@code from}/{@code to} label sits on a walk: the first element that is the value the label
+     * holds (the same vertex, edge or value). A label that was never bound, or whose value is not on this
+     * walk, is an error - a quietly empty slice would look like the traversal found nothing.
+     */
+    private static int labelPosition(GremlinTraverser traverser, List<Object> walk, String label,
+                                     String modulator) {
+        if (!traverser.labels().containsKey(label)) {
+            throw new QueryException("path()." + modulator + "('" + label + "') has no such label: bind it"
+                    + " with as('" + label + "') before the path. Bound here: "
+                    + (traverser.labels().isEmpty() ? "nothing" : traverser.labels().keySet()));
+        }
+        Object bound = traverser.labels().get(label);
+        for (int i = 0; i < walk.size(); i++) {
+            if (sameElement(walk.get(i), bound)) {
+                return i;
+            }
+        }
+        throw new QueryException("path()." + modulator + "('" + label + "'): the value of that label is not"
+                + " on this walk, so there is nothing to slice at");
+    }
+
+    /** Whether two walk elements are the same value (an element by label and id, a number by value). */
+    private static boolean sameElement(Object left, Object right) {
+        if (left instanceof GremlinElement a && right instanceof GremlinElement b) {
+            return java.util.Objects.equals(a.id(), b.id()) && java.util.Objects.equals(a.label(), b.label());
+        }
+        if (left instanceof Number a && right instanceof Number b) {
+            return Double.compare(a.doubleValue(), b.doubleValue()) == 0;
+        }
+        return java.util.Objects.equals(left, right);
     }
 
     /** {@code withSack(seed)}: every traverser gets its own accumulator, starting at the seed. */
@@ -1591,6 +2292,106 @@ public class GremlinGraphQuery {
             }
         }
         return specs;
+    }
+
+    /**
+     * Whether a {@code flatMap}/{@code map} argument is a child traversal rather than a closure
+     * expression: it parses as steps and every step name is one the registry knows. An expression such as
+     * {@code [1, 2, 3]} or {@code element.value('age')} is not a step chain and answers false.
+     */
+    private boolean looksLikeTraversal(String body) {
+        try {
+            List<GremlinQuery.Step> steps = GremlinQuery.parseSteps("." + childTraversal(body));
+            if (steps.isEmpty()) {
+                return false;
+            }
+            for (GremlinQuery.Step step : steps) {
+                registry.resolve(step.name(), step.args());
+            }
+            return true;
+        } catch (QueryException e) {
+            return false;
+        }
+    }
+
+    /** Adds a value to a flatMap answer: a list/set/array contributes its elements, anything else itself. */
+    private static void flattenInto(List<Object> out, Object value) {
+        if (value instanceof Iterable<?> iterable) {
+            for (Object element : iterable) {
+                out.add(element);
+            }
+        } else if (value instanceof Object[] array) {
+            out.addAll(java.util.Arrays.asList(array));
+        } else if (value != null) {
+            out.add(value);
+        }
+    }
+
+    /** {@code group().by(key).by(value)}: one map of the traversers, grouped and valued. */
+    private List<Object> groupStep(GremlinContext context, List<String> specs, List<Object> in) {
+        String keySpec = specs.isEmpty() ? null : specs.get(0);
+        String valueSpec = specs.size() > 1 ? specs.get(1) : null;
+        Map<Object, List<Object>> groups = new LinkedHashMap<>();
+        for (Object element : in) {
+            Object key = keySpec == null ? element : groupKey(context, element, keySpec);
+            groups.computeIfAbsent(key == null ? "(none)" : key, ignored -> new ArrayList<>()).add(element);
+        }
+        Map<Object, Object> answer = new LinkedHashMap<>();
+        for (Map.Entry<Object, List<Object>> group : groups.entrySet()) {
+            answer.put(group.getKey(), groupValue(context, group.getValue(), valueSpec));
+        }
+        return List.of(answer);
+    }
+
+    /** One group's key: a property of the element, or the first value a child traversal reaches. */
+    private Object groupKey(GremlinContext context, Object element, String spec) {
+        if (isPropertySpec(spec)) {
+            return element instanceof GremlinElement gremlinElement
+                    ? GremlinElementExpression.value(gremlinElement, spec) : null;
+        }
+        List<Object> reached = runSubTraversal(context, spec, List.of(element));
+        return reached.isEmpty() ? null : reached.get(0);
+    }
+
+    /**
+     * One group's value. No spec, or a spec that is not a reducing step, answers the list it produced
+     * (a property key maps each element; a child traversal runs over the whole group). A reducing step
+     * ({@code count/sum/mean/min/max/fold}) answers its single value instead.
+     */
+    private Object groupValue(GremlinContext context, List<Object> group, String spec) {
+        if (spec == null) {
+            return new ArrayList<>(group);
+        }
+        if (isPropertySpec(spec)) {
+            List<Object> values = new ArrayList<>();
+            for (Object element : group) {
+                if (element instanceof GremlinElement gremlinElement) {
+                    Object value = GremlinElementExpression.value(gremlinElement, spec);
+                    if (value != null) {
+                        values.add(value);
+                    }
+                }
+            }
+            return values;
+        }
+        List<Object> reached = runSubTraversal(context, spec, group);
+        if (isReducingSpec(spec)) {
+            return reached.isEmpty() ? null : reached.get(0);
+        }
+        return reached;
+    }
+
+    /** Whether a {@code by} spec is a bare property key (no call and no chain) rather than a traversal. */
+    private static boolean isPropertySpec(String spec) {
+        return !spec.contains("(") && !spec.contains(".");
+    }
+
+    /** Whether a {@code by} spec ends in a step that collapses a group to one value. */
+    private static boolean isReducingSpec(String spec) {
+        String last = spec.contains(".") ? spec.substring(spec.lastIndexOf('.') + 1) : spec;
+        String name = last.contains("(") ? last.substring(0, last.indexOf('(')).trim() : last.trim();
+        return name.equals("count") || name.equals("sum") || name.equals("mean") || name.equals("max")
+                || name.equals("min") || name.equals("fold");
     }
 
     /**
@@ -2211,15 +3012,16 @@ public class GremlinGraphQuery {
             this.steps = steps;
             this.plan = plan;
             this.traverserMode = needsTraverserState(plan);
-            // the walk is also what simplePath()/cyclicPath() read, so they ask for it too
+            // the walk is also what simplePath()/cyclicPath() read, and what subgraph()/tree() collect
             this.pathAware = stepNames.contains("path") || stepNames.contains("simplePath")
-                    || stepNames.contains("cyclicPath");
+                    || stepNames.contains("cyclicPath") || stepNames.contains("subgraph")
+                    || stepNames.contains("tree");
         }
     }
 
     /** The steps that read or write a traverser's labels, and therefore need the stateful path. */
     private static final Set<String> STATEFUL_STEPS = Set.of("as", "select", "project", "withSack", "sack",
-            "sideEffect", "branch");
+            "sideEffect", "branch", "loops", "subgraph", "tree", "match");
 
     /** Whether the plan needs per-traverser state (a labelled step, or {@code where(label, P)}). */
     private static boolean needsTraverserState(List<GremlinQuery.Step> plan) {
@@ -2227,12 +3029,37 @@ public class GremlinGraphQuery {
             if (STATEFUL_STEPS.contains(step.name())) {
                 return true;
             }
-            if (step.name().equals("where") && step.args().size() == 2
-                    && step.args().get(0).matches("[A-Za-z_$][A-Za-z0-9_$]*")) {
+            // a repeat with an until()/emit() condition needs per-traverser state: the loop count and the
+            // emitted traversers travel with each one (the folded arguments carry the markers)
+            if (step.name().equals("repeat") && step.args().stream()
+                    .anyMatch(arg -> arg.startsWith(UNTIL_MARKER) || arg.startsWith(EMIT_MARKER))) {
+                return true;
+            }
+            // path().from(x)/to(x) resolves labels, which live on the traverser
+            if (step.name().equals("path") && step.args().stream()
+                    .anyMatch(arg -> arg.startsWith(FROM_MARKER) || arg.startsWith(TO_MARKER))) {
+                return true;
+            }
+            // math with a variable or a by() modulator reads labels, which live on the traverser
+            if (step.name().equals("math") && mathNeedsTraverserState(step.args())) {
+                return true;
+            }
+            if (step.name().equals("where") && whereLabels(step.args())) {
                 return true;
             }
         }
         return false;
+    }
+
+    /** Whether a folded {@code where} carries the two-argument label form ({@code where('a', P)}). */
+    private static boolean whereLabels(List<String> args) {
+        List<String> bodies = new ArrayList<>(args.size());
+        for (String arg : args) {
+            if (!arg.startsWith("by:")) {
+                bodies.add(arg);
+            }
+        }
+        return bodies.size() == 2 && bodies.get(0).matches("[A-Za-z_$][A-Za-z0-9_$]*");
     }
 
     private List<GremlinQuery.Step> expandLogic(String logic) {
@@ -2306,10 +3133,12 @@ public class GremlinGraphQuery {
                 break;
             }
             if (name.equals("hasNot") || name.equals("hasKey") || name.equals("hasValue")
-                    || name.equals("valueMap") || name.equals("order") || name.equals("groupCount")
+                    || name.equals("valueMap") || name.equals("propertyMap") || name.equals("order")
+                    || name.equals("groupCount")
                     || name.equals("union") || name.equals("local") || name.equals("coalesce")
                     || name.equals("not") || name.equals("and") || name.equals("or")
                     || name.equals("optional") || name.equals("where") || name.equals("choose")
+                    || name.equals("flatMap") || name.equals("group")
                     || name.equals("repeat")
                     // these hand the element's own properties on (properties() makes them traversers,
                     // format() writes them into a template), so the projection has to be everything
@@ -2320,7 +3149,13 @@ public class GremlinGraphQuery {
                     || name.equals("as") || name.equals("select") || name.equals("project")
                     || name.equals("where")
                     // the sack reads a property through by()
-                    || name.equals("withSack") || name.equals("sack") || name.equals("sideEffect")) {
+                    || name.equals("withSack") || name.equals("sack") || name.equals("sideEffect")
+                    // subgraph()/tree() collect the elements of the walk, so they read them in full
+                    || name.equals("subgraph") || name.equals("tree")
+                    // match() binds labels and reads properties through its patterns
+                    || name.equals("match")
+                    // math() reads a property through by() and a labelled value through its variable
+                    || name.equals("math")) {
                 // these read the element's properties (which ones depends on the argument, or on a child
                 // traversal), so the projection stays "all"
                 all = true;

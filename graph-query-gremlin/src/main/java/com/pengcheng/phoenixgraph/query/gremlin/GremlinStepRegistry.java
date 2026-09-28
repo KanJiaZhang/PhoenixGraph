@@ -4,6 +4,7 @@ import com.pengcheng.phoenixgraph.query.QueryException;
 import com.pengcheng.phoenixgraph.query.storage.EdgeSide;
 import com.pengcheng.phoenixgraph.storage.TimeRange;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -208,6 +209,14 @@ public class GremlinStepRegistry {
         // stateful path only takes it over when a label is in the query)
         register("branch", args -> stateful);
         register("sack", args -> stateful);
+        // match(...) joins labelled patterns, so it needs the traverser's bindings
+        register("match", args -> stateful);
+        // loops() reads how far the traverser is through its repeat, which only the stateful path carries
+        register("loops", args -> stateful);
+        // subgraph(name)/tree(name) collect the traversers' walks into a named side effect (cap(name) reads
+        // it back); tree() with no name answers the tree itself. Both need the walk, hence the stateful path.
+        register("subgraph", args -> stateful);
+        register("tree", args -> stateful);
         // aggregate/store/cap work on the context, so both paths can use them (and a child traversal
         // collects into the same container as its parent)
         register("aggregate", args -> GremlinSteps.aggregate(single(args, "aggregate")));
@@ -242,7 +251,28 @@ public class GremlinStepRegistry {
             requireNoArgs(args, "value");
             return GremlinSteps.propertyValue();
         });
-        register("math", args -> GremlinSteps.math(single(args, "math")));
+        register("math", args -> {
+            List<String> specs = new ArrayList<>();
+            String expression = null;
+            for (String arg : args) {
+                if (arg.startsWith("by:")) {
+                    specs.add(arg.substring(3));
+                } else if (expression == null) {
+                    expression = arg;
+                } else {
+                    throw new QueryException("math expects one expression, got: " + args);
+                }
+            }
+            if (expression == null || expression.isBlank()) {
+                throw new QueryException("math expects an expression, e.g. math('_ + 1')");
+            }
+            // a variable (or a by() modulator) reads the traverser's labels, so those queries run on the
+            // stateful path; math('_ ...') with no by() keeps the list-path implementation
+            if (GremlinGraphQuery.mathNeedsTraverserState(args)) {
+                return stateful;
+            }
+            return GremlinSteps.math(expression);
+        });
         register("format", args -> GremlinSteps.format(single(args, "format")));
         register("dateTime", args -> {
             requireNoArgs(args, "dateTime");
@@ -316,6 +346,9 @@ public class GremlinStepRegistry {
         register("groupCount", args -> GremlinSteps.groupCount(args.isEmpty() ? null
                 : single(args, "groupCount")));
         register("valueMap", args -> GremlinSteps.valueMap(args));
+        // propertyMap(keys...) is valueMap here: the engine stores single-valued properties (a multi-valued
+        // one is a list), so the {key: value} map is the same shape TinkerPop's GraphSON renders
+        register("propertyMap", args -> GremlinSteps.valueMap(args));
         register("toLower", args -> {
             requireNoArgs(args, "toLower");
             return GremlinSteps.toLower();
@@ -417,12 +450,33 @@ public class GremlinStepRegistry {
         register("times", args -> {
             throw new QueryException("times(n) must follow repeat(child), e.g. repeat(out('Payment')).times(2)");
         });
+        // until()/emit() are folded into the repeat in front of them at compile time; reaching either one
+        // here means it was written without a repeat (the other order is not supported yet)
+        register("until", args -> {
+            throw new QueryException("until(...) must follow repeat(child), e.g."
+                    + " repeat(out('Payment')).until(has('status','CLOSED'))");
+        });
+        register("emit", args -> {
+            throw new QueryException("emit(...) must follow repeat(child), e.g."
+                    + " repeat(out('Payment')).emit().times(3)");
+        });
+        // from(x)/to(x) are path modulators, folded into path() at compile time; reaching one here means
+        // it was written without a path()
+        register("from", args -> {
+            throw new QueryException("from(x) must follow path(), e.g. path().from('a').to('b')");
+        });
+        register("to", args -> {
+            throw new QueryException("to(x) must follow path(), e.g. path().from('a').to('b')");
+        });
         // path() is executed by the path walk (GremlinGraphQuery#runPathCompiled); this is the resolved
         // step the compiler validates, so the name is known like every other one
         register("path", args -> {
-            // path() carries the walk; path(key) (or path().by(key)) carries the key's values instead
-            if (args.size() > 1) {
-                throw new QueryException("path expects path() or path(key), got " + args.size());
+            // path() carries the walk; path(key) (or path().by(key)) carries the key's values instead.
+            // from:/to: are path modulators folded into the arguments, not keys.
+            long keys = args.stream().filter(arg -> !arg.startsWith(GremlinGraphQuery.FROM_MARKER)
+                    && !arg.startsWith(GremlinGraphQuery.TO_MARKER)).count();
+            if (keys > 1) {
+                throw new QueryException("path expects path() or path(key), got " + keys);
             }
             return GremlinSteps.path();
         });

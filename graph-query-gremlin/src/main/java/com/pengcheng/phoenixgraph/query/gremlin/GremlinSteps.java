@@ -689,15 +689,28 @@ final class GremlinSteps {
         };
     }
 
-    /** {@code cap(name)}: end the traversal with what the named container collected. */
+    /**
+     * {@code cap(name)}: end the traversal with what the named container collected - an
+     * {@code aggregate}/{@code store} list, the {@link Subgraph} a {@code subgraph(name)} collected, or
+     * the path tree a {@code tree(name)} collected.
+     */
     static GremlinStep cap(String name) {
         return (ctx, in) -> {
             List<Object> container = ctx.sideEffects().get(name);
-            if (container == null) {
-                throw new QueryException("cap('" + name + "') names a side effect nothing filled: collect"
-                        + " it first with aggregate('" + name + "') or store('" + name + "')");
+            if (container != null) {
+                return List.of(List.copyOf(container));
             }
-            return List.of(List.copyOf(container));
+            Map<String, Object> subgraph = ctx.namedSubgraphs().get(name);
+            if (subgraph != null) {
+                return List.of(GremlinContext.subgraphOf(subgraph.values()));
+            }
+            Map<Object, Object> tree = ctx.namedTrees().get(name);
+            if (tree != null) {
+                return List.of(tree);
+            }
+            throw new QueryException("cap('" + name + "') names a side effect nothing filled: collect it"
+                    + " first with aggregate('" + name + "'), store('" + name + "'), subgraph('" + name
+                    + "') or tree('" + name + "')");
         };
     }
 
@@ -2275,7 +2288,7 @@ final class GremlinSteps {
         throw new QueryException("Step expects vertices but got: " + o);
     }
 
-    private static GremlinElement requireElement(Object o) {
+    static GremlinElement requireElement(Object o) {
         if (o instanceof GremlinElement element) {
             return element;
         }
