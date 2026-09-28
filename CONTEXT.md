@@ -6811,3 +6811,24 @@ node .logs/probe-predicates.js           # 谓词对照（before/after 两份 co
 1. `path()` 并入 traverser 路径（`path` 就是 traverser 的 walk，`path().by()/from()` 随之可用，并解除"标签 + `path()` 互斥"）；
 2. `match` / `branch` / `emit` / `until` / `loops`（需要"同一批 traverser 反复跑子链"的循环执行）；
 3. `subgraph` / `tree`（`subgraph` 是把收集到的子图当一个值；`tree` 需要路径树）。
+
+## 97. `Traverser` 第三批（二）：`path()` 并入 traverser 路径（解除"标签 + path() 互斥"）
+
+第三批的核心这一步，**纯增量**（没有改任何共用函数的形状或开销）。
+
+* `CompiledQuery.pathAware`（编译期由 `stepNames.contains("path")` 决定）；那句"as()/select()/project() with path() is the next batch"的**拒绝被删掉**：
+  带标签且要 `path()` 的查询现在走状态路径，`compiled.stepNames.contains("path") && !traverserMode` 时才用原来的 `runPathCompiled`（列表路径**完全不动**）。
+* 状态路径上每个 traverser 自己带 walk：起点种进 `GremlinTraverser.path`（只在这条查询要 path 时才付这个代价，否则 walk 仍是 `null`）；
+  跳步把走过的**边与到达点**追加进去 —— 点跳 `edge, vertex`，边跳把边同时当"走过的边"和"到达点"，与列表路径的 `expandPathHop` **逐元素同形**。
+* `path()` step（`pathStep`）：walk（+ 当前值，若末元素不是它）→ `GremlinPath`；`path().by(键)` 的映射与列表路径同一表达式（元素无此键 → `null`）。
+  **标签保留**，所以 `path().select('v')` 这类查询成立。
+* 边的来源：新增 **`GremlinSteps.hopPerInputWithPath`**（`hopPerInput` 的兄弟，返回 `edge, reached` 成对列表）——
+  点跳多一次**批量化**的边读（不是 per-traverser），`hopPerInput` 本身一字未改，列表路径的形状与开销不变；
+  悬空边（无远端）对齐不上时往 walk 里放 `null`，而不是把错的边配给错的点。
+
+**验证**：`graph-query-gremlin` **288 用例绿**。其中**每一个既有 `path()` 用例都没改**（列表路径行为不变）；
+`pathAndLabelsTogetherAreTheNextBatch`（钉住旧限制的那个）换成 **`pathAndLabelsWorkTogetherAndTheWalkMatchesTheListPath`**：
+1 跳与 2 跳的"带标签 vs 不带标签"路径**整体相等**、walk 形状是 `[起点, 边, 到达点]`、`path().select('v'/'u')`、`path().by('name')`（边为 `null`）各有断言。
+
+**第三批仍未做**：`match` / `branch` / `emit` / `until` / `loops`（需"同一批 traverser 反复跑子链"+ `loops` 计数）、
+`subgraph` / `tree`、`path().from()/to()`、状态路径上的 `simplePath/cyclicPath`。

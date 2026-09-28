@@ -270,9 +270,31 @@ class GremlinTraverserStepsTest {
     }
 
     @Test
-    void pathAndLabelsTogetherAreTheNextBatch() {
-        QueryException error = assertThrows(QueryException.class, () -> gremlin.execute(
-                "g.V('a','Account').as('x').out('knows').path()"));
-        assertTrue(error.getMessage().contains("next batch"), error.getMessage());
+    void pathAndLabelsWorkTogetherAndTheWalkMatchesTheListPath() {
+        List<Object> plain = gremlin.execute("g.V('a','Account').out('knows').path()");
+        List<Object> labelled = gremlin.execute("g.V('a','Account').as('v').out('knows').path()");
+        assertEquals(plain, labelled, "the same walk, whether or not a label was bound");
+        assertEquals(1, plain.size());
+        GremlinPath walk = (GremlinPath) plain.get(0);
+        assertEquals(3, walk.size(), "the start, the edge walked, the vertex reached: " + walk);
+        assertTrue(walk.get(0) instanceof GremlinVertex && walk.get(1) instanceof GremlinEdge
+                && walk.get(2) instanceof GremlinVertex, "in that order: " + walk);
+
+        // two hops: both paths, element for element
+        assertEquals(gremlin.execute("g.V('a','Account').out('knows').out('knows').path()"),
+                gremlin.execute("g.V('a','Account').as('v').out('knows').out('knows').path()"),
+                "a longer walk agrees too");
+
+        // what this batch is for: the label is still readable after path()
+        assertEquals(List.of("a"), ids("g.V('a','Account').as('v').out('knows').path().select('v')"));
+        assertEquals(List.of("b"), ids("g.V('a','Account').as('v').out('knows').as('u').path().select('u')"),
+                "a label bound after the hop is there too");
+
+        // path().by(key) maps every element of the walk; the edge in it carries no such key
+        List<Object> names = ((GremlinPath) gremlin.execute(
+                "g.V('a','Account').as('v').out('knows').path().by('name')").get(0)).objects();
+        assertEquals(3, names.size());
+        assertEquals(gremlin.execute("g.V('a','Account').values('name')"), List.of(names.get(0)));
+        assertTrue(names.get(1) == null, "the edge in the walk carries no name: " + names);
     }
 }

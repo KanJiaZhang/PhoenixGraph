@@ -1880,6 +1880,47 @@ final class GremlinSteps {
      * do it; the grouping comes from the per-vertex edge lists and, for a vertex hop, from slicing the one
      * batched vertex read by each input's edge count.
      */
+    /**
+     * The same hop, with the elements a walk has to remember: for every input, the edge it traversed and the
+     * element it reached, always as pairs ({@code edge, reached, edge, reached, ...}) - the shape
+     * {@code path()} appends. A vertex hop reads its edges in a second batched pass (asking the same helper
+     * for the edges) so that {@link #hopPerInput}, which both paths call, keeps its shape and its cost.
+     */
+    static List<List<Object>> hopPerInputWithPath(GremlinContext ctx, List<Object> in, GremlinQuery.Step step) {
+        List<List<Object>> reached = hopPerInput(ctx, in, step);
+        String name = step.name();
+        boolean vertexHop = name.equals("out") || name.equals("in") || name.equals("both");
+        if (!vertexHop) {
+            // an edge hop reaches the edges themselves: the edge is what it walked and where it stands
+            List<List<Object>> edgesOnly = new ArrayList<>(in.size());
+            for (List<Object> mine : reached) {
+                List<Object> paired = new ArrayList<>(mine.size() * 2);
+                for (Object edge : mine) {
+                    paired.add(edge);
+                    paired.add(edge);
+                }
+                edgesOnly.add(paired);
+            }
+            return edgesOnly;
+        }
+        List<List<Object>> edges = hopPerInput(ctx, in, new GremlinQuery.Step(name + "E", step.args()));
+        List<List<Object>> out = new ArrayList<>(in.size());
+        for (int i = 0; i < in.size(); i++) {
+            List<Object> mineEdges = i < edges.size() ? edges.get(i) : List.of();
+            List<Object> mineReached = i < reached.size() ? reached.get(i) : List.of();
+            // a dangling edge (no far end) is dropped by the vertex hop but not by the edge read: a null in
+            // the walk is better than a walk that pairs the wrong edge with the wrong vertex
+            boolean aligned = mineEdges.size() == mineReached.size();
+            List<Object> paired = new ArrayList<>(mineReached.size() * 2);
+            for (int j = 0; j < mineReached.size(); j++) {
+                paired.add(aligned ? mineEdges.get(j) : null);
+                paired.add(mineReached.get(j));
+            }
+            out.add(paired);
+        }
+        return out;
+    }
+
     static List<List<Object>> hopPerInput(GremlinContext ctx, List<Object> in, GremlinQuery.Step step) {
         String name = step.name();
         EdgeSide dir = switch (name) {

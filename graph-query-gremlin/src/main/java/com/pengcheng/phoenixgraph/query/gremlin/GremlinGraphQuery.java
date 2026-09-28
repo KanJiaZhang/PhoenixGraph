@@ -1330,15 +1330,11 @@ public class GremlinGraphQuery {
         if (compiled.stepNames.contains("profile")) {
             return profile(context, compiled);
         }
-        if (compiled.stepNames.contains("path")) {
-            if (compiled.traverserMode) {
-                throw new QueryException("as()/select()/project() with path() is the next batch of the"
-                        + " stateful path (see TRAVERSER-DESIGN.md 5): for now a query uses one or the"
-                        + " other. Drop path(), or drop the labels and read the walk's ends with"
-                        + " start()/end().");
-            }
+        if (compiled.stepNames.contains("path") && !compiled.traverserMode) {
             return runPathCompiled(context, compiled);
         }
+        // a query that binds labels and asks for path() runs on the stateful path, where every traverser
+        // carries its own walk - element for element the walk runPathCompiled builds for the same chain
         if (compiled.traverserMode) {
             return runTraverserCompiled(context, compiled);
         }
@@ -1355,11 +1351,12 @@ public class GremlinGraphQuery {
     private List<Object> runTraverserCompiled(GremlinContext context, CompiledQuery compiled) {
         List<Object> started = start(context, compiled.source, compiled.startProperties, compiled.verifySeeds);
         List<GremlinTraverser> traversers = new ArrayList<>(started.size());
+        boolean walk = compiled.pathAware;
         for (Object value : started) {
-            traversers.add(GremlinTraverser.of(value));
+            // a query that asks for path() pays for the walk; one that does not carries a null walk
+            traversers.add(walk ? GremlinTraverser.of(value).withPathElement(value)
+                    : GremlinTraverser.of(value));
         }
-        // the side effects of this run: aggregate()/store() collect into a name, cap() reads it back
-        Map<String, List<Object>> sideEffects = new LinkedHashMap<>();
         for (int i = 0; i < compiled.steps.size(); i++) {
             String name = compiled.stepNames.get(i);
             GremlinQuery.Step planned = compiled.plan.get(i);
@@ -1372,6 +1369,7 @@ public class GremlinGraphQuery {
                         child -> runSubTraversal(context, child, List.of()));
                 case "where" -> GremlinTraverserSteps.whereLabel(traversers, planned.args().get(0),
                         planned.args().get(1));
+                case "path" -> pathStep(traversers, planned.args());
                 case "withSack" -> withSack(traversers, planned.args());
                 case "sack" -> sack(traversers, planned.args());
                 case "sideEffect" -> {
@@ -1393,6 +1391,33 @@ public class GremlinGraphQuery {
             answer.add(traverser.value());
         }
         return answer;
+    }
+
+    /** {@code path()}: the traverser's walk becomes its value, and its labels survive into the next step. */
+    private static List<GremlinTraverser> pathStep(List<GremlinTraverser> traversers, List<String> args) {
+        String key = args.isEmpty() ? null : args.get(0);
+        List<GremlinTraverser> out = new ArrayList<>(traversers.size());
+        for (GremlinTraverser traverser : traversers) {
+            List<Object> walk = traverser.path() == null ? new ArrayList<>()
+                    : new ArrayList<>(traverser.path());
+            Object value = traverser.value();
+            // a step that is not a hop (values(), a filter) does not extend the walk, but the walk ends at
+            // the value the traverser stands on, which the list path shows as its last element too
+            if (walk.isEmpty() || !java.util.Objects.equals(walk.get(walk.size() - 1), value)) {
+                walk.add(value);
+            }
+            if (key != null) {
+                // path().by('name'): the walk of what each element carries under that key, as path().by does
+                List<Object> mapped = new ArrayList<>(walk.size());
+                for (Object element : walk) {
+                    mapped.add(element instanceof GremlinElement gremlinElement
+                            ? gremlinElement.properties().get(key) : null);
+                }
+                walk = mapped;
+            }
+            out.add(traverser.withValue(new GremlinPath(walk)));
+        }
+        return out;
     }
 
     /** {@code withSack(seed)}: every traverser gets its own accumulator, starting at the seed. */
@@ -1491,13 +1516,31 @@ public class GremlinGraphQuery {
             values.add(traverser.value());
         }
         // one batched read for the whole hop (the same helper the list path uses), sliced back per input so
-        // each reached value keeps the labels of the traverser it came from
-        List<List<Object>> reached = GremlinSteps.hopPerInput(context, values, compiled.plan.get(index));
+        // each reached value keeps the labels of the traverser it came from. A query that asked for path()
+        // reads the edges it walked too (one more batched pass), so its walk holds the same elements the list
+        // path's walk holds: the edge, then the vertex it reached
+        boolean walk = compiled.pathAware;
+        List<List<Object>> reached = walk
+                ? GremlinSteps.hopPerInputWithPath(context, values, compiled.plan.get(index))
+                : GremlinSteps.hopPerInput(context, values, compiled.plan.get(index));
         List<GremlinTraverser> out = new ArrayList<>();
+        String name = compiled.plan.get(index).name();
+        boolean vertexHop = name.equals("out") || name.equals("in") || name.equals("both");
         for (int i = 0; i < traversers.size(); i++) {
             GremlinTraverser traverser = traversers.get(i);
-            for (Object value : i < reached.size() ? reached.get(i) : List.of()) {
-                out.add(traverser.withValue(value));
+            List<Object> mine = i < reached.size() ? reached.get(i) : List.of();
+            if (!walk) {
+                for (Object value : mine) {
+                    out.add(traverser.withValue(value));
+                }
+                continue;
+            }
+            for (int j = 0; j + 1 < mine.size(); j += 2) {
+                Object edge = mine.get(j);
+                Object value = mine.get(j + 1);
+                GremlinTraverser next = vertexHop && edge != null ? traverser.withPathElement(edge)
+                        : traverser;
+                out.add(next.withValue(value).withPathElement(value));
             }
         }
         return out;
@@ -2065,6 +2108,9 @@ public class GremlinGraphQuery {
          */
         final boolean traverserMode;
 
+        /** Whether the chain asks for {@code path()}: on the stateful path that is what makes a walk. */
+        final boolean pathAware;
+
         CompiledQuery(GremlinQuery.Source source, List<String>[] properties,
                       List<String> startProperties, boolean verifySeeds, List<String> stepNames,
                       List<GremlinStep> steps, List<GremlinQuery.Step> plan) {
@@ -2076,6 +2122,7 @@ public class GremlinGraphQuery {
             this.steps = steps;
             this.plan = plan;
             this.traverserMode = needsTraverserState(plan);
+            this.pathAware = stepNames.contains("path");
         }
     }
 
