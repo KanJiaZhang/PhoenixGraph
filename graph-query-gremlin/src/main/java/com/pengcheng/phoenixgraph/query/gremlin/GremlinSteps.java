@@ -676,6 +676,31 @@ final class GremlinSteps {
                 edge.properties(), edge.createdTime(), edge.lastUpdatedTime());
     }
 
+    /**
+     * {@code aggregate(name)} / {@code store(name)}: collect the traversers into a named container of the
+     * run and let them pass. TinkerPop separates the two by when the collection happens (a barrier
+     * against as they come), which a list-shaped step cannot show, so they behave the same here.
+     */
+    static GremlinStep aggregate(String name) {
+        return (ctx, in) -> {
+            List<Object> container = ctx.sideEffects().computeIfAbsent(name, key -> new ArrayList<>());
+            container.addAll(in);
+            return in;
+        };
+    }
+
+    /** {@code cap(name)}: end the traversal with what the named container collected. */
+    static GremlinStep cap(String name) {
+        return (ctx, in) -> {
+            List<Object> container = ctx.sideEffects().get(name);
+            if (container == null) {
+                throw new QueryException("cap('" + name + "') names a side effect nothing filled: collect"
+                        + " it first with aggregate('" + name + "') or store('" + name + "')");
+            }
+            return List.of(List.copyOf(container));
+        };
+    }
+
     /** A step argument as a literal value: quoted text, a number, true/false/null, else the text. */
     static Object literalValue(String argument) {
         String text = argument == null ? "" : argument.trim();

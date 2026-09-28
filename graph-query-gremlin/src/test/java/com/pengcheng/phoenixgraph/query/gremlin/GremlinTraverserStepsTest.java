@@ -249,6 +249,17 @@ class GremlinTraverserStepsTest {
         }
     }
 
+    @Test
+    void aSideEffectInsideAChildCollectsIntoTheSameContainer() {
+        List<Object> answer = gremlin.execute("g.V('a','b','Account').sideEffect(aggregate('x')).cap('x')");
+        assertEquals(1, answer.size());
+        assertEquals(List.of("a", "b"), collectedIds(answer.get(0)),
+                "the child's aggregate reached the run's container: the gap CONTEXT.md 95 recorded is closed");
+        // and the container steps work on the plain path too, without any label in the query
+        List<Object> plain = gremlin.execute("g.V('a','b','Account').aggregate('x').cap('x')");
+        assertEquals(List.of("a", "b"), collectedIds(plain.get(0)));
+    }
+
     /** The ids in a collected container (a list of vertices). */
     private static List<String> collectedIds(Object container) {
         List<String> out = new ArrayList<>();

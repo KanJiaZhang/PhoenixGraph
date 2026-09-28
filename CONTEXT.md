@@ -6793,3 +6793,21 @@ node .logs/probe-predicates.js           # 谓词对照（before/after 两份 co
 
 **验证**：`graph-query-gremlin` **287 用例绿**（`GremlinTraverserStepsTest` 现在 12 个，新批次的 4 个是：sack 累加与四种调制器 + 非调制器报错、
 `aggregate/cap` 与 `store/cap` 的收集与读回 + 未填充名字报错、`sideEffect` 透传、以及**"两条路径答案一致"**的两组对照）。
+
+## 96. `Traverser` 第三批（一）：副作用容器挂到 context 上，`aggregate/store/cap` 两条路径通用
+
+`TRAVERSER-DESIGN.md` §5 第三批的第一步（也是第二批留下的那个缺口的修法）。
+
+* 容器从"状态路径的局部变量"移到 **`GremlinContext.sideEffects()`**（`name → List<Object>`）；
+* `aggregate(name)` / `store(name)` / `cap(name)` 变成**真正的 step**（`GremlinSteps.aggregate/cap`），读 context 的容器 ——
+  于是它们**两条路径都能用**：列表路径直接跑，状态路径经适配器跑（它们只是收集并把 traverser 放行，没有 per-traverser 状态）；
+* 因此 **`sideEffect(子遍历)` 内部的副作用缺口已关闭**：子遍历与外层共用同一个 context，`sideEffect(aggregate('x')).cap('x')` 能拿到子遍历收集的内容
+  （用例 `aSideEffectInsideAChildCollectsIntoTheSameContainer` 钉住）；
+* 顺带：这三个名字**退出** `STATEFUL_STEPS` 与"需要全部属性"名单（不再需要状态投影），只用了它们的查询继续走原来的快路径 ✓。
+
+**验证**：`graph-query-gremlin` **288 用例绿**（既有 275 个未改）。
+
+**第三批仍未做**：
+1. `path()` 并入 traverser 路径（`path` 就是 traverser 的 walk，`path().by()/from()` 随之可用，并解除"标签 + `path()` 互斥"）；
+2. `match` / `branch` / `emit` / `until` / `loops`（需要"同一批 traverser 反复跑子链"的循环执行）；
+3. `subgraph` / `tree`（`subgraph` 是把收集到的子图当一个值；`tree` 需要路径树）。

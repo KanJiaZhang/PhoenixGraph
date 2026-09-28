@@ -205,18 +205,11 @@ public class GremlinStepRegistry {
         // the side-effect steps: containers, the sack and cap need the stateful path too
         register("withSack", args -> stateful);
         register("sack", args -> stateful);
-        register("aggregate", args -> {
-            requireArgs(args, "aggregate");
-            return stateful;
-        });
-        register("store", args -> {
-            requireArgs(args, "store");
-            return stateful;
-        });
-        register("cap", args -> {
-            requireArgs(args, "cap");
-            return stateful;
-        });
+        // aggregate/store/cap work on the context, so both paths can use them (and a child traversal
+        // collects into the same container as its parent)
+        register("aggregate", args -> GremlinSteps.aggregate(single(args, "aggregate")));
+        register("store", args -> GremlinSteps.aggregate(single(args, "store")));
+        register("cap", args -> GremlinSteps.cap(single(args, "cap")));
         register("sideEffect", args -> stateful);
         register("project", args -> {
             requireArgs(args, "project");

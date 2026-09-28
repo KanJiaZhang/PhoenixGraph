@@ -1374,27 +1374,6 @@ public class GremlinGraphQuery {
                         planned.args().get(1));
                 case "withSack" -> withSack(traversers, planned.args());
                 case "sack" -> sack(traversers, planned.args());
-                case "aggregate", "store" -> {
-                    // both collect the traversers' values into a named container and let them pass; the
-                    // difference in TinkerPop is when the collection happens (a barrier vs as they come),
-                    // which a list-shaped step cannot show - the content is the same either way
-                    List<Object> container = sideEffects.computeIfAbsent(planned.args().get(0),
-                            key -> new ArrayList<>());
-                    for (GremlinTraverser traverser : traversers) {
-                        container.add(traverser.value());
-                    }
-                    yield traversers;
-                }
-                case "cap" -> {
-                    List<Object> container = sideEffects.get(planned.args().get(0));
-                    if (container == null) {
-                        throw new QueryException("cap('" + planned.args().get(0) + "') names a side effect"
-                                + " nothing filled: collect it first with aggregate('" + planned.args().get(0)
-                                + "') or store('" + planned.args().get(0) + "')");
-                    }
-                    // cap ends the traversal: one traverser carrying the container's content
-                    yield List.of(GremlinTraverser.of(List.copyOf(container)));
-                }
                 case "sideEffect" -> {
                     // the child runs for its effect; its answer is not the traversal's, the traverser passes on
                     String child = planned.args().get(0);
@@ -1566,7 +1545,10 @@ public class GremlinGraphQuery {
     private static final Set<String> ADAPTABLE_STEPS = Set.of("has", "filter", "hasLabel", "hasId",
             "hasNot", "hasKey", "hasValue", "values", "id", "label", "is", "range", "skip", "limit",
             "tail", "dedup", "order", "count", "sum", "mean", "max", "min", "groupCount", "fold",
-            "unfold", "constant", "identity", "math", "format", "dateTime");
+            "unfold", "constant", "identity", "math", "format", "dateTime",
+            // the side-effect steps of the context: they collect and hand the traversers on, so the
+            // stateful path can use them through the adapter like any other step
+            "aggregate", "store", "cap");
 
     /**
      * {@code explain()}: the plan this query compiled to - the start, the steps, and the property
@@ -2098,8 +2080,7 @@ public class GremlinGraphQuery {
     }
 
     /** The steps that read or write a traverser's labels, and therefore need the stateful path. */
-    private static final Set<String> STATEFUL_STEPS = Set.of("as", "select", "project", "withSack",
-            "sack", "aggregate", "store", "cap", "sideEffect");
+    private static final Set<String> STATEFUL_STEPS = Set.of("as", "select", "project", "withSack", "sack", "sideEffect");
 
     /** Whether the plan needs per-traverser state (a labelled step, or {@code where(label, P)}). */
     private static boolean needsTraverserState(List<GremlinQuery.Step> plan) {
@@ -2199,9 +2180,8 @@ public class GremlinGraphQuery {
                     // (select().by('name')), so their projection has to be all of them
                     || name.equals("as") || name.equals("select") || name.equals("project")
                     || name.equals("where")
-                    // the sack reads a property through by(), aggregate/cap hand values around
-                    || name.equals("withSack") || name.equals("sack") || name.equals("aggregate")
-                    || name.equals("store") || name.equals("cap") || name.equals("sideEffect")) {
+                    // the sack reads a property through by()
+                    || name.equals("withSack") || name.equals("sack") || name.equals("sideEffect")) {
                 // these read the element's properties (which ones depends on the argument, or on a child
                 // traversal), so the projection stays "all"
                 all = true;

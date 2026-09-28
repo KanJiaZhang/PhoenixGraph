@@ -63,6 +63,18 @@ public final class GremlinContext {
     private final NeighborVertexResolver vertexResolver;
     private final Map<Object, VertexQueryResult> vertexCache = new LinkedHashMap<>();
     private final Map<EdgeCacheKey, List<EdgeQueryResult>> edgeCache = new LinkedHashMap<>();
+
+    /**
+     * The side effects of this run: {@code aggregate(name)}/{@code store(name)} collect into a name and
+     * {@code cap(name)} reads it back. They live on the context (not on a step) so that a child traversal
+     * - a {@code sideEffect(...)}, a branch - collects into the same container as its parent.
+     */
+    private final Map<String, List<Object>> sideEffects = new LinkedHashMap<>();
+
+    /** @see #sideEffects */
+    public Map<String, List<Object>> sideEffects() {
+        return sideEffects;
+    }
     /** Neighbours read for a vertex hop: identity only, so it is cached apart from the edges. */
     private final Map<NeighbourCacheKey, List<NeighbourRef>> neighbourCache = new LinkedHashMap<>();
 
