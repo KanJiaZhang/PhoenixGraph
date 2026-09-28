@@ -69,6 +69,19 @@ public class GremlinStepRegistry {
             }
             return GremlinSteps.otherV();
         });
+        // the endpoint steps: the vertex at one end of an edge (or both), read in one batch
+        register("outV", args -> {
+            requireNoArgs(args, "outV");
+            return GremlinSteps.outV();
+        });
+        register("inV", args -> {
+            requireNoArgs(args, "inV");
+            return GremlinSteps.inV();
+        });
+        register("bothV", args -> {
+            requireNoArgs(args, "bothV");
+            return GremlinSteps.bothV();
+        });
         register("batch", args -> GremlinSteps.batch(positiveInt(single(args, "batch"))));
         register("barrier", args -> GremlinSteps.barrier(positiveInt(single(args, "barrier"))));
         register("has", args -> {
@@ -176,6 +189,7 @@ public class GremlinStepRegistry {
             return GremlinSteps.label();
         });
         register("hasId", args -> GremlinSteps.hasId(requireArgs(args, "hasId")));
+        register("hasLabel", args -> GremlinSteps.hasLabel(requireArgs(args, "hasLabel")));
         register("hasNot", args -> GremlinSteps.hasNot(single(args, "hasNot")));
         register("hasKey", args -> GremlinSteps.hasKey(requireArgs(args, "hasKey")));
         register("hasValue", args -> GremlinSteps.hasValue(requireArgs(args, "hasValue")));

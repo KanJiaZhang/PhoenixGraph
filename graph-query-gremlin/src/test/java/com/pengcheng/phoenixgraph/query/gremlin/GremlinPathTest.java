@@ -130,6 +130,22 @@ class GremlinPathTest {
     }
 
     @Test
+    void anEdgeAnswersBothOfItsEndpoints() {
+        when(graphQuery.readEdges(eq("v1"), anyString(), eq("knows"), eq(EdgeSide.OUT), anyList()))
+                .thenReturn(List.of(new EdgeQueryResult("knows", "e1", EdgeSide.OUT, "v2", Map.of(), 1L, 2L)));
+
+        assertEquals(List.of("v2"), gremlin.execute("g.V('v1','person').outE('knows').inV().id()"),
+                "inV() is where the edge points");
+        assertEquals(List.of("v1"), gremlin.execute("g.V('v1','person').outE('knows').outV().id()"),
+                "outV() is where the edge was read from");
+        assertEquals(List.of("v1", "v2"),
+                gremlin.execute("g.V('v1','person').outE('knows').bothV().id()"),
+                "bothV() answers with the source then the target");
+        assertEquals(2L, gremlin.execute("g.V('v1','person').outE('knows').bothV().dedup().count()").get(0),
+                "the two endpoints are distinct vertices");
+    }
+
+    @Test
     void anEdgeAnswersTheSideItWasReadFrom() {
         when(graphQuery.readEdges(eq("v1"), anyString(), eq("knows"), eq(EdgeSide.BOTH), anyList()))
                 .thenReturn(List.of(

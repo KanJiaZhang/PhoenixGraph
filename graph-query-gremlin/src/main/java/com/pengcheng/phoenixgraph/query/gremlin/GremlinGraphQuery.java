@@ -318,7 +318,7 @@ public class GremlinGraphQuery {
         if (args.size() != 1) {
             throw new QueryException(stepName + " expects one child traversal, got " + args.size());
         }
-        return args.get(0);
+        return childTraversal(args.get(0));
     }
 
     /** The child traversals a branch step was given, or an error naming what it expects. */
@@ -327,7 +327,28 @@ public class GremlinGraphQuery {
             throw new QueryException(stepName + " expects at least one child traversal, e.g. "
                     + stepName + "(out('Payment'))");
         }
-        return List.copyOf(args);
+        List<String> children = new java.util.ArrayList<>(args.size());
+        for (String argument : args) {
+            children.add(childTraversal(argument));
+        }
+        return List.copyOf(children);
+    }
+
+    /**
+     * A child traversal, with TinkerPop's anonymous marker accepted: {@code union(__.out('Payment'))} and
+     * {@code union(out('Payment'))} mean the same thing here. The marker is only a marker - this engine
+     * writes a child as the steps themselves - so accepting it costs one strip and removes a difference
+     * that has nothing to do with the question being asked.
+     */
+    private static String childTraversal(String argument) {
+        String text = argument == null ? "" : argument.trim();
+        while (text.startsWith("__")) {
+            text = text.substring(2).trim();
+            if (text.startsWith(".")) {
+                text = text.substring(1).trim();
+            }
+        }
+        return text;
     }
 
     /** Keeps the elements for which every ({@code all}) or any child traversal reaches something. */

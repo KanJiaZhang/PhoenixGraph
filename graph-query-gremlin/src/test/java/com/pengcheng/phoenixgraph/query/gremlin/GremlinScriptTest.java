@@ -207,6 +207,60 @@ class GremlinScriptTest {
         return new GremlinEdge("Payment", id, EdgeSide.OUT, other, Map.of(), 1L, 2L, source);
     }
 
+    /** A script's answer, without any traversal: the syntax tests only need the statement and value layers. */
+    private static Object script(String text) {
+        return GremlinScript.parse(text).execute(new Stub(values())).value();
+    }
+
+    @Test
+    void compoundAssignmentAndIncrementRewriteToAnAssignment() {
+        assertEquals(3L, script("def x = 1\nx += 2\nx"));
+        assertEquals(4L, script("def x = 10\nx -= 6\nx"));
+        assertEquals(6L, script("def x = 2\nx *= 3\nx"));
+        assertEquals(3.5, script("def x = 7\nx /= 2\nx"), "Groovy's / is a real division");
+        assertEquals(2L, script("def x = 1\nx++\nx"));
+        assertEquals(2L, script("def x = 1\n++x\nx"));
+        assertEquals(0L, script("def x = 1\nx--\nx"));
+        assertEquals(0L, script("def x = 1\n--x\nx"));
+        assertEquals(4L, script("def xs = [1, 2]\ndef i = 0\ni += xs.size() + 2\ni"),
+                "the right side is one expression, so i + (2 + 2)");
+    }
+
+    @Test
+    void ternaryAndElvis() {
+        assertEquals("yes", script("def x = 1\nx > 0 ? 'yes' : 'no'"));
+        assertEquals("no", script("def x = -1\nx > 0 ? 'yes' : 'no'"));
+        assertEquals("no", script("def x = 1\ndef y = 2\nx > y ? 'yes' : 'no'"));
+        assertEquals("d", script("def x = null\nx ?: 'd'"));
+        assertEquals(5L, script("def x = 5\nx ?: 9"));
+        assertEquals("yes", script("def x = 1\ndef y = 2\nx == 1 && y == 2 ? 'yes' : 'no'"),
+                "the condition is the whole expression before the '?'");
+    }
+
+    @Test
+    void aTripleQuotedStringIsOneValueNewlinesIncluded() {
+        assertEquals("a\nb", script("def s = '''a\nb'''\ns"));
+        assertEquals("a\nb", script("def s = \"\"\"a\nb\"\"\"\ns"));
+    }
+
+    @Test
+    void aStringHasToBeOneValueSoRegexIsRefusedRatherThanSwallowed() {
+        QueryException error = assertThrows(QueryException.class, () -> script("def m = 'abc' =~ 'b'\nm"));
+        assertTrue(error.getMessage().contains("string has to be one value"), error.getMessage());
+        assertTrue(error.getMessage().contains("regular-expression"), error.getMessage());
+        assertEquals("it's", script("def s = 'it\\'s'\ns"), "an escaped quote is still one string");
+    }
+
+    @Test
+    void aListPlusAppendsWhileTextStaysText() {
+        assertEquals(List.of(1L, 2L, 3L), script("def xs = [1, 2]\nxs + 3\n"),
+                "Groovy appends to a list");
+        assertEquals(List.of(1L, 2L, 3L, 4L), script("def xs = [1, 2]\nxs + [3, 4]"));
+        assertEquals("ids: [1, 2]", script("def xs = [1, 2]\n'ids: ' + xs"),
+                "a String on either side still makes text");
+        assertEquals(5L, script("def x = 2\nx + 3"), "numbers still add");
+    }
+
     @Test
     void edgeEndedHalvesJoinOnTheirFarVertex() {
         // the second hop is outE(), so each half ends on an edge whose far vertex is the shared one

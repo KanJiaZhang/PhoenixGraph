@@ -6579,3 +6579,94 @@ unfold union valueMap values where
 3. **低风险的第二批**：列表索引（含负索引）、Map 字面量 + `m['a']`、字符串/数字方法白名单；
 4. 需要权衡的：静态方法白名单（沙箱面）、一等闭包；
 5. **明确不做**：`try/catch`（会吞错）、GString（与参数替换冲突）、类/导入/任意 `new`/IO/线程（通用运行时）。
+## 89. 本轮新支持的 step（§87 建议的第 1、2 批）
+
+### 89.1 P 谓词：全量求值 + 未知谓词报错（最重要的修复）
+
+`GremlinPredicate` 重写为完整谓词层，`is(...)` 与 `has(key, ...)` **共用**一条路径（之前 `is` 里另有一套只认 `eq/neq/gt/gte/lt/lte`
+的正则，且把**带引号的参数**直接拿去比较 —— 这就是静默错的根源）：
+
+| 类别 | 谓词 |
+|---|---|
+| 相等 | `eq` `neq`（文本忽略大小写、数值跨类型、布尔） |
+| 大小 | `gt` `gte` `lt` `lte`（两侧都能读成数字就按数字，否则 `String.compareTo`） |
+| 区间 | `between(a,b)` = `a<=x<b`、`inside(a,b)` = `a<x<b`、`outside(a,b)` = `x<a\|\|x>b`（TinkerPop 定义） |
+| 集合/文本 | `within` `without` `containing` `startingWith` `endingWith` 及其 `not*` 形式（`TextP.`/`P.` 前缀可选） |
+| 组合 | `not(p)` `and(p...)` `or(p...)`，参数本身可以是谓词（不是谓词的参数按相等比较） |
+| 多值属性 | 每个元素逐一匹配：肯定谓词任一命中，否定谓词无一命中（TinkerPop 的 multi-property 语义） |
+
+**未知谓词现在是错误**：`roughly('x')` → `Unknown predicate 'roughly'. Supported: eq, neq, …`；而普通值（`'ACTIVE'`、`42`）仍然不是谓词 ✓。
+
+**线上前后对比**（`.logs/probe-predicates.js`，51 个账户；`predicate-coverage.txt` → `-after.txt`）：
+
+| 写法 | 修前 | 修后 |
+|---|---|---|
+| `is(eq('CLOSED'))` | **0** ✗ | **17** ✓ |
+| `is(neq('CLOSED'))` | **51** ✗ | **34** ✓ |
+| `is(between/inside/outside)` | **0/0/0** ✗ | **3/1/20** ✓（探针数据） |
+| `is(not(within(...)))` | **0** ✗ | **34** ✓ |
+| `is(and(gt(1000),lt(1003)))` | **0** ✗ | **2** ✓ |
+| `has(k, eq/neq/gt/between/not)` | **全 0** ✗ | **17/34/1/1/34** ✓ |
+
+**副作用**：这是**行为变更**——以前静默返回 0（或全量）的查询现在返回真实结果；依赖"错值"的下游会变（这正是目的）。
+`is` 里那套重复的正则被删掉，谓词语义只有一处。
+
+### 89.2 `hasLabel(name...)`
+
+按 label（schema 名）过滤，忽略大小写；`g.V('Account').hasLabel('Account')`。起点已经能写 `g.V('Account')`，
+这个 step 的价值在**遍历中段**（跳步之后类型会变）。副作用：几乎没有（纯过滤器，被滤掉的元素照样从子图里 drop）。
+
+### 89.3 `outV()` / `inV()` / `bothV()`
+
+边的**另一侧端点**：`sourceEndpoint()`/`targetEndpoint()` 现在对 hop 读出来的边也是准的（`hopEdges` 会把"在哪个点上读到这条边"
+写进 `sourceVertexId`），端点顶点用 `otherV()` 同一套**批量读**取回（`readNeighbourVertices`），所以 N 条边仍然是一次往返。
+`bothV()` 按"先 source 后 target"输出。
+
+**副作用**：`side=BOTH` 的边（未命名 hop / `g.E(...)` 扫描）方向本身是近似的（把"读到它的点"当 source），
+这对 `outV` 是合理近似、对 `inV` 也一致，但不是 TinkerPop 那种逐边方向信息——需要精确方向就要用 `outE`/`inE`。
+
+### 89.4 TinkerPop 的匿名标记 `__` 现在被接受
+
+`union(__.out('Payment'))` 与 `union(out('Payment'))` 等价（`childTraversal(...)` 在解析子遍历前剥掉 `__`/`__.`）。
+副作用：几乎为零，只是少一处"照抄 TinkerPop 文档就报错"的坑。
+
+### 89.5 仍未做（§87 的分类不变）
+
+`as/select/project/match/sack/aggregate/cap/store/sideEffect/subgraph/tree/group().by().by()/branch`（需要
+`Traverser{value,path,sack,labels}` 模型）、`properties/key/value`（需要属性 traverser）、`emit/until/loops`、
+`math/format/date*`、`profile/explain`、`shortestPath/peerPressure` 别名；写入家族与 `with*` 维持**刻意不支持**。
+
+## 90. 本轮新支持的脚本语法（§88 建议的第 1、2 批）
+
+### 90.1 三处"静默给错"全部修掉
+
+| 之前 | 现在 |
+|---|---|
+| `'''a\nb'''` 被当普通字符串（结果是 `''a\nb''`） | **三引号字符串**是一整个值，换行保留（`a<换行>b`）✓ |
+| `'abc' =~ 'b'` 被当字符串原样返回 | **报错**：`a string has to be one value. (There is no regular-expression support: …)` ✓（`literal()` 要求第一个闭合引号就是结尾） |
+| `count() + count()` → 文本 `[3][9]` | `+` 按 Groovy 语义：**String 任一侧则拼文本**、**List 则追加** → `[3, 9]`；要算术先 `.first()`/`.get(0)`（文档里提示） |
+
+### 90.2 新增语法（都有单测）
+
+| 语法 | 实现 | 备注 |
+|---|---|---|
+| `+= -= *= /= %=` | 解析期脱糖成 `x = x + (rhs)`（复用表达式求值器） | `/=` 是真除法（`7 /= 2` → 3.5，Groovy 一致） |
+| `x++` `++x` `x--` `--x` | 脱糖成 `x = x ± 1`；语句层不区分前后缀（值不被使用） | 顺带修了语句切分器把行尾 `++` 当续行的 bug |
+| 三元 `a ? b : c` | `evaluate` 里最松一级（在 `\|\|` 之前） | 条件可以是整个 `&&`/比较表达式 ✓ |
+| elvis `a ?: b` | 在 `?` 之前单独识别（`?:` 是一个 token） | 左值不真则取右值 |
+| 括号分组 `(1 + 2) * 3` | `primary` 里判断"首字符 `(` 且配对括号正好在末尾" | `(xs).size()` 那种仍走链解析 |
+| 三引号字符串 | 同上 | 支持 `'''` 与 `"""` |
+
+### 90.3 仍未做（§88 的列表）
+
+`do/while`、`switch`、`assert`、`sprintf/printf`、更多闭包方法（`groupBy/collectEntries/inject/sort{}/max{}/min{}/unique/flatten/take/drop/withIndex/toSorted`）、
+列表索引 `xs[i]`（含负索引）、Map 字面量、字符串/数字方法白名单、静态方法白名单、一等闭包；
+**明确不做**：`try/catch`（会吞真错误）、GString（与 HTTP 参数替换冲突）、类/导入/任意 `new`/IO/线程。
+
+### 90.4 复现
+
+```bash
+node .logs/verify-support-batch.js       # 21 项：谓词 / 新 step / 新语法（线上）
+node .logs/probe-predicates.js           # 谓词对照（before/after 两份 coverage 文本）
+./mvnw -o -pl graph-query-gremlin test   # 268 用例（新增 GremlinPredicateTest 8 + 语法/step 用例）
+```

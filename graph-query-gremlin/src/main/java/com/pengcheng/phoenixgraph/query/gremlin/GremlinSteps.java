@@ -589,6 +589,93 @@ final class GremlinSteps {
         };
     }
 
+    /**
+     * {@code hasLabel(name...)}: keeps the elements whose label (schema name) is one of the names.
+     *
+     * <p>A vertex type is normally named by the start ({@code g.V('Account')}); this is the step form, so
+     * it also works in the middle of a traversal, where the type can change from hop to hop.
+     */
+    static GremlinStep hasLabel(List<String> labels) {
+        return (ctx, in) -> {
+            List<Object> out = new ArrayList<>();
+            for (Object o : in) {
+                GremlinElement element = requireElement(o);
+                boolean keep = element.label() != null && labels.stream()
+                        .anyMatch(label -> label != null && label.equalsIgnoreCase(element.label()));
+                if (keep) {
+                    out.add(o);
+                } else {
+                    ctx.dropElement(element);
+                }
+            }
+            return out;
+        };
+    }
+
+    /** {@code outV()}: the vertex an edge comes from (its source endpoint). */
+    static GremlinStep outV() {
+        return endpointStep(true, false);
+    }
+
+    /** {@code inV()}: the vertex an edge points at (its target endpoint). */
+    static GremlinStep inV() {
+        return endpointStep(false, true);
+    }
+
+    /** {@code bothV()}: both endpoints of every edge, the source first. */
+    static GremlinStep bothV() {
+        return endpointStep(true, true);
+    }
+
+    /**
+     * The endpoint step: each edge becomes the vertex at one end (or both ends).
+     *
+     * <p>The endpoint ids come from {@link GremlinEdge#sourceEndpoint()}/{@link GremlinEdge#targetEndpoint()},
+     * which every edge of a hop carries (the hop remembers the vertex it read the edge for), and the
+     * vertices themselves are read in one batched pass - the same pass {@code otherV()} uses, so an
+     * endpoint read costs one storage round trip however many edges there are.
+     */
+    private static GremlinStep endpointStep(boolean source, boolean target) {
+        return (ctx, in) -> {
+            List<EdgeQueryResult> sources = new ArrayList<>();
+            List<EdgeQueryResult> targets = new ArrayList<>();
+            for (Object o : in) {
+                if (!(o instanceof GremlinEdge edge)) {
+                    throw new QueryException("outV()/inV()/bothV() expect edges but got: " + o);
+                }
+                if (source && edge.sourceEndpoint() != null) {
+                    // presented as an incoming edge, so the resolver looks up the class' source type
+                    sources.add(endpoint(edge, EdgeSide.IN, edge.sourceEndpoint()));
+                }
+                if (target && edge.targetEndpoint() != null) {
+                    targets.add(endpoint(edge, EdgeSide.OUT, edge.targetEndpoint()));
+                }
+            }
+            List<GremlinVertex> fromSource = readNeighbourVertices(ctx, sources);
+            List<GremlinVertex> fromTarget = readNeighbourVertices(ctx, targets);
+            if (!source) {
+                return new ArrayList<Object>(fromTarget);
+            }
+            if (!target) {
+                return new ArrayList<Object>(fromSource);
+            }
+            // bothV(): the source then the target of each edge, in the order the edges arrived
+            List<Object> out = new ArrayList<>(fromSource.size() + fromTarget.size());
+            int pairs = Math.min(fromSource.size(), fromTarget.size());
+            for (int i = 0; i < pairs; i++) {
+                out.add(fromSource.get(i));
+                out.add(fromTarget.get(i));
+            }
+            return out;
+        };
+    }
+
+    /** One endpoint of an edge, shaped as the edge a read of that vertex would have produced. */
+    private static EdgeQueryResult endpoint(GremlinEdge edge, EdgeSide side, Object vertexId) {
+        return new EdgeQueryResult(edge.label(), String.valueOf(edge.id()), side, vertexId,
+                edge.properties(), edge.createdTime(), edge.lastUpdatedTime());
+    }
+
     /** Filters elements: keeps those having {@code key} (and, when given, matching {@code rawValue}). */
     static GremlinStep has(String key, String rawValue) {
         return (ctx, in) -> {
@@ -785,41 +872,14 @@ final class GremlinSteps {
         };
     }
 
-    private static final java.util.regex.Pattern IS_PREDICATE = java.util.regex.Pattern.compile(
-            "^\\s*(gt|gte|lt|lte|neq|eq)\\s*\\((.*)\\)\\s*$", java.util.regex.Pattern.DOTALL);
-
     private static boolean isMatch(Object value, String token) {
-        java.util.regex.Matcher matcher = IS_PREDICATE.matcher(token.trim());
-        if (matcher.matches()) {
-            return predicateMatches(value, matcher.group(1), matcher.group(2).trim());
+        // every predicate the engine knows is parsed here, so a token that looks like a predicate call
+        // and names an unknown one is an error (see GremlinPredicate); anything else is a value
+        GremlinPredicate predicate = GremlinPredicate.parse(token);
+        if (predicate != null) {
+            return predicate.test(value);
         }
         return matches(value, token);
-    }
-
-    private static boolean predicateMatches(Object value, String predicate, String argument) {
-        if (predicate.equals("eq")) {
-            return matches(value, argument);
-        }
-        if (predicate.equals("neq")) {
-            return !matches(value, argument);
-        }
-        int comparison = compareValues(value, argument);
-        return switch (predicate) {
-            case "gt" -> comparison > 0;
-            case "gte" -> comparison >= 0;
-            case "lt" -> comparison < 0;
-            case "lte" -> comparison <= 0;
-            default -> throw new QueryException("Unknown is() predicate: " + predicate);
-        };
-    }
-
-    private static int compareValues(Object left, String right) {
-        String text = unquote(right);
-        try {
-            return Double.compare(Double.parseDouble(String.valueOf(left)), Double.parseDouble(text));
-        } catch (NumberFormatException e) {
-            return String.valueOf(left).compareTo(text);
-        }
     }
 
     private static String unquote(String text) {
@@ -1871,6 +1931,12 @@ final class GremlinSteps {
      * {@code ACTIVE} is the same status as the one typed {@code Active}.
      */
     static boolean matches(Object stored, String rawToken) {
+        // TextP.containing(…)/startingWith(…)/within(…): the token is a predicate, not a value.
+        // Checked before the type branches so a predicate also works on a numeric property.
+        GremlinPredicate predicate = GremlinPredicate.parse(rawToken);
+        if (predicate != null) {
+            return predicate.test(stored);
+        }
         if (stored instanceof Number number) {
             try {
                 if (rawToken.indexOf('.') >= 0 || rawToken.indexOf('e') >= 0 || rawToken.indexOf('E') >= 0) {

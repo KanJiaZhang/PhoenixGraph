@@ -13,6 +13,10 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import com.pengcheng.phoenixgraph.query.QueryException;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -61,6 +65,45 @@ class GremlinTinkerPopStepsTest {
     private Object one(String query) {
         List<Object> result = gremlin.execute(query);
         return result.isEmpty() ? null : result.get(0);
+    }
+
+    @Test
+    void hasLabelKeepsTheTypeItNames() {
+        assertEquals(2, gremlin.execute("g.V('a','b','Account').hasLabel('Account')").size());
+        assertEquals(0, gremlin.execute("g.V('a','b','Account').hasLabel('Payment')").size());
+        assertEquals(2, gremlin.execute("g.V('a','b','Account').hasLabel('account')").size(),
+                "the label match ignores case");
+    }
+
+    @Test
+    void predicatesAreEvaluatedAndAnUnknownOneIsAnError() {
+        assertEquals(List.of("c"), gremlin.execute("g.V('a','b','c','Account').has('status', eq('FROZEN'))")
+                .stream().map(o -> ((GremlinVertex) o).id()).toList());
+        assertEquals(1, gremlin.execute("g.V('a','b','c','Account').has('status', neq('FROZEN'))").size(),
+                "b has no status at all, and has(key, ...) needs the key to be there");
+        assertEquals(1, gremlin.execute("g.V('a','b','c','Account').has('status', not(within('ACTIVE')))").size());
+        assertEquals(2, gremlin.execute("g.V('a','b','c','d','Account').has('age', between(20, 30))").size(),
+                "between is inclusive of the lower bound and exclusive of the upper one");
+        assertEquals(1, gremlin.execute("g.V('a','b','c','d','Account').has('age', inside(20, 30))").size());
+        assertEquals(1, gremlin.execute("g.V('a','b','c','d','Account').has('age', outside(20, 30))").size(),
+                "outside(20,30) is x < 20 or x > 30: only c (40)");
+        assertEquals(List.of("a"), gremlin.execute("g.V('a','b','Account').values('id').is(eq('a'))"));
+        assertEquals(List.of("b"), gremlin.execute("g.V('a','b','Account').values('id').is(neq('a'))"));
+        assertEquals(List.of("b"), gremlin.execute("g.V('a','b','Account').values('id').is(within('b'))"));
+        assertEquals(List.of("a"), gremlin.execute("g.V('a','b','Account').values('id').is(not(within('b')))"));
+        QueryException error = assertThrows(QueryException.class, () -> gremlin.execute(
+                "g.V('a','Account').has('status', roughly('ACTIVE'))"));
+        assertTrue(error.getMessage().contains("Unknown predicate"), error.getMessage());
+    }
+
+    @Test
+    void aChildTraversalMayCarryTinkerPopsAnonymousMarker() {
+        assertEquals(List.of("a", "b"), gremlin.execute(
+                "g.V('a','b','Account').union(__.values('id')).toList()"),
+                "union(__.values('id')) means union(values('id'))");
+        assertEquals(2L, one("g.V('a','b','Account').and(__.has('name')).count()"));
+        assertEquals(List.of("a"), gremlin.execute(
+                "g.V('a','b','Account').where(__.has('status','ACTIVE')).values('id')"));
     }
 
     @Test

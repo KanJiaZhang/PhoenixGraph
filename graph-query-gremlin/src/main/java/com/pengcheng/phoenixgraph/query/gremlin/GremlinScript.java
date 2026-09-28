@@ -125,6 +125,12 @@ public final class GremlinScript {
             Pattern.DOTALL);
     private static final Pattern ASSIGN = Pattern.compile("^([A-Za-z_$][A-Za-z0-9_$]*)\\s*=(?!=)(.*)$",
             Pattern.DOTALL);
+    /** {@code x += 1}: rewritten into {@code x = x + (1)} so one expression evaluator serves both. */
+    private static final Pattern COMPOUND_ASSIGN = Pattern.compile(
+            "^([A-Za-z_$][A-Za-z0-9_$]*)\\s*(\\+=|-=|\\*=|/=|%=)\\s*(.+)$", Pattern.DOTALL);
+    /** {@code x++} / {@code ++x} / {@code x--} / {@code --x}: {@code x = x + 1} to the letter. */
+    private static final Pattern INCREMENT = Pattern.compile(
+            "^(?:([A-Za-z_$][A-Za-z0-9_$]*)\\s*(\\+\\+|--)|(\\+\\+|--)\\s*([A-Za-z_$][A-Za-z0-9_$]*))$");
     private static final Pattern PRINT = Pattern.compile("^(print|println)\\s*\\((.*)\\)\\s*$", Pattern.DOTALL);
     private static final Pattern RETURN = Pattern.compile("^return\\s+(.*)$", Pattern.DOTALL);
     private static final Pattern NAME = Pattern.compile("^[A-Za-z_$][A-Za-z0-9_$]*$");
@@ -330,6 +336,19 @@ public final class GremlinScript {
         if (ret.matches()) {
             return new Return(ret.group(1).trim(), trimmed);
         }
+        Matcher increment = INCREMENT.matcher(trimmed);
+        if (increment.matches()) {
+            // the value of x++ / ++x is not used by a statement, so both spellings rewrite the same way
+            String name = increment.group(1) != null ? increment.group(1) : increment.group(4);
+            String delta = increment.group(2) != null ? increment.group(2) : increment.group(3);
+            return new Assign(name, name + " " + delta.charAt(0) + " 1", trimmed);
+        }
+        Matcher compound = COMPOUND_ASSIGN.matcher(trimmed);
+        if (compound.matches()) {
+            String name = compound.group(1);
+            String operator = compound.group(2).substring(0, 1);
+            return new Assign(name, name + " " + operator + " (" + compound.group(3).trim() + ")", trimmed);
+        }
         Matcher assign = ASSIGN.matcher(trimmed);
         if (assign.matches()) {
             return new Assign(assign.group(1), assign.group(2).trim(), trimmed);
@@ -473,6 +492,12 @@ public final class GremlinScript {
             return false;
         }
         char last = soFar.charAt(soFar.length() - 1);
+        // `x++` / `x--` end with an operator character but are a whole statement: a trailing '++' does not
+        // mean the next line is part of it (only a lone '+' does, as in a multi-line sum)
+        if ((last == '+' || last == '-') && soFar.length() >= 2
+                && soFar.charAt(soFar.length() - 2) == last) {
+            return false;
+        }
         if (last == '.' || last == ',' || last == '+' || last == '=' || last == '(' || last == '['
                 || last == '{') {
             return true;
@@ -497,6 +522,24 @@ public final class GremlinScript {
         String text = expression.trim();
         if (text.isEmpty()) {
             throw new QueryException("A script statement has no expression");
+        }
+        // elvis before the ternary: `a ?: b` is one token, and `a ? b : c` is the general form
+        int elvis = indexOfTopLevelWord(text, "?:");
+        if (elvis >= 0) {
+            Object value = evaluate(text.substring(0, elvis).trim(), state, runner);
+            return truthy(value) ? value : evaluate(text.substring(elvis + 2).trim(), state, runner);
+        }
+        int question = indexOfTopLevelWord(text, "?");
+        if (question >= 0) {
+            int colon = indexOfTopLevelWord(text.substring(question + 1), ":");
+            if (colon < 0) {
+                throw new QueryException("A ternary needs ':' after the '?' in: " + text);
+            }
+            Object condition = evaluate(text.substring(0, question).trim(), state, runner);
+            int colonAt = question + 1 + colon;
+            return truthy(condition)
+                    ? evaluate(text.substring(question + 1, colonAt).trim(), state, runner)
+                    : evaluate(text.substring(colonAt + 1).trim(), state, runner);
         }
         // boolean logic is a value too, and it short-circuits: `p.get(1).value('side') == 'out' && ...`
         int or = indexOfTopLevelWord(text, "||");
@@ -562,6 +605,11 @@ public final class GremlinScript {
 
     /** The plain expression: a traversal, a variable (with a chain), or a literal. */
     private static Object primary(String text, State state, Runner runner) {
+        // a grouping: (1 + 2) * 3. Checked before the traversal and chain branches, and only when the
+        // matching bracket is the last character, so `(xs).size()` still goes to the chain parser
+        if (text.startsWith("(") && matchingParenthesis(text) == text.length() - 1) {
+            return evaluate(text.substring(1, text.length() - 1), state, runner);
+        }
         if (TRAVERSAL.matcher(text).find()) {
             String traversal = substitute(text, state.vars);
             GremlinGraphQuery.Result result = runner.run(traversal);
@@ -1146,6 +1194,28 @@ public final class GremlinScript {
 
     /** {@code +}: numbers add, anything else is joined as text (Groovy's rule for a query script). */
     private static Object plus(Object left, Object right) {
+        // Groovy's +, in Groovy's order: a String on either side makes text (so 'ids: ' + list still reads
+        // as a label followed by the list); a List appends (which is why count() + count() is [3, 9] and
+        // not 6 - a traversal answers with a list, so arithmetic on one value needs first()/get(0));
+        // numbers add; anything else joins as text.
+        if (left instanceof String || right instanceof String) {
+            return text(left) + text(right);
+        }
+        if (left instanceof List<?> list) {
+            List<Object> out = new ArrayList<>(list);
+            if (right instanceof List<?> other) {
+                out.addAll(other);
+            } else {
+                out.add(right);
+            }
+            return out;
+        }
+        if (right instanceof List<?> other) {
+            List<Object> out = new ArrayList<>();
+            out.add(left);
+            out.addAll(other);
+            return out;
+        }
         if (left instanceof Number a && right instanceof Number b) {
             if (isIntegral(a) && isIntegral(b)) {
                 return a.longValue() + b.longValue();
@@ -1508,10 +1578,26 @@ public final class GremlinScript {
         if (text.startsWith("[")) {
             return list(text, state, runner);
         }
-        if (text.length() >= 2 && (text.charAt(0) == '\'' || text.charAt(0) == '"')
-                && text.charAt(text.length() - 1) == text.charAt(0)) {
-            return text.substring(1, text.length() - 1)
-                    .replace("\\'", "'").replace("\\\"", "\"");
+        // a triple-quoted string is one value, newlines included
+        if (text.length() >= 6 && (text.startsWith("'''") || text.startsWith("\"\"\""))) {
+            String quote = text.substring(0, 3);
+            if (!text.endsWith(quote)) {
+                throw new QueryException("A triple-quoted string has to be closed with " + quote + " in: "
+                        + text);
+            }
+            return text.substring(3, text.length() - 3);
+        }
+        if (text.length() >= 2 && (text.charAt(0) == '\'' || text.charAt(0) == '"')) {
+            int close = closingQuote(text);
+            if (close != text.length() - 1) {
+                // before this check, `'abc' =~ 'b'` was read as one string (the outer quotes were
+                // stripped) - a silent answer to a question the engine cannot ask. A string has to be
+                // one value; anything after it is an operator this engine does not have.
+                throw new QueryException("Cannot read the script value '" + text + "': a string has to be"
+                        + " one value. (There is no regular-expression support: compare with"
+                        + " filter(key.equals('x')) or has(key, containing('x')).)");
+            }
+            return text.substring(1, close).replace("\\'", "'").replace("\\\"", "\"");
         }
         if (text.equals("true")) {
             return Boolean.TRUE;
@@ -1534,6 +1620,20 @@ public final class GremlinScript {
         }
         throw new QueryException("Cannot read the script value '" + text + "'. A value is a traversal "
                 + "(g.V(...)), a variable, a list, a string, a number, true/false or null");
+    }
+
+    /** The index of the quote that closes the string starting at 0, or -1 when it is never closed. */
+    private static int closingQuote(String text) {
+        char quote = text.charAt(0);
+        for (int i = 1; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c == '\\') {
+                i++;
+            } else if (c == quote) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     private static List<Object> list(String text, State state, Runner runner) {
@@ -1657,6 +1757,34 @@ public final class GremlinScript {
             }
         }
         throw new QueryException("Unbalanced parentheses in: " + s);
+    }
+
+    /** The index of the {@code ')'} that closes the {@code '('} at 0, or -1 when it does not pair up. */
+    private static int matchingParenthesis(String text) {
+        int depth = 0;
+        char quote = 0;
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (quote != 0) {
+                if (c == '\\') {
+                    i++;
+                } else if (c == quote) {
+                    quote = 0;
+                }
+                continue;
+            }
+            if (c == '\'' || c == '"') {
+                quote = c;
+            } else if (c == '(') {
+                depth++;
+            } else if (c == ')') {
+                depth--;
+                if (depth == 0) {
+                    return i;
+                }
+            }
+        }
+        return -1;
     }
 
     private static int matchingBracket(String s, int open) {
