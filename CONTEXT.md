@@ -6862,3 +6862,13 @@ node .logs/probe-predicates.js           # 谓词对照（before/after 两份 co
 * 因此"状态路径上不带 `path()` 也能用"是**有意增强**，不能用两条路径对照钉，改用**差分对**钉：同一 walk 上 `simplePath()` 留 1、`cyclicPath()` 留 0，极性写反立刻翻掉。
 
 验证：`graph-query-gremlin` **291 用例绿**（既有 275 个未改）。
+
+## 100. `Traverser` 第三批（五）：状态路径上的 `repeat(child).times(n)`
+
+`repeat` **早就存在于列表路径**（`times` 调制器在编译期折叠成 `repeat(child, n)`）；缺的只是状态路径的对应处理。
+上一轮我加这个时犯了两个错：参数顺序写成 `[n, child]`（其实是 `[child, n]`），并且把 `repeat` 塞进了 `STATEFUL_STEPS`，
+于是无标签的 `repeat` 查询被劫持离列表路径、弄坏既有用例——已撤销。本轮只加 switch case、参数按 `[child, times]` 解析，
+**不动 `STATEFUL_STEPS`、不动注册表**（与 `union` 同一手法）：无标签 `repeat` 仍走列表路径（行为/代价不变），
+只有查询已因别的 step 走状态路径时才接管。`repeat` 是最后一个"状态路径尚不覆盖"的 step，故那个断言它仍抛错的用例
+被替换为正向等价用例：列表路径 repeat == 手写两次 hop == 带标签状态路径 repeat，且标签在循环后仍可读。
+`graph-query-gremlin` **291 用例绿**（既有 275 个未改）。

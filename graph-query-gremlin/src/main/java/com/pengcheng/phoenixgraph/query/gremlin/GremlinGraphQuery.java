@@ -1372,6 +1372,7 @@ public class GremlinGraphQuery {
                 case "path" -> pathStep(traversers, planned.args());
                 case "simplePath" -> walkFilter(traversers, true);
                 case "cyclicPath" -> walkFilter(traversers, false);
+                case "repeat" -> repeatStep(context, planned.args(), traversers);
                 case "branch" -> branchStep(context, planned.args(), traversers);
                 // union is an ordinary step on the list path; with labels it needs the traversers, so the
                 // stateful path handles it here and the list path keeps running exactly what it ran before
@@ -1397,6 +1398,37 @@ public class GremlinGraphQuery {
             answer.add(traverser.value());
         }
         return answer;
+    }
+
+    /**
+     * {@code repeat(child).times(n)} on the stateful path: the same loop the list path runs, but on
+     * traversers, so a label bound before the loop stays readable after it. The args arrive folded as
+     * {@code [child, times]} - the {@code times} modulator is attached at compile time. A child that
+     * answers nothing empties the loop early. {@code until/emit/loops} are the rest of the executor.
+     */
+    private List<GremlinTraverser> repeatStep(GremlinContext context, List<String> args,
+                                              List<GremlinTraverser> traversers) {
+        int times;
+        try {
+            times = Integer.parseInt(args.get(1).trim());
+        } catch (NumberFormatException | IndexOutOfBoundsException e) {
+            throw new QueryException("repeat expects repeat(child).times(n)");
+        }
+        String child = args.get(0);
+        List<GremlinTraverser> current = traversers;
+        for (int i = 0; i < times; i++) {
+            List<GremlinTraverser> next = new ArrayList<>();
+            for (GremlinTraverser traverser : current) {
+                for (Object value : runSubTraversal(context, child, List.of(traverser.value()))) {
+                    next.add(traverser.withValue(value));
+                }
+            }
+            current = next;
+            if (current.isEmpty()) {
+                break;
+            }
+        }
+        return current;
     }
 
     /**

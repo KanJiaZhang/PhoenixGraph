@@ -187,11 +187,16 @@ class GremlinTraverserStepsTest {
     }
 
     @Test
-    void aStepThatTheStatefulPathDoesNotCoverYetSaysSo() {
-        QueryException error = assertThrows(QueryException.class, () -> gremlin.execute(
-                "g.V('a','Account').as('x').repeat(out('knows')).times(2)"));
-        assertTrue(error.getMessage().contains("stateful path"), error.getMessage());
-        assertTrue(error.getMessage().contains("repeat"), error.getMessage());
+    void repeatWithLabelsRunsTheSameLoopAsTheListPath() {
+        String twoHops = ".out('knows').out('knows')";
+        assertEquals(gremlin.execute("g.V('a','Account')" + twoHops + ".values('id')"),
+                gremlin.execute("g.V('a','Account').repeat(out('knows')).times(2).values('id')"),
+                "the list-path repeat is exactly two hops");
+        assertEquals(gremlin.execute("g.V('a','Account').repeat(out('knows')).times(2).values('id')"),
+                gremlin.execute("g.V('a','Account').as('v').repeat(out('knows')).times(2).values('id')"),
+                "the stateful path runs the same loop, so a labelled repeat answers the same");
+        assertEquals(List.of("c"), ids("g.V('a','Account').as('v').repeat(out('knows')).times(2).values('id')"),
+                "and the label bound before the loop survives it");
     }
 
     @Test
