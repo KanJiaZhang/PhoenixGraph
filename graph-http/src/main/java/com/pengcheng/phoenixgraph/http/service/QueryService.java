@@ -79,6 +79,21 @@ public class QueryService {
     /** The most elements one answer may carry (see {@link #cap}); {@code 0} disables the cap. */
     private int maxResponseItems = DEFAULT_MAX_RESPONSE_ITEMS;
 
+    /**
+     * Whether scripts may use the admin-level features: whitelisted statics ({@code Math.max}), a
+     * first-class closure stored in a variable and called, and regular expressions ({@code =~},
+     * {@code ==~}, {@code /.../}). The development UI gate is the script toggle itself, so this
+     * defaults to on; an admin deployment can set {@code phoenixgraph.script.advanced=false} (or wire
+     * it to a role later) and the constructs are refused with a message that says so.
+     */
+    private boolean advancedScript = true;
+
+    /** Wires the admin-level script features ({@code phoenixgraph.script.advanced}). */
+    @Value("${phoenixgraph.script.advanced:true}")
+    public void advancedScript(boolean advancedScript) {
+        this.advancedScript = advancedScript;
+    }
+
     /** Wires the patterns fuzzy linking reads ({@code fuzzyLink(patternId, context)}). */
     @Autowired(required = false)
     public void fuzzyPatterns(FuzzyPatternStore fuzzyPatterns) {
@@ -332,7 +347,8 @@ public class QueryService {
                     // text: the counters around the run say how much of that this call had to do
                     GremlinGraphQuery.CompileStats before = engine.compileStats();
                     GremlinGraphQuery.ScriptPlan plan = engine.script(substituted);
-                    GremlinScript.Result result = plan.script().execute(engine::executeWithSubgraph);
+                    GremlinScript.Result result = plan.script().execute(engine::executeWithSubgraph,
+                            advancedScript);
                     GremlinGraphQuery.CompileStats spent = engine.compileStats().minus(before);
                     yield new ScriptResponse(result.value(), result.output(),
                             returnSubgraph ? result.subgraph() : Subgraph.EMPTY,

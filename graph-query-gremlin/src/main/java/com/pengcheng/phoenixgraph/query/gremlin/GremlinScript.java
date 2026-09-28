@@ -90,6 +90,11 @@ public final class GremlinScript {
     private record For(String variable, String iterable, List<Stmt> body, String text) implements Stmt {
     }
 
+    /** {@code for (init; condition; update) { ... }}: Groovy's C-style loop. */
+    private record ForC(Stmt init, String condition, Stmt update, List<Stmt> body, String text)
+            implements Stmt {
+    }
+
     private record While(String condition, List<Stmt> body, String text) implements Stmt {
     }
 
@@ -123,6 +128,14 @@ public final class GremlinScript {
 
     /** A closure: its parameter names ({@code it} when there are none) and its body. */
     private record Closure(List<String> params, List<Stmt> body) {
+    }
+
+    /** A Groovy range: {@code 1..3} (inclusive) or {@code 1..<3} (the end excluded). */
+    private record RangeValue(long from, long to, boolean exclusive) {
+    }
+
+    /** A compiled regular expression: the slashy literal {@code /a.c/} or a {@code ~'a.c'} pattern. */
+    private record RegexValue(java.util.regex.Pattern pattern) {
     }
 
     /** Control flow leaves a block by throwing; the block executor catches it. */
@@ -229,7 +242,18 @@ public final class GremlinScript {
 
     /** Runs the script and answers with what was printed (or the last value) and the subgraph. */
     public Result execute(Runner runner) {
+        return execute(runner, true);
+    }
+
+    /**
+     * Runs the script with the advanced features ({@code Math.*} and other whitelisted statics, a
+     * first-class closure stored in a variable and called, and regular expressions) allowed or not.
+     * The query service turns this off for callers without the admin/script-advanced permission; the
+     * development UI gate is the script toggle itself, so it defaults to allowed.
+     */
+    public Result execute(Runner runner, boolean advanced) {
         State state = new State();
+        state.advanced = advanced;
         try {
             execute(statements, state, runner);
         } catch (ReturnSignal signal) {
@@ -268,6 +292,27 @@ public final class GremlinScript {
                         // on to the next item
                     } catch (BreakSignal ignored) {
                         break;
+                    }
+                }
+            } else if (statement instanceof ForC loop) {
+                if (loop.init() != null) {
+                    execute(List.of(loop.init()), state, runner);
+                }
+                int guard = 0;
+                while (loop.condition().isEmpty() || truth(loop.condition(), state, runner)) {
+                    if (++guard > MAX_LOOP_ITERATIONS) {
+                        throw new QueryException("The for loop ran " + MAX_LOOP_ITERATIONS
+                                + " times; check its condition");
+                    }
+                    try {
+                        execute(loop.body(), state, runner);
+                    } catch (ContinueSignal ignored) {
+                        // on to the update
+                    } catch (BreakSignal ignored) {
+                        break;
+                    }
+                    if (loop.update() != null) {
+                        execute(List.of(loop.update()), state, runner);
                     }
                 }
             } else if (statement instanceof While loop) {
@@ -344,16 +389,10 @@ public final class GremlinScript {
     /** The values a {@code for (x in ...)} walks. */
     private static List<Object> iterable(String expression, State state, Runner runner) {
         Object value = evaluate(expression, state, runner);
-        if (value instanceof Collection<?> collection) {
-            return new ArrayList<>(collection);
-        }
         if (value instanceof Map<?, ?> map) {
             return new ArrayList<>(map.entrySet());
         }
-        if (value instanceof Object[] array) {
-            return new ArrayList<>(java.util.Arrays.asList(array));
-        }
-        return value == null ? List.of() : List.of(value);
+        return items(value);
     }
 
     /** The mutable state of one run: the variables, what was printed, and the last value. */
@@ -364,6 +403,16 @@ public final class GremlinScript {
         Subgraph subgraph = Subgraph.EMPTY;
         Object last;
         boolean lastWasPrint;
+        /** Whether the admin-level features (whitelisted statics, first-class closures, regex) are on. */
+        boolean advanced = true;
+    }
+
+    /** Refuses an admin-level feature when the caller has no permission for it. */
+    private static void requireAdvanced(State state, String what) {
+        if (!state.advanced) {
+            throw new QueryException(what + " needs the advanced script permission (admin). Ask an"
+                    + " administrator to enable it, or write the query without it.");
+        }
     }
 
     // --- statements ---
@@ -476,9 +525,6 @@ public final class GremlinScript {
         String header = text.substring(open + 1, close).trim();
         Matcher in = Pattern.compile("^([A-Za-z_$][A-Za-z0-9_$]*)\\s+in\\s+(.+)$", Pattern.DOTALL)
                 .matcher(header);
-        if (!in.matches()) {
-            throw new QueryException("for expects for (name in list), got: for (" + header + ")");
-        }
         int brace = text.indexOf('{', close);
         if (brace < 0) {
             throw new QueryException("for expects a { ... } block: " + text);
@@ -487,6 +533,20 @@ public final class GremlinScript {
         String rest = text.substring(end + 1).trim();
         if (!rest.isEmpty()) {
             throw new QueryException("Unexpected '" + rest + "' after the for block in: " + text);
+        }
+        if (!in.matches()) {
+            // C-style: for (init; condition; update)
+            List<String> parts = splitTopLevel(header, ";");
+            if (parts.size() == 3) {
+                String initText = parts.get(0).trim();
+                String conditionText = parts.get(1).trim();
+                String updateText = parts.get(2).trim();
+                return new ForC(initText.isEmpty() ? null : parseStatement(initText), conditionText,
+                        updateText.isEmpty() ? null : parseStatement(updateText),
+                        parseBlock(text.substring(brace + 1, end)), text);
+            }
+            throw new QueryException("for expects for (name in list) or for (init; condition; update),"
+                    + " got: for (" + header + ")");
         }
         return new For(in.group(1), in.group(2).trim(), parseBlock(text.substring(brace + 1, end)), text);
     }
@@ -741,11 +801,22 @@ public final class GremlinScript {
         if (text.isEmpty()) {
             throw new QueryException("A script statement has no expression");
         }
+        // a slashy regular expression as a whole value: /a.c/ (checked before the operators, whose
+        // scanners would otherwise read the slashes as division)
+        if (isSlashyRegex(text)) {
+            requireAdvanced(state, "A regular expression (/.../)");
+            return new RegexValue(java.util.regex.Pattern.compile(text.substring(1, text.length() - 1)));
+        }
         // elvis before the ternary: `a ?: b` is one token, and `a ? b : c` is the general form
         int elvis = indexOfTopLevelWord(text, "?:");
         if (elvis >= 0) {
             Object value = evaluate(text.substring(0, elvis).trim(), state, runner);
             return truthy(value) ? value : evaluate(text.substring(elvis + 2).trim(), state, runner);
+        }
+        // safe navigation `a?.b` before the ternary (it also starts with a '?'): a null receiver
+        // short-circuits the whole chain to null
+        if (indexOfTopLevelWord(text, "?.") >= 0) {
+            return safeNavigation(text, state, runner);
         }
         int question = indexOfTopLevelWord(text, "?");
         if (question >= 0) {
@@ -770,6 +841,52 @@ public final class GremlinScript {
             return truthy(evaluate(text.substring(0, and).trim(), state, runner))
                     && truthy(evaluate(text.substring(and + 2).trim(), state, runner));
         }
+        // Groovy's regex match/exact-match (before ==, which ==~ contains)
+        int exactMatch = indexOfTopLevelWord(text, "==~");
+        if (exactMatch >= 0) {
+            requireAdvanced(state, "A regular expression (==~)");
+            Object subject = evaluate(text.substring(0, exactMatch).trim(), state, runner);
+            Object pattern = evaluate(text.substring(exactMatch + 3).trim(), state, runner);
+            return java.util.regex.Pattern.matches(patternText(pattern), text(subject));
+        }
+        int findMatch = indexOfTopLevelWord(text, "=~");
+        if (findMatch >= 0) {
+            requireAdvanced(state, "A regular expression (=~)");
+            Object subject = evaluate(text.substring(0, findMatch).trim(), state, runner);
+            Object pattern = evaluate(text.substring(findMatch + 2).trim(), state, runner);
+            java.util.regex.Matcher matcher = java.util.regex.Pattern.compile(patternText(pattern))
+                    .matcher(text(subject));
+            List<Object> found = new ArrayList<>();
+            while (matcher.find()) {
+                found.add(matcher.group());
+            }
+            return found;
+        }
+        // Groovy's leftShift `xs << 2` (before the comparisons: '<' would split '<<')
+        int leftShift = indexOfTopLevelWord(text, "<<");
+        if (leftShift >= 0) {
+            Object left = evaluate(text.substring(0, leftShift).trim(), state, runner);
+            Object right = evaluate(text.substring(leftShift + 2).trim(), state, runner);
+            if (left instanceof Collection<?> collection) {
+                @SuppressWarnings("unchecked")
+                Collection<Object> mutable = (Collection<Object>) collection;
+                mutable.add(right);
+                return left;
+            }
+            throw new QueryException("'<<' appends to a list, got " + typeName(left));
+        }
+        // Groovy ranges: 1..3 and 1..<3 (before the comparisons: the '<' of '..<' would split it)
+        int exclusiveRange = indexOfTopLevelWord(text, "..<");
+        if (exclusiveRange >= 0) {
+            return new RangeValue((long) number(evaluate(text.substring(0, exclusiveRange).trim(), state,
+                    runner)), (long) number(evaluate(text.substring(exclusiveRange + 3).trim(), state,
+                    runner)), true);
+        }
+        int range = indexOfTopLevelWord(text, "..");
+        if (range >= 0) {
+            return new RangeValue((long) number(evaluate(text.substring(0, range).trim(), state, runner)),
+                    (long) number(evaluate(text.substring(range + 2).trim(), state, runner)), false);
+        }
         // Groovy's spaceship: the comparator a sort closure answers with
         int spaceship = indexOfTopLevelWord(text, "<=>");
         if (spaceship >= 0) {
@@ -790,6 +907,166 @@ public final class GremlinScript {
             return !truthy(evaluate(text.substring(1), state, runner));
         }
         return additive(text, state, runner);
+    }
+
+    /**
+     * Groovy's safe navigation {@code a?.b.c}: the chain answers null as soon as a receiver is null,
+     * instead of failing on the next link.
+     */
+    private static Object safeNavigation(String text, State state, Runner runner) {
+        List<String> parts = splitTopLevel(text, "?.");
+        Object current = evaluate(parts.get(0).trim(), state, runner);
+        for (int i = 1; i < parts.size() && current != null; i++) {
+            current = applyChain(current, "." + parts.get(i).trim(), state, runner);
+        }
+        return current;
+    }
+
+    /** Splits on a separator that is outside quotes and brackets (a {@code ?.} chain). */
+    private static List<String> splitTopLevel(String text, String separator) {
+        List<String> out = new ArrayList<>();
+        int at = 0;
+        while (true) {
+            int next = indexOfTopLevelWord(text.substring(at), separator);
+            if (next < 0) {
+                out.add(text.substring(at));
+                return out;
+            }
+            out.add(text.substring(at, at + next));
+            at = at + next + separator.length();
+        }
+    }
+
+    /** Whether a value is written as a slashy regular expression literal: {@code /a.c/}. */
+    private static boolean isSlashyRegex(String text) {
+        if (text.length() < 3 || text.charAt(0) != '/' || text.charAt(text.length() - 1) != '/') {
+            return false;
+        }
+        // a division such as `a / b /` is not a regex: the body must not contain an unescaped slash
+        return text.indexOf('/', 1) == text.length() - 1;
+    }
+
+    /** The pattern of a regex operand: a {@code /.../} literal's pattern, or the text itself. */
+    private static String patternText(Object pattern) {
+        return pattern instanceof RegexValue regex ? regex.pattern().pattern() : text(pattern);
+    }
+
+    /**
+     * The classes a script may call statically. Nothing else is reachable: no reflection, no IO, no
+     * threads. A name not on this list is refused as an unknown variable.
+     */
+    private static boolean isWhitelistedClass(String name) {
+        return name.equals("Math") || name.equals("Integer") || name.equals("Long") || name.equals("Double")
+                || name.equals("String") || name.equals("Boolean");
+    }
+
+    /** A whitelisted static call or constant ({@code Math.max(1, 2)}, {@code Integer.MAX_VALUE}). */
+    private static Object staticCall(String className, String chain, State state, Runner runner) {
+        int open = indexOfTopLevel(chain, '(');
+        if (open < 0) {
+            return staticConstant(className, chain.trim());
+        }
+        String method = chain.substring(0, open).trim();
+        int close = matchingParen(chain, open);
+        List<Object> arguments = new ArrayList<>();
+        for (String part : splitArgs(chain.substring(open + 1, close))) {
+            if (!part.isBlank()) {
+                arguments.add(evaluate(part.trim(), state, runner));
+            }
+        }
+        return staticMethod(className, method, arguments);
+    }
+
+    /** A whitelisted static constant. */
+    private static Object staticConstant(String className, String name) {
+        return switch (className + "." + name) {
+            case "Math.PI" -> Math.PI;
+            case "Math.E" -> Math.E;
+            case "Integer.MAX_VALUE" -> (long) Integer.MAX_VALUE;
+            case "Integer.MIN_VALUE" -> (long) Integer.MIN_VALUE;
+            case "Long.MAX_VALUE" -> Long.MAX_VALUE;
+            case "Long.MIN_VALUE" -> Long.MIN_VALUE;
+            case "Double.MAX_VALUE" -> Double.MAX_VALUE;
+            case "Double.MIN_VALUE" -> Double.MIN_VALUE;
+            case "Double.NaN" -> Double.NaN;
+            case "Double.POSITIVE_INFINITY" -> Double.POSITIVE_INFINITY;
+            case "Double.NEGATIVE_INFINITY" -> Double.NEGATIVE_INFINITY;
+            case "Boolean.TRUE" -> Boolean.TRUE;
+            case "Boolean.FALSE" -> Boolean.FALSE;
+            default -> throw new QueryException("Static constant '" + className + "." + name
+                    + "' is not in the whitelist");
+        };
+    }
+
+    /** A whitelisted static method; the argument count is checked against the signature. */
+    private static Object staticMethod(String className, String method, List<Object> args) {
+        String key = className + "." + method;
+        switch (key) {
+            case "Math.abs":
+                return Math.abs(numberArg(args, 0, key, 1));
+            case "Math.max":
+                return Math.max(numberArg(args, 0, key, 2), numberArg(args, 1, key, 2));
+            case "Math.min":
+                return Math.min(numberArg(args, 0, key, 2), numberArg(args, 1, key, 2));
+            case "Math.round":
+                return Math.round(numberArg(args, 0, key, 1));
+            case "Math.floor":
+                return Math.floor(numberArg(args, 0, key, 1));
+            case "Math.ceil":
+                return Math.ceil(numberArg(args, 0, key, 1));
+            case "Math.sqrt":
+                return Math.sqrt(numberArg(args, 0, key, 1));
+            case "Math.pow":
+                return Math.pow(numberArg(args, 0, key, 2), numberArg(args, 1, key, 2));
+            case "Math.signum":
+                return Math.signum(numberArg(args, 0, key, 1));
+            case "Math.toRadians":
+                return Math.toRadians(numberArg(args, 0, key, 1));
+            case "Math.toDegrees":
+                return Math.toDegrees(numberArg(args, 0, key, 1));
+            case "Integer.parseInt", "Long.parseLong", "Integer.valueOf", "Long.valueOf":
+                return Long.parseLong(text(argument(args, 0, key, 1)).trim());
+            case "Double.parseDouble", "Double.valueOf":
+                return Double.parseDouble(text(argument(args, 0, key, 1)).trim());
+            case "Integer.toHexString":
+                return Integer.toHexString((int) numberArg(args, 0, key, 1));
+            case "Integer.toBinaryString":
+                return Integer.toBinaryString((int) numberArg(args, 0, key, 1));
+            case "Long.toHexString":
+                return Long.toHexString((long) numberArg(args, 0, key, 1));
+            case "String.valueOf":
+                return text(argument(args, 0, key, 1));
+            case "String.format":
+                return stringFormat(args);
+            case "String.join":
+                return String.join(text(argument(args, 0, key, 2)),
+                        items(argument(args, 1, key, 2)).stream().map(GremlinScript::text).toList());
+            case "Boolean.parseBoolean", "Boolean.valueOf":
+                return Boolean.parseBoolean(text(argument(args, 0, key, 1)).trim());
+            default:
+                throw new QueryException("Static call '" + key + "' is not in the whitelist");
+        }
+    }
+
+    private static double numberArg(List<Object> args, int index, String key, int expected) {
+        return number(argument(args, index, key, expected));
+    }
+
+    /** The argument at {@code index}, after checking the call has exactly {@code expected} of them. */
+    private static Object argument(List<Object> args, int index, String key, int expected) {
+        if (args.size() != expected) {
+            throw new QueryException(key + " expects " + expected + " argument(s), got " + args.size());
+        }
+        return args.get(index);
+    }
+
+    /** {@code String.format(fmt, ...)} with the locale fixed, so a script is reproducible. */
+    private static String stringFormat(List<Object> args) {
+        if (args.isEmpty()) {
+            throw new QueryException("String.format needs a format string");
+        }
+        return String.format(java.util.Locale.ROOT, text(args.get(0)),
+                args.subList(1, args.size()).toArray());
     }
 
     /** {@code +}/{@code -}, left to right, over the multiplicative terms. */
@@ -862,6 +1139,10 @@ public final class GremlinScript {
             String head = text.substring(0, dot).trim();
             Object base;
             if (NAME.matcher(head).matches()) {
+                if (isWhitelistedClass(head)) {
+                    requireAdvanced(state, "A static call (" + head + ")");
+                    return staticCall(head, text.substring(dot + 1).trim(), state, runner);
+                }
                 if (!state.vars.containsKey(head)) {
                     throw new QueryException("Unknown script variable '" + head + "' in: " + text);
                 }
@@ -870,6 +1151,21 @@ public final class GremlinScript {
                 base = literal(head, state, runner); // 'abc'.size(), [1, 2, 3].size()
             }
             return applyChain(base, text.substring(dot), state, runner);
+        }
+        // a call of a closure stored in a variable: def f = { x -> x * 2 }; f(3)
+        int callOpen = indexOfTopLevel(text, '(');
+        if (callOpen > 0 && matchingParen(text, callOpen) == text.length() - 1) {
+            String callee = text.substring(0, callOpen).trim();
+            if (NAME.matcher(callee).matches() && state.vars.get(callee) instanceof Closure closure) {
+                requireAdvanced(state, "A first-class closure call");
+                List<Object> arguments = new ArrayList<>();
+                for (String part : splitArgs(text.substring(callOpen + 1, text.length() - 1))) {
+                    if (!part.isBlank()) {
+                        arguments.add(evaluate(part.trim(), state, runner));
+                    }
+                }
+                return invoke(closure, arguments, state, runner);
+            }
         }
         if (NAME.matcher(text).matches()) {
             if (state.vars.containsKey(text)) {
@@ -987,10 +1283,19 @@ public final class GremlinScript {
                         state, runner);
             } else {
                 if (open < 0) {
-                    // Groovy's property access: m.a is m['a'] when the value is a map (a bare word after a
-                    // dot is only ever a property here, since a method without arguments is written ())
-                    if (current instanceof Map<?, ?> map && NAME.matcher(rest).matches()) {
-                        current = map.get(rest);
+                    // Groovy's property access: m.a is m['a'] when the value is a map, and a dotted
+                    // path m.a.b walks nested maps (a bare word after a dot is only ever a property
+                    // here, since a method without arguments is written ())
+                    if (rest.matches("[A-Za-z_$][A-Za-z0-9_$]*(\\.[A-Za-z_$][A-Za-z0-9_$]*)*")) {
+                        Object node = current;
+                        for (String property : rest.split("\\.")) {
+                            if (!(node instanceof Map<?, ?> map)) {
+                                throw new QueryException("Cannot read property '." + property + "' of "
+                                        + typeName(node));
+                            }
+                            node = map.get(property);
+                        }
+                        current = node;
                         break;
                     }
                     throw new QueryException("Expected '(' after '." + rest + "' (or a map property: m.a)");
@@ -1076,33 +1381,40 @@ public final class GremlinScript {
      */
     private static Object applyWithClosure(String name, Object value, Closure closure, State state,
                                            Runner runner) {
-        List<Object> items = value instanceof Collection<?> collection ? new ArrayList<>(collection)
-                : (value == null ? List.of() : List.of(value));
+        // a Map contributes its entries (Groovy iterates key/value; a two-parameter closure destructures)
+        List<Object> items = closureItems(value);
         switch (name) {
             case "each": {
                 for (Object item : items) {
-                    invoke(closure, List.of(item), state, runner);
+                    invokeItem(closure, item, state, runner);
                 }
                 return value;
             }
             case "eachwithindex": {
                 long index = 0;
                 for (Object item : items) {
-                    invoke(closure, List.of(item, index++), state, runner);
+                    invokeItem(closure, item, state, runner, index++);
                 }
                 return value;
             }
             case "collect": {
                 List<Object> out = new ArrayList<>(items.size());
                 for (Object item : items) {
-                    out.add(invoke(closure, List.of(item), state, runner));
+                    out.add(invokeItem(closure, item, state, runner));
                 }
                 return out;
             }
-            case "findall", "filter": {
+            case "collectmany": {
                 List<Object> out = new ArrayList<>();
                 for (Object item : items) {
-                    if (truthy(invoke(closure, List.of(item), state, runner))) {
+                    flattenInto(out, invokeItem(closure, item, state, runner));
+                }
+                return out;
+            }
+            case "findall", "filter", "grep": {
+                List<Object> out = new ArrayList<>();
+                for (Object item : items) {
+                    if (truthy(invokeItem(closure, item, state, runner))) {
                         out.add(item);
                     }
                 }
@@ -1110,15 +1422,24 @@ public final class GremlinScript {
             }
             case "find": {
                 for (Object item : items) {
-                    if (truthy(invoke(closure, List.of(item), state, runner))) {
+                    if (truthy(invokeItem(closure, item, state, runner))) {
                         return item;
+                    }
+                }
+                return null;
+            }
+            case "findresult": {
+                for (Object item : items) {
+                    Object result = invokeItem(closure, item, state, runner);
+                    if (result != null) {
+                        return result;
                     }
                 }
                 return null;
             }
             case "any": {
                 for (Object item : items) {
-                    if (truthy(invoke(closure, List.of(item), state, runner))) {
+                    if (truthy(invokeItem(closure, item, state, runner))) {
                         return Boolean.TRUE;
                     }
                 }
@@ -1126,7 +1447,7 @@ public final class GremlinScript {
             }
             case "every": {
                 for (Object item : items) {
-                    if (!truthy(invoke(closure, List.of(item), state, runner))) {
+                    if (!truthy(invokeItem(closure, item, state, runner))) {
                         return Boolean.FALSE;
                     }
                 }
@@ -1135,7 +1456,7 @@ public final class GremlinScript {
             case "count": {
                 long count = 0;
                 for (Object item : items) {
-                    if (truthy(invoke(closure, List.of(item), state, runner))) {
+                    if (truthy(invokeItem(closure, item, state, runner))) {
                         count++;
                     }
                 }
@@ -1145,14 +1466,14 @@ public final class GremlinScript {
                 java.math.BigDecimal total = java.math.BigDecimal.ZERO;
                 for (Object item : items) {
                     total = total.add(new java.math.BigDecimal(
-                            text(invoke(closure, List.of(item), state, runner))));
+                            text(invokeItem(closure, item, state, runner))));
                 }
                 return total.stripTrailingZeros().scale() <= 0 ? (Object) total.longValueExact() : total;
             }
             case "sort": {
                 List<Object> out = new ArrayList<>(items);
                 out.sort((left, right) -> ordering(left, right, closure, state, runner));
-                return out;
+                return sortedInPlace(value, out);
             }
             case "max", "min": {
                 boolean max = name.equals("max");
@@ -1168,7 +1489,7 @@ public final class GremlinScript {
             case "groupby": {
                 Map<String, List<Object>> groups = new LinkedHashMap<>();
                 for (Object item : items) {
-                    groups.computeIfAbsent(text(invoke(closure, List.of(item), state, runner)),
+                    groups.computeIfAbsent(text(invokeItem(closure, item, state, runner)),
                             key -> new ArrayList<>()).add(item);
                 }
                 return new LinkedHashMap<String, Object>(groups);
@@ -1176,7 +1497,7 @@ public final class GremlinScript {
             case "collectentries": {
                 Map<String, Object> out = new LinkedHashMap<>();
                 for (Object item : items) {
-                    Object entry = invoke(closure, List.of(item), state, runner);
+                    Object entry = invokeItem(closure, item, state, runner);
                     if (entry instanceof Map<?, ?> map) {
                         for (Map.Entry<?, ?> e : map.entrySet()) {
                             out.put(text(e.getKey()), e.getValue());
@@ -1190,11 +1511,79 @@ public final class GremlinScript {
                 }
                 return out;
             }
+            case "times": {
+                // n.times { i -> ... }: the receiver is a number, not a collection
+                long count = value instanceof Number number ? number.longValue() : 0L;
+                for (long i = 0; i < count; i++) {
+                    invoke(closure, List.of(i), state, runner);
+                }
+                return value;
+            }
             default:
                 throw new QueryException("Unknown closure method '." + name + ". Supported: each(), "
-                        + "eachWithIndex(), collect(), findAll(), find(), any(), every(), count(), sum(), "
-                        + "sort(), max(), min(), groupBy(), collectEntries()");
+                        + "eachWithIndex(), collect(), collectMany(), findAll(), grep(), find(),"
+                        + " findResult(), any(), every(), count(), sum(), sort(), max(), min(), groupBy(),"
+                        + " collectEntries(), times()");
         }
+    }
+
+    /** The items a closure method iterates: a Map contributes its entries, a collection its elements. */
+    private static List<Object> closureItems(Object value) {
+        if (value instanceof Map<?, ?> map) {
+            return new ArrayList<>(map.entrySet());
+        }
+        return items(value);
+    }
+
+    /**
+     * Invokes a closure for one item: a {@code Map.Entry} destructures into key/value when the closure
+     * declares two parameters (Groovy's {@code m.each { k, v -> ... }}), otherwise the entry itself is
+     * {@code it}. Extra arguments (an index, say) are appended after the item or the pair.
+     */
+    private static Object invokeItem(Closure closure, Object item, State state, Runner runner,
+                                     Object... extra) {
+        List<Object> arguments = new ArrayList<>();
+        int params = closure.params().isEmpty() ? 1 : closure.params().size();
+        if (item instanceof Map.Entry<?, ?> entry && params >= 2 + extra.length) {
+            arguments.add(entry.getKey());
+            arguments.add(entry.getValue());
+        } else {
+            arguments.add(item);
+        }
+        for (Object value : extra) {
+            arguments.add(value);
+        }
+        return invoke(closure, arguments, state, runner);
+    }
+
+    /** Adds a closure's answer to a flattened list: a collection/array contributes its elements. */
+    private static void flattenInto(List<Object> out, Object value) {
+        if (value instanceof Collection<?> collection) {
+            out.addAll(collection);
+        } else if (value instanceof Object[] array) {
+            out.addAll(List.of(array));
+        } else if (value != null) {
+            out.add(value);
+        }
+    }
+
+    /**
+     * Reorders the receiver in place when it is a mutable list (Groovy's {@code sort()}) and answers it;
+     * an immutable list (or anything else) answers the sorted copy instead of throwing.
+     */
+    @SuppressWarnings("unchecked")
+    private static Object sortedInPlace(Object value, List<Object> sorted) {
+        if (value instanceof List<?> list) {
+            try {
+                List<Object> mutable = (List<Object>) list;
+                mutable.clear();
+                mutable.addAll(sorted);
+                return value;
+            } catch (UnsupportedOperationException ignored) {
+                // an immutable list: answer the copy
+            }
+        }
+        return sorted;
     }
 
     /**
@@ -1213,15 +1602,39 @@ public final class GremlinScript {
         return 1;
     }
 
-    /** The values of a collection-like value: a collection, an array, or the value itself. */
+    /** The values of a collection-like value: a collection, an array, a range, or the value itself. */
     private static List<Object> items(Object value) {
         if (value instanceof Collection<?> collection) {
             return new ArrayList<>(collection);
+        }
+        if (value instanceof RangeValue range) {
+            return rangeList(range);
         }
         if (value instanceof Object[] array) {
             return new ArrayList<>(List.of(array));
         }
         return value == null ? List.of() : new ArrayList<>(List.of(value));
+    }
+
+    /** The whole numbers a range covers, ascending or descending, end excluded when {@code exclusive}. */
+    private static List<Object> rangeList(RangeValue range) {
+        List<Object> out = new ArrayList<>();
+        long last = range.exclusive() ? range.to() + (range.from() <= range.to() ? -1 : 1) : range.to();
+        if (range.from() <= last) {
+            for (long i = range.from(); i <= last; i++) {
+                out.add(i);
+            }
+        } else {
+            for (long i = range.from(); i >= last; i--) {
+                out.add(i);
+            }
+        }
+        return out;
+    }
+
+    /** The simple class name of a value, for an error message. */
+    private static String typeName(Object value) {
+        return value == null ? "null" : value.getClass().getSimpleName();
     }
 
     /** A number as a double, or an error naming what was not one. */
@@ -1311,7 +1724,8 @@ public final class GremlinScript {
         if (closure != null) {
             return applyWithClosure(method, value, closure, state, runner);
         }
-        Collection<?> collection = value instanceof Collection<?> c ? c : null;
+        Collection<?> collection = value instanceof Collection<?> c ? c
+                : value instanceof RangeValue range ? rangeList(range) : null;
         List<Object> list = collection == null ? null : new ArrayList<>(collection);
         switch (method) {
             case "size", "count":
@@ -1320,6 +1734,9 @@ public final class GremlinScript {
                 }
                 if (value instanceof Map<?, ?> map) {
                     return (long) map.size();
+                }
+                if (value instanceof RangeValue range) {
+                    return (long) rangeList(range).size();
                 }
                 if (value instanceof Object[] array) {
                     return (long) array.length;
@@ -1343,14 +1760,61 @@ public final class GremlinScript {
             case "end":
                 return value instanceof GremlinPath path ? path.end()
                         : (list == null || list.isEmpty() ? null : list.get(list.size() - 1));
+            case "keyset": {
+                if (value instanceof Map<?, ?> map) {
+                    return new ArrayList<>(map.keySet());
+                }
+                throw new QueryException(".keySet() needs a map, got " + typeName(value));
+            }
+            case "containskey": {
+                if (value instanceof Map<?, ?> map) {
+                    return map.containsKey(text(evaluate(args, state, runner)));
+                }
+                throw new QueryException(".containsKey(k) needs a map, got " + typeName(value));
+            }
+            case "getordefault": {
+                if (value instanceof Map<?, ?> map) {
+                    List<String> parts = splitArgs(args);
+                    if (parts.size() != 2) {
+                        throw new QueryException("getOrDefault(key, fallback) needs two arguments");
+                    }
+                    Object key = text(evaluate(parts.get(0), state, runner));
+                    Object found = map.get(key);
+                    return found != null ? found : evaluate(parts.get(1), state, runner);
+                }
+                throw new QueryException(".getOrDefault(k, v) needs a map, got " + typeName(value));
+            }
+            case "put": {
+                if (value instanceof Map<?, ?> raw) {
+                    List<String> parts = splitArgs(args);
+                    if (parts.size() != 2) {
+                        throw new QueryException("put(key, value) needs two arguments");
+                    }
+                    @SuppressWarnings("unchecked")
+                    Map<Object, Object> map = (Map<Object, Object>) raw;
+                    return map.put(evaluate(parts.get(0), state, runner),
+                            evaluate(parts.get(1), state, runner));
+                }
+                throw new QueryException(".put(k, v) needs a map, got " + typeName(value));
+            }
+            case "matches": {
+                if (value instanceof CharSequence sequence) {
+                    requireAdvanced(state, "A regular expression (String.matches)");
+                    return sequence.toString().matches(text(evaluate(args, state, runner)));
+                }
+                throw new QueryException(".matches(regex) needs a string, got " + typeName(value));
+            }
             case "reverse": {
                 List<Object> out = list == null ? new ArrayList<>() : list;
                 java.util.Collections.reverse(out);
                 return out;
             }
             case "get": {
+                if (value instanceof Map<?, ?> map) {
+                    return map.get(text(evaluate(args, state, runner)));
+                }
                 if (list == null) {
-                    throw new QueryException(".get(i) needs a list, got "
+                    throw new QueryException(".get(i) needs a list or a map, got "
                             + (value == null ? "null" : value.getClass().getSimpleName()));
                 }
                 Object indexArg = evaluate(args, state, runner);
@@ -1442,7 +1906,8 @@ public final class GremlinScript {
             case "tosorted", "sort": {
                 List<Object> out = new ArrayList<>(items(value));
                 out.sort(GremlinScript::naturalOrder);
-                return out;
+                // Groovy's sort() reorders the receiver and answers it; toSorted() answers a copy
+                return name.equals("sort") ? sortedInPlace(value, out) : out;
             }
             case "max", "min": {
                 List<Object> items = items(value);
@@ -1529,6 +1994,9 @@ public final class GremlinScript {
                 return GremlinElementExpression.value(element, text(evaluate(args, state, runner)));
             }
             case "values": {
+                if (value instanceof Map<?, ?> map) {
+                    return new ArrayList<>(map.values());
+                }
                 if (!(value instanceof GremlinElement element)) {
                     throw new QueryException(".values(keys) needs a vertex or an edge, got " + text(value));
                 }
@@ -1762,6 +2230,17 @@ public final class GremlinScript {
     }
 
     private static Object times(Object left, Object right) {
+        // Groovy's String * int repeats the text; List * int repeats the list
+        if (left instanceof CharSequence text && right instanceof Number count) {
+            return text.toString().repeat(Math.max(0, count.intValue()));
+        }
+        if (left instanceof List<?> list && right instanceof Number count) {
+            List<Object> out = new ArrayList<>();
+            for (int i = 0; i < Math.max(0, count.intValue()); i++) {
+                out.addAll(list);
+            }
+            return out;
+        }
         Number a = requireNumber(left, "*");
         Number b = requireNumber(right, "*");
         return isIntegral(a) && isIntegral(b) ? (Object) (a.longValue() * b.longValue())
@@ -2078,6 +2557,19 @@ public final class GremlinScript {
     }
 
     private static Object literal(String text, State state, Runner runner) {
+        // a closure literal: def f = { x -> x * 2 }, kept as a callable value (admin-level)
+        if (text.startsWith("{")) {
+            int close = matchingBrace(text, 0);
+            if (close == text.length() - 1) {
+                requireAdvanced(state, "A first-class closure");
+                return parseClosure(text.substring(1, close));
+            }
+        }
+        // a slashy regular expression: /a.c/ (admin-level)
+        if (isSlashyRegex(text)) {
+            requireAdvanced(state, "A regular expression (/.../)");
+            return new RegexValue(java.util.regex.Pattern.compile(text.substring(1, text.length() - 1)));
+        }
         if (text.startsWith("[")) {
             // [a, b] is a list; [a: 1, b: 2] is a map (Groovy's two uses of the same brackets)
             return mapOrList(text, state, runner);
@@ -2219,7 +2711,13 @@ public final class GremlinScript {
      */
     private static Object indexInto(Object base, Object index, String text) {
         if (base instanceof Map<?, ?> map) {
+            if (index instanceof RangeValue || index instanceof Collection<?>) {
+                throw new QueryException("A map is indexed by one key, not a range in: " + text);
+            }
             return map.get(index instanceof String key ? key : String.valueOf(index));
+        }
+        if (index instanceof RangeValue range) {
+            return rangeSlice(base, range, text);
         }
         long at = index instanceof Number number ? number.longValue() : 0;
         if (!(index instanceof Number)) {
@@ -2246,6 +2744,55 @@ public final class GremlinScript {
                     + " items in: " + text);
         }
         return list.get(i);
+    }
+
+    /**
+     * {@code xs[1..3]} / {@code 'abcd'[1..2]}: a range slice, ascending or descending (Groovy allows
+     * both), with out-of-range ends clamped to what the base has.
+     */
+    private static Object rangeSlice(Object base, RangeValue range, String text) {
+        boolean isText = base instanceof String;
+        List<?> list = isText ? null
+                : base instanceof List<?> l ? l : base instanceof Object[] a ? List.of(a) : null;
+        if (!isText && list == null) {
+            throw new QueryException("Cannot slice " + typeName(base) + " in: " + text);
+        }
+        int size = isText ? ((String) base).length() : list.size();
+        int from = clampIndex(range.from(), size);
+        int to = clampIndex(range.to(), size);
+        if (range.exclusive()) {
+            to += from <= to ? -1 : 1;
+        }
+        List<Object> out = new ArrayList<>();
+        if (from <= to) {
+            for (int i = from; i <= to; i++) {
+                out.add(elementAt(base, i, isText));
+            }
+        } else {
+            for (int i = from; i >= to; i--) {
+                out.add(elementAt(base, i, isText));
+            }
+        }
+        if (isText) {
+            StringBuilder joined = new StringBuilder();
+            for (Object piece : out) {
+                joined.append(piece);
+            }
+            return joined.toString();
+        }
+        return out;
+    }
+
+    private static int clampIndex(long index, int size) {
+        long normalized = index < 0 ? size + index : index;
+        return (int) Math.max(0, Math.min(normalized, Math.max(0, size - 1)));
+    }
+
+    private static Object elementAt(Object base, int index, boolean isText) {
+        if (isText) {
+            return String.valueOf(((String) base).charAt(index));
+        }
+        return base instanceof Object[] array ? array[index] : ((List<?>) base).get(index);
     }
 
     private static List<Object> list(String text, State state, Runner runner) {
@@ -2343,6 +2890,9 @@ public final class GremlinScript {
     }
 
     private static String text(Object value) {
+        if (value instanceof RangeValue range) {
+            return range.from() + (range.exclusive() ? "..<" : "..") + range.to();
+        }
         return value == null ? "null" : String.valueOf(value);
     }
 

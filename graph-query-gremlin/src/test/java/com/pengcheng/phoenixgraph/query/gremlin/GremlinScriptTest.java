@@ -208,6 +208,89 @@ class GremlinScriptTest {
     }
 
     /** A script's answer, without any traversal: the syntax tests only need the statement and value layers. */
+    @Test
+    void mapClosuresDestructureKeyAndValue() {
+        assertEquals(3L, script("def m = [a: 1, b: 2]\ndef t = 0\nm.each { k, v -> t = t + v }\nt"),
+                "a two-parameter closure over a map gets the key and the value");
+        assertEquals(2L, script("def m = [a: 1, b: 2]\ndef t = 0\nm.each { t = t + 1 }\nt"),
+                "a one-parameter closure runs once per entry");
+        assertEquals(List.of("a=1", "b=2"), script("def m = [a: 1, b: 2]\nm.collect { k, v -> k + '=' + v }"));
+        assertEquals(1L, script("def m = [a: 1, b: 2]\nm.findAll { k, v -> v > 1 }.size()"));
+        assertEquals(List.of(1L, 2L), script("def m = [a: 1, b: 2]\nm.collect { k, v -> v }"));
+    }
+
+    @Test
+    void sortReordersTheReceiverWhileToSortedCopies() {
+        assertEquals(List.of(1L, 3L), script("def xs = [3, 1]\nxs.sort()\nxs"),
+                "Groovy's sort() reorders the receiver");
+        assertEquals(List.of(3L, 1L), script("def xs = [3, 1]\nxs.toSorted()\nxs"),
+                "toSorted() leaves the receiver alone");
+        assertEquals(List.of(1L, 3L), script("def xs = [3, 1]\ndef ys = xs.sort()\nys"));
+    }
+
+    @Test
+    void rangesIndexSlicesAndTimes() {
+        assertEquals(3L, script("def r = 1..3\nr.size()"));
+        assertEquals(2L, script("def r = 1..<3\nr.size()"), "..< excludes the end");
+        assertEquals(List.of(1L, 2L, 3L), script("(1..3).toList()"));
+        assertEquals(List.of(2L, 3L), script("def xs = [1, 2, 3, 4]\nxs[1..2]"), "a range slices a list");
+        assertEquals(List.of(3L, 2L, 1L), script("def xs = [1, 2, 3]\nxs[2..0]"), "both directions");
+        assertEquals(6L, script("def t = 0\nfor (x in 1..3) { t = t + x }\nt"));
+        assertEquals(3L, script("def t = 0\n3.times { i -> t = t + i }\nt"), "n.times { i -> ... }");
+    }
+
+    @Test
+    void cStyleForAndLeftShiftAndSafeNavigation() {
+        assertEquals(3L, script("def t = 0\nfor (def i = 0; i < 3; i++) { t = t + i }\nt"));
+        assertEquals(List.of(1L, 2L), script("def xs = [1]\nxs << 2\nxs"), "<< appends to a list");
+        assertEquals(null, script("def s = null\ns?.size()"), "?. stops at a null receiver");
+        assertEquals(1L, script("def m = [a: 1]\nm?.size()"));
+        assertEquals(1L, script("def m = [a: [b: 1]]\nm.a.b"), "nested map property chain");
+        assertEquals("abab", script("'ab' * 2"), "String * int repeats");
+    }
+
+    @Test
+    void moreClosureAndMapHelpers() {
+        assertEquals(List.of(2L, 3L), script("[1, 2, 3].grep { it > 1 }"));
+        assertEquals(List.of(1L, 2L, 3L), script("[[1], [2, 3]].collectMany { it }"));
+        assertEquals(2L, script("[1, 2].findResult { it > 1 ? it : null }"));
+        assertEquals(9L, script("def m = [a: 1]\nm.getOrDefault('b', 9)"));
+        assertEquals(1L, script("def m = [a: 1]\nm.get('a')"));
+        assertEquals(1L, script("def m = [a: 1]\nm.keySet().size()"));
+        assertEquals(true, script("def m = [a: 1]\nm.containsKey('a')"));
+        assertEquals(true, script("'abc'.matches('a.c')"));
+    }
+
+    @Test
+    void whitelistedStaticsFirstClassClosuresAndRegex() {
+        assertEquals(2.0, script("Math.max(1, 2)"));
+        assertEquals(12L, script("Integer.parseInt('12')"));
+        assertEquals("x", script("String.format('%s', 'x')"));
+        assertEquals(2147483647L, script("Integer.MAX_VALUE"));
+        assertEquals(6L, script("def f = { x -> x * 2 }\nf(3)"), "a closure in a variable is callable");
+        assertEquals(List.of("b"), script("def m = 'abc' =~ 'b'\nm"));
+        assertEquals(true, script("'abc' ==~ /a.c/"));
+        // everything not on the allow-list is refused
+        QueryException system = assertThrows(QueryException.class, () -> script("System.exit(0)"));
+        assertTrue(system.getMessage().contains("Unknown script variable 'System'"), system.getMessage());
+        QueryException cls = assertThrows(QueryException.class, () -> script("Class.forName('x')"));
+        assertTrue(cls.getMessage().contains("Unknown script variable 'Class'"), cls.getMessage());
+    }
+
+    @Test
+    void theAdvancedFeaturesNeedThePermission() {
+        Stub stub = new Stub(values());
+        QueryException statics = assertThrows(QueryException.class,
+                () -> GremlinScript.parse("Math.max(1, 2)").execute(stub, false));
+        assertTrue(statics.getMessage().contains("advanced script permission"), statics.getMessage());
+        QueryException closure = assertThrows(QueryException.class,
+                () -> GremlinScript.parse("def f = { x -> x }\nf(1)").execute(stub, false));
+        assertTrue(closure.getMessage().contains("advanced script permission"), closure.getMessage());
+        // the ordinary language is still there without it
+        assertEquals(3L, GremlinScript.parse("def x = 1\nx + 2").execute(stub, false).value());
+        assertEquals(List.of(2L, 3L), GremlinScript.parse("[1, 2, 3].findAll { it > 1 }").execute(stub, false).value());
+    }
+
     private static Object script(String text) {
         return GremlinScript.parse(text).execute(new Stub(values())).value();
     }
@@ -244,10 +327,11 @@ class GremlinScriptTest {
     }
 
     @Test
-    void aStringHasToBeOneValueSoRegexIsRefusedRatherThanSwallowed() {
-        QueryException error = assertThrows(QueryException.class, () -> script("def m = 'abc' =~ 'b'\nm"));
-        assertTrue(error.getMessage().contains("string has to be one value"), error.getMessage());
-        assertTrue(error.getMessage().contains("regular-expression"), error.getMessage());
+    void regexMatchAndExactMatchAreSupported() {
+        assertEquals(List.of("b"), script("def m = 'abc' =~ 'b'\nm"), "=~ answers the matches");
+        assertEquals(1L, script("('abc' =~ 'b').size()"));
+        assertEquals(true, script("'abc' ==~ /a.c/"), "==~ matches the whole text, /.../ is a pattern");
+        assertEquals(false, script("'abc' ==~ /a./"));
         assertEquals("it's", script("def s = 'it\\'s'\ns"), "an escaped quote is still one string");
     }
 
