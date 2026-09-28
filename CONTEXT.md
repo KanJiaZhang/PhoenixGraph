@@ -6421,3 +6421,161 @@ g.V(DIST).has('Account','accountStatus','FROZEN').bothE('Payment').cc()
 node .logs/verify-dist-cc.js                       # 线上等价类对比
 ./mvnw -o -pl graph-query-gremlin test             # 251 用例（含集群算法那条）
 ```
+## 87. Step 支持现状复核（2026-09-25）：探针实测 + 能否支持 + 支持的副作用
+
+方法：从源码枚举注册的 step（`grep register("`），再拿 71 条探针打**在跑的 8081**（`.logs/probe-steps.js`），
+每个 refused 都记引擎原话；对可疑结果再手工复核。产物：`.logs/step-coverage.txt`、`.logs/predicate-coverage.txt`。
+
+### 87.1 已实现（96 个注册名）
+
+```
+all and any asBool asDate asNumber asString barrier batch both bothE cc choose circle coalesce coin
+combine concat constant count countBothE countInE countOutE createdBetween cyclicPath dedup difference
+discard disjunct elementMap filter fold fuzzyLink groupCount has hasId hasKey hasNot hasValue id identity
+in inE inject intersect is iterate label length limit local louvain map max mean min nearest next none
+not optional or order otherV out outE pagerank path rTrim range repeat replace sample simplePath size
+skip split substring sum tail timeLimit times toBulkSet toIterator toList toLower toSet toUpper trim
+unfold union valueMap values where
+```
+（`countBothE/countInE/countOutE/batch/fuzzyLink/nearest/circle/createdBetween/cc/louvain/pagerank` 是本项目的扩展或命名。）
+
+### 87.2 探针结果（71 条）：**18 answered / 4 empty / 49 refused**
+
+**比上一版 §76 表更好的地方**（探针实测，之前表里标的 ❌ 或不确定，其实已经支持）：
+
+| 之前以为 | 实测 | 说明 |
+|---|---|---|
+| `has(key, P)` 不支持 | **部分支持** | `has('accountStatus', within('ACTIVE','FROZEN'))`=34 ✓、`has('primaryAddress', startingWith('addr-10'))`=50 ✓（TextP 也有） |
+| `by(traversal)` 不支持 | **支持** | `g.V(1001).order().by(out('Payment').count())` ✓ |
+| `elementMap()` 只无参 | **支持带 keys** | `elementMap('id','accountStatus')` ✓ |
+| 子遍历要写 `__` | **不能写 `__`** | 引擎的写法是 `union(out('Payment'))`、`repeat(out('Payment'))`、`where(out('Payment'))`；写 `__.out(...)` 会报 `Unknown Gremlin step: __.out` |
+
+**空的 4 条**：`none()`、`discard()` 空是设计（它们就是丢弃）；`and/or/not` 与 `is(within)` 空是我探针的**数据不匹配**（1001 是 CLOSED，我筛 ACTIVE），手工复核后都正常：
+`and(has(...))`/`or(has(...))`/`not(has(...))` ✓、`is(within('CLOSED'))` = 17 ✓。
+
+### 87.3 真正的坑：**P 谓词静默给错**（最重要的一条）
+
+`g.V('Account').values('accountStatus')` 共 51 条（CLOSED/ACTIVE/FROZEN 各 17）实测：
+
+| 写法 | 结果 | 判定 |
+|---|---|---|
+| `is('CLOSED')` | 17 | ✓ |
+| `is(eq('CLOSED'))` | **0** | ✗ 静默错（应为 17） |
+| `is(neq('CLOSED'))` | **51** | ✗ 静默错（应为 34；看起来谓词没被求值，而是拿 `neq('CLOSED')` 当字面量比） |
+| `is(within(a,b))` / `is(without(a,b))` | 34 / 17 | ✓ |
+| `is(gt(1030))` `gte(1049)` `lt(1002)` `lte(1001)` | 19/1/3/3 | ✓ 数值比较正确 |
+| `is(between(1001,1003))` `inside(...)` `outside(...)` | **0 / 0 / 0** | ✗ 静默错 |
+| `is(not(within('CLOSED')))` `is(and(gt(1000),lt(1003)))` | **0 / 0** | ✗ 静默错 |
+| `has(key, eq(..))` `has(key, neq(..))` `has(key, gt(..))` `has(key, between(..))` `has(key, not(..))` | **全 0** | ✗ 静默错（`has(k,v)` 两参形式是好的） |
+| `filter(accountStatus.equals('CLOSED'))` | 17 | ✓（文档里推荐的那种裸访问器写法） |
+| `filter(is(gt(0)))` | 报错 `unexpected '(' in expression` | ✓ 明确拒绝 |
+
+**结论**：谓词只有 `gt/gte/lt/lte/within/without` 被真正求值；**其余 P 形式既不报错也不生效**——这是当前最该修的一类问题
+（错得安静，用户会当成"真的没有数据"）。
+
+**能否支持**：能，而且是**优先级最高、风险最低**的一类修复。做法：在表达式层把 P 谓词编译成统一的 `Predicate`，
+`is/has/where/TextP` 共用一条路径；**同时**给"无法识别的谓词"加一个默认分支——**报错**而不是当字面量比较（静默错的根源就是这个兜底）。
+**副作用**：① 行为变更——现在返回 0/全量的查询修好后会返回真实结果，依赖"错值"的测试/脚本会变（这正是目的）；
+② 修复后 `has(key, P)` 也走谓词，索引/下推的条件类型要与谓词对齐（`EdgePropertyFilter` 已经是这个形状，改动可控）；
+③ TextP（`startingWith/endingWith/containing`）已经支持一部分，统一后要确认 `has(k, startingWith())` 与 `filter(k.startsWith())` 语义一致。
+
+### 87.4 不支持的部分：能不能支持、代价与副作用
+
+| 家族 | 现状 | 能否支持 | 代价 / 副作用 |
+|---|---|---|---|
+| `as/select/match/where('a',eq('b'))/project/sack/withSack/aggregate/store/sideEffect/cap/subgraph/tree/group().by().by()/branch` | ✗（`aggregate/cap/store/sideEffect/subgraph/tree/sack/branch/project/match` 报 `Unknown Gremlin step`） | **能，但要换执行模型**：现在管线是"列表里一个值"，这些需要 `Traverser{value, path, sack, labels}` + 副作用容器 | 影响面最大：`GremlinStep.apply(ctx, in)` 的语义、路径执行（`runPathCompiled`）、批量读优化都要跟着改。建议**分批**：先 `as/select/project`（覆盖大多数真实查询）+ `where('a',eq('b'))`，再议 sack/aggregate/cap。副作用：`as` 之后 `path()`/`dedup` 的语义、以及"同一标签被覆盖"的规则要写清楚 |
+| `hasLabel(name)` | ✗ | **能，极小**（按当前 traverser 的 label 过滤，schema 里就有类型名） | 基本无副作用；顺带能支持 `g.V().hasLabel('Account')`（现在要写 `g.V('Account')`） |
+| `properties()/key()/value()` | ✗（`Unknown Gremlin step: properties`） | 能，中等 | 需要引入**属性 traverser**（`GremlinProperty`）或退化成 `[k,v]` 对（不与 TinkerPop 一致）。引入新 traverser 类型会影响 `values/valueMap/elementMap/otherV` 的分支 |
+| `outV()/inV()/bothV()` | ✗ | **能，小**（边 traverser 已带 `sourceVertexId`/`otherVertexId`，只差"批量读回顶点对象"） | 一次额外批量读；`side=BOTH` 时 `sourceEndpoint()` 目前是近似（§85 之前的记录），实现时要一并厘清方向语义 |
+| `emit()/until()/loops()`（`repeat().times()` 已有） | ✗ | 能，但要 per-traverser 计数与沿途收集 | 与第 1 行同源（需要 `Traverser` 状态）；`emit` 的"哪些层算命中"规则要与 TinkerPop 对齐 |
+| `math/format/dateAdd/dateDiff/dateTime` | ✗ | 能 | `math` 要新写一个表达式求值（`_ + 1` 的下划线占位），引擎已有 `GremlinExpression` 可复用；`format/sprintf` 直接 `String.format`。副作用：又一套小语法要对齐（`_`、`DT.day` 之类的 token） |
+| `subgraph()/tree()` | ✗ | `subgraph` 能且便宜（引擎已经会收集 `Subgraph`）；`tree` 不能（需要路径树） | `subgraph()` 在 TinkerPop 里是副作用 + `cap()` 取值；没有副作用机制时只能做"立即返回当前收集的子图"的近似 → **不完全兼容**，要么接受近似要么等 `Traverser` 模型 |
+| 写入家族 `addV/addE/mergeV/mergeE/property/drop/io/read/write/call` | ✗（`g.addV(...)` 直接报"Expected 'g.V(...)'…"；`property/drop/addE/io/read/write` 报未知 step） | **刻意不支持** | 引擎读-only 是设计决定：写走 HTTP 写接口（校验/审计/指标都在那里）。让 `g` 能写会把事务、id 分配、并发与权限全部拉进来。建议**保持**，并在报错里指向写接口（现在正是） |
+| `profile()/explain()` | ✗ | **能且值得**（引擎有 metrics 与编译计划） | 副作用是暴露内部计划（对用户是好事）；实现上要把每个 step 的耗时/计数收集起来，和 §81 的编译指标风格一致 |
+| `with*/withStrategies/withoutStrategies` | ✗ | 不建议 | 当前架构没有 TraversalStrategy 层；硬做只能"接受但忽略"——那就是**静默错**，宁可不支持（改为在 schema/服务层配置） |
+| `tx()/commit()` | ✗ | 不建议（与读-only 冲突） | — |
+| `shortestPath()/peerPressure()` | ✗ | 能（Gemini 已有 `sssp`/`bfs`） | 加别名即可，但要注意"集群路径 vs 内存路径"的一致性（§85/§86 同一套） |
+| `index()/reverse()/dateAdd` 等零散 step | ✗ | `reverse` 能（列表反转）；`index` 已废弃 → 不做 | 低价值 |
+
+### 87.5 一条不该有的语法偏差
+
+子遍历在 TinkerPop 里写 `__.out('Payment')`，本引擎**不接受 `__` 前缀**（`union(out('Payment'))` 才是对的）。
+**能否支持**：能，一行预处理（把裸 `__` 前缀剥掉）。**副作用**：几乎没有——只有"名字真的叫 `__` 的属性"这种荒谬冲突。
+
+### 87.6 建议的优先级
+
+1. **P 谓词统一 + 未知谓词报错**（修静默错，风险低，收益最大）；
+2. `hasLabel`（一行过滤器）、`__` 前缀兼容（一行预处理）；
+3. `as/select/project` + `where('a',eq('b'))`（第一批 per-traverser 状态，覆盖最多真实需求）；
+4. `properties/key/value`、`outV/inV/bothV`、`profile`（中等、独立）；
+5. 其余（`emit/until/sack/aggregate/cap/branch/math/tree`）跟着 `Traverser` 模型一起做；
+6. 写入与 `with*` 明确保持不支持（错误信息说清原因）。
+
+## 88. 脚本（Groovy 子集）支持现状复核（2026-09-25）：两批探针 + 能否支持 + 副作用
+
+方法：两批共 **127 条**探针打**在跑的 8081**，每条都记引擎原话（`.logs/probe-script-support.js` 68 条 → `.logs/groovy-coverage1.txt`；
+`.logs/probe-groovy2.js` 59 条 → `.logs/groovy-coverage2.txt`）。
+
+**结果：48/127 接受**（batch1 44/68、batch2 4/59）。**好消息**：拒绝基本都带明确消息（"Unknown script method '.x'. Supported: …" /
+"Cannot read the script value '…'. A value is a traversal…"）；**坏消息**：有 3 处是**静默给错**（见 88.3）。
+
+### 88.1 接受（查询脚本真正用得到的）
+
+* 语句：`def`、赋值/重新赋值、`return`、`print`/`println`、`//` `/* */`、分号/多行分隔、空行；
+* 控制流：`if/else if/else`、`for (x in 集合)`、`while`、`break`/`continue`、嵌套块；
+* 表达式：`+ - * / %`、`!`、`&&` `||`、比较、**小数**（§84 修好）、字符串拼接（`+` 两侧非数字即文本拼接）；
+* 集合：列表字面量（含空表/嵌套）、`size() count() toList() toSet() isEmpty() get(i) first() last() start() end()
+  reverse() contains() indexOf() add() addAll() retainAll() intersect() endIds() joinOnEnd()`、`join(sep)`；
+* 闭包：`each() eachWithIndex() collect() findAll() find() any() every() count() sum()`（含 `sum { it * 2 }`），**闭包体可多行**；
+  闭包里 `it.value('k')/id()/label()/value('side')`；**`it` 之外还可写 `{ x, i -> }`**；
+* 遍历：`g.V(变量, 'Schema')`、链式 step、遍历结果当 id 列表再喂 `g.V(...)`、`toList()` 后当普通列表用。
+
+### 88.2 拒绝（都有消息）
+
+| 类别 | 例子 | 引擎回答（节选） |
+|---|---|---|
+| 语句级 | `switch`、`try/catch`、`do/while`、`assert`、`synchronized`、带标签的 `break outer`、`def (a,b) = [1,2]` | `Cannot read the script value '…'` |
+| 运算符 | 三元 `a ? b : c`、elvis `?:`、`+=`、`++`、`**`、`<=>`、`..<`、`<<`、`?.`、`as`、`instanceof` | 同上（`..<` 是 `Expected '(' after '..'`） |
+| 索引 | `xs[0]`、`xs[-1]`、`xs[0..1]` | 同上 |
+| 一等闭包 | `def f = { x -> x*2 }` 然后 `f(3)`；闭包默认参数 | 同上 |
+| 集合方法（未实现） | `collectEntries{}`、`groupBy{}`、`inject`、`sort{}`、`max{}`、`unique`、`flatten`、`take/drop`、`withIndex`、`toSorted`、`sum()`（无闭包） | `Unknown script method '.x'. Supported: …` / `Unknown closure method '.x'. Supported: each(), eachWithIndex(), collect(), findAll(), find(), any(), every(), count(), sum()` |
+| 字符串/数字方法 | `'abc'.toUpperCase()` `.length()` `.substring()`、`1.7.intValue()`、`(-3).abs()` | 同上（`'abc'.size()` 可以） |
+| 静态调用 | `Math.max(1,2)`、`String.valueOf(12)`、`Integer.parseInt('12')`、`Integer.MAX_VALUE` | `Unknown script variable 'Math'/'String'/'Integer'` |
+| Map | `[a: 1]`（字面量）、`m.a`、`m['a']` | `Cannot read the script value 'a: 1'` |
+| 正则 | `/a.c/`、`=~`、`==~` | `Cannot read the script value …`（**但有一种 `=~` 写法会被当成字符串，见 88.3**） |
+| GString | `"v=${x}"` | `Missing value for query parameter 'x'`（**被 HTTP 参数替换先吃掉了**） |
+| 格式化 | `sprintf`、`printf` | `Cannot read the script value …` |
+| 语言级 | `class`、`import`、`def f(x) { }`、`new Date()`、`readLines()/eachLine()` | 同上 |
+
+### 88.3 三处"静默给错"（最该先修）
+
+1. **`'''多行字符串'''`**：`'''a\nb'''` 被当成普通字符串，结果是 `''a\nb''` —— 引号被留下、`\n` 没转义。**要么正确支持（`literal()` 里认三引号，几行）要么明确报错**。
+2. **`=~`**：某些写法（`'abc' =~ 'b'`）被解析成**字符串**并原样返回（`abc' =~ 'b`），既不报错也不做正则。同样：要么支持要么报错。
+3. **遍历结果是 List 不是标量**：`g.V(...).count() + g.V(...).count()` 得到**文本** `[3][9]`（`+` 对非数字走文本拼接）。要算术得先 `.get(0)`/`first()`。
+   这是"类型系统不显式"的必然结果——建议在文档里显著提示，或让 `count()`/`sum()` 这类单值 step 在脚本里返回标量（**会改变现有行为**，需权衡）。
+
+### 88.4 能否支持：分类与副作用
+
+| 候选 | 难度 | 能否支持 | 代价 / 副作用 |
+|---|---|---|---|
+| `+=` `-=` `*=` `/=`、`++x`/`x++`、`do/while`、`switch`（脱糖成 if/else）、`assert` | **低** | 能 | 只是语句/运算符层的小补充；副作用几乎为零。`switch` 要定 `case` 的相等语义（`==` 与 `equals`） |
+| 三元 `a ? b : c`、elvis `?:` | **低** | 能 | 纯表达式层；无副作用 |
+| 列表索引 `xs[i]`（负索引）、`xs[i..j]` | 低（负索引）/ 中（range 形式，需要 range 值） | 能 | range 值要新增一个值类型（或脱糖成子列表）；无外部副作用 |
+| Map 字面量 `[a: 1]`、`m['a']` | **低-中** | 能 | 脚本层已有 Map 值（`properties()` 返回 `LinkedHashMap`），只差解析：要在 `[` 后看是否有顶层 `k:` 来区分 list 与 map。副作用：**与列表字面量的歧义**要小心（`['a':1]` 是 map，`['a',1]` 是 list） |
+| `'''…'''`、`=~`/`==~`、`/regex/` | 低（三引号）/ 中（正则值） | 能（三引号建议直接支持；正则至少要**报错**而不是静默） | 正则要引入 pattern 值类型；无外部副作用 |
+| 更多闭包方法：`groupBy{} collectEntries{} inject sort{} max{} min{} unique flatten take drop withIndex toSorted` | **低**（逐个复用现有闭包机制） | 能 | 每个方法一个分支；`sort{}`/`max{}` 的**比较器语义**要定清楚（`<=>` 还是布尔），否则又一处静默歧义 |
+| 字符串/数字方法：`toUpperCase toLowerCase length substring replace split trim startsWith endsWith contains matches`、`abs intValue toInteger` | **低** | 能 | 委托 Java 即可；要**限定白名单**（只读、无副作用），否则变成"任意方法调用" |
+| 静态调用 `Math.*`/`Integer.parseInt`/`String.valueOf` | 中 | 能 | 需要一张**白名单类表**；不做白名单就等于开放任意 Java（沙箱逃逸），所以必须白名单 + 未知类报错 |
+| 一等闭包（`def f = {…}; f(3)`） | 中 | 能 | 需要"可调用值"类型 + 作用域捕获；副作用：闭包生命周期/变量捕获语义要定义（Groovy 的 `owner`/`delegate` 不做） |
+| `try/catch` | 中 | **建议不做** | 需要把 `QueryException` 暴露成脚本值；副作用是脚本可以**吞掉真错误**（把存储/查询失败变成"看起来没数据"），与"拒绝要明确"的设计原则冲突 |
+| `class`/`interface`/`trait`/`import`/注解/`new`（任意类）/多线程/IO | 高 | **不做** | 会把脚本变成通用运行时：依赖、内存、线程、沙箱全部要重做；查询脚本不需要 |
+| GString `"${x}"` | — | **不做（冲突）** | `${name}` 已经是**HTTP 参数替换**语法，脚本解析器根本收不到；要支持只能换一套插值标记（例如 `$x` 或 `"${'literal'}"` 的转义规则），会破坏现有参数功能。建议保持不支持并在文档里说明 |
+| 格式化 `sprintf/printf` | 低 | 能 | `String.format` 即可；无副作用（除 `%s` 对 List 的渲染规则要定） |
+
+### 88.5 建议的优先级
+
+1. **先修三处静默错**（`'''…'''`、`=~`、`count()+count()` 的类型提示）——它们让"支持边界"变得不可信；
+2. **零风险的一批**：`+=` 家族、`++`、`do/while`、`switch`、三元/elvis、`assert`、三引号字符串、`sprintf/printf`、更多闭包方法；
+3. **低风险的第二批**：列表索引（含负索引）、Map 字面量 + `m['a']`、字符串/数字方法白名单；
+4. 需要权衡的：静态方法白名单（沙箱面）、一等闭包；
+5. **明确不做**：`try/catch`（会吞错）、GString（与参数替换冲突）、类/导入/任意 `new`/IO/线程（通用运行时）。
