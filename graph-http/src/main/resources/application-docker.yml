@@ -1,0 +1,24 @@
+# The Docker profile (SPRING_PROFILES_ACTIVE=docker): the services run in containers, so the
+# storage host is the compose service name, RocksDB lives on a mounted volume, and only the
+# graphs a container can serve are listed. The full local list is in application.yml.
+#
+#   docker compose up --build
+#
+# The Aerospike demo set (http_demo_v3) is seeded from the host with the integration-test
+# loader; the RocksDB graphs read a loaded .rocksdb directory mounted at /data/rocksdb.
+phoenixgraph:
+  storage:
+    host: ${PHOENIXGRAPH_STORAGE_HOST:aerospike}
+    port: ${PHOENIXGRAPH_STORAGE_PORT:3000}
+    namespace: ${PHOENIXGRAPH_STORAGE_NAMESPACE:test}
+    vertex-set: ${PHOENIXGRAPH_STORAGE_VERTEX_SET:http_demo_v3}
+    schema: payment-graph
+    rocksdb-root: ${PHOENIXGRAPH_STORAGE_ROCKSDB_ROOT:/data/rocksdb}
+    graphs:
+      # the same payment data in the RocksDB-Edge (analytical) scheme: one table per vertex
+      # type, one edge table per class, so a whole-class scan and a time window are range scans
+      - schema: payment-graph-rocksdb-edge
+        vertex-set: http_demo_v3
+      # the knowledge graph whose entities and relations were extracted from free text
+      - schema: sanguo-kg-text
+        vertex-set: kg_sanguo_v1

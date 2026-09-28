@@ -5,6 +5,98 @@ A High Scaled and High Performance HTAP Graph Database.
 > **Resuming work?** Start with [HANDOVER.md](HANDOVER.md) - current state, how
 > to start the services and what is next.
 
+## What PhoenixGraph is
+
+PhoenixGraph is a graph database that joins three workloads that usually live in three systems:
+
+- **OLTP** - a request arrives with a key and one record (or one batch) answers it. The **Aerospike**
+  scheme is the transactional side: a vertex and its denormalised edges are one record, per-property
+  CAS makes concurrent updates safe, and a query that names ids never scans.
+- **OLAP, in one process** - a question names a *class* rather than an id. The **RocksDB-Edge** scheme
+  is the analytical side: one ordered table per vertex type and per edge class, so "every account",
+  "every payment of this class" or "the edges of this hub in this time window" is one range scan that
+  can be capped, projected and pushed into the decode.
+- **OLAP, over many machines** - the algorithm steps (`pagerank`, `louvain`, `cc`, `sssp`, `bfs`) run
+  in-process by default and on a Gemini cluster with the `DIST` marker (see below).
+
+The engine is the same for all of them: the backend is a property of the **schema**, not of the query,
+so the same graph definition, the same Gremlin, the same openCypher and the same HTTP API are served by
+any scheme. A new backend only has to implement the `GraphQuery` port, and the engine asks it what it
+can do (`supportsScan`, `supportsEdgeReadPushdown`, `supportsPartitionedScan`, …) - either the storage
+pushes the work down or the traversal does it.
+
+```json
+"storage": { "type": "RocksDB-Edge", "path": "payment-graph-rocksdb-edge" }
+```
+
+| Scheme | Role | Layout |
+| --- | --- | --- |
+| `Aerospike` (**default**) | OLTP: keyed reads and writes | one record per vertex: properties + denormalised edges, per-property CAS |
+| `Aerospike-Edge` | OLTP + aggregated hub reads | Aerospike, plus `Edge_Out`/`Edge_In` tables chunked by creation time for vertices with huge degree |
+| `RocksDB-Inline` | analytical, with degree limits | one table per vertex type, one per edge type, edges folded into the record |
+| `RocksDB-Edge` | analytical, no degree limit | one table per vertex type, one edge table per class, creation-time window = range scan |
+
+## One traversal, three kinds of search
+
+Vector search, geo search and graph traversal are **steps of the same query**, so they compose instead
+of being three round trips from the application:
+
+```groovy
+g.V('a7','Account').nearest(5)                          // vector: the five most similar accounts
+g.V('m1','Merchant').circle('{"lat":31.2304,"lon":121.4737,"radius":3000}').limit(5)  // geo
+g.V('a7','Account').nearest(5).outE('Payment')          // then walk the graph from the hits
+g.V('m1','Merchant').circle('{"lat":31.2304,"lon":121.4737}', 500).has('category','coffee')
+        .values('name','distanceMeters')                // a geo hit is a normal traverser
+```
+
+- **vector** - a property marked `isVector` is indexed by HNSW (`graph-hnsw`): writes maintain the
+  layered graph, and `nearest(k[, ef])` searches it. A `has`/`filter` right after `nearest` is
+  pushed into the search, so it answers the k nearest that *match*, not the k nearest of which some
+  happen to match. The layer edge classes (`<property>_0`, one more per doubling of the data) are
+  created on demand.
+- **geo** - a property marked `isGeo` holds a point and gets an S2 cell index; `circle(point[, radius])`
+  is a range scan over that index, nearest first, with `distanceMeters` attached to each hit.
+- **graph** - every other step (`out/in/both`, `outE/inE/bothE`, filters, aggregations, algorithms)
+  walks the result, so a vector or geo hit is the seed of an ordinary traversal - which is what makes
+  "the five accounts most like this one, and what they paid" one query instead of two systems.
+
+## Knowledge graphs and AI context
+
+The engine also serves **knowledge graphs that an AI/LLM layer reads as context**: typed entities and
+relations with provenance, plus question-shaped query templates a retrieval layer can call with
+parameters. The worked example in this repository is the 《三国演义》 (Romance of the Three Kingdoms)
+graph, served in three forms (`sanguo-kg`, `sanguo-kg-rocksdb-edge`, `sanguo-kg-text`):
+
+- **Entity/relation schema** - a typed `Entity` vertex and edges carrying `relation`, `xrelation`,
+  `relationLabel` and `relationFamily`, so "who is whose lord / minister / advisor" is a filter on an
+  edge property instead of a different edge class per question.
+- **From RDF** - `SANGUO-KG.md` documents the document-to-RDF mapping (entity split, relation split,
+  validation), including the three real parsing bugs the validation caught.
+- **From free text** - `sanguo-kg-text` adds entities and relations extracted from the documents'
+  running text by a dictionary plus regular expressions (no model, fully reproducible): offices,
+  advisor / strategist / fellow relations, battles, kills, and `mentions` edges that carry the
+  sentence they came from, so an answer can point back at its evidence.
+  `SANGUO-KG-TEXT-EXTRACTION.md` lists every rule and the provenance it emits.
+- **Query templates** - `SANGUO-KG-QUERIES.md` is a handbook of question-shaped Gremlin and Cypher
+  queries ("关羽 和 诸葛亮 是什么关系？", two- and three-hop relation paths, statistics) ready to be
+  parameterised by a retrieval / agent layer.
+
+Two storage schemes serve the same graph (Aerospike with relation-sharded ids, and RocksDB-Edge with
+one record per person), and a test asserts both answer the shared questions identically.
+
+## Visualization
+
+`graph-web` (port 8080) is a single-page canvas over the HTTP API - a query returns an **induced
+subgraph**, which is exactly what a renderer needs:
+
+- **query editor** for Gremlin and openCypher, with example pickers and a script mode;
+- **graph canvas** that draws the returned subgraph with full properties, with re-balance, brush /
+  selection, zoom-to-fit and a text search;
+- **value / rows panels** for an element's properties and for tabular answers, and a legend/count;
+- **algorithm results** (PageRank, connected components, communities, …) drawn as node colours;
+- **graph builder** (`builder.html`) to author a schema and its storage, edit fuzzy-link patterns and
+  preview a demo query; and **metrics** through the `/api/v1/metrics` endpoints.
+
 ## Profiles, locations and the questions they answer
 
 `payment-graph-smart` is a second payment graph whose accounts and merchants carry a 16-dimensional
@@ -147,6 +239,41 @@ with labels and inline properties), `WHERE` with comparisons, `AND/OR/NOT`, `IN`
 write API, and a `MATCH` always needs a starting vertex with an id (the storage has no
 label index, so nothing is scanned). The web UI has a language picker, an example picker
 and a rows table. See `CONTEXT.md` section 19.
+
+### Script mode: a Groovy subset
+
+A Gremlin query may be a **script** - the same traversals written as statements - by sending
+`"script": true` (or by leaving it out and letting the text decide: a query with `def`, `print` or a
+statement is a script). It is a sandboxed interpreter, **not** a Groovy runtime:
+
+```groovy
+def ids = g.V('Account').has('accountStatus', 'CLOSED').values('id').toList()
+println('closed accounts: ' + ids.size())
+ids.findAll { it > 1000 }.collect { it * 2 }.sum()
+```
+
+It supports statements (`def`, assignment, `return`, `print`/`println`/`printf`, `if`/`else if`/`else`,
+`for (x in ...)`, C-style `for`, `while`, `do/while`, `switch`, `break`/`continue`, `assert`), operators
+(`+ - * / %`, comparisons, `&& || !`, ternary, elvis `?:`, spaceship `<=>`, `+= -= *= /= %=`, `++`/`--`,
+`<<`, safe navigation `?.`), ranges (`1..3`, `1..<3`, `xs[1..3]`), literals (lists, maps, `m.a`/`m['k']`,
+triple-quoted strings, slashy `/regex/`), the collection/closure helpers (`each`, `collect`, `findAll`,
+`find`, `grep`, `collectMany`, `findResult`, `any`, `every`, `count`, `sum`, `sort{}`, `max{}`, `min{}`,
+`groupBy`, `collectEntries`, `inject`, `times`), the list/map/text/number methods, and the traversal
+API (`g.V(...)`, chained steps, `toList()`).
+
+**The advanced features are gated.** Whitelisted statics (`Math.max`, `Integer.parseInt`,
+`String.format`, `Integer.MAX_VALUE`, ...), a first-class closure stored in a variable and called
+(`def f = { x -> x * 2 }; f(3)`), and regular expressions (`=~`, `==~`, `String.matches`) need
+`phoenixgraph.script.advanced=true`. It defaults to on (the development gate is the script toggle
+itself); an admin deployment sets it to `false` (or wires it to a role) and those constructs are
+refused with a message that says which permission is missing. Only whitelisted static methods exist -
+there is no reflection, class loading, IO or thread entry point.
+
+**Deliberately not supported** (documented decisions, not gaps): `try/catch` (it would swallow a real
+query/storage error into "looks like no data"), GString `"${x}"` (`${...}` is the HTTP parameter
+substitution syntax, so the script parser never sees it), `class`/`interface`/`trait`/`import`/`new` of
+an arbitrary class, IO (`File`/`URL`/`Socket`), threads and reflection
+(`getClass`/`metaClass`/`invokeMethod`/`Class.forName`). See `CONTEXT.md` sections 109-110.
 
 ### Vector search in one query
 
@@ -319,78 +446,72 @@ four workers on one machine, connected components converging in seven supersteps
 hand-written single-process reference to 1e-6, and a live `pagerank(DIST)` over the payment demo
 answering for fifty accounts in 2.8 seconds including loading the graph.
 
-## Requirements
+## Run the whole database in Docker
 
-- JDK 21+ (the project compiles with `--release 21`)
-- Maven 3.9+ (or use the included Maven wrapper: `./mvnw`)
-
-## Build
-
-```bash
-./mvnw clean package
-```
-
-On Windows (cmd/PowerShell):
-
-```bat
-mvnw.cmd clean package
-```
-
-## Run the web service
+The stack is three containers: Aerospike (the transactional store), `graph-http` (the engine and the
+query/write API) and `graph-web` (the visualization UI). The compose file builds both images from this
+repository.
 
 ```bash
-./mvnw -pl graph-web spring-boot:run
+# full stack: UI on 8080, API on 8081, Aerospike on 3000
+docker compose up --build
+
+# also the write-driven vector instance (its own graph, port 8083)
+docker compose --profile hnsw up --build
+
+# stop (add -v to drop the RocksDB volume as well)
+docker compose down
 ```
 
-Then open <http://localhost:8080/api/v1/graph/health>.
-, 2)   // the second group: a@mail.ru -> ru (0 is the whole match)
+Then open <http://localhost:8080> for the UI and <http://localhost:8081/api/v1/graphs> for the API.
+
+The two images are also built and run on their own:
+
+```bash
+docker build -f graph-http/Dockerfile -t phoenixgraph-http .
+docker build -f graph-web/Dockerfile  -t phoenixgraph-web  .
+
+docker run --rm -p 8081:8081 \
+  -e PHOENIXGRAPH_STORAGE_HOST=host.docker.internal \
+  -v phoenix-rocksdb:/data/rocksdb phoenixgraph-http
+
+docker run --rm -p 8080:8080 \
+  -e PHOENIXGRAPH_HTTP_URL=http://host.docker.internal:8081 phoenixgraph-web
 ```
 
-Backslashes are kept as written (`\d`, `\w`, `\s`), so a class means what it says; a group the
-expression does not have is reported when the pattern is used, and a value the expression does not
-match contributes nothing - which makes the pattern not apply.
+What the images contain and how they behave:
 
-A pattern can carry how to try it: an `example` context, a `demoTitle` and the `demoSteps` a demo
-query continues with. The dashboard's fuzzy button reads exactly that - it only appears for a graph
-whose patterns have an example, and it runs `g.V().fuzzyLink(id, context)` plus those steps, so the
-demo walks from the fragments to the ring, its payments and the account they reach.
+- **multi-stage build** - a Maven stage compiles the module and its dependencies, the runtime stage is
+  a JRE with only the fat jar; the whole repository is the build context (`.dockerignore` keeps
+  `target/`, `node_modules/`, `.rocksdb/`, `.logs/` and `.datasets/` out of it);
+- **non-root** - both containers run as an unprivileged `phoenixgraph` user;
+- **healthchecks** - `graph-http` is healthy when `/api/v1/graphs` answers, `graph-web` when `/`
+  answers, and `graph-web` waits for `graph-http` to be healthy (`depends_on: condition: service_healthy`);
+- **`JAVA_OPTS`** defaults to `-XX:MaxRAMPercentage=75`, so the JVM sizes its heap from the container
+  memory limit; override it to pass any other flag;
+- **configuration** - the image runs with the `docker` Spring profile
+  (`graph-http/src/main/resources/application-docker.yml`), which points the storage host at the
+  compose service, puts RocksDB under `/data/rocksdb` (a named volume) and serves the graphs whose data
+  a container can hold. Everything else is the ordinary environment:
+  `PHOENIXGRAPH_STORAGE_HOST`, `PHOENIXGRAPH_STORAGE_PORT`, `PHOENIXGRAPH_STORAGE_NAMESPACE`,
+  `PHOENIXGRAPH_STORAGE_VERTEX_SET`, `PHOENIXGRAPH_STORAGE_ROCKSDB_ROOT`.
 
-```groovy
-g.V().fuzzyLink(0, '{"email":"19880101@mail.ru","phone":"+8613800138001",
-                   "ip":"10.20.31.7","username":"zhang1988"}')
-    .out('FuzzyLinkedTo')                 // the accounts that share those fragments
-    .outE('Payment').otherV()             // where their money went
+**Data.** Aerospike starts empty. Seed the demo set (`http_demo_v3`) from the host against the
+Aerospike the compose publishes on 3000:
 
-g.V('fz_a1','Account').fuzzyLink(0)       // which ring does this account belong to
+```bash
+./mvnw -pl graph-integration-test -am test -Dtest=QueryApiIntegrationTest \
+       -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
-What it is made of:
+For the analytical (RocksDB) graphs, build a local `.rocksdb` directory and mount it at `/data/rocksdb`:
 
-- **`graph-fuzzy`** (a module of its own): the pattern language
-  (`emailDomain`, `emailName`, `ip2`/`ip3`, `countryCode`, `phonePrefix`, `cardBin`,
-  `alphaPrefix`, `digitSuffix`, `regex`, `digits`, `first`/`last`, `hash`, `opt`, …),
-  the key normalisation, the deterministic ids (`pattern_<id>`, `fl_<pattern>_<key>`) and
-  the link plan - a pure function of a pattern and a context, which is why the reader and
-  the writer agree by construction;
-- **patterns as a file** (`fuzzy-patterns.json`, per graph), edited in the builder page and
-  re-read when it changes, so a new pattern is used by the next query without a restart;
-- **the `fuzzyLink` step**: it computes the key from the context, reads the link vertex with
-  that id and continues the traversal from it. It works from a context alone
-  (`g.V().fuzzyLink(0, '{...}')`) or from an account (`g.V('a1','Account').fuzzyLink(0)`,
-  whose own properties are the context);
-- **the schema**: a `FuzzyLink` vertex, a `FuzzyPattern` vertex and one `FuzzyLinkedTo`
-  edge from a link to an account, with out- and in-degree limits of 1000 - a pattern like
-  "same /16" can group a lot of accounts, and the edge has to allow it;
-- **the writes**: `POST /api/v1/graphs/{graph}/fuzzy-links` links one vertex (and the demo
-  loader seeds two rings), through the ordinary write path, so links are validated and
-  indexed like any other vertex - and linking twice leaves one node and one edge, because
-  the ids are the key.
-
-`FuzzyLinkIntegrationTest` seeds two rings (six accounts sharing an email provider, a
-country, a `/16` and a name word; four hiding behind machine-made addresses on one `/24`
-with one card BIN) plus honest accounts that share nothing, and then asserts that the
-pattern finds exactly the ring, that the link node and its members agree both ways, and
-that the query above walks to twelve payments at the collection account.
+```bash
+./mvnw -pl graph-integration-test -am test -Dtest=RocksDbLiveLoadTest \
+       -Drocksdb.live.dir=$PWD/.rocksdb -Dsurefire.failIfNoSpecifiedTests=false
+# then, in docker-compose.yml, replace the named volume with a bind mount:
+#   volumes: [ "./.rocksdb:/data/rocksdb" ]
+```
 
 ## Requirements
 

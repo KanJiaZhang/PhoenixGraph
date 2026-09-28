@@ -1,23 +1,46 @@
+# The whole database in containers: Aerospike (the transactional store), graph-http (the engine
+# and the query/write API) and graph-web (the visualization UI).
+#
+#   docker compose up --build                 # 8080 UI, 8081 API, 3000 Aerospike
+#   docker compose --profile hnsw up --build  # also the write-driven vector instance on 8083
+#   docker compose down                       # stop; add -v to drop the RocksDB volume too
+#
+# Data: Aerospike starts empty. Seed the demo set (http_demo_v3) from the host, against the
+# Aerospike the compose publishes on 3000:
+#   ./mvnw -pl graph-integration-test -am test -Dtest=QueryApiIntegrationTest \
+#          -Dsurefire.failIfNoSpecifiedTests=false
+# For the analytical (RocksDB) graphs, build .rocksdb locally with RocksDbLiveLoadTest and mount it
+# at /data/rocksdb (see the README).
 services:
+
   aerospike:
     image: aerospike/aerospike-server:latest
     ports:
       - "3000:3000"
+    healthcheck:
+      test: ["CMD", "asinfo", "-v", "-c", "status"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
 
   graph-http:
     build:
       context: .
       dockerfile: graph-http/Dockerfile
     environment:
+      SPRING_PROFILES_ACTIVE: docker
       PHOENIXGRAPH_STORAGE_HOST: aerospike
       PHOENIXGRAPH_STORAGE_PORT: "3000"
       PHOENIXGRAPH_STORAGE_NAMESPACE: test
-      PHOENIXGRAPH_STORAGE_VERTEX_SET: vertices
-      PHOENIXGRAPH_STORAGE_SCHEMA: payment-graph
+      PHOENIXGRAPH_STORAGE_VERTEX_SET: http_demo_v3
+      PHOENIXGRAPH_STORAGE_ROCKSDB_ROOT: /data/rocksdb
+    volumes:
+      - rocksdb:/data/rocksdb
     ports:
       - "8081:8081"
     depends_on:
-      - aerospike
+      aerospike:
+        condition: service_healthy
 
   graph-web:
     build:
@@ -28,4 +51,31 @@ services:
     ports:
       - "8080:8080"
     depends_on:
-      - graph-http
+      graph-http:
+        condition: service_healthy
+
+  # Write-driven vector instance (optional): its own graph whose HNSW layers are built as
+  # vertices are written, on its own port. Start it with --profile hnsw.
+  graph-http-hnsw:
+    profiles: ["hnsw"]
+    build:
+      context: .
+      dockerfile: graph-http/Dockerfile
+    environment:
+      SPRING_PROFILES_ACTIVE: docker,hnsw-dynamic
+      SERVER_PORT: "8083"
+      PHOENIXGRAPH_STORAGE_HOST: aerospike
+      PHOENIXGRAPH_STORAGE_PORT: "3000"
+      PHOENIXGRAPH_STORAGE_NAMESPACE: test
+      PHOENIXGRAPH_STORAGE_VERTEX_SET: hnsw_dynamic_v1
+      PHOENIXGRAPH_STORAGE_ROCKSDB_ROOT: /data/rocksdb
+    volumes:
+      - rocksdb:/data/rocksdb
+    ports:
+      - "8083:8083"
+    depends_on:
+      aerospike:
+        condition: service_healthy
+
+volumes:
+  rocksdb:

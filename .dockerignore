@@ -1,6 +1,11 @@
 .git
+.gitattributes
+.idea
+.sessions
+.logs
+.rocksdb
+.datasets
 **/target
 **/node_modules
 *.log
-.idea
 *.iml
