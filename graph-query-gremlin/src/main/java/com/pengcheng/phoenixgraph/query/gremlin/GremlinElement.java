@@ -10,7 +10,7 @@ import java.util.Map;
  * {@code null} label and no properties (only its id), which is still enough to
  * continue traversing along edges.
  */
-public sealed interface GremlinElement permits GremlinVertex, GremlinEdge {
+public sealed interface GremlinElement permits GremlinVertex, GremlinEdge, GremlinProperty {
 
     /** Schema name (label) of this element; may be {@code null} for an unresolved vertex. */
     String label();

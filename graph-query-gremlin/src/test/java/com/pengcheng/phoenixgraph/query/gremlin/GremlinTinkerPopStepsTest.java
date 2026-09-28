@@ -107,6 +107,65 @@ class GremlinTinkerPopStepsTest {
     }
 
     @Test
+    void propertiesGiveKeyAndValueAndMathFormatsAndDates() {
+        // properties()/key()/value()
+        assertEquals(List.of("age", "name", "status"),
+                gremlin.execute("g.V('a','Account').properties().key()").stream()
+                        .map(String::valueOf).sorted().toList());
+        assertEquals(List.of("30", "ACTIVE", "ann"),
+                gremlin.execute("g.V('a','Account').properties().value()").stream()
+                        .map(String::valueOf).sorted().toList());
+        assertEquals(3L, one("g.V('a','Account').properties().count()"));
+        QueryException notAProperty = assertThrows(QueryException.class,
+                () -> gremlin.execute("g.V('a','Account').key()"));
+        assertTrue(notAProperty.getMessage().contains("properties()"), notAProperty.getMessage());
+
+        // math('_ ...')
+        assertEquals(15L, one("g.V('a','Account').values('age').math('_ / 2')"));
+        assertEquals(62L, one("g.V('a','Account').values('age').math('(_ + 1) * 2')"));
+        assertEquals(1L, one("g.V('a','Account').values('age').math('_ % 29')"));
+        QueryException notANumber = assertThrows(QueryException.class,
+                () -> gremlin.execute("g.V('a','Account').math('_ + 1')"));
+        assertTrue(notANumber.getMessage().contains("needs a number"), notANumber.getMessage());
+
+        // format('%{key}')
+        assertEquals(List.of("ann: 30"), gremlin.execute("g.V('a','Account').format('%{name}: %{age}')"));
+        assertEquals(List.of("Account a"), gremlin.execute("g.V('a','Account').format('%{label} %{id}')"));
+        QueryException missing = assertThrows(QueryException.class,
+                () -> gremlin.execute("g.V('a','Account').format('%{nope}')"));
+        assertTrue(missing.getMessage().contains("does not carry"), missing.getMessage());
+
+        // dates: epoch millis stay numbers, text stays text
+        assertEquals(List.of(86_400_000L), gremlin.execute("g.inject(0).dateAdd('day', 1)"));
+        assertEquals(List.of(86_400_000L), gremlin.execute("g.inject(0).dateAdd('DT.day', 1)"),
+                "the DT. spelling of TinkerPop works too");
+        assertEquals(List.of(172_800_000L), gremlin.execute("g.inject(0).dateAdd('days', 2)"));
+        assertEquals(List.of(2L), gremlin.execute("g.inject(0).dateDiff('day', 172800000)"));
+        assertEquals(List.of("1970-01-01T00:00:00Z"), gremlin.execute("g.inject(0).dateTime()"));
+        assertEquals(List.of("2026-01-02T00:00:00Z"),
+                gremlin.execute("g.inject('2026-01-01').dateAdd('day', 1)"), "text in, text out");
+    }
+
+    @Test
+    void profileAndExplainSayWhatTheRunDid() {
+        Map<?, ?> profile = (Map<?, ?>) one("g.V('a','b','Account').has('status','ACTIVE').profile()");
+        assertEquals(1L, ((Number) profile.get("traversers")).longValue());
+        List<?> steps = (List<?>) profile.get("steps");
+        assertEquals(1, steps.size(), "only the steps that ran, not profile() itself");
+        Map<?, ?> has = (Map<?, ?>) steps.get(0);
+        assertEquals("has", has.get("step"));
+        assertEquals(2L, ((Number) has.get("in")).longValue());
+        assertEquals(1L, ((Number) has.get("out")).longValue());
+
+        Map<?, ?> plan = (Map<?, ?>) one("g.V('a','Account').out('knows').explain()");
+        assertEquals("vertices", plan.get("source"));
+        assertEquals("Account", plan.get("name"));
+        assertEquals(false, plan.get("pathAware"));
+        assertEquals(List.of("out"), ((List<?>) plan.get("steps")).stream()
+                .map(step -> ((Map<?, ?>) step).get("step")).toList());
+    }
+
+    @Test
     void identityConstantIdAndLabel() {
         assertEquals(3, gremlin.execute("g.V('a','b','c','Account').identity()").size());
         assertEquals(List.of("x", "x"), gremlin.execute("g.V('a','b','Account').constant('x')"));

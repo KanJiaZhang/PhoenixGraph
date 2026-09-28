@@ -190,6 +190,56 @@ public class GremlinStepRegistry {
         });
         register("hasId", args -> GremlinSteps.hasId(requireArgs(args, "hasId")));
         register("hasLabel", args -> GremlinSteps.hasLabel(requireArgs(args, "hasLabel")));
+        register("properties", args -> {
+            requireNoArgs(args, "properties");
+            return GremlinSteps.properties();
+        });
+        // profile() and explain() are terminal: the runner answers with what the traversal did (or would
+        // do), so as steps they are pass-through and cost nothing when nobody asks for them
+        register("profile", args -> {
+            requireNoArgs(args, "profile");
+            return GremlinSteps.identity();
+        });
+        register("explain", args -> {
+            requireNoArgs(args, "explain");
+            return GremlinSteps.identity();
+        });
+        register("key", args -> {
+            requireNoArgs(args, "key");
+            return GremlinSteps.propertyKey();
+        });
+        // TinkerPop writes value() without arguments for a property's value; values(keys) is the
+        // projection step and keeps its meaning
+        register("value", args -> {
+            requireNoArgs(args, "value");
+            return GremlinSteps.propertyValue();
+        });
+        register("math", args -> GremlinSteps.math(single(args, "math")));
+        register("format", args -> GremlinSteps.format(single(args, "format")));
+        register("dateTime", args -> {
+            requireNoArgs(args, "dateTime");
+            return GremlinSteps.dateTime();
+        });
+        register("dateAdd", args -> {
+            if (args.size() != 2) {
+                throw new QueryException("dateAdd expects dateAdd(unit, amount), got " + args.size()
+                        + " arguments");
+            }
+            long amount;
+            try {
+                amount = Long.parseLong(args.get(1).trim());
+            } catch (NumberFormatException e) {
+                throw new QueryException("dateAdd expects a whole number of units, got: " + args.get(1));
+            }
+            return GremlinSteps.dateAdd(args.get(0), amount);
+        });
+        register("dateDiff", args -> {
+            if (args.size() != 2) {
+                throw new QueryException("dateDiff expects dateDiff(unit, other), got " + args.size()
+                        + " arguments");
+            }
+            return GremlinSteps.dateDiff(args.get(0), args.get(1));
+        });
         register("hasNot", args -> GremlinSteps.hasNot(single(args, "hasNot")));
         register("hasKey", args -> GremlinSteps.hasKey(requireArgs(args, "hasKey")));
         register("hasValue", args -> GremlinSteps.hasValue(requireArgs(args, "hasValue")));

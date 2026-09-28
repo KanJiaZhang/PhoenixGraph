@@ -676,6 +676,151 @@ final class GremlinSteps {
                 edge.properties(), edge.createdTime(), edge.lastUpdatedTime());
     }
 
+    /**
+     * {@code properties()}: each of the element's properties becomes a traverser of its own, so the key
+     * and the value can be asked for separately ({@code properties().key()}).
+     */
+    static GremlinStep properties() {
+        return (ctx, in) -> {
+            List<Object> out = new ArrayList<>();
+            for (Object o : in) {
+                GremlinElement element = requireElement(o);
+                for (Map.Entry<String, Object> entry : element.properties().entrySet()) {
+                    out.add(new GremlinProperty(entry.getKey(), entry.getValue(), element));
+                }
+            }
+            return out;
+        };
+    }
+
+    /** {@code key()}: the key of a property traverser ({@code properties().key()}). */
+    static GremlinStep propertyKey() {
+        return (ctx, in) -> {
+            List<Object> out = new ArrayList<>(in.size());
+            for (Object o : in) {
+                out.add(requireProperty(o, "key()").key());
+            }
+            return out;
+        };
+    }
+
+    /** {@code value()}: the value of a property traverser ({@code properties().value()}). */
+    static GremlinStep propertyValue() {
+        return (ctx, in) -> {
+            List<Object> out = new ArrayList<>(in.size());
+            for (Object o : in) {
+                out.add(requireProperty(o, "value()").value());
+            }
+            return out;
+        };
+    }
+
+    private static GremlinProperty requireProperty(Object o, String step) {
+        if (!(o instanceof GremlinProperty property)) {
+            throw new QueryException(step + " needs a property - put properties() before it - but got: "
+                    + o);
+        }
+        return property;
+    }
+
+    /**
+     * {@code math('_ * 2 + 1')}: the arithmetic of the current number, with {@code _} standing for it.
+     * The expression language (numbers, {@code _}, {@code + - * / %}, parentheses) is in
+     * {@link GremlinNumbers}.
+     */
+    static GremlinStep math(String expression) {
+        return (ctx, in) -> {
+            List<Object> out = new ArrayList<>(in.size());
+            for (Object o : in) {
+                out.add(GremlinNumbers.math(expression, o));
+            }
+            return out;
+        };
+    }
+
+    /**
+     * {@code format('%{id}: %{accountStatus}')}: the template with every {@code %{key}} replaced by the
+     * element's value for that key, and {@code %{_}} by the traverser itself. A key the element does not
+     * have is an error rather than an empty spot, so a typo shows up as a message.
+     */
+    static GremlinStep format(String template) {
+        return (ctx, in) -> {
+            List<Object> out = new ArrayList<>(in.size());
+            for (Object o : in) {
+                out.add(renderFormat(template, o));
+            }
+            return out;
+        };
+    }
+
+    private static String renderFormat(String template, Object element) {
+        StringBuilder out = new StringBuilder();
+        int at = 0;
+        while (at < template.length()) {
+            int start = template.indexOf("%{", at);
+            if (start < 0) {
+                out.append(template, at, template.length());
+                break;
+            }
+            out.append(template, at, start);
+            int end = template.indexOf('}', start + 2);
+            if (end < 0) {
+                throw new QueryException("format('" + template + "') has an unclosed %{ ... }");
+            }
+            String key = template.substring(start + 2, end).trim();
+            if (key.equals("_")) {
+                out.append(String.valueOf(element));
+            } else if (element instanceof GremlinElement gremlinElement) {
+                Object value = GremlinElementExpression.value(gremlinElement, key);
+                if (value == null && !GremlinElementExpression.isPseudoName(key)) {
+                    throw new QueryException("format('" + template + "') names '" + key + "', which "
+                            + (gremlinElement.label() == null ? "this element"
+                            : "a " + gremlinElement.label() + " element")
+                            + " does not carry (only the properties the traversal read are there)");
+                }
+                out.append(value == null ? "" : String.valueOf(value));
+            } else {
+                throw new QueryException("format('" + template + "') needs a vertex or an edge for '%{" + key
+                        + "}', got: " + element);
+            }
+            at = end + 1;
+        }
+        return out.toString();
+    }
+
+    /** {@code dateTime()}: the current time (epoch millis or UTC text) as the UTC text form. */
+    static GremlinStep dateTime() {
+        return (ctx, in) -> {
+            List<Object> out = new ArrayList<>(in.size());
+            for (Object o : in) {
+                out.add(GremlinDates.dateTime(o));
+            }
+            return out;
+        };
+    }
+
+    /** {@code dateAdd(unit, amount)}: the current time moved by that much, in the same shape. */
+    static GremlinStep dateAdd(String unit, long amount) {
+        return (ctx, in) -> {
+            List<Object> out = new ArrayList<>(in.size());
+            for (Object o : in) {
+                out.add(GremlinDates.dateAdd(unit, amount, o));
+            }
+            return out;
+        };
+    }
+
+    /** {@code dateDiff(unit, other)}: whole units from the current time to {@code other}. */
+    static GremlinStep dateDiff(String unit, String other) {
+        return (ctx, in) -> {
+            List<Object> out = new ArrayList<>(in.size());
+            for (Object o : in) {
+                out.add(GremlinDates.dateDiff(unit, o, other));
+            }
+            return out;
+        };
+    }
+
     /** Filters elements: keeps those having {@code key} (and, when given, matching {@code rawValue}). */
     static GremlinStep has(String key, String rawValue) {
         return (ctx, in) -> {

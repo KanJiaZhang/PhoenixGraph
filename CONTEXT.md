@@ -6692,3 +6692,26 @@ node .logs/probe-predicates.js           # 谓词对照（before/after 两份 co
 **仍未做**：一等闭包（`def f = {…}` 然后 `f(3)`）、静态方法白名单（`Math.max`/`Integer.parseInt`）、GString（与 HTTP 参数替换冲突）、`try/catch`（会吞真错误）、类/导入/任意 `new`/IO/线程；step 侧的 `as/select/project/...` 仍等 `Traverser` 模型。
 
 **验证**：`graph-query-gremlin` **273 用例**（新增 assert/do-while/switch/索引与 map/集合与文本方法 5 个用例组）；线上 `.logs/verify-script-tier2.js` **19/19**。
+## 92. 复核清单第 2 项：`properties/key/value`、`math/format/dateAdd/dateDiff/dateTime`、`profile/explain`
+
+| 新增 | 说明 |
+|---|---|
+| `properties()` | 元素的每个属性变成一个**属性遍历器**（新记录 `GremlinProperty`，加入 `GremlinElement` 的 permits 列表）。它实现 `GremlinElement`，所以 `values/valueMap/id/label` 照旧可用；label/id 即 key。只有遍历读到的属性在里面，而 `properties/key/value/format/profile/explain` 已加入"需要全部属性"的投影规则 |
+| `key()` / `value()` | 属性遍历器的 key / value（`properties().key()`）；对非属性遍历器**报错**并提示先 `properties()` |
+| `math('_ * 2 + 1')` | 每个遍历器自己的数字做算术（`_` 是它，`+ - * / %`、括号、负数）；整型进整型出。非数字**报错**并提示"先 `values('key')`" |
+| `format('%{id}: %{status}')` | 模板里的 `%{key}` 换成该元素的属性/伪键（`id/label/createdTime/source/target/side` 都能用），`%{_}` 是遍历器本身。**键不存在就报错**（不静默留空） |
+| `dateTime()` / `dateAdd(unit, n)` / `dateDiff(unit, other)` | 时间为 epoch millis 或 UTC 文本；**数字进数字出、文本进文本出**（可直接喂回 `createdBetween`）；单位 `second/minute/hour/day/week/month/year`，也接受 TinkerPop 的 `DT.day` 与复数 |
+| `profile()` | **终结步**：跑一遍并回答每一步的 `in/out/millis` 与总耗时/遍历器数（`profile()` 自己不计入）。记录器只在 step 出现时创建，普通查询**零成本** |
+| `explain()` | **终结步**：回答编译出的计划——起点、每一步与其属性投影（`none`/`all`/列表）、是否 path-aware、是否校验种子 |
+
+**副作用**：`GremlinElement` 是 sealed，加了 `GremlinProperty` 到 permits（编译期就会发现所有 switch 是否漏分支）；属性投影规则把新 step 归入"需要全部属性"（
+可能让这些查询多读属性——这是语义要求）；`profile/explain` 是终结步（会替换答案，与 TinkerPop 的"可继续的 profile"不同，已在文档说明）。
+
+**验证**：`graph-query-gremlin` **275 用例**（新增两组：properties/key/value+math/format/dates、profile/explain）；线上 `.logs/verify-medium-steps.js` **12/12**。
+
+## 93. 复核清单第 1 项（`Traverser` 家族）的设计：见 `TRAVERSER-DESIGN.md`
+
+那份文档给出：为什么现在做不到（扁平列表不携带来历）、**两条路径由编译器选**（没有状态 step 时走今天的快路径，
+现有查询/step/批读/UI/脚本**零影响**）、`GremlinTraverser{value,path,labels,sack,bulk}` 与 `TraverserContext` 的数据结构、
+跳步仍批读、`path()` 模式如何合并、四批落地计划与每批的验收（现有 275 用例全绿 + "同一查询两条路径答案一致"对照）、
+以及风险对策（性能对照用 `profile()`、与 `DIST` 明确互斥）。**尚未开工**：等确认后按第 1 批（`as/select/project` + `where('a',eq('b'))`）开始。

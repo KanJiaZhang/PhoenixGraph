@@ -1308,11 +1308,65 @@ public class GremlinGraphQuery {
             // a partitioned scan: mappers in parallel, then the whole-set steps once (see runDistributed)
             return runDistributed(context, compiled).values();
         }
+        // profile() and explain() are terminal steps: they answer with what the run did (or would do)
+        // instead of the traversers, so nothing else in the pipeline has to know about them
+        if (compiled.stepNames.contains("explain")) {
+            return List.of(explain(compiled));
+        }
+        if (compiled.stepNames.contains("profile")) {
+            return profile(context, compiled);
+        }
         if (compiled.stepNames.contains("path")) {
             return runPathCompiled(context, compiled);
         }
         List<Object> current = start(context, compiled.source, compiled.startProperties, compiled.verifySeeds);
-        return applySteps(context, compiled, current, 0, compiled.steps.size());
+        return applySteps(context, compiled, current, 0, compiled.steps.size(), null);
+    }
+
+    /**
+     * {@code explain()}: the plan this query compiled to - the start, the steps, and the property
+     * projection each step asked for ({@code null} = no properties, empty = all of them).
+     */
+    private static Map<String, Object> explain(CompiledQuery compiled) {
+        List<Map<String, Object>> steps = new ArrayList<>(compiled.stepNames.size());
+        for (int i = 0; i < compiled.stepNames.size(); i++) {
+            String name = compiled.stepNames.get(i);
+            if (name.equals("profile") || name.equals("explain")) {
+                continue; // the reporter itself is not part of the plan it describes
+            }
+            Map<String, Object> step = new LinkedHashMap<>();
+            step.put("step", name);
+            List<String> projection = compiled.properties[i];
+            step.put("properties", projection == null ? "none" : projection.isEmpty() ? "all" : projection);
+            steps.add(step);
+        }
+        Map<String, Object> plan = new LinkedHashMap<>();
+        plan.put("source", compiled.source.kind().name().toLowerCase(java.util.Locale.ROOT));
+        plan.put("name", compiled.source.name());
+        plan.put("seeds", compiled.source.ids().size());
+        plan.put("steps", steps);
+        plan.put("pathAware", compiled.stepNames.contains("path"));
+        plan.put("verifySeeds", compiled.verifySeeds);
+        return plan;
+    }
+
+    /**
+     * {@code profile()}: runs the traversal with a recorder next to every step and answers with what each
+     * one saw - how many traversers went in and came out, and how long it took. The recorder is only
+     * created when the step asks for it, so a normal run pays nothing for it.
+     *
+     * <p>The storage counters are not here: they belong to the store and are on the metrics endpoint.
+     */
+    private List<Object> profile(GremlinContext context, CompiledQuery compiled) {
+        List<Map<String, Object>> recorded = new ArrayList<>();
+        long started = System.nanoTime();
+        List<Object> current = start(context, compiled.source, compiled.startProperties, compiled.verifySeeds);
+        current = applySteps(context, compiled, current, 0, compiled.steps.size(), recorded);
+        Map<String, Object> profile = new LinkedHashMap<>();
+        profile.put("steps", recorded);
+        profile.put("totalMillis", (System.nanoTime() - started) / 1e6);
+        profile.put("traversers", current.size());
+        return List.of(profile);
     }
 
     /**
@@ -1320,13 +1374,15 @@ public class GremlinGraphQuery {
      * pipeline uses. One loop, so a distributed run walks exactly the steps a single-process run walks.
      */
     private List<Object> applySteps(GremlinContext context, CompiledQuery compiled, List<Object> in,
-                                    int from, int to) {
+                                    int from, int to, List<Map<String, Object>> profile) {
         List<Object> current = in;
         int hopsDone = 0;
         int hopFanOut = 0;
         boolean filterSinceHop = false;
         for (int i = from; i < to; i++) {
             String name = compiled.stepNames.get(i);
+            int before = current.size();
+            long started = System.nanoTime();
             if (isHop(name)) {
                 // Adaptive batch tuning: scale the next hop's batch size to the previous
                 // hop's fan-out, unless a filter already reduced the traverser cardinality.
@@ -1344,6 +1400,14 @@ public class GremlinGraphQuery {
                 }
                 context.readProperties(compiled.properties[i]);
                 current = compiled.steps.get(i).apply(context, current);
+            }
+            if (profile != null && !name.equals("profile")) {
+                Map<String, Object> step = new LinkedHashMap<>();
+                step.put("step", name);
+                step.put("in", before);
+                step.put("out", current.size());
+                step.put("millis", (System.nanoTime() - started) / 1e6);
+                profile.add(step);
             }
         }
         return current;
@@ -1428,7 +1492,7 @@ public class GremlinGraphQuery {
                     List<Object> elements = partitionStart(mapper, compiled.source, compiled.startProperties,
                             partition, partitions);
                     List<Object> out = split == 0 ? elements
-                            : applySteps(mapper, compiled, elements, 0, split);
+                            : applySteps(mapper, compiled, elements, 0, split, null);
                     if (wantSubgraph) {
                         subgraphs.set(partition, mapper.buildSubgraph());
                     }
@@ -1464,7 +1528,7 @@ public class GremlinGraphQuery {
             return new DistributedRun(merged);
         }
         return new DistributedRun(applySteps(reduceContext, compiled, merged, split,
-                compiled.steps.size()));
+                compiled.steps.size(), null));
     }
 
     /** Replays a mapper's subgraph into the reducing context, so the drawn graph is their union. */
@@ -1856,7 +1920,11 @@ public class GremlinGraphQuery {
                     || name.equals("union") || name.equals("local") || name.equals("coalesce")
                     || name.equals("not") || name.equals("and") || name.equals("or")
                     || name.equals("optional") || name.equals("where") || name.equals("choose")
-                    || name.equals("repeat")) {
+                    || name.equals("repeat")
+                    // these hand the element's own properties on (properties() makes them traversers,
+                    // format() writes them into a template), so the projection has to be everything
+                    || name.equals("properties") || name.equals("key") || name.equals("value")
+                    || name.equals("format") || name.equals("profile") || name.equals("explain")) {
                 // these read the element's properties (which ones depends on the argument, or on a child
                 // traversal), so the projection stays "all"
                 all = true;
