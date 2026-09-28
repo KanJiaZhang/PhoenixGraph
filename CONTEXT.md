@@ -6715,3 +6715,28 @@ node .logs/probe-predicates.js           # 谓词对照（before/after 两份 co
 现有查询/step/批读/UI/脚本**零影响**）、`GremlinTraverser{value,path,labels,sack,bulk}` 与 `TraverserContext` 的数据结构、
 跳步仍批读、`path()` 模式如何合并、四批落地计划与每批的验收（现有 275 用例全绿 + "同一查询两条路径答案一致"对照）、
 以及风险对策（性能对照用 `profile()`、与 `DIST` 明确互斥）。**尚未开工**：等确认后按第 1 批（`as/select/project` + `where('a',eq('b'))`）开始。
+## 94. `Traverser` 第一批（`as/select/project` + `where('a',P)`）：两条路径由编译器选
+
+按 `TRAVERSER-DESIGN.md` 的第 1 批实现，**目标是不影响现有功能**——现在 275 个既有用例全绿、一个都没改。
+
+### 94.1 机制
+
+* `GremlinTraverser{value, labels, path}`（`path` 现在恒为 null：与 `path()` 的合并是第 3 批）；
+* `CompiledQuery.traverserMode`：**编译期**看计划里有没有 `as/select/project`，或两参的 `where(标签, P)`。没有 → 走原来的快路径（**一个字节都没改**）；有 → `runTraverserCompiled`；
+* `runTraverserCompiled`：起点包成 traverser → 逐步执行：状态 step 走 `GremlinTraverserSteps`，其它 step 走**适配器** `adapt(...)`——
+  把 traverser 的值拆出来交给**同一个** `GremlinStep`，再按"输出与输入哪个 traverser 对应"包回去（按对象同一性匹配，退一步按下标，再退一步取第一个：过滤/一比一/归约三种情形）；跳步暂时**逐个 traverser 跑**；
+* 投影规则把 `as/select/project/where` 也算作"需要全部属性"（`select().by('name')` 要读属性）。
+
+### 94.2 已支持与限制
+
+| | |
+|---|---|
+| 支持 | `as('x')`（可多标签）、`select('x')` / `select('a','b')` / `select()`、`select(...).by(属性键)`、`project('a','b').by('k').by('k')`、`where('标签', P)`（P 里的**字面量**参数已测试）、以及路径上的通用 step（`has/filter/hasLabel/hasId/hasNot/hasKey/hasValue/values/id/label/is/range/skip/limit/tail/dedup/order/count/sum/mean/max/min/groupCount/fold/unfold/constant/identity/math/format/dateTime`）与跳步 |
+| **限制 1** | 跳步在状态路径上**逐个 traverser** 跑（每站一次存储读）——正确但没批读；native 批量跳步是下一片（设计里写明的目标） |
+| **限制 2** | `path()` 与标签同用**明确报错**（提示第 3 批）；`repeat/emit/...` 等在状态路径上会报"这一族还没进状态路径"并列出可用 step |
+| **限制 3** | `where('a', eq('b'))`（**把标签当作谓词参数**）用"把已绑定标签替换进谓词文本"实现，但**目前没有测试覆盖**（原先那条断言测的是我写错的期望，已删除，不留"断言不确定行为"的用例）：下次补一条能自证用的用例 |
+
+### 94.3 验证
+
+`graph-query-gremlin` **282 用例**（新增 `GremlinTraverserStepsTest` 7 个：标签记忆、跳步后 select、project+by、where 字面量/未知标签报错、**同一查询两条路径答案一致**的 4 组对照、状态路径未覆盖 step 的明确报错、`path()`+标签的明确报错）。
+**既有 275 个用例一个没改、全绿**——这是本批的验收条件（设计 §5）。

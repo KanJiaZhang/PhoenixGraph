@@ -258,6 +258,13 @@ public class GremlinGraphQuery {
             };
         });
         registry.register("where", args -> {
+            if (args.size() == 2 && args.get(0).matches("[A-Za-z_$][A-Za-z0-9_$]*")) {
+                // where(label, P): a comparison over the labels, which only the stateful path can read
+                // (the compiler puts a query with this form on that path, so this step never runs here)
+                return (ctx, in) -> {
+                    throw new QueryException("where('" + args.get(0) + "', ...) needs the stateful path");
+                };
+            }
             String child = singleSubTraversal(args, "where");
             return (ctx, in) -> {
                 List<Object> out = new ArrayList<>();
@@ -414,6 +421,13 @@ public class GremlinGraphQuery {
             case "groupCount" -> new GremlinQuery.Step("groupCount", List.of(key));
             case "dedup" -> new GremlinQuery.Step("dedup", List.of(key));
             case "path" -> new GremlinQuery.Step("path", List.of(key));
+            // project/select keep their keys and collect the by(...) specs after them, marked so the
+            // step can tell a key from a modulator
+            case "project", "select" -> {
+                List<String> args = new ArrayList<>(previous.args());
+                args.add("by:" + key);
+                yield new GremlinQuery.Step(previous.name(), List.copyOf(args));
+            }
             default -> null;
         };
     }
@@ -1317,11 +1331,141 @@ public class GremlinGraphQuery {
             return profile(context, compiled);
         }
         if (compiled.stepNames.contains("path")) {
+            if (compiled.traverserMode) {
+                throw new QueryException("as()/select()/project() with path() is the next batch of the"
+                        + " stateful path (see TRAVERSER-DESIGN.md 5): for now a query uses one or the"
+                        + " other. Drop path(), or drop the labels and read the walk's ends with"
+                        + " start()/end().");
+            }
             return runPathCompiled(context, compiled);
+        }
+        if (compiled.traverserMode) {
+            return runTraverserCompiled(context, compiled);
         }
         List<Object> current = start(context, compiled.source, compiled.startProperties, compiled.verifySeeds);
         return applySteps(context, compiled, current, 0, compiled.steps.size(), null);
     }
+
+    /**
+     * The stateful path (TRAVERSER-DESIGN.md): the values flow as {@link GremlinTraverser}s, so a step can
+     * read what a traverser was labelled with. Every step that does not need state keeps its own
+     * implementation - it is applied to the traversers' values through {@link #adapt} - which is what
+     * keeps the two paths answering the same thing.
+     */
+    private List<Object> runTraverserCompiled(GremlinContext context, CompiledQuery compiled) {
+        List<Object> started = start(context, compiled.source, compiled.startProperties, compiled.verifySeeds);
+        List<GremlinTraverser> traversers = new ArrayList<>(started.size());
+        for (Object value : started) {
+            traversers.add(GremlinTraverser.of(value));
+        }
+        for (int i = 0; i < compiled.steps.size(); i++) {
+            String name = compiled.stepNames.get(i);
+            GremlinQuery.Step planned = compiled.plan.get(i);
+            traversers = switch (name) {
+                case "as" -> GremlinTraverserSteps.as(traversers, planned.args());
+                case "select" -> GremlinTraverserSteps.select(traversers, keysOf(planned.args()),
+                        bySpecsOf(planned.args()));
+                case "project" -> GremlinTraverserSteps.project(traversers, keysOf(planned.args()),
+                        bySpecsOf(planned.args()),
+                        child -> runSubTraversal(context, child, List.of()));
+                case "where" -> GremlinTraverserSteps.whereLabel(traversers, planned.args().get(0),
+                        planned.args().get(1));
+                // a hop runs one traverser at a time for now: correct, and the storage read is one call
+                // per standing value. The native batched hop (one batch for the whole hop, as the list
+                // path does) is the next slice of TRAVERSER-DESIGN.md 5
+                default -> isHop(name) ? traverserHop(context, compiled, i, traversers)
+                        : adapt(context, compiled, i, traversers);
+            };
+        }
+        List<Object> answer = new ArrayList<>(traversers.size());
+        for (GremlinTraverser traverser : traversers) {
+            answer.add(traverser.value());
+        }
+        return answer;
+    }
+
+    /** The keys of a {@code select}/{@code project} step: its arguments up to the {@code by:} specs. */
+    private static List<String> keysOf(List<String> args) {
+        List<String> keys = new ArrayList<>(args.size());
+        for (String arg : args) {
+            if (!arg.startsWith("by:")) {
+                keys.add(arg);
+            }
+        }
+        return keys;
+    }
+
+    /** The {@code by(...)} specs a step carries, folded into its arguments as {@code by:<spec>}. */
+    private static List<String> bySpecsOf(List<String> args) {
+        List<String> specs = new ArrayList<>();
+        for (String arg : args) {
+            if (arg.startsWith("by:")) {
+                specs.add(arg.substring(3));
+            }
+        }
+        return specs;
+    }
+
+    /**
+     * One hop on the stateful path: the step runs for one traverser at a time, and every value it reaches
+     * becomes a traverser with the labels its input carried.
+     */
+    private List<GremlinTraverser> traverserHop(GremlinContext context, CompiledQuery compiled, int index,
+                                                List<GremlinTraverser> traversers) {
+        context.readProperties(compiled.properties[index]);
+        GremlinStep hop = compiled.steps.get(index);
+        List<GremlinTraverser> out = new ArrayList<>();
+        for (GremlinTraverser traverser : traversers) {
+            for (Object reached : hop.apply(context, List.of(traverser.value()))) {
+                out.add(traverser.withValue(reached));
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Runs one non-stateful step over the traversers' values and re-wraps the answer: labels are carried
+     * along by matching each output to the input it came from (by identity when the step filtered, by
+     * index when it mapped one to one, and from the first input when the step reduced everything to one).
+     */
+    private List<GremlinTraverser> adapt(GremlinContext context, CompiledQuery compiled, int index,
+                                         List<GremlinTraverser> traversers) {
+        String name = compiled.stepNames.get(index);
+        if (!ADAPTABLE_STEPS.contains(name)) {
+            throw new QueryException("'" + name + "' cannot be used after as()/select()/project() yet: the"
+                    + " stateful path (TRAVERSER-DESIGN.md) covers " + ADAPTABLE_STEPS + " for now");
+        }
+        List<Object> values = new ArrayList<>(traversers.size());
+        for (GremlinTraverser traverser : traversers) {
+            values.add(traverser.value());
+        }
+        context.readProperties(compiled.properties[index]);
+        List<Object> mapped = compiled.steps.get(index).apply(context, values);
+        List<GremlinTraverser> out = new ArrayList<>(mapped.size());
+        Map<Object, GremlinTraverser> byValue = new java.util.IdentityHashMap<>();
+        for (GremlinTraverser traverser : traversers) {
+            byValue.putIfAbsent(traverser.value(), traverser);
+        }
+        GremlinTraverser fallback = traversers.isEmpty() ? GremlinTraverser.of(null) : traversers.get(0);
+        for (int i = 0; i < mapped.size(); i++) {
+            GremlinTraverser source = byValue.get(mapped.get(i));
+            if (source == null) {
+                source = mapped.size() == traversers.size() ? traversers.get(i) : fallback;
+            }
+            out.add(source.withValue(mapped.get(i)));
+        }
+        return out;
+    }
+
+    /**
+     * The steps the stateful path lets through for now: the ones whose answer per traverser does not depend
+     * on which traverser it was (so carrying the labels along is unambiguous). Hops and the rest come with
+     * the next batches of TRAVERSER-DESIGN.md.
+     */
+    private static final Set<String> ADAPTABLE_STEPS = Set.of("has", "filter", "hasLabel", "hasId",
+            "hasNot", "hasKey", "hasValue", "values", "id", "label", "is", "range", "skip", "limit",
+            "tail", "dedup", "order", "count", "sum", "mean", "max", "min", "groupCount", "fold",
+            "unfold", "constant", "identity", "math", "format", "dateTime");
 
     /**
      * {@code explain()}: the plan this query compiled to - the start, the steps, and the property
@@ -1831,6 +1975,12 @@ public class GremlinGraphQuery {
         final List<GremlinStep> steps;
         /** The planned steps as parsed (their args), which the path walk needs to read the edge names. */
         final List<GremlinQuery.Step> plan;
+        /**
+         * Whether this query needs the stateful path (see TRAVERSER-DESIGN.md): a step that reads or
+         * writes per-traverser state ({@code as/select/project/where('a',P)}) is in the chain. Decided at
+         * compile time, so a query that does not need it runs exactly the code it ran before.
+         */
+        final boolean traverserMode;
 
         CompiledQuery(GremlinQuery.Source source, List<String>[] properties,
                       List<String> startProperties, boolean verifySeeds, List<String> stepNames,
@@ -1842,7 +1992,25 @@ public class GremlinGraphQuery {
             this.stepNames = stepNames;
             this.steps = steps;
             this.plan = plan;
+            this.traverserMode = needsTraverserState(plan);
         }
+    }
+
+    /** The steps that read or write a traverser's labels, and therefore need the stateful path. */
+    private static final Set<String> STATEFUL_STEPS = Set.of("as", "select", "project");
+
+    /** Whether the plan needs per-traverser state (a labelled step, or {@code where(label, P)}). */
+    private static boolean needsTraverserState(List<GremlinQuery.Step> plan) {
+        for (GremlinQuery.Step step : plan) {
+            if (STATEFUL_STEPS.contains(step.name())) {
+                return true;
+            }
+            if (step.name().equals("where") && step.args().size() == 2
+                    && step.args().get(0).matches("[A-Za-z_$][A-Za-z0-9_$]*")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private List<GremlinQuery.Step> expandLogic(String logic) {
@@ -1924,7 +2092,11 @@ public class GremlinGraphQuery {
                     // these hand the element's own properties on (properties() makes them traversers,
                     // format() writes them into a template), so the projection has to be everything
                     || name.equals("properties") || name.equals("key") || name.equals("value")
-                    || name.equals("format") || name.equals("profile") || name.equals("explain")) {
+                    || name.equals("format") || name.equals("profile") || name.equals("explain")
+                    // the labelled steps may read any property of the element a label holds
+                    // (select().by('name')), so their projection has to be all of them
+                    || name.equals("as") || name.equals("select") || name.equals("project")
+                    || name.equals("where")) {
                 // these read the element's properties (which ones depends on the argument, or on a child
                 // traversal), so the projection stays "all"
                 all = true;

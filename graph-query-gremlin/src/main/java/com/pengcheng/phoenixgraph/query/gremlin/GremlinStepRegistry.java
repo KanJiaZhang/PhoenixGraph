@@ -190,6 +190,22 @@ public class GremlinStepRegistry {
         });
         register("hasId", args -> GremlinSteps.hasId(requireArgs(args, "hasId")));
         register("hasLabel", args -> GremlinSteps.hasLabel(requireArgs(args, "hasLabel")));
+        // the labelled steps: they only run on the stateful path (GremlinGraphQuery.runTraverserCompiled),
+        // which the compiler chooses when one of them is in the chain. Registered so the compiler can
+        // resolve them, and an error if a list-path run ever reaches one.
+        GremlinStep stateful = (ctx, in) -> {
+            throw new QueryException("as()/select()/project() need the stateful path; this run did not"
+                    + " choose it (see TRAVERSER-DESIGN.md)");
+        };
+        register("as", args -> {
+            requireArgs(args, "as");
+            return stateful;
+        });
+        register("select", args -> stateful);
+        register("project", args -> {
+            requireArgs(args, "project");
+            return stateful;
+        });
         register("properties", args -> {
             requireNoArgs(args, "properties");
             return GremlinSteps.properties();
