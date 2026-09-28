@@ -1817,6 +1817,81 @@ final class GremlinSteps {
                 maxResults);
     }
 
+    /**
+     * One hop with the answer grouped per input, read in the same batched pass the list path uses: the
+     * stateful path needs to know which input a reached element came from (to carry its labels along), and
+     * it must not fall back to one storage read per traverser for that.
+     *
+     * <p>The batch is over every vertex the inputs stand on, exactly as {@link #hopEdges}/{@link #hopVertices}
+     * do it; the grouping comes from the per-vertex edge lists and, for a vertex hop, from slicing the one
+     * batched vertex read by each input's edge count.
+     */
+    static List<List<Object>> hopPerInput(GremlinContext ctx, List<Object> in, GremlinQuery.Step step) {
+        String name = step.name();
+        EdgeSide dir = switch (name) {
+            case "out", "outE" -> EdgeSide.OUT;
+            case "in", "inE" -> EdgeSide.IN;
+            default -> EdgeSide.BOTH;
+        };
+        boolean vertexHop = name.equals("out") || name.equals("in") || name.equals("both");
+        List<String> edgeNames = step.args().isEmpty() ? null : step.args();
+        List<GremlinVertex> standing = standOn(ctx, in, dir);
+        List<List<EdgeQueryResult>> perInput = new ArrayList<>(in.size());
+        if (edgeNames == null || edgeNames.size() == 1) {
+            perInput = readEdgesByVertex(ctx, standing, edgeNames == null ? null : edgeNames.get(0), dir,
+                    List.of(), List.of(), 0);
+        } else {
+            for (int i = 0; i < in.size(); i++) {
+                perInput.add(new ArrayList<>());
+            }
+            for (String edgeName : edgeNames) {
+                List<List<EdgeQueryResult>> part = readEdgesByVertex(ctx, standing, edgeName, dir, List.of(),
+                        List.of(), 0);
+                for (int i = 0; i < part.size() && i < perInput.size(); i++) {
+                    perInput.get(i).addAll(part.get(i));
+                }
+            }
+        }
+        List<List<Object>> out = new ArrayList<>(in.size());
+        if (!vertexHop) {
+            for (int i = 0; i < in.size(); i++) {
+                List<Object> mine = new ArrayList<>();
+                Object owner = i < standing.size() ? standing.get(i).id() : null;
+                for (EdgeQueryResult edge : perInput.get(i)) {
+                    mine.add(new GremlinEdge(edge.edgeName(), edge.edgeId(), edge.side(),
+                            edge.otherVertexId(), edge.properties(), edge.createdTime(),
+                            edge.lastUpdatedTime(), owner));
+                }
+                out.add(mine);
+            }
+            return out;
+        }
+        // a vertex hop wants only the far end: keep the edges that have one, read their vertices in one
+        // batch, and slice the answer back by each input's edge count
+        List<List<EdgeQueryResult>> reachable = new ArrayList<>(in.size());
+        List<EdgeQueryResult> flat = new ArrayList<>();
+        for (List<EdgeQueryResult> edges : perInput) {
+            List<EdgeQueryResult> kept = new ArrayList<>(edges.size());
+            for (EdgeQueryResult edge : edges) {
+                if (edge.otherVertexId() != null) {
+                    kept.add(edge);
+                    flat.add(edge);
+                }
+            }
+            reachable.add(kept);
+        }
+        List<GremlinVertex> far = readNeighbourVertices(ctx, flat);
+        int at = 0;
+        for (int i = 0; i < in.size(); i++) {
+            List<Object> mine = new ArrayList<>(reachable.get(i).size());
+            for (int j = 0; j < reachable.get(i).size() && at < far.size(); j++) {
+                mine.add(far.get(at++));
+            }
+            out.add(mine);
+        }
+        return out;
+    }
+
     private static List<Object> hopVertices(GremlinContext ctx, List<Object> in, String edgeName, EdgeSide dir) {
         return hopVertices(ctx, in, edgeName, dir, 0);
     }

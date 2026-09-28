@@ -141,6 +141,12 @@ class GremlinTraverserStepsTest {
                 ids("g.V('a','b','c','Account').as('x').values('status').as('s').where('s', neq('ACTIVE')).select('x')"));
         assertEquals(List.of("a", "c"),
                 ids("g.V('a','b','c','Account').as('x').values('status').as('s').where('s', within('ACTIVE')).select('x')"));
+        // Known gap (CONTEXT.md 94.2): a label named as the predicate ARGUMENT is written into the
+        // predicate text, but the comparison still answers nothing. Pinned as it behaves today so the gap
+        // is visible in the suite instead of being forgotten.
+        assertEquals(List.of(), ids("g.V('a','b','c','Account').as('x').values('status').as('s')"
+                        + ".where('s', eq('s')).select('x')"),
+                "known gap: where(label, eq(label)) matches nothing yet");
         QueryException unknown = assertThrows(QueryException.class,
                 () -> gremlin.execute("g.V('a','Account').values('status').where('nope', eq('ACTIVE'))"));
         assertTrue(unknown.getMessage().contains("no such label"), unknown.getMessage());

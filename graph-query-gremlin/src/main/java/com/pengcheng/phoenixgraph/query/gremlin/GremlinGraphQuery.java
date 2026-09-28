@@ -1413,11 +1413,18 @@ public class GremlinGraphQuery {
     private List<GremlinTraverser> traverserHop(GremlinContext context, CompiledQuery compiled, int index,
                                                 List<GremlinTraverser> traversers) {
         context.readProperties(compiled.properties[index]);
-        GremlinStep hop = compiled.steps.get(index);
-        List<GremlinTraverser> out = new ArrayList<>();
+        List<Object> values = new ArrayList<>(traversers.size());
         for (GremlinTraverser traverser : traversers) {
-            for (Object reached : hop.apply(context, List.of(traverser.value()))) {
-                out.add(traverser.withValue(reached));
+            values.add(traverser.value());
+        }
+        // one batched read for the whole hop (the same helper the list path uses), sliced back per input so
+        // each reached value keeps the labels of the traverser it came from
+        List<List<Object>> reached = GremlinSteps.hopPerInput(context, values, compiled.plan.get(index));
+        List<GremlinTraverser> out = new ArrayList<>();
+        for (int i = 0; i < traversers.size(); i++) {
+            GremlinTraverser traverser = traversers.get(i);
+            for (Object value : i < reached.size() ? reached.get(i) : List.of()) {
+                out.add(traverser.withValue(value));
             }
         }
         return out;

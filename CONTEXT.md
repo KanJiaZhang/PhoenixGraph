@@ -6740,3 +6740,15 @@ node .logs/probe-predicates.js           # 谓词对照（before/after 两份 co
 
 `graph-query-gremlin` **282 用例**（新增 `GremlinTraverserStepsTest` 7 个：标签记忆、跳步后 select、project+by、where 字面量/未知标签报错、**同一查询两条路径答案一致**的 4 组对照、状态路径未覆盖 step 的明确报错、`path()`+标签的明确报错）。
 **既有 275 个用例一个没改、全绿**——这是本批的验收条件（设计 §5）。
+### 94.4 第一批的收尾：批量跳步已做，一个"标签当谓词参数"的缺口被钉住
+
+* **批量跳步（设计里"跳步不许退化"的要求）已实现**：状态路径上的跳步不再逐个 traverser 跑——
+  `GremlinSteps.hopPerInput(ctx, in, step)` 用**同一个**批量读（`readEdgesByVertex` + 一次 `readNeighbourVertices`）读完整跳，
+  再按"每个输入的各条边"切回各自的结果，于是每条到达值都带着它来源 traverser 的 labels：
+  边跳直接带上 `sourceVertexId`（读到它的那个点），点跳把一次批量点读按各输入的边数切片。
+  `GremlinGraphQuery.traverserHop` 改用它。**存储调用回到"一跳一次（每类一次）"，与列表路径一致。**
+* **`where('a', eq('b'))`（标签当谓词参数）仍不生效**：测试钉住的是**今天的行为**——
+  `g.V('a','b','c','Account').as('x').values('status').as('s').where('s', eq('s')).select('x')` 返回 `[]`
+  （应当是 `[a, c]`）。实现是把绑定标签写进谓词文本（`eq('s')` → `eq('ACTIVE')`），比较却仍然不成立；
+  根因未定位。**这条用例故意断言"空"，并在消息里写明是 known gap**，这样缺口留在测试套件里而不是被忘掉。
+  修它时把这条断言改成 `[a, c]` 即可。
