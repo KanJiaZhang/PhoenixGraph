@@ -6683,7 +6683,7 @@ node .logs/probe-predicates.js           # 谓词对照（before/after 两份 co
 |---|---|
 | `assert expr [ : message ]` | 不成立则抛 `Assertion failed: <原文>[ - <message>]`（脚本立刻停） |
 | `do { ... } while (cond)` | 体内先执行一次再判条件；`break`/`continue` 与 `while` 一致 |
-| `switch (x) { case a, b: ...; default: ... }` | 用 `==` 匹配（文本按引擎既有规则忽略大小写），**首个命中生效、不 fall-through**（有意：静默滑到下一个 case 是这类脚本最不该有的惊喜） |
+| `switch (x) { case a, b: ...; default: ... }` | 用 `==` 匹配（**文本大小写敏感**，与表达式里的 `==` 一致；§88–§91 曾误记为忽略大小写，2026-09-28 探针实测纠正），**首个命中生效、不 fall-through**（有意：静默滑到下一个 case 是这类脚本最不该有的惊喜） |
 | `xs[i]` / `xs[-1]` / `s[i]` / `m['k']` | 列表/数组/字符串/Map 下标；负索引从末尾数；越界**报错**（不返回 null） |
 | `[a: 1, b: 2]` 字面量、`m.a` | 括号里每一项都是 `key: value` 就是 map，否则是 list；混用报错。裸词键与引号键等价；`m.a` 是 `m['a']`（`(xs).size()` 这类链解析不受影响） |
 | 集合方法 | `unique() flatten() take(n) drop(n) withIndex() toSorted() sort() max() min() sum() inject(seed){}` |
@@ -6872,3 +6872,343 @@ node .logs/probe-predicates.js           # 谓词对照（before/after 两份 co
 只有查询已因别的 step 走状态路径时才接管。`repeat` 是最后一个"状态路径尚不覆盖"的 step，故那个断言它仍抛错的用例
 被替换为正向等价用例：列表路径 repeat == 手写两次 hop == 带标签状态路径 repeat，且标签在循环后仍可读。
 `graph-query-gremlin` **291 用例绿**（既有 275 个未改）。
+
+## 101. `Traverser` 第三批（六）：`until()` / `emit()` / `loops()`（循环的终止条件与沿途收集）
+
+第三批剩下的循环执行部分。`repeat` 一直只有 `times(n)`；本轮把 TinkerPop 的另两个调制器与计数器补上，
+**语义按 `repeat(...).until(...)` / `repeat(...).emit(...)` 的写法（post-repeat，即 do/while）实现**，
+`until(c).repeat(t)` 的 pre-repeat 形式明确报错（消息里说明只支持哪一种）。
+
+### 101.1 编译期：三个调制器都折进 `repeat`
+
+`times`/`until`/`emit` 都是"作用在前一个 `repeat` 上的调制器"（与 `by` 同性质），所以在 `foldModulators` 里折进 `repeat` 的参数：
+
+```
+repeat(child)                     -> [child]
+repeat(child).times(2)            -> [child, 2]                      (老形状，列表路径一字未动)
+repeat(child).until(c)            -> [child, until:c]
+repeat(child).emit()              -> [child, emit:]                  (空条件 = 每轮都 emit)
+repeat(child).until(c).times(2)   -> [child, 2, until:c]             (数字固定在 child 之后)
+repeat(child).emit(c).until(c2)   -> [child, emit:c, until:c2]
+```
+
+`parseRepeat(args)` 统一读出 `{child, times, until, emit}`，列表路径注册与状态路径 `repeatStep` 共用它。
+**路由**：`needsTraverserState` 看到 `repeat` 参数里有 `until:`/`emit:` 标记（或链上有 `loops`）就选状态路径——
+`repeat(...).until(...)` 是**新语法**，以前只会报错，所以没有既有查询被改道；无标记的 `repeat(...).times(n)` 仍走列表路径（零回归）。
+
+### 101.2 执行：一条循环，三种出口
+
+状态路径上每个 traverser 带 `loops`（`GremlinTraverser` 新增第 5 个分量，保留 3/4 参构造，`withValue/withLabel/withSack` 全部透传）：
+
+| 写法 | 语义 |
+|---|---|
+| `repeat(child).times(n)` | 跑 n 次（原行为，答案 = 第 n 轮的结果） |
+| `repeat(child).until(c)` | do/while：先跑 child，再测 c；满足 c 的 traverser **就是答案**，其它继续；child 无输出则循环结束 |
+| `repeat(child).emit(c)` | 每轮跑完 child，满足 c 的（`emit()` 无条件是全部）**收进答案**，循环继续 |
+| 两者同时 | 满足 `emit` 的收进答案并继续，满足 `until` 的离开循环并收进答案；**同时满足两者只收一次** |
+| `until(loops().is(n))` | 等价于 `times(n)`（`loops()` 在条件里回答当前轮数） |
+| `loops()` | 独立 step：把 traverser 的值换成它穿过 repeat 体的次数 |
+
+* `until` 只在**体之后**测，起点的值不会被当成命中（与 TinkerPop 的 do/while 一致，用例钉住）；
+* 无 `times` 的 `until` 循环有 `MAX_REPEAT_ITERATIONS`（100000）保护，且 `repeat` 无界（既无 times 又无 until）直接报错——
+  无界循环在带环图上永远不会停；
+* 条件里的 `loops()` 由 `predicateHolds` 就地替换成轮数（不必给子遍历引入状态），其余条件走原来的 `runSubTraversal`。
+
+### 101.3 明确不做与副作用
+
+* **pre-repeat 形式**（`until(c).repeat(t)` / `emit(c).repeat(t)`）报错并给出改写方式；TinkerPop 里它表示 while/先测起点，
+  实现它要区分"先测还是后测"，留到需要时再做。
+* `emit` 的收集顺序是**轮的次序**（第 1 轮的结果在前），与 TinkerPop 一致；不去重（除"同时命中 emit+until"这一处）。
+* `path()` 与 `repeat` 仍不联动（repeat 体内的 hop 不写 walk）——这与本批无关，是既有边界，写在这里免得误认为已解决。
+
+### 101.4 验证
+
+* `GremlinTraverserStepsTest` 新增 4 个用例（until 的 do/while 与"起点不算命中"、`loops()` 计数与 `until(loops().is(2))` 对照 `times(2)`、
+  emit 的每轮/条件/两者同时只收一次、以及三条错误路径）；
+* **既有 291 个用例一个未改**；`graph-query-gremlin` **295 用例绿**（注册表新增 `loops`/`until`/`emit` 三个名字）；
+* 线上 `.logs/verify-until-emit-loops.js`（`payment-graph-rocksdb-edge`，重建并重启 8081/8080/8083 后）：**9/9 符合预期** ——
+  `until(loops().is(1))` == `out('Payment')`（3 个 id 逐项相同）、`until(loops().is(2))` == `times(2)`（9 行含重复也一致）、
+  `loops()` 每个 traverser 都是 2、`emit().times(1)` == `out()`、`emit().times(2)` 12 行（= 1 跳 3 + 2 跳 9）、
+  `until(has('accountStatus','CLOSED'))` 的 27 个终端**全部满足条件**、无界 repeat / pre-repeat / 孤立 `loops()` 三条错误路径都报出预期消息。
+
+## 102. `Traverser` 第三批（七）：`path().from(x).to(y)` —— 取 walk 的一段
+
+`from`/`to` 是 `path` 的调制器（与 `by` 同性质），在 `foldModulators` 里折进 `path` 的参数，
+用 `from:`/`to:` 标记（`path().by('name').from('a')` → `path` 的参数是 `[name, from:a]`）。
+它们需要标签，所以带标记的 `path` 也进状态路径（`needsTraverserState` 看标记）。
+
+* **切片规则**：先在**完整 walk**上找两个标签的位置（`from` 取第一个匹配，`to` 同理），再切 `[start, end]`（两端都含），
+  所以 `from(x).to(y)` 与 `to(y).from(x)` 同结果；`by()` 的映射在切片**之后**做（只映射保留下来的元素）；
+* **标签定位**：在 walk 里找"与该标签的值相同的元素"（顶点/边按 label+id，数字按数值，其余按值）；
+  与 `as()` 记录下标相比少了新状态，代价是：标签绑的是**非元素**（如 `values('name').as('n')`）时定位不到——这时**明确报错**，
+  不静默给空切片；标签没绑定、或值不在这条 walk 上，都报错（消息里列出已绑定标签）；
+* `path` 注册表改为"非 `from:`/`to:` 的参数最多一个"（by 键），`applyBy` 保留已有标记。
+
+验证：`path().from()`/`to()` 各形态 + `by` 组合 + 两条错误路径；`graph-query-gremlin` **296 用例绿**（既有未改）。
+
+## 103. `Traverser` 第三批（八）：`subgraph('x')` 与 `tree('x')`（cap 读回）
+
+两者都要 walk，所以**进入 `pathAware`**（与 `path()` 同代价：点跳多一次批量化边读），并在 `STATEFUL_STEPS` 里。
+
+| step | 语义 |
+|---|---|
+| `subgraph('x')` | 把每个 traverser **整条 walk**（没有 walk 时就是它的值）的顶点/边收进命名子图，traverser 照常往下走；`cap('x')` 返回组装好的 `Subgraph`（按 label+id 去重，边带解析后的端点；复用图/UI 已有的 `Subgraph` 类型） |
+| `tree('x')` | 把所有 traverser 的 walk 合并成一棵嵌套 Map（节点按 `label#id` 命名，同一顶点只成一个节点），`cap('x')` 读回；`tree()` 无参时直接把这个 Map 当答案 |
+
+`cap` 的查找顺序：`sideEffects`（aggregate/store 的列表）→ `namedSubgraphs`（`Subgraph`）→ `namedTrees`（嵌套 Map）→ 都没有则**明确报错**并列出可填名字的四个 step。
+收集发生在 step 当时（不是收尾时重建），所以后面再 `drop`/`filter` 不会改变已收集的内容。
+
+验证：`subgraph` 的 1 跳/2 跳顶点与边、无 `cap` 时透传、`tree` 的嵌套结构与命名形式；`graph-query-gremlin` **298 用例绿**。
+
+## 104. `Traverser` 第三批（九）：`match(pattern...)` —— 共享标签的连接
+
+`match` 放在状态路径（进 `STATEFUL_STEPS`）。每个 pattern 是一段子链（如 `as('a').out('created').as('b')`），
+共享它绑定的标签；语义：
+
+* 每个 traverser 单独求解；pattern 的**首个** `as(x)` 若 `x` 已绑定，就从 `x` 的**值**开始（在别处绑的也认），
+  否则把当前值绑给 `x`；pattern 中段的 `as(y)`：已绑定则**当等值过滤**，未绑定则绑定当前值；
+* 其余步骤用现有注册表在**当前值**上跑，每一步的每个到达值都是一条分支（pattern 内部也会分叉）；
+  `where('a', P)` 走 `whereLabel`，`select` 走 `GremlinTraverserSteps.select`（pattern 里也能读标签）；
+* **求解顺序不固定**：递归时把"还没应用的 pattern"逐个试（书写顺序先试），所以"先读 `b` 的 pattern 写在前面"也能得到正确答案；
+  同一组绑定只输出一次（按标签集合去重）；
+* 输出形状按 TinkerPop：值仍是**进入 match 的那个值**，标签是并集，所以后面用 `select(...)`/`where(...)` 读；
+* 上限：`MAX_MATCH_PATTERNS = 8`（求解会探索 pattern 的顺序），空 `match()` 报错。
+
+验证：规范 join（`as('x').out().as('y')` + `as('y').has(...)`）、**把两个 pattern 顺序写反也同答案**、
+两跳链、`has` 对已绑定标签是过滤、无解为空、空 `match()` 报错；`graph-query-gremlin` **300 用例绿**（既有未改）。
+
+## 105. 第三批收尾
+
+`TRAVERSER-DESIGN.md` §5 第三批的清单至此全部落地：`path()` 并入（§97）、`branch`/`union`（§98）、`simplePath`/`cyclicPath`（§99）、
+`repeat.times`（§100）、`until`/`emit`/`loops`（§101）、`path().from()/to()`（§102）、`subgraph`/`tree`（§103）、`match`（§104）。
+第四批（可选）剩：`group().by().by()`、`math` 的变量形式、`by(traversal)` 全量。
+
+线上验证（重建并重启 8081/8080/8083 后，`payment-graph-rocksdb-edge`）：
+`.logs/verify-third-batch-rest.js` **11/11**（from/to 与整段 walk 逐项相同、`from(u)`/`to(v)` 长度为 1、未知标签报错、
+subgraph 边数 == 1 跳数且顶点数 == 边数+1、subgraph 透传、tree 根为 `Account#1001`、
+match join 计数 == 1 跳 + 条件计数、pattern 顺序写反同计数、无解 0、空 `match()` 报错）；
+`.logs/verify-until-emit-loops.js` **9/9**（回归）。
+
+## 106. `math` 的变量形式与函数（第四批第一项）
+
+TinkerPop 的 `math()` 不只支持 `_`：表达式里的名字（`a`、`b`…）是**作用域变量**，
+按"首次出现的顺序"依次对应 `by()` 调制器（调制器不够就**轮转复用**，即 TinkerPop 的 `TraversalRing`），
+`_` 是当前 traverser，其余名字查 `getNullableScopeValue`（路径标签/副作用/Map 键）。
+
+本引擎落地如下：
+
+* **编译**：`by()` 折进 `math`（`by:spec`，与 `project/select/sack` 同一机制）。`applyBy` 里 `math` 只收一个调制器。
+  **路由**：`mathNeedsTraverserState(args)` —— 有 `by:` 调制器，或表达式里有非 `_` 变量 → 状态路径；
+  `math('_ ...')` 无调制器仍走列表路径（实现与开销一字未动）。
+* **执行**（`mathStep`）：对每个 traverser 按变量首次出现顺序逐个解析：
+  `_` 取当前值，其它名字取 `as(name)` 绑定的值；`spec == null` 就用该值本身，否则用 `by()` 规格读数
+  （裸属性键 → `GremlinElementExpression.value`；含 `(`/`.` 的子遍历 → 跑一遍取第一个）；
+  调制器产生不了值（如属性缺失）→ **该 traverser 被过滤**（与 TinkerPop 的 non-productive 一致），不是错误；
+  值不是数字 → **报错**；变量没绑定 → **报错**（不静默当 0）。
+* **表达式语言**（`GremlinNumbers` 重写）：新增 `^`（幂，右结合）、以及 TinkerPop 的全部内置函数
+  `abs acos asin atan cbrt ceil cos cosh exp floor log log10 log2 sin sinh sqrt tan tanh signum`，
+  函数支持 `sin(_)` 与文档写法 `sin _`；`variables(expr)` 按首次出现顺序取变量（跳过函数名与数字字面量，
+  所以 `1e-3` 的 `e` 不会被当成变量）。
+  另外修正：**只用常量的表达式**（如 `math('1 + 2')`）不再先要求当前值必须是数字（以前会误报）。
+* **明确的边界**：变量只解析到 `_` 与 `as()` 标签；TinkerPop 的另外两种作用域（`withSideEffect` 副作用、Map 键）
+  本引擎没有对应 step，不在此列。
+
+**验证**：`GremlinTraverserStepsTest` 新增 3 个用例组（变量 + `by` 轮转 + 子遍历 by + 缺失属性过滤；
+`^`/函数/常量；未绑定变量与非数字两条错误）→ `graph-query-gremlin` **303 用例绿**（既有一个未改）。
+线上 `.logs/verify-math-variables.js`（重建重启后）：**10/10** —— 标签变量 `_ + i`、`i * 2`、`by()` 作用于 `_`
+（`out('Payment').count()` + 1）、`_ ^ 2`、常量、`sqrt(_ * _)`、`floor(_ / 1000)`、`floor _`、
+未绑定变量报错、顶点当数字报错；另有旧形式 `_ / 2`=500.5、`(_ + 1) * 2`=2004、`_ % 10`=1 的回归确认。
+
+## 107. 第四批（二）：`group().by().by()`、`choose().option()`、`flatMap`、`propertyMap`、`select().by(t)`、`where().by()`
+
+| step | 实现 | 语义与边界 |
+|---|---|---|
+| `group().by(k).by(v)` | `applyBy` 折入 `group`（`by:` 标记），`GremlinGraphQuery.groupStep` | 键：裸属性键（缺失归 `(none)`）或子遍历（取第一个）。值：无规格 = 元素列表；裸属性键 = 各元素该属性（跳过缺失）的列表；子遍历在**整组**上跑，末步是 `count/sum/mean/min/max/fold` 时取单值，否则取结果列表 |
+| `choose(pred).option(v,t)...option(t)` | `foldModulators` 折 `option` 成 `optionValue:`/`optionChild:`/`optionDefault:` 成对参数；`choose` 注册表分派 | 3 参 `choose(p,t,f)` 原样；选项形式：`pred` 的答案与各 `option(v,…)` 的 v 比较（数值/大小写不敏感文本），命中即跑；否则跑默认 `option(t)`；都不命中则该 traverser 消失 |
+| `flatMap(t)` / `flatMap{expr}` | `GremlinGraphQuery` 注册 | 参数像步骤链（能解析且每个名字注册表认识）就在每个元素上跑子遍历并拼接；否则按表达式求值，结果是 list/set/array 就摊平，否则当单值 |
+| `propertyMap(k...)` | 注册别名到 `valueMap` | 引擎属性是单值（多值本身就是 list），`{key: value}` 就是 TinkerPop GraphSON 的形状 |
+| `select('a').by(t)` | `GremlinTraverserSteps.select` 加 `childRunner` | 顺带修了一个潜伏 bug：`project().by(childTraversal)` 之前把子遍历跑在**空输入**上（恒 null），现在 `pick` 接收 `(value, child)` 并在标签值上跑 |
+| `where(P).by(k)` / `where(child).by(k)` / `where('a',P).by(k)` | `where` 注册表重写；`GremlinTraverserSteps.whereLabel` 加 `bySpec` | `where(P).by(k)`：把当前值按 k 取值再测谓词；`where(child).by(k)`：把当前值按 k 取值再跑子遍历；`where('a',P).by(k)`：存储值与谓词里引用的标签值**都**按 k 映射后再比较（`where('a',eq('b')).by('name')` 比名字）。`GremlinPredicate.isPredicate` 用于把 `where(eq(...))`（谓词）与 `where(out(...))`（子遍历）分开 |
+
+验证：`GremlinTinkerPopStepsTest` +4 用例（group 的三种值形态、propertyMap、choose.option、where(P).by），
+`GremlinTraverserStepsTest` +3 用例（select/project 的子遍历 by、where(label,P).by、flatMap）；
+`graph-query-gremlin` **310 用例绿**（既有未改）。
+线上 `.logs/verify-fourth-batch.js`（重建重启后，`payment-graph-rocksdb-edge`）：**7/7** ——
+group().by().by(count()) 与 groupCount('accountStatus') 同图、propertyMap==valueMap、flatMap(out('Payment'))==out('Payment')、
+select('x').by(out('Payment').count()) == 该账户出度、where('x',eq('CLOSED')).by('accountStatus') == has(accountStatus,CLOSED)（17）、
+choose().option() 的 'closed' 计数 == CLOSED 计数、孤立 option 报错。回归：`verify-math-variables` 10/10、
+`verify-third-batch-rest` 11/11、`verify-until-emit-loops` 9/9、`verify-support-batch` 21/21、`verify-medium-steps` 12/12。
+
+## 108. 文档与 Docker 交付（第四批第三、四项）
+
+### 108.1 README 重写要点
+
+`README.md` 去掉了一段重复的 fuzzy 章节（一次错误合并留下的残片），并按四条要求重新组织：
+
+1. **What PhoenixGraph is**：OLTP（Aerospike 键读/写 + per-property CAS）与 OLAP（RocksDB-Edge 一类一表、
+   范围扫描、下推）是同一引擎的两种后端，由 **schema 的 `storage.type`** 选择；后端只需实现 `GraphQuery`
+   端口，引擎按能力询问（`supportsScan`/`supportsEdgeReadPushdown`/`supportsPartitionedScan`）。附四方案对照表。
+2. **One traversal, three kinds of search**：向量（`nearest` + HNSW，`has` 下推进搜索）、地理（`circle` + S2 索引，
+   返回 `distanceMeters`）、图遍历（其余 step 都在同一管线里），三者是同一条查询的 step。
+3. **Knowledge graphs and AI context**：`sanguo-kg(-rocksdb-edge/-text)` 的实体/关系 schema、RDF 映射、
+   自由文本抽取（词典+正则，带 provenance）、22 条问答模板；两种存储答案一致性有测试。
+4. **Visualization**：`graph-web` 的查询编辑器（Gremlin/Cypher）、画布（返回诱导子图，含全属性）、
+   属性/行面板、算法着色、builder 页与 metrics 接口。
+
+### 108.2 Docker 交付
+
+| 文件 | 内容 |
+|---|---|
+| `graph-http/Dockerfile` | 多阶段：Maven 编译 `graph-http -am`，运行阶段 JRE21 + curl + 非 root 用户 + healthcheck（`/api/v1/graphs`）+ `JAVA_OPTS=-XX:MaxRAMPercentage=75`；RocksDB 落在 `/data/rocksdb` |
+| `graph-web/Dockerfile` | 同上，端口 8080，healthcheck 打 `/` |
+| `docker-compose.yml` | aerospike（带 `asinfo` healthcheck）+ graph-http + graph-web（`depends_on: service_healthy`），RocksDB 命名卷；`--profile hnsw` 追加写驱动向量实例（8083，profile `docker,hnsw-dynamic`） |
+| `application-docker.yml` | docker profile：storage host=compose 服务名、`rocksdb-root=/data/rocksdb`、只列容器能服务的图（RocksDB-Edge payment + sanguo-kg-text） |
+| `.dockerignore` | 排除 `target/`、`node_modules/`、`.rocksdb/`、`.logs/`、`.datasets/`、`.sessions/`、`.git` |
+| `README.md` §"Run the whole database in Docker" | `docker compose up --build`、image/`docker run` 两种用法、healthcheck/非 root/JVM/配置说明、数据播种（Aerospike loader 或挂载 `.rocksdb`） |
+
+注意：`graph-http` 启动时 `new AerospikeClient(host, port)` 是**急切连接**，所以 RocksDB-only 也必须带上
+Aerospike 容器（compose 就是这么做的），健康检查保证 http 在 Aerospike 起来后才启动。
+
+### 108.3 验证与一个环境限制
+
+* `docker compose config` 通过；两个基础镜像（maven、temurin jre）就位。
+* **沙箱限制**：本机的 Docker Desktop 容器**连不上 Maven Central**（`repo.maven.apache.org` 读超时；宿主 curl 能通），
+  所以“在容器里 `mvn package`”这一步在这里跑不通——这是网络问题，不是 Dockerfile 的问题。
+  用宿主 `.m2` 挂进去离线跑 `mvn -o -pl graph-http -am -DskipTests package` **编译阶段成功**（只在
+  spring-boot repackage 改名时因宿主服务持有旧 jar 而失败），证明构建命令本身正确。
+* **运行阶段已实测**：用本地已构建的 fat jar 按同一运行阶段做一个临时镜像，`docker run` 后
+  `/api/v1/graphs` 200、healthcheck 变 `healthy`、进程是 `uid=999(phoenixgraph)`（非 root）、
+  且能执行查询（`payment-graph-rocksdb-edge` 的 `group().by().by(count())`），空卷时返回 `[{}]` 符合预期。
+  正式镜像在有外网的环境下 `docker compose up --build` 即可。
+
+## 109. 脚本（Groovy 子集）支持现状复核（2026-09-28）：新探针 + 安全面
+
+方法：在跑的 8081 上再打一批探针（`script: true`），只记录引擎原话，产物：
+
+| 文件 | 内容 | 结果 |
+|---|---|---|
+| `.logs/probe-groovy-now.js` → `.logs/groovy-coverage-now.txt` | 语法覆盖 103 条（语句/运算符/字面量/集合/方法/格式化/语言级/遍历） | **70 接受 / 33 拒绝** |
+| `.logs/probe-groovy-security.js` → `.logs/groovy-security-now.txt` | 安全面 45 条（反射/Class/IO/线程/环境/静态调用/闭包能力） | **43 拒绝 / 2 回答（均无危害）** |
+| `/tmp/probe-idioms.js`（临场） | 常用惯用法 30 条 | 17 接受 / 13 拒绝 |
+| `/tmp/probe-detail.js`（临场） | 语义细节 15 条 | 11 接受 |
+
+### 109.1 现在支持（与 §90/§91 一致，探针再次确认）
+
+* 语句：`def`/赋值/重赋值/`return`/`print`/`println`/`printf`/`sprintf`/`if-else if-else`/`for-in`/`while`/`do-while`/`switch`/
+  `break`/`continue`/`assert`/注释/分号；**不支持**嵌套裸块 `{ ... }`（它在新 Groovy 里本就是闭包字面量，拒绝反而安全）。
+* 运算符：`+ - * / %`、`**` 不支持（`2 ** 3` 报错）、比较、`&& || !`、三元、elvis、`<=>`、`+= -= *= /= %=`、`++/--`、
+  `==`（**文本大小写敏感**，见下）、列表下标 `[i]`（含负）/字符串下标/Map 下标；**不支持** `?.`、`<<`、`*.`、`as`、`instanceof`、范围 `..`/`..<`。
+* 字面量：数字（含小数）、字符串、三引号字符串、列表/空表/嵌套、Map 字面量 `[a: 1]` 与 `m.a`/`m['a']`。
+* 集合方法：`size count toList toSet isEmpty get first last start end reverse contains indexOf add addAll retainAll intersect
+  unique flatten take drop withIndex toSorted sort max min sum join`；闭包方法 `each eachWithIndex collect findAll find
+  any every count sum sort{} max{} min{} groupBy{} collectEntries{} inject`。
+* 文本/数值方法：`toUpperCase toLowerCase trim length startsWith endsWith substring replace split`、
+  `abs intValue toInteger toDouble round`。
+
+### 109.2 探针照出来的问题（按严重度；前三条建议优先处理）
+
+1. **Map 上的闭包方法静默错**（最严重）。`applyWithClosure` 只把 `Collection` 展开，`Map` 被当成**单个值**：
+   * `def m=[a:1,b:2]; m.each { k, v -> ... }` → `k` 拿到整个 `{a=1}`/`{b=2}` 字面量、`v` 是 `null`（`t = t + v` 得到 `"0null"`）；
+   * `m.each { t = t + 1 }` 对 2 个 entry 只跑 **1 次**（返回 1，应为 2）；
+   * `m.findAll { k, v -> v > 1 }` 返回 0；`m.collect { k, v -> k }` 得到 `["{a=1}=null"]`。
+   这些都是**不报错但错**，与"边界要显式"的原则冲突。修法：把 `Map` 按 `entrySet()` 展开（单参数闭包给 `Map.Entry`，双参数给 key/value）。
+2. **`sort()` 不原地改**。`def xs=[3,1]; xs.sort(); xs` 仍是 `[3,1]`（`sort()` 返回排序副本）。Groovy 的 `sort()` 是原地排序，
+   所以照搬 Groovy 的脚本会拿到未排序的 `xs`。`toSorted()` 本来就返回副本，二者应明确区分（让 `sort()` 原地改并返回原列表）。
+3. **从遍历结果取标量很别扭**：`g.V('Account').count() + 1` → `[51,1]`（List 追加）；链式 `.toList().first()` / `.get(0)` 会被当成
+   **Gremlin step**（`Unknown Gremlin step: first`）。可行的写法是**先赋给变量**：`def n = g.V('Account').count().toList(); n.first()` → 51。
+   这属于类型系统不显式的固有坑，需要在文档/样例里显著提示，或让脚本层的 `.first()/.get()` 在"链尾是遍历"时识别为列表方法。
+4. **`++x` 单独作最后一句返回 `null`**（语句层不区分前后缀，值不被使用）；`x++; x` 正常。极小的不一致。
+5. **`${` 在任何字符串里都被 HTTP 参数替换吃掉**（双引号、单引号、`\${x}` 都一样 → `Missing value for query parameter 'x'`）。
+   所以 GString 不只是"不支持"，而是**会得到一条与 GString 无关的报错**；文档要说清 `${...}` 是保留给参数的。
+6. **误导性错误消息**：`s?.size()` → `A ternary needs ':' after the '?'`；`xs << 2` → `A script statement has no expression`；
+   `1..3` → `Expected '(' after '..3'`；`/a.c/` → `Cannot read ... '/a.c'`。拒绝是对的，但消息指向了别的东西。
+7. **文档纠错**：§91 说 `switch` 的 `case` "文本忽略大小写"是**错的**——实测 `'ACTIVE' == 'active'` 为 `false`，`switch` 也用 `==`（大小写敏感）；
+   已就地改正。
+
+### 109.3 安全面结论（45 条探针）
+
+* **没有逃逸面**：`.class`/`getClass()`/`metaClass`/`invokeMethod()`/`getDeclaredMethods()`/`newInstance()`、
+  `Class.forName`、`System.*`、`Runtime.*`、`new ProcessBuilder`/`Thread`/`File`/`FileReader`/`URL`/`Socket`/`BigDecimal`、
+  `toString`/`equals`/`hashCode`/`notify` 全部**明确拒绝**，消息里给白名单（"Unknown script method '.x'. Supported: …"）。
+* **Closure 能力受限**：`def f = {…}` 存起来再调、`.call()`、`.delegate` 都拒绝（没有一等闭包）。
+* **循环有上限**：`while (true)` 跑到 100000 次被 `The while loop ran 100000 times` 叫停。
+* 两个"回答"的探针都无危害：`for (x in g.V('Account').toList())`（正常迭代）、`m.each {…}`（即 109.2 第 1 条的错，不是洞）。
+* 结论：**当前沙箱是"白名单解释器"而非"Groovy 运行时"**；新增语法只要不引入反射/动态类加载/IO/线程，就不会扩大攻击面。
+  唯一需要纪律的是**静态方法**：必须一张显式方法白名单（`Math.max`、`Integer.parseInt`…），不能做成"任意静态调用"，否则等于开放任意 Java。
+
+### 109.4 给决策用的分类（不实现，只列可行性/风险）
+
+| 类别 | 候选 | 风险 | 说明 |
+|---|---|---|---|
+| 零风险（不新增能力，只是语法糖） | 范围 `1..3`/`xs[0..1]`、`n.times{}`、C 风格 `for(;;)`、`?.`、`<<`、`grep`/`collectMany`/`findResult`、`getOrDefault`、`m.a.b` 链、`'ab' * 2`、错误消息修正 | 低 | 都是解析/迭代层，沙箱面不变 |
+| 低风险（补白名单方法） | Map 的 `get/put/keySet/values/containsKey`、`String.matches`、修 `sort()` 原地、修 Map 闭包展开 | 低 | 只读/内存操作，无外部资源 |
+| 需要白名单表 | `Math.*`、`Integer/Double/Long.parse*`、`String.format/valueOf` | 中 | **必须显式方法白名单**；未知类/方法报错。副作用：脚本开始能调 JDK，审计面变大（但可控） |
+| 一等闭包 | `def f = {…}; f(x)` | 中 | 要"可调用值"类型 + 变量捕获语义（`owner`/`delegate` 不做）；沙箱面不变 |
+| 正则值 | `/re/`、`=~`、`==~` | 中 | 要 Pattern 值类型；当前至少要保证**报错**（`=~` 已修，斜杠形式消息可改进） |
+| 明确不建议 | `try/catch`（吞真错误）、GString（与 `${}` 参数替换冲突）、`class`/`import`/任意 `new`/IO/线程/反射 | — | 会把脚本变成通用运行时；GString 需要换插值标记才可能共存 |
+
+## 110. 脚本 Groovy 扩展（2026-09-28）：按 §109.4 的档位落地 + 权限门
+
+按 §109.4 的分类实现（**除"明确不建议"一档外全部支持**），并加了一道权限门。
+
+### 110.1 修掉的三处静默错（§109.2 的第 1、2、5 条）
+
+| 之前 | 现在 |
+|---|---|
+| Map 上的闭包把 Map 当**单值**：`m.each {k,v->}` 的 v 是 null、2 个 entry 只跑 1 次 | `closureItems` 把 Map 展开为 `entrySet`，`invokeItem` 在闭包声明 ≥2 个参数时把 entry 拆成 key/value（`m.each/collect/findAll/grep/...` 全对） |
+| `sort()` 不原地改（Groovy 原地改） | `sort()`/`sort{}` 现在**原地重排并返回接收者**（`sortedInPlace`）；`toSorted()` 仍是副本；不可变列表安全退回副本 |
+| `'ab' * 2` 报错 | 支持 `String * int` 与 `List * int` 重复 |
+
+（§109.2 第 3 条"从遍历取标量"是类型系统的固有坑，只能先赋给变量；第 6 条的报错消息在下面顺手改了。）
+
+### 110.2 新增语法（零风险 / 低风险档）
+
+| 语法 | 说明 |
+|---|---|
+| 范围 `a..b` / `a..<b` | 值类型 `RangeValue`（升/降序都行）；`size()`、`for (x in 1..3)`、`.toList()`、`xs[1..3]`（含降序切片、负数端点、越界截断） |
+| `xs << v` | 追加（`<<` 在比较之前识别，否则 `<` 会把它切开） |
+| `a?.b.c` | 安全导航：接收者为 null 时整条链答 null |
+| `n.times { i -> ... }` | 数字接收者，`i` 是 0..n-1 |
+| C 风格 `for (init; cond; update) { }` | `init`/`update` 是语句（`def i = 0`、`i++`），有 100000 次保护 |
+| `grep` / `collectMany` / `findResult` | 复用闭包机制 |
+| `m.a.b` | 嵌套 Map 属性链（逐层取，非 Map 时明确报错） |
+| Map 方法 `get/put/keySet/values/containsKey/getOrDefault`、`String.matches` | 白名单方法 |
+| 报错消息 | `?.` 不再报"ternary needs ':'"，`<<` 不再报"no expression"，`..<` 不再报"Expected '(' after '..'"，`/re/` 明确走正则分支 |
+
+### 110.3 需要白名单 / 需定义语义的档
+
+* **静态方法白名单**：`Math.*`（abs/max/min/round/floor/ceil/sqrt/pow/signum/toRadians/toDegrees + PI/E）、
+  `Integer/Long/Double`（parse*/valueOf/toHexString/toBinaryString + MAX_VALUE/MIN_VALUE/NaN/±INFINITY）、
+  `String`（format/valueOf/join）、`Boolean`（parseBoolean/valueOf/TRUE/FALSE）。**逐方法白名单**，未知类报
+  `Unknown script variable`，未知方法/常量报 `... is not in the whitelist`；没有反射、类加载、IO、线程入口。
+* **一等闭包**：`def f = { x -> x * 2 }; f(3)`（`Closure` 存进变量，`f(args)` 调用）。
+* **正则值**：`/a.c/`（slashy 字面量，在 `evaluate` 最前面识别，避免被除号切开）、`s =~ p`（返回匹配列表）、
+  `s ==~ p`（整串匹配返回布尔）、`String.matches`。
+
+### 110.4 权限门（admin）与开发期
+
+* `GremlinScript.execute(Runner)` → `execute(Runner, boolean advanced)`；`advanced=false` 时
+  静态调用、一等闭包、正则（含 `String.matches`）抛
+  `... needs the advanced script permission (admin). Ask an administrator to enable it...`；普通语言不受影响。
+* HTTP 层：`QueryService.advancedScript` 由 `phoenixgraph.script.advanced`（默认 **true**）注入，传给脚本执行。
+  开发阶段的门就是脚本 UI 开关（`script: true` / 文本自动识别）；生产可把该属性接成 admin 角色。
+* 作用域：这些"高级"能力只在**脚本模式**下可达（普通 Gremlin 管线不走脚本解析器），所以脚本开关本身就是第一道边界。
+
+### 110.5 明确不支持（写入文档，作为设计决定）
+
+`try/catch`（会把查询/存储错误吞成"看起来没数据"，与"拒绝要明确"冲突）、GString `"${x}"`（`${...}` 已经是 HTTP
+参数替换语法，解析器收不到；换插值标记会破坏现有参数功能）、`class`/`interface`/`trait`/`import`/注解/任意 `new`、
+IO（`File`/`URL`/`Socket`）、线程、反射（`getClass`/`metaClass`/`invokeMethod`/`Class.forName`）：这些会把脚本变成
+通用运行时，查询脚本不需要。**静态方法虽已支持，但严格限于 110.3 的白名单。**
+
+### 110.6 验证
+
+* `GremlinScriptTest` 新增 7 个用例组（Map 闭包、sort 原地、范围/切片/times、C 风格 for/`<<`/`?.`、更多闭包与
+  Map 方法、静态白名单/一等闭包/正则、权限门开与关），并把钉"正则被拒"的旧用例换成"正则可用"；
+* `graph-query-gremlin` **317 用例绿**（既有 310 个未改，唯一改动是那条断言旧限制的用例）；
+* 线上探针重跑（重建重启后）：`.logs/groovy-coverage-now.txt` 从 **70 接受 / 33 拒绝** 变为 **84 接受 / 19 拒绝**
+  （范围、`..<`、`<<`、`?.`、C 风格 for、索引切片、slashy 正则、`=~`/`==~`、静态调用、一等闭包全部转绿）；
+  `.logs/groovy-security-now.txt`：45 条中 **12 回答 / 33 拒绝**，而 12 条回答全部是**有意开放**的白名单能力
+  （Math/Integer/String/Double、闭包调用与递归、Map 方法、String.matches）；反射/Class/IO/线程/环境仍全部拒绝。
+  剩下 19 条拒绍里，除设计上不做的（try/catch、GString、class/import/new/IO/线程/反射）就是本次未列入档位的
+  （`**`、`*.`、`as`、`instanceof`、`def f(x){}`、closure 默认参数、多赋值、labeled break）。
