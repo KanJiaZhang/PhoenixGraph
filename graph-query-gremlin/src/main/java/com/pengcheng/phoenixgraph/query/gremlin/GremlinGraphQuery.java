@@ -1370,6 +1370,10 @@ public class GremlinGraphQuery {
                 case "where" -> GremlinTraverserSteps.whereLabel(traversers, planned.args().get(0),
                         planned.args().get(1));
                 case "path" -> pathStep(traversers, planned.args());
+                case "branch" -> branchStep(context, planned.args(), traversers);
+                // union is an ordinary step on the list path; with labels it needs the traversers, so the
+                // stateful path handles it here and the list path keeps running exactly what it ran before
+                case "union" -> unionStep(context, planned.args(), traversers);
                 case "withSack" -> withSack(traversers, planned.args());
                 case "sack" -> sack(traversers, planned.args());
                 case "sideEffect" -> {
@@ -1391,6 +1395,42 @@ public class GremlinGraphQuery {
             answer.add(traverser.value());
         }
         return answer;
+    }
+
+    /**
+     * {@code branch(child...)}: every traverser goes to the <b>first</b> child that answers something; a
+     * traverser no child answers for is dropped. The child's answer becomes the traverser's value, so the
+     * labels bound before it are still readable afterwards.
+     */
+    private List<GremlinTraverser> branchStep(GremlinContext context, List<String> children,
+                                              List<GremlinTraverser> traversers) {
+        List<GremlinTraverser> out = new ArrayList<>();
+        for (GremlinTraverser traverser : traversers) {
+            for (String child : children) {
+                List<Object> answer = runSubTraversal(context, child, List.of(traverser.value()));
+                if (!answer.isEmpty()) {
+                    for (Object value : answer) {
+                        out.add(traverser.withValue(value));
+                    }
+                    break;
+                }
+            }
+        }
+        return out;
+    }
+
+    /** {@code union(child...)}: every child runs and their answers are concatenated, child by child. */
+    private List<GremlinTraverser> unionStep(GremlinContext context, List<String> children,
+                                             List<GremlinTraverser> traversers) {
+        List<GremlinTraverser> out = new ArrayList<>();
+        for (GremlinTraverser traverser : traversers) {
+            for (String child : children) {
+                for (Object value : runSubTraversal(context, child, List.of(traverser.value()))) {
+                    out.add(traverser.withValue(value));
+                }
+            }
+        }
+        return out;
     }
 
     /** {@code path()}: the traverser's walk becomes its value, and its labels survive into the next step. */
@@ -2127,7 +2167,8 @@ public class GremlinGraphQuery {
     }
 
     /** The steps that read or write a traverser's labels, and therefore need the stateful path. */
-    private static final Set<String> STATEFUL_STEPS = Set.of("as", "select", "project", "withSack", "sack", "sideEffect");
+    private static final Set<String> STATEFUL_STEPS = Set.of("as", "select", "project", "withSack", "sack",
+            "sideEffect", "branch");
 
     /** Whether the plan needs per-traverser state (a labelled step, or {@code where(label, P)}). */
     private static boolean needsTraverserState(List<GremlinQuery.Step> plan) {

@@ -204,6 +204,9 @@ public class GremlinStepRegistry {
         register("select", args -> stateful);
         // the side-effect steps: containers, the sack and cap need the stateful path too
         register("withSack", args -> stateful);
+        // branch routes each traverser, so it needs the traversers (union is an ordinary step, and the
+        // stateful path only takes it over when a label is in the query)
+        register("branch", args -> stateful);
         register("sack", args -> stateful);
         // aggregate/store/cap work on the context, so both paths can use them (and a child traversal
         // collects into the same container as its parent)

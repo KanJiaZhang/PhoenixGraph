@@ -6832,3 +6832,22 @@ node .logs/probe-predicates.js           # 谓词对照（before/after 两份 co
 
 **第三批仍未做**：`match` / `branch` / `emit` / `until` / `loops`（需"同一批 traverser 反复跑子链"+ `loops` 计数）、
 `subgraph` / `tree`、`path().from()/to()`、状态路径上的 `simplePath/cyclicPath`。
+
+## 98. `Traverser` 第三批（三）：能分派的子遍历 step —— `branch` / `union`
+
+第三批（三）里**不需要循环**的那部分先落地（`match` 与 `emit/until/loops` 需要"同一批 traverser 反复跑子链"，另做）。
+
+| step | 语义（状态路径） |
+|---|---|
+| `branch(子1, 子2, ...)` | 每个 traverser 交给**第一个有答案的子遍历**（都没有答案则该 traverser 消失）；子遍历的答案成为它的值，**之前的标签仍可读** |
+| `union(子1, 子2, ...)` | 每个 traverser 跑每个子遍历，答案拼接 |
+
+* `branch` 是新 step：注册为 stateful 占位（`GremlinStepRegistry`），并进入 `STATEFUL_STEPS`（没有既有查询用它，零回归面）。
+* `union` 在列表路径上是普通 step：**它没有被加进 `STATEFUL_STEPS`** —— 只有查询里已经因为别的 step 走状态路径时，才由状态路径接管它，
+  所以列表路径的 `union` 行为与开销**一字未动**（这是刻意的回归隔离）。
+* 顺序：实现是 **traverser 主序**（每个 traverser 依次跑各子遍历）；`union` 的顺序由用例**直接与列表路径对照**钉住（不手写顺序假设 —— 我第一版就是手写错了，被这条对照当场抓到）。
+
+**验证**：`graph-query-gremlin` **290 用例绿**（既有 275 个未改；`branch` 3 组断言 + `union` 两条"两条路径答案一致"对照）。
+
+**第三批仍未做**：`match(...)`（多模式 + 共享变量绑定）、`emit` / `until` / `loops`（循环执行 + per-traverser 计数）、
+`subgraph` / `tree`、`path().from()/to()`、状态路径上的 `simplePath/cyclicPath`。

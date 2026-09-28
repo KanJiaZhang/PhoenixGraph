@@ -260,6 +260,36 @@ class GremlinTraverserStepsTest {
         assertEquals(List.of("a", "b"), collectedIds(plain.get(0)));
     }
 
+    @Test
+    void branchSendsEachTraverserToTheFirstChildThatAnswers() {
+        // the first child answers for no vertex, so every traverser falls through to the second
+        assertEquals(List.of("a", "b"), ids("g.V('a','b','Account').as('v')"
+                + ".branch(has('name','nobody').values('id'), values('id'))"));
+        // the first child answers for 'a' only: its answer is the name, 'b' falls through to the id
+        List<Object> mixed = gremlin.execute("g.V('a','b','Account').as('v')"
+                + ".branch(hasId('a').values('name'), values('id'))");
+        assertEquals(2, mixed.size());
+        assertEquals(gremlin.execute("g.V('a','Account').values('name')"), List.of(mixed.get(0)));
+        assertEquals("b", String.valueOf(mixed.get(1)));
+        // and the label is still there after the branch
+        assertEquals(List.of("a"), ids("g.V('a','Account').as('v').branch(hasId('a').values('id'))"
+                + ".select('v')"));
+    }
+
+    @Test
+    void unionOnTheStatefulPathAgreesWithThePlainOne() {
+        String body = ".union(values('id'), values('name'))";
+        assertEquals(gremlin.execute("g.V('a','b','Account')" + body),
+                gremlin.execute("g.V('a','b','Account').as('v')" + body),
+                "the same union, whether or not a label was bound");
+        // both children ran, in whatever order the plain path puts them (asked, not assumed)
+        String twice = ".union(values('id').limit(1), values('id').limit(1))";
+        List<Object> plainTwice = gremlin.execute("g.V('a','b','Account')" + twice);
+        assertEquals(4, plainTwice.size(), "both children answered: " + plainTwice);
+        assertEquals(plainTwice, gremlin.execute("g.V('a','b','Account').as('v')" + twice),
+                "and the stateful path puts them in the same order");
+    }
+
     /** The ids in a collected container (a list of vertices). */
     private static List<String> collectedIds(Object container) {
         List<String> out = new ArrayList<>();
