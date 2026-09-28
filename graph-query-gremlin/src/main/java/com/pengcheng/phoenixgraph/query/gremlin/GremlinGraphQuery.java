@@ -423,7 +423,7 @@ public class GremlinGraphQuery {
             case "path" -> new GremlinQuery.Step("path", List.of(key));
             // project/select keep their keys and collect the by(...) specs after them, marked so the
             // step can tell a key from a modulator
-            case "project", "select" -> {
+            case "project", "select", "sack" -> {
                 List<String> args = new ArrayList<>(previous.args());
                 args.add("by:" + key);
                 yield new GremlinQuery.Step(previous.name(), List.copyOf(args));
@@ -1358,6 +1358,8 @@ public class GremlinGraphQuery {
         for (Object value : started) {
             traversers.add(GremlinTraverser.of(value));
         }
+        // the side effects of this run: aggregate()/store() collect into a name, cap() reads it back
+        Map<String, List<Object>> sideEffects = new LinkedHashMap<>();
         for (int i = 0; i < compiled.steps.size(); i++) {
             String name = compiled.stepNames.get(i);
             GremlinQuery.Step planned = compiled.plan.get(i);
@@ -1370,9 +1372,39 @@ public class GremlinGraphQuery {
                         child -> runSubTraversal(context, child, List.of()));
                 case "where" -> GremlinTraverserSteps.whereLabel(traversers, planned.args().get(0),
                         planned.args().get(1));
-                // a hop runs one traverser at a time for now: correct, and the storage read is one call
-                // per standing value. The native batched hop (one batch for the whole hop, as the list
-                // path does) is the next slice of TRAVERSER-DESIGN.md 5
+                case "withSack" -> withSack(traversers, planned.args());
+                case "sack" -> sack(traversers, planned.args());
+                case "aggregate", "store" -> {
+                    // both collect the traversers' values into a named container and let them pass; the
+                    // difference in TinkerPop is when the collection happens (a barrier vs as they come),
+                    // which a list-shaped step cannot show - the content is the same either way
+                    List<Object> container = sideEffects.computeIfAbsent(planned.args().get(0),
+                            key -> new ArrayList<>());
+                    for (GremlinTraverser traverser : traversers) {
+                        container.add(traverser.value());
+                    }
+                    yield traversers;
+                }
+                case "cap" -> {
+                    List<Object> container = sideEffects.get(planned.args().get(0));
+                    if (container == null) {
+                        throw new QueryException("cap('" + planned.args().get(0) + "') names a side effect"
+                                + " nothing filled: collect it first with aggregate('" + planned.args().get(0)
+                                + "') or store('" + planned.args().get(0) + "')");
+                    }
+                    // cap ends the traversal: one traverser carrying the container's content
+                    yield List.of(GremlinTraverser.of(List.copyOf(container)));
+                }
+                case "sideEffect" -> {
+                    // the child runs for its effect; its answer is not the traversal's, the traverser passes on
+                    String child = planned.args().get(0);
+                    for (GremlinTraverser traverser : traversers) {
+                        runSubTraversal(context, child, List.of(traverser.value()));
+                    }
+                    yield traversers;
+                }
+                // a hop runs with the batched read (GremlinSteps.hopPerInput), so a hop after a label keeps
+                // the labels and still costs one storage call per class
                 default -> isHop(name) ? traverserHop(context, compiled, i, traversers)
                         : adapt(context, compiled, i, traversers);
             };
@@ -1382,6 +1414,68 @@ public class GremlinGraphQuery {
             answer.add(traverser.value());
         }
         return answer;
+    }
+
+    /** {@code withSack(seed)}: every traverser gets its own accumulator, starting at the seed. */
+    private static List<GremlinTraverser> withSack(List<GremlinTraverser> traversers, List<String> args) {
+        if (args.size() != 1) {
+            throw new QueryException("withSack expects one seed value, got " + args.size() + " arguments");
+        }
+        Object seed = GremlinSteps.literalValue(args.get(0));
+        List<GremlinTraverser> out = new ArrayList<>(traversers.size());
+        for (GremlinTraverser traverser : traversers) {
+            out.add(traverser.withSack(seed));
+        }
+        return out;
+    }
+
+    /**
+     * {@code sack()}: with no argument the traverser's value becomes its sack; with a modulator
+     * ({@code assign}, {@code sum}, {@code min}, {@code max}) and a {@code by(...)} spec, the sack absorbs
+     * the value that spec reads off the traverser (a property key, or a child traversal).
+     */
+    private static List<GremlinTraverser> sack(List<GremlinTraverser> traversers, List<String> args) {
+        List<String> specs = bySpecsOf(args);
+        String modulator = null;
+        for (String arg : args) {
+            if (!arg.startsWith("by:")) {
+                modulator = arg.trim().toLowerCase(java.util.Locale.ROOT);
+            }
+        }
+        List<GremlinTraverser> out = new ArrayList<>(traversers.size());
+        for (GremlinTraverser traverser : traversers) {
+            if (modulator == null) {
+                out.add(traverser.withValue(traverser.sack()));
+                continue;
+            }
+            Object value = specs.isEmpty() ? traverser.value()
+                    : GremlinTraverserSteps.read(traverser.value(), specs.get(0));
+            out.add(traverser.withSack(combine(modulator, traverser.sack(), value)));
+        }
+        return out;
+    }
+
+    /** The sack arithmetic: assign/sum/min/max, the four TinkerPop's {@code sack()} offers. */
+    private static Object combine(String modulator, Object sack, Object value) {
+        return switch (modulator) {
+            case "assign" -> value;
+            case "sum" -> number(sack) + number(value);
+            case "min" -> Math.min(number(sack), number(value));
+            case "max" -> Math.max(number(sack), number(value));
+            default -> throw new QueryException("sack('" + modulator + "') is not a modulator: use assign,"
+                    + " sum, min or max");
+        };
+    }
+
+    private static double number(Object value) {
+        if (value instanceof Number number) {
+            return number.doubleValue();
+        }
+        try {
+            return Double.parseDouble(String.valueOf(value));
+        } catch (NumberFormatException e) {
+            throw new QueryException("sack arithmetic needs numbers, got: " + value);
+        }
     }
 
     /** The keys of a {@code select}/{@code project} step: its arguments up to the {@code by:} specs. */
@@ -2004,7 +2098,8 @@ public class GremlinGraphQuery {
     }
 
     /** The steps that read or write a traverser's labels, and therefore need the stateful path. */
-    private static final Set<String> STATEFUL_STEPS = Set.of("as", "select", "project");
+    private static final Set<String> STATEFUL_STEPS = Set.of("as", "select", "project", "withSack",
+            "sack", "aggregate", "store", "cap", "sideEffect");
 
     /** Whether the plan needs per-traverser state (a labelled step, or {@code where(label, P)}). */
     private static boolean needsTraverserState(List<GremlinQuery.Step> plan) {
@@ -2103,7 +2198,10 @@ public class GremlinGraphQuery {
                     // the labelled steps may read any property of the element a label holds
                     // (select().by('name')), so their projection has to be all of them
                     || name.equals("as") || name.equals("select") || name.equals("project")
-                    || name.equals("where")) {
+                    || name.equals("where")
+                    // the sack reads a property through by(), aggregate/cap hand values around
+                    || name.equals("withSack") || name.equals("sack") || name.equals("aggregate")
+                    || name.equals("store") || name.equals("cap") || name.equals("sideEffect")) {
                 // these read the element's properties (which ones depends on the argument, or on a child
                 // traversal), so the projection stays "all"
                 all = true;

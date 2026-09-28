@@ -202,6 +202,22 @@ public class GremlinStepRegistry {
             return stateful;
         });
         register("select", args -> stateful);
+        // the side-effect steps: containers, the sack and cap need the stateful path too
+        register("withSack", args -> stateful);
+        register("sack", args -> stateful);
+        register("aggregate", args -> {
+            requireArgs(args, "aggregate");
+            return stateful;
+        });
+        register("store", args -> {
+            requireArgs(args, "store");
+            return stateful;
+        });
+        register("cap", args -> {
+            requireArgs(args, "cap");
+            return stateful;
+        });
+        register("sideEffect", args -> stateful);
         register("project", args -> {
             requireArgs(args, "project");
             return stateful;

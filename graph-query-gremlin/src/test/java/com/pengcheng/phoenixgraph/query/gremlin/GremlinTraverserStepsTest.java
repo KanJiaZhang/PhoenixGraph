@@ -195,6 +195,70 @@ class GremlinTraverserStepsTest {
     }
 
     @Test
+    void theSackAccumulatesPerTraverser() {
+        assertEquals(List.of(100L, 100L), gremlin.execute("g.V('a','b','Account').withSack(100).sack()"),
+                "sack() makes the traverser's value its sack");
+        assertEquals(List.of(31.0), gremlin.execute("g.V('a','Account').withSack(1).sack(sum).by('age').sack()"),
+                "sack(sum).by('age') adds the property to the sack (age 30 + seed 1)");
+        assertEquals(List.of(30), gremlin.execute("g.V('a','Account').withSack(1).sack(assign).by('age').sack()"),
+                "assign replaces it");
+        assertEquals(List.of(1.0), gremlin.execute("g.V('a','Account').withSack(1).sack(min).by('age').sack()"));
+        assertEquals(List.of(30.0), gremlin.execute("g.V('a','Account').withSack(1).sack(max).by('age').sack()"));
+        assertEquals(List.of("a", "b"),
+                ids("g.V('a','b','Account').withSack(0).sack(sum).by('age').values('id')"),
+                "the sack does not disturb the traversal's values");
+        QueryException bad = assertThrows(QueryException.class, () -> gremlin.execute(
+                "g.V('a','Account').withSack(0).sack(divide).by('age').sack()"));
+        assertTrue(bad.getMessage().contains("not a modulator"), bad.getMessage());
+    }
+
+    @Test
+    void aggregateAndCapCollectAndReadBackASideEffect() {
+        List<Object> collected = gremlin.execute("g.V('a','b','Account').aggregate('x').cap('x')");
+        assertEquals(1, collected.size(), "cap ends the traversal with the collected container");
+        assertEquals(List.of("a", "b"), collectedIds(collected.get(0)));
+
+        List<Object> stored = gremlin.execute("g.V('a','b','Account').store('x').values('id').cap('x')");
+        assertEquals(List.of("a", "b"), collectedIds(stored.get(0)),
+                "store collects the same values while the traversal moves on");
+
+        QueryException empty = assertThrows(QueryException.class,
+                () -> gremlin.execute("g.V('a','Account').cap('nope')"));
+        assertTrue(empty.getMessage().contains("nothing filled"), empty.getMessage());
+    }
+
+    @Test
+    void sideEffectRunsAChildForItsEffectAndPassesTheTraverserOn() {
+        assertEquals(List.of("a", "b"),
+                ids("g.V('a','b','Account').sideEffect(values('id')).values('id')"),
+                "the child's answer is not the traversal's");
+        assertEquals(List.of("c"), ids("g.V('a','Account').as('v').out('knows').out('knows')"),
+                "and a hop still works next to it");
+    }
+
+    @Test
+    void theSideEffectStepsKeepTheExistingAnswer() {
+        // the regression net again: a query with an effect that changes nothing must answer what it answered
+        for (String[] pair : List.of(
+                new String[]{"g.V('a','b','Account').values('id')",
+                        "g.V('a','b','Account').sideEffect(count()).values('id')"},
+                new String[]{"g.V('a','b','Account').has('status','ACTIVE').values('name')",
+                        "g.V('a','b','Account').aggregate('x').has('status','ACTIVE').values('name')"})) {
+            assertEquals(gremlin.execute(pair[0]), gremlin.execute(pair[1]),
+                    "same answer from both paths: " + pair[1]);
+        }
+    }
+
+    /** The ids in a collected container (a list of vertices). */
+    private static List<String> collectedIds(Object container) {
+        List<String> out = new ArrayList<>();
+        for (Object item : (List<?>) container) {
+            out.add(item instanceof GremlinVertex vertex ? String.valueOf(vertex.id()) : String.valueOf(item));
+        }
+        return out;
+    }
+
+    @Test
     void pathAndLabelsTogetherAreTheNextBatch() {
         QueryException error = assertThrows(QueryException.class, () -> gremlin.execute(
                 "g.V('a','Account').as('x').out('knows').path()"));

@@ -676,6 +676,35 @@ final class GremlinSteps {
                 edge.properties(), edge.createdTime(), edge.lastUpdatedTime());
     }
 
+    /** A step argument as a literal value: quoted text, a number, true/false/null, else the text. */
+    static Object literalValue(String argument) {
+        String text = argument == null ? "" : argument.trim();
+        if (text.equals("true")) {
+            return Boolean.TRUE;
+        }
+        if (text.equals("false")) {
+            return Boolean.FALSE;
+        }
+        if (text.equals("null")) {
+            return null;
+        }
+        if (text.length() >= 2 && (text.charAt(0) == '\'' || text.charAt(0) == '"')
+                && text.charAt(text.length() - 1) == text.charAt(0)) {
+            return text.substring(1, text.length() - 1);
+        }
+        try {
+            return Long.parseLong(text);
+        } catch (NumberFormatException ignored) {
+            // not a whole number
+        }
+        try {
+            return Double.parseDouble(text);
+        } catch (NumberFormatException ignored) {
+            // not a number either: the text is the value
+        }
+        return text;
+    }
+
     /**
      * {@code properties()}: each of the element's properties becomes a traverser of its own, so the key
      * and the value can be asked for separately ({@code properties().key()}).

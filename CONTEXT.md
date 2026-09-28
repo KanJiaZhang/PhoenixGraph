@@ -6770,3 +6770,26 @@ node .logs/probe-predicates.js           # 谓词对照（before/after 两份 co
 * 跨标签 `where('n', eq('v'))`（名字 vs 顶点 id）**一个都不留**，证明参数确实解析成了另一个标签的值。
 
 `CONTEXT.md` 94.4 中"仍不生效"那段随之作废，以本节为准。`graph-query-gremlin` **283 用例绿**。
+
+## 95. `Traverser` 第二批：副作用（`sack` / `aggregate` / `store` / `sideEffect` / `cap`）
+
+按 `TRAVERSER-DESIGN.md` §5 的第二批实现；**既有用例仍未改动**（283 → **287**，新增 4 个批次二用例）。
+
+| 新增 | 语义 |
+|---|---|
+| `withSack(seed)` | 每个 traverser 一个累加器（`GremlinTraverser` 新增第 4 个分量 `sack`，并保留三参构造，其它代码不受影响）；种子支持引号文本/数字/true/false |
+| `sack()` | 把 traverser 的**值**换成它的 sack |
+| `sack(assign\|sum\|min\|max).by(属性键)` | sack 吸收 `by` 读到的值（`assign` 直接赋值，其余用数值算术；非数字/未知调制器**报错**） |
+| `aggregate(name)` / `store(name)` | 把每个 traverser 的值收进**本次运行**的命名容器，traverser 继续往下走 |
+| `cap(name)` | 用容器的内容结束遍历（一个 traverser）；名字没被填过 → **明确报错**并提示先用 `aggregate/store` |
+| `sideEffect(child)` | 对每个 traverser 跑一次子遍历（取其效果），traverser 原样通过 |
+
+**编译器**：这六个名字进入 `STATEFUL_STEPS`（有它们就走状态路径），并加入"需要全部属性"的投影规则（`sack(sum).by('age')` 要读属性）；
+`by()` 折叠扩展到 `sack`（与 `project/select` 同一机制，规格以 `by:<spec>` 标记）。
+
+**两条已知的语义差异（有意，写在代码注释里）**：
+1. `aggregate` 与 `store` 在 TinkerPop 里的区别是"何时收集"（barrier vs 边到边收），列表形状的 step 表现不出这个差异 —— 两者内容相同；
+2. `sideEffect(子遍历)` 里的**副作用本身**（子遍历内部的 `aggregate`）目前不会进入本次运行的容器：子遍历走普通子遍历路径，拿不到外层容器。要支持它需要把容器挂到 context 上（第三批和 `path()` 合并时一起做）。
+
+**验证**：`graph-query-gremlin` **287 用例绿**（`GremlinTraverserStepsTest` 现在 12 个，新批次的 4 个是：sack 累加与四种调制器 + 非调制器报错、
+`aggregate/cap` 与 `store/cap` 的收集与读回 + 未填充名字报错、`sideEffect` 透传、以及**"两条路径答案一致"**的两组对照）。

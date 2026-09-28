@@ -18,47 +18,58 @@ import java.util.Map;
  * @param labels the {@code as(...)} bindings, newest value per label
  * @param path   the walk so far, or {@code null} when nothing asked for it (a query pays for its walk
  *               only when it asks: {@code path()}, or {@code select} over a label bound before a hop)
+ * @param sack   the {@code withSack(...)} accumulator of this traverser
  */
-public record GremlinTraverser(Object value, Map<String, Object> labels, java.util.List<Object> path) {
+public record GremlinTraverser(Object value, Map<String, Object> labels, java.util.List<Object> path,
+                               Object sack) {
 
     public GremlinTraverser {
         labels = labels == null ? Map.of() : Map.copyOf(labels);
         path = path == null ? null : java.util.List.copyOf(path);
     }
 
-    /** A traverser standing on a value with no labels yet. */
-    public static GremlinTraverser of(Object value) {
-        return new GremlinTraverser(value, Map.of(), null);
+    /** A traverser without a sack (the shape every query had before {@code withSack}). */
+    public GremlinTraverser(Object value, Map<String, Object> labels, java.util.List<Object> path) {
+        this(value, labels, path, null);
     }
 
-    /** The same traverser standing on another value (a hop, a projection), labels and walk kept. */
+    /** A traverser standing on a value with no labels yet. */
+    public static GremlinTraverser of(Object value) {
+        return new GremlinTraverser(value, Map.of(), null, null);
+    }
+
+    /** The same traverser standing on another value (a hop, a projection), labels, walk and sack kept. */
     public GremlinTraverser withValue(Object next) {
-        return new GremlinTraverser(next, labels, path);
+        return new GremlinTraverser(next, labels, path, sack);
+    }
+
+    /** The same traverser with a new sack value ({@code sack(assign|sum|min|max)}). */
+    public GremlinTraverser withSack(Object next) {
+        return new GremlinTraverser(value, labels, path, next);
     }
 
     /** The same traverser with one more label bound. */
     public GremlinTraverser withLabel(String label, Object bound) {
         Map<String, Object> next = new LinkedHashMap<>(labels);
         next.put(label, bound);
-        return new GremlinTraverser(value, next, path);
+        return new GremlinTraverser(value, next, path, sack);
     }
 
     /** The same traverser with the walk extended (a hop appends the edge it took and the vertex it reached). */
     public GremlinTraverser withPathElement(Object element) {
         java.util.List<Object> next = new java.util.ArrayList<>(path == null ? java.util.List.of() : path);
         next.add(element);
-        return new GremlinTraverser(value, labels, next);
+        return new GremlinTraverser(value, labels, next, sack);
     }
 
     /** The same traverser with the walk extended by several elements. */
     public GremlinTraverser withPathElements(java.util.List<Object> elements) {
         java.util.List<Object> next = new java.util.ArrayList<>(path == null ? java.util.List.of() : path);
         next.addAll(elements);
-        return new GremlinTraverser(value, labels, next);
+        return new GremlinTraverser(value, labels, next, sack);
     }
 
     /** The labelled value, or {@code null} when the label was never bound. */
     public Object label(String name) {
         return labels.get(name);
-    }
-}
+    }}

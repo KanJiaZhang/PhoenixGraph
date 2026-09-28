@@ -163,6 +163,11 @@ final class GremlinTraverserSteps {
         return "'" + String.valueOf(value).replace("'", "\\'") + "'";
     }
 
+    /** The value a {@code by(...)} spec reads off a value (a property key), as {@code sack()} needs it. */
+    static Object read(Object value, String bySpec) {
+        return pick(value, bySpec, null);
+    }
+
     /**
      * What a {@code by()} modulator produces for one value: a property of the element, or the first
      * element a child traversal reaches (when a runner was handed in).
