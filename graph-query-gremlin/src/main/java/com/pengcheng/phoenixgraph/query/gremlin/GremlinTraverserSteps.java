@@ -132,7 +132,20 @@ final class GremlinTraverserSteps {
                 String word = predicateText.substring(start, i);
                 Object bound = names.contains(word.toLowerCase(java.util.Locale.ROOT)) ? null
                         : traverser.labels().get(word);
-                out.append(bound == null ? word : literalFor(bound));
+                if (bound == null) {
+                    out.append(word);
+                    continue;
+                }
+                // the word may already be inside quotes (`eq('s')`): replace the quoted token as a whole,
+                // otherwise the value would end up quoted twice (`eq(''ACTIVE'')`)
+                boolean quoted = start > 0 && i < predicateText.length()
+                        && (predicateText.charAt(start - 1) == '\'' || predicateText.charAt(start - 1) == '"')
+                        && predicateText.charAt(i) == predicateText.charAt(start - 1);
+                if (quoted) {
+                    out.setLength(out.length() - 1); // drop the opening quote that was just appended
+                    i++;
+                }
+                out.append(literalFor(bound));
             } else {
                 out.append(c);
                 i++;

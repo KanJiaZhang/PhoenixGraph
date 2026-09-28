@@ -328,6 +328,9 @@ KG_TRIPLE_LIMIT=5000 ... 同上
   与**过五关六将**。`tools/download-sanguo-dataset.sh` 现在**校验行数与结尾换行**。
   同时暴露并修掉 4 个真 bug（`无` 占位符、自环、同名人 `[势力]` 后缀被剥、单元格空格/`|` 混用）
   和 2 类抽取误报（密诏/企图等**意图**被当成事实、`X军师Y` 取错人）。详见 [SANGUO-KG.md](SANGUO-KG.md) §0。
+- **方案 ⑤：`TextP` 谓词 + `alias` 多值属性**：`GremlinPredicate` 实现了 `TextP.containing/startingWith/endingWith/notContaining/within/without`
+  （修掉了"未实现谓词静默返回空"的假阴性陷阱）；实体新增 `alias`（`List<String>`），由 `道号X`/`称…为X`/`姓+字` 三条规则
+  从传记抽取，`司马德操`/`水镜先生`/`卧龙`/`凤雏` 都能反查了。详见 [SANGUO-KG.md](SANGUO-KG.md) §7.9。
 - **方案 ④：关系的时间维度**（`year`/`chapter`/`seq`/`provenance` 四个边属性，三个图都加）：
   `year`/`chapter` 是**两个端点共现的区间**（文档只给人时间，不给关系时间），`seq` 是**叙述序**
   （`字段序*1000+句子序`）。实测：徐庶∩刘备 与 徐庶∩曹操 的回数区间**完全相同**（35-48），
@@ -6366,6 +6369,7 @@ node .logs/verify-dist.js                          # 线上 7 组 DIST/单机对
 * 每个 mapper 一个 `GremlinContext`（自己的边缓存/投影计划），所以 **mapper 内的迭代是有界的**：一个分片里的点/边仍然按批量读走
   （`readAllEdgesBatchCached` 等），"mapper 内多线程"目前体现为 **mapper 之间并行**；
   单 mapper 内部再切子任务（同一分片再分几段给子线程）是下一步可选项。
+
 ## 86. 分布式扫描 + 分布式算法：一个 `DIST` 管整条查询
 
 用法（用户给的形状）：
@@ -6421,6 +6425,7 @@ g.V(DIST).has('Account','accountStatus','FROZEN').bothE('Payment').cc()
 node .logs/verify-dist-cc.js                       # 线上等价类对比
 ./mvnw -o -pl graph-query-gremlin test             # 251 用例（含集群算法那条）
 ```
+
 ## 87. Step 支持现状复核（2026-09-25）：探针实测 + 能否支持 + 支持的副作用
 
 方法：从源码枚举注册的 step（`grep register("`），再拿 71 条探针打**在跑的 8081**（`.logs/probe-steps.js`），
@@ -6579,6 +6584,7 @@ unfold union valueMap values where
 3. **低风险的第二批**：列表索引（含负索引）、Map 字面量 + `m['a']`、字符串/数字方法白名单；
 4. 需要权衡的：静态方法白名单（沙箱面）、一等闭包；
 5. **明确不做**：`try/catch`（会吞错）、GString（与参数替换冲突）、类/导入/任意 `new`/IO/线程（通用运行时）。
+
 ## 89. 本轮新支持的 step（§87 建议的第 1、2 批）
 
 ### 89.1 P 谓词：全量求值 + 未知谓词报错（最重要的修复）
@@ -6670,6 +6676,7 @@ node .logs/verify-support-batch.js       # 21 项：谓词 / 新 step / 新语�
 node .logs/probe-predicates.js           # 谓词对照（before/after 两份 coverage 文本）
 ./mvnw -o -pl graph-query-gremlin test   # 268 用例（新增 GremlinPredicateTest 8 + 语法/step 用例）
 ```
+
 ## 91. 脚本语法第二梯队（§90.3 清单的其余部分）
 
 | 新增 | 说明 |
@@ -6692,6 +6699,7 @@ node .logs/probe-predicates.js           # 谓词对照（before/after 两份 co
 **仍未做**：一等闭包（`def f = {…}` 然后 `f(3)`）、静态方法白名单（`Math.max`/`Integer.parseInt`）、GString（与 HTTP 参数替换冲突）、`try/catch`（会吞真错误）、类/导入/任意 `new`/IO/线程；step 侧的 `as/select/project/...` 仍等 `Traverser` 模型。
 
 **验证**：`graph-query-gremlin` **273 用例**（新增 assert/do-while/switch/索引与 map/集合与文本方法 5 个用例组）；线上 `.logs/verify-script-tier2.js` **19/19**。
+
 ## 92. 复核清单第 2 项：`properties/key/value`、`math/format/dateAdd/dateDiff/dateTime`、`profile/explain`
 
 | 新增 | 说明 |
@@ -6715,6 +6723,7 @@ node .logs/probe-predicates.js           # 谓词对照（before/after 两份 co
 现有查询/step/批读/UI/脚本**零影响**）、`GremlinTraverser{value,path,labels,sack,bulk}` 与 `TraverserContext` 的数据结构、
 跳步仍批读、`path()` 模式如何合并、四批落地计划与每批的验收（现有 275 用例全绿 + "同一查询两条路径答案一致"对照）、
 以及风险对策（性能对照用 `profile()`、与 `DIST` 明确互斥）。**尚未开工**：等确认后按第 1 批（`as/select/project` + `where('a',eq('b'))`）开始。
+
 ## 94. `Traverser` 第一批（`as/select/project` + `where('a',P)`）：两条路径由编译器选
 
 按 `TRAVERSER-DESIGN.md` 的第 1 批实现，**目标是不影响现有功能**——现在 275 个既有用例全绿、一个都没改。
@@ -6740,6 +6749,7 @@ node .logs/probe-predicates.js           # 谓词对照（before/after 两份 co
 
 `graph-query-gremlin` **282 用例**（新增 `GremlinTraverserStepsTest` 7 个：标签记忆、跳步后 select、project+by、where 字面量/未知标签报错、**同一查询两条路径答案一致**的 4 组对照、状态路径未覆盖 step 的明确报错、`path()`+标签的明确报错）。
 **既有 275 个用例一个没改、全绿**——这是本批的验收条件（设计 §5）。
+
 ### 94.4 第一批的收尾：批量跳步已做，一个"标签当谓词参数"的缺口被钉住
 
 * **批量跳步（设计里"跳步不许退化"的要求）已实现**：状态路径上的跳步不再逐个 traverser 跑——
@@ -6747,8 +6757,16 @@ node .logs/probe-predicates.js           # 谓词对照（before/after 两份 co
   再按"每个输入的各条边"切回各自的结果，于是每条到达值都带着它来源 traverser 的 labels：
   边跳直接带上 `sourceVertexId`（读到它的那个点），点跳把一次批量点读按各输入的边数切片。
   `GremlinGraphQuery.traverserHop` 改用它。**存储调用回到"一跳一次（每类一次）"，与列表路径一致。**
-* **`where('a', eq('b'))`（标签当谓词参数）仍不生效**：测试钉住的是**今天的行为**——
-  `g.V('a','b','c','Account').as('x').values('status').as('s').where('s', eq('s')).select('x')` 返回 `[]`
-  （应当是 `[a, c]`）。实现是把绑定标签写进谓词文本（`eq('s')` → `eq('ACTIVE')`），比较却仍然不成立；
-  根因未定位。**这条用例故意断言"空"，并在消息里写明是 known gap**，这样缺口留在测试套件里而不是被忘掉。
-  修它时把这条断言改成 `[a, c]` 即可。
+
+### 94.5 缺口已修：`where('a', eq('b'))` 的标签参数
+
+**根因**：把绑定标签写进谓词文本时，值被**在原有引号里面又加了一层引号** —— `eq('s')` 变成 `eq(''ACTIVE'')`，
+于是谓词把 `''ACTIVE''` 当字面量比较，什么都不匹配（§94.4 里那条"钉住今天行为"的断言就是因为这个）。
+**修法**：识别"这个词本来就落在引号里"，连引号一起替换（`eq('s')` → `eq('ACTIVE')`），不重复加引号。
+
+**验证**（三条，都能自证，不是"看起来对"）：
+* `where('s', eq('s'))` **保留全部** traverser —— 若没做替换，它会拿状态去比文本 `'s'`，一个都不留；
+* `where('s', within('s'))` 对**每个 traverser** 用自己的标签值解析（`ACTIVE` / `FROZEN`），两个都留；
+* 跨标签 `where('n', eq('v'))`（名字 vs 顶点 id）**一个都不留**，证明参数确实解析成了另一个标签的值。
+
+`CONTEXT.md` 94.4 中"仍不生效"那段随之作废，以本节为准。`graph-query-gremlin` **283 用例绿**。

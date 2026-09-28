@@ -141,15 +141,31 @@ class GremlinTraverserStepsTest {
                 ids("g.V('a','b','c','Account').as('x').values('status').as('s').where('s', neq('ACTIVE')).select('x')"));
         assertEquals(List.of("a", "c"),
                 ids("g.V('a','b','c','Account').as('x').values('status').as('s').where('s', within('ACTIVE')).select('x')"));
-        // Known gap (CONTEXT.md 94.2): a label named as the predicate ARGUMENT is written into the
-        // predicate text, but the comparison still answers nothing. Pinned as it behaves today so the gap
-        // is visible in the suite instead of being forgotten.
-        assertEquals(List.of(), ids("g.V('a','b','c','Account').as('x').values('status').as('s')"
-                        + ".where('s', eq('s')).select('x')"),
-                "known gap: where(label, eq(label)) matches nothing yet");
+        assertEquals(List.of("a", "b", "c"),
+                ids("g.V('a','b','c','Account').as('x').values('status').as('s').where('s', eq('s'))"
+                        + ".select('x')"),
+                "a label named as the predicate argument is read as that label's value (comparing it with"
+                        + " itself keeps every traverser, while the literal 's' would keep none)");
+        assertEquals(List.of(),
+                ids("g.V('a','b','c','Account').as('v').values('name').as('n').where('n', eq('v'))"
+                        + ".select('v')"),
+                "and comparing two different labels compares their values (a name is not a vertex id)");
         QueryException unknown = assertThrows(QueryException.class,
                 () -> gremlin.execute("g.V('a','Account').values('status').where('nope', eq('ACTIVE'))"));
         assertTrue(unknown.getMessage().contains("no such label"), unknown.getMessage());
+    }
+
+    @Test
+    void theWhereHelperResolvesALabelArgument() {
+        GremlinTraverser active = GremlinTraverser.of("ACTIVE").withLabel("s", "ACTIVE");
+        GremlinTraverser frozen = GremlinTraverser.of("FROZEN").withLabel("s", "FROZEN");
+        assertTrue(GremlinPredicate.parse("eq('ACTIVE')").test("ACTIVE"), "the predicate itself works");
+        assertEquals(1, GremlinTraverserSteps.whereLabel(List.of(active, frozen), "s", "eq('ACTIVE')").size(), "a literal argument");
+        assertEquals(2, GremlinTraverserSteps.whereLabel(List.of(active, frozen), "s", "eq('s')").size(),
+                "eq('s') reads the label s and compares it with itself, which keeps everything (against the"
+                        + " text 's' it would match nothing)");
+        assertEquals(2, GremlinTraverserSteps.whereLabel(List.of(active, frozen), "s", "within('s')").size(),
+                "within('s') is resolved per traverser, so each one contains its own label value");
     }
 
     @Test
