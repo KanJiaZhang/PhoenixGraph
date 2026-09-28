@@ -45,6 +45,9 @@ function entityVertex(withShard) {
     { id: withShard ? 6 : 5, name: 'historicity', description: '史实人物 / 虚构人物', type: 'STRING' },
     { id: withShard ? 7 : 6, name: 'history', description: '历史简介', type: 'STRING' },
     { id: withShard ? 8 : 7, name: 'novel', description: '演义简介', type: 'STRING' },
+    // 别名：字以外的称呼——号（道号水镜先生）、他人所称（称诸葛亮为卧龙）、姓+字（司马德操）。
+    // 多值属性，查询靠 has('alias', TextP.containing('…'))。
+    { id: withShard ? 9 : 8, name: 'alias', description: '别名/号（多值）', type: { list: 'STRING' } },
   );
   return {
     id: 1,

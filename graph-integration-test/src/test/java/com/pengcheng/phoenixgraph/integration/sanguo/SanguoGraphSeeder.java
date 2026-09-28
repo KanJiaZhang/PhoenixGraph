@@ -59,6 +59,8 @@ final class SanguoGraphSeeder {
     private static final int PROPERTY_COURTESY_NAME = 5;
     private static final int PROPERTY_HISTORICITY = 6;
     private static final int PROPERTY_HISTORY = 7;
+    /** 顶点属性 id：别名/号（多值，见 generate-sanguo-schema.js）。 */
+    private static final int PROPERTY_ALIAS = 9;
     private static final int PROPERTY_NOVEL = 8;
 
     private static final int EDGE_PROPERTY_RELATION = 3;
@@ -167,6 +169,10 @@ final class SanguoGraphSeeder {
                 put(properties, PROPERTY_HISTORICITY, document.historicity(), timestamp);
                 put(properties, PROPERTY_HISTORY, truncate(document.history()), timestamp);
                 put(properties, PROPERTY_NOVEL, truncate(document.novel()), timestamp);
+            }
+            if (entity != null && !entity.aliases().isEmpty()) {
+                // a multi-valued property: has('alias', TextP.containing('水镜')) reads the list
+                properties.put(PROPERTY_ALIAS, new VertexPropertyValue(entity.aliases(), timestamp));
             }
             vertices.add(new VertexUpsert(vertexId, schema.vertexSchema(SanguoGraphIds.VERTEX_LABEL),
                     properties, timestamp, timestamp));

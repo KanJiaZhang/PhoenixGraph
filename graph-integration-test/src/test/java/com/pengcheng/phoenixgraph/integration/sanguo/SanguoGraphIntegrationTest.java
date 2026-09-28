@@ -110,7 +110,8 @@ class SanguoGraphIntegrationTest {
         assertEquals(1, schema.vertexSchemas().size());
         VertexSchema entity = schema.vertexSchema(SanguoGraphIds.VERTEX_LABEL);
         assertNotNull(entity, "missing the Entity vertex schema");
-        assertEquals(List.of("name", "shard", "entityType", "gender", "courtesyName", "historicity", "history", "novel"),
+        assertEquals(List.of("name", "shard", "entityType", "gender", "courtesyName", "historicity",
+                        "history", "novel", "alias"),
                 entity.properties().stream().map(p -> p.name()).toList());
         assertEquals(List.of("name"), entity.displayPropertyNames());
 

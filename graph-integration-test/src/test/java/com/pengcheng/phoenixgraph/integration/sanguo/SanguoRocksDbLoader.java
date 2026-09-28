@@ -150,6 +150,10 @@ public final class SanguoRocksDbLoader {
                 put(values, "history", truncate(document.history()), time);
                 put(values, "novel", truncate(document.novel()), time);
             }
+            if (!value.aliases().isEmpty()) {
+                // a multi-valued property: has('alias', TextP.containing('水镜')) reads the list
+                values.put("alias", new RocksDbPropertyValue(value.aliases(), time));
+            }
             upserts.add(new RocksDbVertexUpsert(name, entity, indexed(entity, values), time, time));
         }
         return upserts;

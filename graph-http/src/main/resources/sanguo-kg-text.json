@@ -18,7 +18,8 @@
         { "id": 4, "name": "courtesyName", "description": "字", "type": "STRING" },
         { "id": 5, "name": "historicity", "description": "史实人物 / 虚构人物", "type": "STRING" },
         { "id": 6, "name": "history", "description": "历史简介", "type": "STRING" },
-        { "id": 7, "name": "novel", "description": "演义简介", "type": "STRING" }
+        { "id": 7, "name": "novel", "description": "演义简介", "type": "STRING" },
+        { "id": 8, "name": "alias", "description": "别名/号（多值）", "type": {"list":"STRING"} }
       ]
     }
   ],

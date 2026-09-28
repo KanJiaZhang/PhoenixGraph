@@ -116,6 +116,47 @@ class SanguoTextGraphTest {
                             && r.tail().equals(general)),
                     "关羽 --killed--> " + general + " must be extracted from that biography");
         }
+        // 方案 ⑤: 别名/号 as a multi-valued alias property
+        System.out.println("\n 别名（" + extraction.aliases().size() + " 人有别名，共 "
+                + extraction.aliases().values().stream().mapToInt(List::size).sum() + " 条）");
+        extraction.aliases().entrySet().stream().limit(12)
+                .forEach(e -> System.out.println("   " + e.getKey() + " → " + String.join("、", e.getValue())));
+        // the question the graph could not answer before: 司马德操 and 水镜先生 are one person
+        assertTrue(extraction.aliasesOf("司马徽").contains("水镜先生"),
+                "道号水镜先生 belongs to 司马徽, got " + extraction.aliasesOf("司马徽"));
+        assertTrue(extraction.aliasesOf("司马徽").contains("司马德操"),
+                "姓+字: 司马德操 is 司马徽, got " + extraction.aliasesOf("司马徽"));
+        assertTrue(extraction.aliasesOf("诸葛亮").contains("卧龙"),
+                "称诸葛亮为卧龙, got " + extraction.aliasesOf("诸葛亮"));
+        assertTrue(extraction.aliasesOf("庞统").contains("凤雏"),
+                "称庞统为凤雏, got " + extraction.aliasesOf("庞统"));
+        assertEquals(extraction.aliasesOf("司马徽"),
+                built.dataset().entities().get("司马徽").aliases(),
+                "the alias must travel from the extractor to the entity");
+        // 方案 ⑤ 的质量回归（都是本次修掉的假别名/漏别名）
+        assertTrue(!extraction.aliasesOf("诸葛亮").contains("之垂泣三日"),
+                "「诸葛亮为之垂泣三日」的 之垂泣三日 不是别名, got " + extraction.aliasesOf("诸葛亮"));
+        assertTrue(extraction.aliasesOf("孙策").contains("小霸王"),
+                "人皆呼之为小霸王, got " + extraction.aliasesOf("孙策"));
+        assertTrue(extraction.aliasesOf("刘协").contains("汉献帝"),
+                "汉献帝 is 刘协, got " + extraction.aliasesOf("刘协"));
+        assertTrue(extraction.aliasesOf("吴").contains("东吴"),
+                "东吴 is 吴, got " + extraction.aliasesOf("吴"));
+        assertTrue(extraction.aliasesOf("蜀").contains("蜀汉"),
+                "蜀汉 is 蜀, got " + extraction.aliasesOf("蜀"));
+        assertTrue(extraction.aliasesOf("魏").contains("曹魏"),
+                "曹魏 is 魏, got " + extraction.aliasesOf("魏"));
+        // 方案 ⑤ 补齐的语义关系（本体里早就有，curated 零实例）
+        assertTrue(extraction.of("recommended").stream()
+                        .anyMatch(r -> r.head().equals("周瑜") && r.tail().equals("鲁肃")),
+                "为周瑜推荐 → 周瑜 recommended 鲁肃");
+        assertTrue(extraction.of("fellow").stream()
+                        .anyMatch(r -> r.head().equals("蒋干") && r.tail().equals("周瑜")),
+                "自幼与周瑜同窗 → 蒋干 fellow 周瑜");
+        assertTrue(extraction.of("son_in_law").stream()
+                        .anyMatch(r -> r.head().equals("周瑜") && r.tail().equals("桥公")),
+                "小桥嫁周瑜 → 周瑜 son_in_law 桥公");
+
         for (String allusion : extraction.allusionNames()) {
             assertTrue(!base.entities().containsKey(allusion),
                     allusion + " must not collide with a base entity");
@@ -238,6 +279,12 @@ class SanguoTextGraphTest {
                     {"方案 ④：徐庶关系的年份/回数区间",
                             "g.V('徐庶','Entity').outE().filter(relation.equals('mentions')).limit(4)"
                                     + ".values('year','chapter','seq')"},
+                    {"方案 ⑤：谁是水镜先生（alias 多值 + TextP.containing）",
+                            "g.V('Entity').has('alias', TextP.containing('水镜')).values('name')"},
+                    {"方案 ⑤：司马德操是谁（alias 精确匹配）",
+                            "g.V('Entity').has('alias', within('司马德操')).values('name')"},
+                    {"方案 ⑤：谁有号（前 6 人）",
+                            "g.V('Entity').has('alias').limit(6).values('name')"},
             };
             for (String[] question : questions) {
                 List<Object> rows = gremlin.execute(question[1]);

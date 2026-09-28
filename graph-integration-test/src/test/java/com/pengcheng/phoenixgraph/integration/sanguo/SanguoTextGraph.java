@@ -74,7 +74,7 @@ public final class SanguoTextGraph {
         // the narrative order (which sentence each relation was read at) travels with them, so a
         // relation can be ordered in time — see SANGUO-KG.md §7.8
         SanguoDataset dataset = SanguoDataset.of(base.documents(), base.curatedRelations(), supplements, ontology,
-                extraction.allusions(), extraction.narrativeOrder());
+                extraction.allusions(), extraction.narrativeOrder(), extraction.aliases());
         return new Built(dataset, extraction);
     }
 

@@ -129,7 +129,7 @@ public final class SanguoOntology {
             FAMILY_OF.put(p, "marriage");
         }
         for (String p : List.of("sworn", "elder_sworn_brother", "younger_sworn_brother", "younger_sworn_sister",
-                "hand_in_hand", "old_friend", "townee", "friend")) {
+                "hand_in_hand", "old_friend", "townee", "fellow", "friend")) {
             FAMILY_OF.put(p, "friendship");
         }
         for (String p : List.of("lord", "minister", "princess")) {

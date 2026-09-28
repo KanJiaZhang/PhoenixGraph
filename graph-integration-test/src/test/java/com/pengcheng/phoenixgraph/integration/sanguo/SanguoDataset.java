@@ -139,7 +139,21 @@ public final class SanguoDataset {
     }
 
     /** One entity with its type. */
-    public record Entity(String name, EntityType type) {
+    /**
+     * An entity of the split. {@code aliases} is the multi-valued {@code alias} property (方案 ⑤):
+     * the names a biography gives a person besides their name and courtesy name — a 号
+     * ({"道号水镜先生"}), what others call them ({"称诸葛亮为卧龙"}) or 姓+字 ({"司马德操"}).
+     */
+    public record Entity(String name, EntityType type, List<String> aliases) {
+
+        public Entity {
+            aliases = List.copyOf(aliases);
+        }
+
+        /** An entity with no alias — the common case, and every entity before 方案 ⑤. */
+        public Entity(String name, EntityType type) {
+            this(name, type, List.of());
+        }
     }
 
     /**
@@ -293,7 +307,7 @@ public final class SanguoDataset {
      */
     public static SanguoDataset of(List<Document> documents, List<Relation> curated, List<Relation> extra,
                                    SanguoOntology ontology, Map<String, EntityType> typedEntities) {
-        return of(documents, curated, extra, ontology, typedEntities, Map.of());
+        return of(documents, curated, extra, ontology, typedEntities, Map.of(), Map.of());
     }
 
     /**
@@ -304,6 +318,17 @@ public final class SanguoDataset {
     public static SanguoDataset of(List<Document> documents, List<Relation> curated, List<Relation> extra,
                                    SanguoOntology ontology, Map<String, EntityType> typedEntities,
                                    Map<String, Long> narrativeOrder) {
+        return of(documents, curated, extra, ontology, typedEntities, narrativeOrder, Map.of());
+    }
+
+    /**
+     * The full form, plus {@code aliases} — entity name to the other names its biography gives it
+     * (方案 ⑤). Applied once every entity exists, so a name the extractor found for a relation-only
+     * person lands on the same entity the relations point at.
+     */
+    public static SanguoDataset of(List<Document> documents, List<Relation> curated, List<Relation> extra,
+                                   SanguoOntology ontology, Map<String, EntityType> typedEntities,
+                                   Map<String, Long> narrativeOrder, Map<String, List<String>> aliases) {
         Map<String, String> gender = new LinkedHashMap<>();
         for (Document document : documents) {
             gender.put(document.name(), document.gender());
@@ -416,6 +441,16 @@ public final class SanguoDataset {
             }
             times.put(key(relation), new RelationTime(window(yearsOf, relation.head(), relation.tail()),
                     window(chaptersOf, relation.head(), relation.tail()), seq));
+        }
+        // the aliases (方案 ⑤): applied after every entity exists, so an alias found for a
+        // relation-only person lands on the same entity its relations point at
+        if (!aliases.isEmpty()) {
+            for (Map.Entry<String, List<String>> entry : aliases.entrySet()) {
+                Entity current = entities.get(entry.getKey());
+                if (current != null && !entry.getValue().isEmpty()) {
+                    entities.put(current.name(), new Entity(current.name(), current.type(), entry.getValue()));
+                }
+            }
         }
         return new SanguoDataset(documents, curated, extra, relations, closed, entities, ontology, times);
     }

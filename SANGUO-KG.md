@@ -731,7 +731,7 @@ Markdown 表由测试生成：`target/sanguo-rdf/CYPHER-TO-GREMLIN.md` 与 `MULT
 **实测查询**：
 
 ```gremlin
-// 关羽的传记提到了哪些事件（注意：必须用相等判断，引擎没实现 within(...)）
+// 关羽的传记提到了哪些事件（TextP/within 现已实现，见 §7.9）
 g.V('关羽','Entity').outE().filter(relation.equals('mentions')).otherV()
   .has('entityType','Event').values('name')
 // → 长阪之战 过五关斩六将 赤壁之战 败走麦城 温酒斩华雄 桃园结义 放水淹七军 刮骨疗伤
@@ -837,8 +837,7 @@ UI 例句（`EXAMPLES['sanguo-kg-text']`）里可以直接点：五虎上将、�
 
 ### 7.7 已知局限（写在报告里）
 
-> ⚠ **引擎陷阱**：Gremlin 引擎**没有实现 `within(...)`**，写成 `has('name',within('X'))` 会**静默返回空**
-> （不报错）。筛类型/名字请用**相等判断**：`has('entityType','Event')`。
+
 
 - `mentions` 只匹配**已知实体名**（词典）→ 零幻觉，但不会发现新实体。
 - `holds`/`fought`/`killed` 是**远程监督**：句子的主语未必是文档本人（例：李邵的传记里写“袁绍与公孙瓒战”，这条会被规则丢弃，
@@ -916,6 +915,32 @@ g.V('徐庶','Entity').outE().filter(relation.equals('mentions')).order().by('se
 - `year`/`chapter` 是**共现窗口**，不是关系的起止时间；两人交集相同是常态，不要用它排序。
 - `seq` 是 **叙述序**，不是绝对时间。要得到真正的关系年份，需要外部年表（或全文按回切分后再抽取）。
 - 文档里的 `年代列表`/`总年数` 以前被解析器丢掉，本方案已保留（`Document.years()`）。
+
+---
+
+## 7.9 方案 ⑤：别名（`alias` List<String>）与 `TextP`（已实现）
+
+**两项补完，互相配合：**
+
+1. **`TextP`/`within` 谓词**：`has(key, TextP.containing(…))` / `startingWith` / `endingWith` / `notContaining` / `within(…)` / `without(…)` 已实现
+   （`GremlinPredicate`，全局唯一入口 `GremlinSteps.matches` —— `has`/`hasValue`/`is`/HNSW 下推都经过它）。
+   修复了"未实现的谓词静默返回空"这个假阴性陷阱：`TextP.containing('')` 现在能匹配一切非空属性。
+2. **`alias` 多值属性**（`List<String>`，三个图都加）：别名/号，来自三个规则——
+   `道号X`（道号水镜先生）、`称<人>为X` 及其并列省略（称诸葛亮为卧龙、庞统为凤雏、司马德操为水镜）、
+   `姓+字`（司马德操 = 司马 + 德操，按首字符索引扫描，连"庞德公传记里提到司马德操"也能认）。
+
+实测（`sanguo-kg-text`）：
+
+```gremlin
+g.V('Entity').has('alias', within('司马德操')).values('name')   // → 司马徽
+g.V('Entity').has('alias', TextP.containing('水镜')).values('name') // → 司马徽、庞德公
+g.V('Entity').has('alias', within('卧龙')).values('name')          // → 诸葛亮
+g.V('Entity').has('novel', TextP.containing('水镜')).values('name')  // → 司马徽
+```
+
+- 别名共 **107 条 / 98 人**；`alias` 是 schema 里的 `{list: STRING}`，存储层 `RocksDbPropertyCodec` 原生支持。
+- 性能：`plausibleTitle` 的实体名包含检查从 O(人数) 改为**子串反向索引**（O(title²)），抽取 46s→13s；
+  `姓+字` 规则用**首字符索引**扫句，避免 O(句子×数千人)。
 
 ---
 

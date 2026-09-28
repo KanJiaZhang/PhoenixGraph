@@ -2,6 +2,8 @@ package com.pengcheng.phoenixgraph.integration.sanguo;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -62,7 +64,13 @@ public final class SanguoTextExtractor {
     public record Result(List<Extracted> relations, Map<String, Integer> countByRule,
                          Map<String, List<String>> samplesByRule,
                          Set<String> newPositions, Set<String> newPersons,
-                         Map<String, SanguoDataset.EntityType> allusions) {
+                         Map<String, SanguoDataset.EntityType> allusions,
+                         Map<String, List<String>> aliases) {
+
+        /** The names the biographies gave a person besides 名字/字 (方案 ⑤). */
+        public List<String> aliasesOf(String person) {
+            return aliases.getOrDefault(person, List.of());
+        }
 
         /** The relations of one rule. */
         public List<Extracted> of(String relation) {
@@ -106,14 +114,25 @@ public final class SanguoTextExtractor {
                     + "又|再|遂|乃|亦|竟|果|终|复|却|已|即|方|才|先|随|共|同|"
                     // the 13x bigger corpus makes the loose verbs bite: 「斩首万级」 must not create a
                     // person called 首万级, 「获三千级」/「贼大」/「而走」 are not names either
-                    + "首|级|获|贼|多|而|及|予|了|请|命|职|妻|他|们|地方|他们|各个)");
+                    + "首|级|获|贼|多|而|及|予|了|请|命|职|妻|他|们|地方|他们|各个|"
+                    // pronouns/particles: 「诸葛亮为之垂泣三日」的 「之垂泣三日」不是别名
+                    + "之|者|所|为|乃|乎|兮|耶|矣|焉|与|于)");
 
     /** A title candidate must not start with one of these (it would be a verb or a fragment). */
     private static final Pattern BAD_TITLE_HEAD =
-            Pattern.compile("^(之|为|修|拜|以|其|汉|加|授|表|除|领|任|迁|封|进|是)");
+            Pattern.compile("^(之|为|修|拜|以|其|加|授|表|除|领|任|迁|封|进|是)");
 
+    /**
+     * An appointment: {@code 封/拜/迁/领…} optionally followed by {@code 为} ({"被封为汉寿亭侯"}) and then
+     * a title ending in one of {@link #TITLE_SUFFIX}.
+     *
+     * <p>The optional {@code 为} is load-bearing: without it the lazy capture takes {"为中郎将"} from
+     * {"事后为朝廷封为中郎将"}, {@link #BAD_TITLE_HEAD} throws it away for starting with 为, and the matcher
+     * has already moved past the position — which is how 关羽's entire career stayed invisible.
+     * {@code 镇} is in the verb list for {"以关羽镇下邳太守"}.
+     */
     private static final Pattern TITLE = Pattern.compile(
-            "(?:为|拜|封|迁|领|任|加|授|表|除)([\\u4e00-\\u9fa5]{2,6}?(?:" + TITLE_SUFFIX + "))");
+            "(?:为|拜|封|迁|领|任|加|授|表|除|镇)(?:为|于)?([\\u4e00-\\u9fa5]{2,6}?(?:" + TITLE_SUFFIX + "))");
 
     private static final Pattern STRATEGIST_JOIN = Pattern.compile("投效(?:与|于)([\\u4e00-\\u9fa5]{2,4})");
     /** The words that may stand between a lord and {@code 谋士}/{@code 军师}. */
@@ -256,9 +275,154 @@ public final class SanguoTextExtractor {
         return found;
     }
 
+    /**
+     * 方案 ⑤ — the other names a biography gives besides 名字/字, all three patterns data-driven:
+     *
+     * <ul>
+     *   <li>{@code 道号X} — a religious style: 「道号水镜先生」 (司马徽)</li>
+     *   <li>{@code 称<已知人>为X} — what others call somebody: 「称诸葛亮为卧龙、庞统为凤雏」</li>
+     *   <li>{@code <姓><字>} — surname + courtesy name: 「司马德操」, 「关云长」</li>
+     * </ul>
+     *
+     * <p>The third pattern needs no wording at all: a person with a courtesy name is also written
+     * 姓+字, so the candidate is built from two facts the document already gives. That is what makes
+     * 「司马德操」 findable without a table of 字号.
+     */
+    private static final Pattern STYLE = Pattern.compile("道号([\\u4e00-\\u9fa5]{2,6})");
+    private static final Pattern CALLED = Pattern.compile("称([\\u4e00-\\u9fa5]{2,4})为([\\u4e00-\\u9fa5]{2,6})");
+    /**
+     * The second and later items of an elided list: 「称诸葛亮为卧龙、<b>庞统为凤雏</b>、司马德操为水镜」.
+     * The subject is a known person, or a 姓+字 that {@link #surnameWords} resolves.
+     */
+    private static final Pattern CALLED_NEXT =
+            Pattern.compile("([、，；])([\\u4e00-\\u9fa5]{2,4})为([\\u4e00-\\u9fa5]{2,3})");
+    /**
+     * 号/绰号: 「号为…」「人称卧龙先生」「人皆呼之为小霸王」「史称魏武帝」「号曰…」.
+     * The optional quote mark is stripped so 「呼之为「小霸王」」 still reads 小霸王.
+     */
+    private static final Pattern STYLED =
+            Pattern.compile("(?:号为|人称|史称|呼之为|号曰)[「『“\"]?([\\u4e00-\\u9fa5]{2,6})");
+    /**
+     * The factions the biographies call by another name: 东吴/孙吴 = 吴, 蜀汉/西蜀 = 蜀, 曹魏 = 魏.
+     * The upstream 籍贯 field even uses 「东吴」 as a place, which is how a spurious 东吴(Place) node
+     * was born — here every occurrence is added to the faction's alias instead.
+     */
+    private static final Map<String, String> FACTION_ALIASES = Map.of(
+            "东吴", "吴", "孙吴", "吴", "蜀汉", "蜀", "西蜀", "蜀", "曹魏", "魏");
+
+    /**
+     * 推荐: 「为周瑜推荐」「为鲁肃荐」 — X 推荐了传记主人。本体已有 {@code recommended}（招募家族），
+     * 但 curated 里零实例，所以鲁肃—周瑜只剩「提及」。
+     */
+    private static final Pattern RECOMMENDED_BY = Pattern.compile("为([\\u4e00-\\u9fa5]{2,4}?)(?:所)?(?:推荐|荐)");
+    /** 同窗: 「自幼与周瑜同窗」— 本体已有 {@code fellow}（朋友家族），同样零实例。 */
+    private static final Pattern CLASSMATE = Pattern.compile("与([\\u4e00-\\u9fa5]{2,4})(?:自幼)?(?:同窗|同学|同门)");
+    /** 女婿: 「次女小桥嫁周瑜」— 主人嫁女，婿是 {@code son_in_law}（头=女婿，尾=岳父，如 诸葛瞻→刘禅）。 */
+    private static final Pattern DAUGHTER_MARRIES = Pattern.compile("女([\\u4e00-\\u9fa5]{1,3})嫁([\\u4e00-\\u9fa5]{2,3})");
+
+    /** The names a sentence gives a person besides 名字/字, keyed by the person they belong to. */
+    private void collectAliases(String owner, String sentence, List<String> mentioned,
+                                Map<String, List<String>> aliases) {
+        for (Matcher m = STYLE.matcher(sentence); m.find(); ) {
+            addAlias(aliases, owner, m.group(1));
+        }
+        for (Matcher m = STYLED.matcher(sentence); m.find(); ) {
+            addAlias(aliases, owner, m.group(1));
+        }
+        for (Matcher m = CALLED.matcher(sentence); m.find(); ) {
+            String person = m.group(1);
+            if (types.containsKey(person) && isPerson(person)) {
+                addAlias(aliases, person, m.group(2));
+            }
+        }
+        for (Matcher m = CALLED_NEXT.matcher(sentence); m.find(); ) {
+            String subject = m.group(2);
+            String person = types.containsKey(subject) && isPerson(subject)
+                    ? subject : surnameWords.get(subject);
+            if (person != null) {
+                addAlias(aliases, person, m.group(3));
+            }
+        }
+        // 帝号直接缀在人名前: 「献帝刘协」「汉献帝刘协」→ 献帝/汉献帝 是刘协的 alias.
+        // 只收以「帝」结尾的：通用的「头衔+姓名」太宽（「依附刘表」的 依附 不是称号），
+        // 卧龙/凤雏/小霸王/水镜先生这些号已由 称X为Y / 号为X / 人称X 覆盖。
+        for (String name : mentioned) {
+            if (!isPerson(name) || name.length() < 2) {
+                continue;
+            }
+            for (int at = sentence.indexOf(name); at >= 0; at = sentence.indexOf(name, at + 1)) {
+                for (int length = 2; length <= 3 && length <= at; length++) {
+                    String title = sentence.substring(at - length, at);
+                    // 只收「献帝」「汉献帝」这种 X帝/汉X帝，不收「向吴帝」「位皇帝」这类动词碎片
+                    if (title.matches("汉?[\\u4e00-\\u9fa5]帝")) {
+                        addAlias(aliases, name, title);
+                    }
+                }
+            }
+        }
+        // 势力别名：句子提到「东吴」时，东吴进 吴 的 alias（而不是成为一个独立的 Place 实体）
+        for (Map.Entry<String, String> variant : FACTION_ALIASES.entrySet()) {
+            if (sentence.contains(variant.getKey())) {
+                List<String> found = aliases.computeIfAbsent(variant.getValue(), key -> new ArrayList<>());
+                if (!found.contains(variant.getKey())) {
+                    found.add(variant.getKey());
+                }
+            }
+        }
+        // 姓 + 字: scan the sentence's own characters against an index of 「姓+字」, so 「司马德操」
+        // written in 庞德公's biography (not 司马徽's own) is still recognised.
+        for (int i = 0; i < sentence.length(); i++) {
+            List<String> candidates = surnameWordsByFirstChar.get(sentence.charAt(i));
+            if (candidates == null) {
+                continue;
+            }
+            for (String candidate : candidates) {
+                if (sentence.startsWith(candidate, i)) {
+                    addAlias(aliases, surnameWords.get(candidate), candidate);
+                }
+            }
+        }
+    }
+
+    private void addAlias(Map<String, List<String>> aliases, String person, String alias) {
+        if (!plausibleAlias(alias, person)) {
+            return;
+        }
+        List<String> found = aliases.computeIfAbsent(person, key -> new ArrayList<>());
+        if (!found.contains(alias)) {
+            found.add(alias);
+        }
+    }
+
+    /**
+     * An alias is a plain name that is not already an entity of the graph: 「水镜先生」可以，
+     * 「刺史」这类已被当作官职的词不可以。
+     */
+    private boolean plausibleAlias(String alias, String person) {
+        // 注意：不检查 NOT_A_NAME 的职衔后缀 —— 「小霸王」以「王」结尾但它是号，不是官职；
+        // 真正的职衔/地名早已是实体，由 types.containsKey 挡住。
+        return alias.length() >= 2 && alias.length() <= 6
+                && alias.matches("[\\u4e00-\\u9fa5]+")            // 纯汉字：，「刘表」、 「、为」都是标点碎片
+                && !alias.equals(person)
+                && !alias.equals(courtesyNames.get(person))
+                && !BAD_NAME_HEAD.matcher(alias).find()
+                && !types.containsKey(alias);
+    }
+
     private final SanguoDataset base;
     private final List<String> gazetteer;
     private final Map<String, SanguoDataset.EntityType> types;
+    /** Name to courtesy name (字), for the 姓+字 alias pattern. */
+    private final Map<String, String> courtesyNames;
+    /** 姓+字 (司马德操) to person (司马徽), and the same candidates grouped by their first character. */
+    private final Map<String, String> surnameWords;
+    private final Map<Character, List<String>> surnameWordsByFirstChar;
+    /**
+     * Person and faction names (2..6 characters), for {@link #plausibleTitle}: a title that contains
+     * one has swallowed a name and is rejected. Indexed by <em>substring</em> instead of scanned, so
+     * checking a candidate is O(title length²) set lookups, not O(people).
+     */
+    private final Set<String> personAndFactionNames;
 
     /**
      * The narrative position of the sentence being scanned: {@code fieldOrder * 1000 + sentenceIndex}
@@ -275,6 +439,32 @@ public final class SanguoTextExtractor {
         Map<String, SanguoDataset.EntityType> map = new LinkedHashMap<>();
         base.entities().forEach((name, entity) -> map.put(name, entity.type()));
         this.types = map;
+        Set<String> fragments = new HashSet<>();
+        for (Map.Entry<String, SanguoDataset.EntityType> entry : map.entrySet()) {
+            if (entry.getKey().length() >= 2 && entry.getKey().length() <= 6 && isPerson(entry.getKey())) {
+                fragments.add(entry.getKey());
+            }
+        }
+        this.personAndFactionNames = fragments;
+        Map<String, String> names = new LinkedHashMap<>();
+        Map<String, String> words = new LinkedHashMap<>();
+        Map<Character, List<String>> wordsByChar = new HashMap<>();
+        for (SanguoDataset.Document document : base.documents()) {
+            if (document.courtesyName() != null && !document.courtesyName().isEmpty()) {
+                names.put(document.name(), document.courtesyName());
+            }
+            if (document.courtesyName() != null && !document.courtesyName().isEmpty()
+                    && document.name().length() > 1) {
+                // 姓 + 字: 司马徽 -> 司马 + 德操 = 司马德操。Indexed by first character so a sentence is
+                // scanned once instead of probing every person with a courtesy name.
+                String word = document.name().substring(0, document.name().length() - 1) + document.courtesyName();
+                words.put(word, document.name());
+                wordsByChar.computeIfAbsent(word.charAt(0), key -> new ArrayList<>()).add(word);
+            }
+        }
+        this.courtesyNames = names;
+        this.surnameWords = words;
+        this.surnameWordsByFirstChar = wordsByChar;
     }
 
     /** Runs every rule over the documents of {@code base}. */
@@ -289,6 +479,7 @@ public final class SanguoTextExtractor {
         Set<String> newPositions = new LinkedHashSet<>();
         Set<String> newPersons = new LinkedHashSet<>();
         Map<String, SanguoDataset.EntityType> allusions = new LinkedHashMap<>();
+        Map<String, List<String>> aliases = new LinkedHashMap<>();
         Set<String> seen = new LinkedHashSet<>();
 
         for (SanguoDataset.Document document : base.documents()) {
@@ -307,7 +498,7 @@ public final class SanguoTextExtractor {
                         continue;
                     }
                     scan(document.name(), column[0], text, relations, counts, samples, newPositions, newPersons,
-                            allusions, seen);
+                            allusions, aliases, seen);
                 }
             }
         }
@@ -315,15 +506,20 @@ public final class SanguoTextExtractor {
                 Set.copyOf(newPositions), Set.copyOf(newPersons),
                 // LinkedHashMap, not Map.copyOf: this map's order decides the order in which the
                 // allusion entities enter the ABox, and a salted order would break the frozen RDF
-                Collections.unmodifiableMap(new LinkedHashMap<>(allusions)));
+                Collections.unmodifiableMap(new LinkedHashMap<>(allusions)),
+                Collections.unmodifiableMap(new LinkedHashMap<>(aliases)));
     }
 
     private void scan(String owner, String field, String sentence, List<Extracted> relations,
                       Map<String, Integer> counts, Map<String, List<String>> samples,
                       Set<String> newPositions, Set<String> newPersons,
-                      Map<String, SanguoDataset.EntityType> allusions, Set<String> seen) {
+                      Map<String, SanguoDataset.EntityType> allusions, Map<String, List<String>> aliases,
+                      Set<String> seen) {
         String source = owner + ":" + field;
         List<String> mentioned = mention(sentence, owner);
+
+        // 0) aliases — 方案 ⑤: the other names this sentence gives a person
+        collectAliases(owner, sentence, mentioned, aliases);
 
         // 0) allusions — 方案 ③. The relation is `mentions` (the biography names the episode); the
         //    episode itself becomes an Event/Artifact/Idiom node instead of six invented generals
@@ -416,7 +612,7 @@ public final class SanguoTextExtractor {
 
         // 4) holds — office titles, minus the ones that belong to somebody else in the sentence
         for (Matcher m = TITLE.matcher(sentence); m.find(); ) {
-            String title = m.group(1);
+            String title = m.group(1).replaceFirst("^(?:为|于)", "");
             if (BAD_TITLE_HEAD.matcher(title).find() || !plausibleTitle(title)) {
                 continue;
             }
@@ -433,6 +629,29 @@ public final class SanguoTextExtractor {
         }
 
         // 5) fought — the owner is the assumed agent, so reported speech is not trustworthy here
+        // 4.5) 推荐 / 同窗 / 女婿 — phrases the ontology already declares but the curated file never
+        //      instantiates: 鲁肃—周瑜 is 推荐 not 提及, 周瑜—蒋干 is 同窗 not 提及, 周瑜/孙策—桥公 is 女婿.
+        for (Matcher m = RECOMMENDED_BY.matcher(sentence); m.find(); ) {
+            String recommender = m.group(1);
+            if (types.containsKey(recommender) && isPerson(recommender)) {
+                add("recommended", recommender, owner, source, sentence, relations, counts, samples, seen, false,
+                        newPositions, newPersons);
+            }
+        }
+        for (Matcher m = CLASSMATE.matcher(sentence); m.find(); ) {
+            String mate = m.group(1);
+            if (types.containsKey(mate) && isPerson(mate)) {
+                add("fellow", owner, mate, source, sentence, relations, counts, samples, seen, false,
+                        newPositions, newPersons);
+            }
+        }
+        for (Matcher m = DAUGHTER_MARRIES.matcher(sentence); m.find(); ) {
+            String groom = m.group(2);
+            if (types.containsKey(groom) && isPerson(groom)) {
+                add("son_in_law", groom, owner, source, sentence, relations, counts, samples, seen, false,
+                        newPositions, newPersons);
+            }
+        }
         if (!QUOTED.matcher(sentence).find()) {
             for (Matcher m = FOUGHT_WITH.matcher(sentence); m.find(); ) {
                 String other = m.group(1);
@@ -564,6 +783,28 @@ public final class SanguoTextExtractor {
         return null;
     }
 
+    /**
+     * The known person name starting exactly at {@code start}, or {@code null} — an office in front of
+     * a person name belongs to that person ({"为河内太守王匡从事"}).
+     *
+     * <p><b>Not wired into the 官职 rule yet.</b> Switching the rule from the backward
+     * {@link #knownPersonAt} to this forward check is the right fix, but it also removes the
+     * "the owner must be named earlier in the sentence" guard, and the resulting candidate explosion
+     * multiplied by {@code plausibleTitle}'s linear scan over every entity name made the text test take
+     * >40 minutes instead of 46 seconds. Re-apply it together with an indexed containment check.
+     */
+    private String knownPersonFrom(String sentence, int start) {
+        for (int length = 4; length >= 2; length--) {
+            if (start + length <= sentence.length()) {
+                String candidate = sentence.substring(start, start + length);
+                if (types.containsKey(candidate) && isPerson(candidate)) {
+                    return candidate;
+                }
+            }
+        }
+        return null;
+    }
+
     /** A known person name contained in {@code text}, else the normalised {@code text} itself. */
     private String personInside(String text) {
         for (String name : gazetteer) {
@@ -607,9 +848,18 @@ public final class SanguoTextExtractor {
         if (title.length() < 2 || title.length() > 7 || BAD_TITLE_PART.matcher(title).find()) {
             return false;
         }
-        for (String name : types.keySet()) {
-            if (name.length() > 1 && title.contains(name)) {
-                return false;
+        // Fast path: an office the graph already knows is a title by definition.
+        if (types.get(title) == SanguoDataset.EntityType.POSITION) {
+            return true;
+        }
+        // A title may contain another title or a place name; it may not contain a person's name,
+        // which would mean the capture ran over a clause: 「荆州牧刘表从事」. Look the fragments up
+        // instead of walking every entity, or the 官职 rule turns quadratic on the 4,487 biographies.
+        for (int length = 2; length <= Math.min(6, title.length()); length++) {
+            for (int i = 0; i + length <= title.length(); i++) {
+                if (personAndFactionNames.contains(title.substring(i, i + length))) {
+                    return false;
+                }
             }
         }
         return true;
