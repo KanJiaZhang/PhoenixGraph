@@ -99,6 +99,28 @@ public final class GremlinScript {
     private record Continue() implements Stmt {
     }
 
+    /** {@code assert expr} (with an optional {@code : message}): a failed assertion stops the script. */
+    private record Assert(String expression, String message, String text) implements Stmt {
+    }
+
+    /** {@code do { ... } while (cond)}: the body runs once before the condition is looked at. */
+    private record DoWhile(String condition, List<Stmt> body, String text) implements Stmt {
+    }
+
+    /**
+     * {@code switch (subject) { case a: ...; default: ... }}. A case matches by {@code ==} (so text
+     * compares like everywhere else in a script), the first match wins, and there is no fall-through -
+     * a script is written to be read, and a case that silently continued into the next one is the kind of
+     * surprise the rest of this grammar refuses.
+     */
+    private record Switch(String subject, List<SwitchCase> cases, List<Stmt> defaultBody, String text)
+            implements Stmt {
+    }
+
+    /** One {@code case a, b: ...} of a {@link Switch}. */
+    private record SwitchCase(List<String> values, List<Stmt> body) {
+    }
+
     /** A closure: its parameter names ({@code it} when there are none) and its body. */
     private record Closure(List<String> params, List<Stmt> body) {
     }
@@ -134,6 +156,9 @@ public final class GremlinScript {
     private static final Pattern PRINT = Pattern.compile("^(print|println)\\s*\\((.*)\\)\\s*$", Pattern.DOTALL);
     private static final Pattern RETURN = Pattern.compile("^return\\s+(.*)$", Pattern.DOTALL);
     private static final Pattern NAME = Pattern.compile("^[A-Za-z_$][A-Za-z0-9_$]*$");
+    /** The two built-in functions a query script uses to format text. */
+    private static final Pattern BUILTIN_CALL = Pattern.compile("^(sprintf|printf)\\s*\\((.*)\\)\\s*$",
+            Pattern.DOTALL);
     private static final Pattern SIMPLE_TOKEN = Pattern.compile("^[A-Za-z0-9_.\\-]+$");
 
     /** A {@code while} that never stops is a typo; the loop is stopped rather than hanging the query. */
@@ -260,6 +285,42 @@ public final class GremlinScript {
                         break;
                     }
                 }
+            } else if (statement instanceof DoWhile loop) {
+                int guard = 0;
+                do {
+                    if (++guard > MAX_LOOP_ITERATIONS) {
+                        throw new QueryException("The do/while loop ran " + MAX_LOOP_ITERATIONS
+                                + " times; check its condition");
+                    }
+                    try {
+                        execute(loop.body(), state, runner);
+                    } catch (ContinueSignal ignored) {
+                        // on to the condition
+                    } catch (BreakSignal ignored) {
+                        break;
+                    }
+                } while (truth(loop.condition(), state, runner));
+            } else if (statement instanceof Switch branch) {
+                Object subject = evaluate(branch.subject(), state, runner);
+                List<Stmt> chosen = null;
+                for (SwitchCase candidate : branch.cases()) {
+                    for (String value : candidate.values()) {
+                        if (truthy(compareWith(subject, "==", evaluate(value, state, runner)))) {
+                            chosen = candidate.body();
+                            break;
+                        }
+                    }
+                    if (chosen != null) {
+                        break;
+                    }
+                }
+                execute(chosen != null ? chosen : branch.defaultBody(), state, runner);
+            } else if (statement instanceof Assert check) {
+                if (!truthy(evaluate(check.expression(), state, runner))) {
+                    String message = check.message() == null ? check.text()
+                            : check.text() + " - " + text(evaluate(check.message(), state, runner));
+                    throw new QueryException("Assertion failed: " + message);
+                }
             } else if (statement instanceof Break) {
                 throw new BreakSignal();
             } else if (statement instanceof Continue) {
@@ -317,6 +378,18 @@ public final class GremlinScript {
         }
         if (trimmed.startsWith("while") && nextIsBoundary(trimmed, 5)) {
             return parseWhile(trimmed);
+        }
+        if (trimmed.startsWith("do") && nextIsBoundary(trimmed, 2)) {
+            return parseDoWhile(trimmed);
+        }
+        if (trimmed.startsWith("switch") && nextIsBoundary(trimmed, 6)) {
+            return parseSwitch(trimmed);
+        }
+        if (trimmed.startsWith("assert") && nextIsBoundary(trimmed, 6)) {
+            String rest = trimmed.substring(6).trim();
+            int colon = topLevelColon(rest);
+            return colon < 0 ? new Assert(rest, null, trimmed)
+                    : new Assert(rest.substring(0, colon).trim(), rest.substring(colon + 1).trim(), trimmed);
         }
         if (trimmed.equals("break")) {
             return new Break();
@@ -416,6 +489,151 @@ public final class GremlinScript {
             throw new QueryException("Unexpected '" + rest + "' after the for block in: " + text);
         }
         return new For(in.group(1), in.group(2).trim(), parseBlock(text.substring(brace + 1, end)), text);
+    }
+
+    /** {@code do { ... } while (cond)}. */
+    private static Stmt parseDoWhile(String text) {
+        int brace = text.indexOf('{');
+        if (brace < 0) {
+            throw new QueryException("do expects a { ... } block: " + text);
+        }
+        int end = matchingBrace(text, brace);
+        String rest = text.substring(end + 1).trim();
+        if (!rest.startsWith("while")) {
+            throw new QueryException("do must be followed by 'while (condition)' in: " + text);
+        }
+        int open = rest.indexOf('(');
+        if (open < 0) {
+            throw new QueryException("do/while expects a condition in parentheses: " + text);
+        }
+        int close = matchingParen(rest, open);
+        if (!rest.substring(close + 1).trim().isEmpty()) {
+            throw new QueryException("Unexpected '" + rest.substring(close + 1).trim()
+                    + "' after the do/while condition in: " + text);
+        }
+        return new DoWhile(rest.substring(open + 1, close).trim(),
+                parseBlock(text.substring(brace + 1, end)), text);
+    }
+
+    /**
+     * {@code switch (subject) { case a: ...; case b, c: ...; default: ... }}.
+     *
+     * <p>The body is split into statements and then cut at the {@code case}/{@code default} labels, so a
+     * label and its first statement may sit on one line (as a Groovy script writes them).
+     */
+    private static Stmt parseSwitch(String text) {
+        int open = text.indexOf('(');
+        if (open < 0) {
+            throw new QueryException("switch expects a subject in parentheses: " + text);
+        }
+        int close = matchingParen(text, open);
+        int brace = text.indexOf('{', close);
+        if (brace < 0) {
+            throw new QueryException("switch expects a { ... } block: " + text);
+        }
+        int end = matchingBrace(text, brace);
+        String rest = text.substring(end + 1).trim();
+        if (!rest.isEmpty()) {
+            throw new QueryException("Unexpected '" + rest + "' after the switch block in: " + text);
+        }
+
+        List<SwitchCase> cases = new ArrayList<>();
+        List<Stmt> defaultBody = new ArrayList<>();
+        List<Stmt> current = null;
+        List<String> currentValues = new ArrayList<>();
+        boolean inDefault = false;
+        for (String raw : splitStatements(text.substring(brace + 1, end))) {
+            String statement = raw.trim();
+            if (statement.isEmpty()) {
+                continue;
+            }
+            String label = labelOf(statement);
+            if (label != null) {
+                int colon = statement.indexOf(':');
+                String head = statement.substring(label.length(), colon).trim();
+                String remainder = statement.substring(colon + 1).trim();
+                if (label.equals("case")) {
+                    if (inDefault) {
+                        throw new QueryException("case after default in: " + text);
+                    }
+                    if (current != null) {
+                        cases.add(new SwitchCase(List.copyOf(currentValues), List.copyOf(current)));
+                        currentValues = new ArrayList<>();
+                    }
+                    for (String value : splitArgs(head)) {
+                        currentValues.add(value);
+                    }
+                    current = new ArrayList<>();
+                    if (!remainder.isEmpty()) {
+                        current.add(parseStatement(remainder));
+                    }
+                } else {
+                    if (current != null) {
+                        cases.add(new SwitchCase(List.copyOf(currentValues), List.copyOf(current)));
+                        currentValues = new ArrayList<>();
+                        current = null;
+                    }
+                    inDefault = true;
+                    if (!remainder.isEmpty()) {
+                        defaultBody.add(parseStatement(remainder));
+                    }
+                    current = defaultBody;
+                }
+                continue;
+            }
+            if (current == null) {
+                throw new QueryException("A statement before the first case in: " + text);
+            }
+            current.add(parseStatement(statement));
+        }
+        if (current != null && !inDefault) {
+            cases.add(new SwitchCase(List.copyOf(currentValues), List.copyOf(current)));
+        }
+        if (cases.isEmpty() && defaultBody.isEmpty()) {
+            throw new QueryException("switch has no cases in: " + text);
+        }
+        return new Switch(text.substring(open + 1, close).trim(), List.copyOf(cases),
+                List.copyOf(defaultBody), text);
+    }
+
+    /** {@code case}/{@code default} when the statement starts with one of them, else {@code null}. */
+    private static String labelOf(String statement) {
+        if (statement.startsWith("case") && nextIsBoundary(statement, 4)
+                && statement.indexOf(':') > 0) {
+            return "case";
+        }
+        if (statement.startsWith("default") && nextIsBoundary(statement, 7)
+                && statement.indexOf(':') > 0) {
+            return "default";
+        }
+        return null;
+    }
+
+    /** The index of the first {@code :} at the top level that does not belong to an elvis {@code ?:}. */
+    private static int topLevelColon(String text) {
+        char quote = 0;
+        int depth = 0;
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (quote != 0) {
+                if (c == '\\') {
+                    i++;
+                } else if (c == quote) {
+                    quote = 0;
+                }
+                continue;
+            }
+            if (c == '\'' || c == '"') {
+                quote = c;
+            } else if (c == '(' || c == '[' || c == '{') {
+                depth++;
+            } else if (c == ')' || c == ']' || c == '}') {
+                depth--;
+            } else if (c == ':' && depth == 0 && (i == 0 || text.charAt(i - 1) != '?')) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     /** {@code while (cond) { ... }}. */
@@ -552,6 +770,13 @@ public final class GremlinScript {
             return truthy(evaluate(text.substring(0, and).trim(), state, runner))
                     && truthy(evaluate(text.substring(and + 2).trim(), state, runner));
         }
+        // Groovy's spaceship: the comparator a sort closure answers with
+        int spaceship = indexOfTopLevelWord(text, "<=>");
+        if (spaceship >= 0) {
+            Object left = evaluate(text.substring(0, spaceship).trim(), state, runner);
+            Object right = evaluate(text.substring(spaceship + 3).trim(), state, runner);
+            return (long) naturalOrder(left, right);
+        }
         // a comparison is a value too (Groovy returns a boolean): `findAll { it % 2 == 0 }`
         for (String operator : new String[]{"==", "!=", "<=", ">=", "<", ">"}) {
             int index = indexOfTopLevelWord(text, operator);
@@ -605,10 +830,26 @@ public final class GremlinScript {
 
     /** The plain expression: a traversal, a variable (with a chain), or a literal. */
     private static Object primary(String text, State state, Runner runner) {
-        // a grouping: (1 + 2) * 3. Checked before the traversal and chain branches, and only when the
-        // matching bracket is the last character, so `(xs).size()` still goes to the chain parser
-        if (text.startsWith("(") && matchingParenthesis(text) == text.length() - 1) {
-            return evaluate(text.substring(1, text.length() - 1), state, runner);
+        // a grouping: (1 + 2) * 3, and a grouped head with a chain: (-3).abs()
+        if (text.startsWith("(")) {
+            int close = matchingParenthesis(text);
+            if (close > 0) {
+                Object grouped = evaluate(text.substring(1, close), state, runner);
+                String rest = text.substring(close + 1).trim();
+                if (rest.isEmpty()) {
+                    return grouped;
+                }
+                if (rest.startsWith(".")) {
+                    return applyChain(grouped, rest, state, runner);
+                }
+            }
+        }
+        // xs[0] / m['k']: index into what the name (or literal) before the brackets evaluates to
+        int bracket = topLevelBracket(text);
+        if (bracket > 0 && matchingBracket(text, bracket) == text.length() - 1) {
+            Object base = evaluate(text.substring(0, bracket).trim(), state, runner);
+            Object index = evaluate(text.substring(bracket + 1, text.length() - 1).trim(), state, runner);
+            return indexInto(base, index, text);
         }
         if (TRAVERSAL.matcher(text).find()) {
             String traversal = substitute(text, state.vars);
@@ -639,6 +880,29 @@ public final class GremlinScript {
             }
             throw new QueryException("Unknown script variable '" + text
                     + "'. Assign it first: def " + text + " = g.V(...)");
+        }
+        java.util.regex.Matcher builtin = BUILTIN_CALL.matcher(text);
+        if (builtin.matches()) {
+            // sprintf('%.2f', x) returns the text; printf(...) prints it and answers null
+            List<Object> arguments = new ArrayList<>();
+            for (String part : splitArgs(builtin.group(2))) {
+                if (!part.isBlank()) {
+                    arguments.add(evaluate(part.trim(), state, runner));
+                }
+            }
+            if (arguments.isEmpty()) {
+                throw new QueryException(builtin.group(1) + " needs a format string");
+            }
+            String formatted = String.format(java.util.Locale.ROOT, text(arguments.get(0)),
+                    arguments.subList(1, arguments.size()).toArray());
+            if (builtin.group(1).equalsIgnoreCase("printf")) {
+                state.printed.add(formatted);
+                state.output.add(formatted);
+                state.last = formatted;
+                state.lastWasPrint = true;
+                return null;
+            }
+            return formatted;
         }
         return literal(text, state, runner);
     }
@@ -723,11 +987,27 @@ public final class GremlinScript {
                         state, runner);
             } else {
                 if (open < 0) {
-                    throw new QueryException("Expected '(' after '." + rest + "'");
+                    // Groovy's property access: m.a is m['a'] when the value is a map (a bare word after a
+                    // dot is only ever a property here, since a method without arguments is written ())
+                    if (current instanceof Map<?, ?> map && NAME.matcher(rest).matches()) {
+                        current = map.get(rest);
+                        break;
+                    }
+                    throw new QueryException("Expected '(' after '." + rest + "' (or a map property: m.a)");
                 }
                 name = rest.substring(0, open).trim();
                 close = matchingParen(rest, open);
                 args = rest.substring(open + 1, close).trim();
+                // inject(seed) { ... }: a closure right after the call is part of it, not a new chain link
+                int after = close + 1;
+                while (after < rest.length() && Character.isWhitespace(rest.charAt(after))) {
+                    after++;
+                }
+                if (after < rest.length() && rest.charAt(after) == '{') {
+                    int end = matchingBrace(rest, after);
+                    args = (args.isEmpty() ? "" : args + " ") + rest.substring(after, end + 1);
+                    close = end;
+                }
                 current = applyMethod(name, current, args, state, runner);
             }
             rest = rest.substring(close + 1).trim();
@@ -869,10 +1149,99 @@ public final class GremlinScript {
                 }
                 return total.stripTrailingZeros().scale() <= 0 ? (Object) total.longValueExact() : total;
             }
+            case "sort": {
+                List<Object> out = new ArrayList<>(items);
+                out.sort((left, right) -> ordering(left, right, closure, state, runner));
+                return out;
+            }
+            case "max", "min": {
+                boolean max = name.equals("max");
+                Object best = null;
+                for (Object item : items) {
+                    if (best == null
+                            || (ordering(best, item, closure, state, runner) < 0) == max) {
+                        best = item;
+                    }
+                }
+                return best;
+            }
+            case "groupby": {
+                Map<String, List<Object>> groups = new LinkedHashMap<>();
+                for (Object item : items) {
+                    groups.computeIfAbsent(text(invoke(closure, List.of(item), state, runner)),
+                            key -> new ArrayList<>()).add(item);
+                }
+                return new LinkedHashMap<String, Object>(groups);
+            }
+            case "collectentries": {
+                Map<String, Object> out = new LinkedHashMap<>();
+                for (Object item : items) {
+                    Object entry = invoke(closure, List.of(item), state, runner);
+                    if (entry instanceof Map<?, ?> map) {
+                        for (Map.Entry<?, ?> e : map.entrySet()) {
+                            out.put(text(e.getKey()), e.getValue());
+                        }
+                    } else if (entry instanceof List<?> pair && pair.size() == 2) {
+                        out.put(text(pair.get(0)), pair.get(1));
+                    } else {
+                        throw new QueryException("collectEntries() needs each closure call to answer a"
+                                + " [key, value] pair or a map, got: " + text(entry));
+                    }
+                }
+                return out;
+            }
             default:
-                throw new QueryException("Unknown closure method '." + name + "'. Supported: each(), "
-                        + "eachWithIndex(), collect(), findAll(), find(), any(), every(), count(), sum()");
+                throw new QueryException("Unknown closure method '." + name + ". Supported: each(), "
+                        + "eachWithIndex(), collect(), findAll(), find(), any(), every(), count(), sum(), "
+                        + "sort(), max(), min(), groupBy(), collectEntries()");
         }
+    }
+
+    /**
+     * The order of two items under a closure: Groovy's comparator may answer a number ({@code a <=> b}),
+     * a boolean ({@code a < b}) or a truthy value, so both are read - the shapes a script really writes.
+     */
+    private static int ordering(Object left, Object right, Closure closure, State state, Runner runner) {
+        Object verdict = invoke(closure, List.of(left, right), state, runner);
+        if (verdict instanceof Number number) {
+            return Double.compare(number.doubleValue(), 0) < 0 ? -1
+                    : number.doubleValue() > 0 ? 1 : 0;
+        }
+        if (truthy(verdict)) {
+            return -1; // `{ a, b -> a < b }` means "left comes first"
+        }
+        return 1;
+    }
+
+    /** The values of a collection-like value: a collection, an array, or the value itself. */
+    private static List<Object> items(Object value) {
+        if (value instanceof Collection<?> collection) {
+            return new ArrayList<>(collection);
+        }
+        if (value instanceof Object[] array) {
+            return new ArrayList<>(List.of(array));
+        }
+        return value == null ? List.of() : new ArrayList<>(List.of(value));
+    }
+
+    /** A number as a double, or an error naming what was not one. */
+    private static double number(Object value) {
+        if (value instanceof Number number) {
+            return number.doubleValue();
+        }
+        try {
+            return Double.parseDouble(text(value));
+        } catch (NumberFormatException e) {
+            throw new QueryException("Expected a number, got: " + text(value));
+        }
+    }
+
+    /** Natural order of two values: numbers by value, everything else by its text form. */
+    private static int naturalOrder(Object left, Object right) {
+        if (left instanceof Number a && right instanceof Number b) {
+            return Double.compare(a.doubleValue(), b.doubleValue());
+        }
+        return text(left).compareTo(text(right));
     }
 
     /** Runs a closure for one set of arguments: parameters shadow the outer scope and are restored after. */
@@ -921,6 +1290,23 @@ public final class GremlinScript {
      */
     private static Object applyMethod(String name, Object value, String args, State state, Runner runner) {
         String method = name.toLowerCase(Locale.ROOT);
+        if (method.equals("inject")) {
+            // inject(seed) { a, b -> ... }: the seed comes before the closure, so this call is handled
+            // before the general "has a closure" route (which has no arguments of its own)
+            int brace = indexOfTopLevel(args, '{');
+            // the closure is the part in braces; the seed is what comes before it
+            Closure fold = brace < 0 ? null
+                    : parseClosure(args.substring(brace + 1, matchingBrace(args, brace)));
+            if (fold == null) {
+                throw new QueryException("inject(seed) { carry, x -> ... } needs a closure");
+            }
+            String seedText = brace < 0 ? args : args.substring(0, brace).replace(",", " ").trim();
+            Object carry = seedText.isEmpty() ? null : evaluate(seedText, state, runner);
+            for (Object item : items(value)) {
+                carry = invoke(fold, new ArrayList<>(List.of(carry, item)), state, runner);
+            }
+            return carry;
+        }
         Closure closure = closureArgument(args);
         if (closure != null) {
             return applyWithClosure(method, value, closure, state, runner);
@@ -1017,6 +1403,119 @@ public final class GremlinScript {
                 }
                 return new ArrayList<>(new LinkedHashSet<>(list));
             }
+            // --- collection helpers a query script reaches for --------------------------------------
+            case "unique": {
+                if (list == null) {
+                    return value;
+                }
+                return new ArrayList<>(new LinkedHashSet<>(list));
+            }
+            case "flatten": {
+                List<Object> out = new ArrayList<>();
+                for (Object item : items(value)) {
+                    if (item instanceof Collection<?> nested) {
+                        out.addAll(nested);
+                    } else if (item instanceof Object[] array) {
+                        out.addAll(List.of(array));
+                    } else {
+                        out.add(item);
+                    }
+                }
+                return out;
+            }
+            case "take", "drop": {
+                long count = (long) number(evaluate(args, state, runner));
+                List<Object> items = items(value);
+                int from = name.equals("take") ? 0 : (int) Math.max(0, Math.min(count, items.size()));
+                int to = name.equals("take") ? (int) Math.max(0, Math.min(count, items.size()))
+                        : items.size();
+                return new ArrayList<>(items.subList(from, to));
+            }
+            case "withindex": {
+                List<Object> out = new ArrayList<>();
+                List<Object> items = items(value);
+                for (int i = 0; i < items.size(); i++) {
+                    out.add(new ArrayList<>(List.of(items.get(i), (long) i)));
+                }
+                return out;
+            }
+            case "tosorted", "sort": {
+                List<Object> out = new ArrayList<>(items(value));
+                out.sort(GremlinScript::naturalOrder);
+                return out;
+            }
+            case "max", "min": {
+                List<Object> items = items(value);
+                Object best = null;
+                for (Object item : items) {
+                    if (best == null || (naturalOrder(best, item) < 0) == name.equals("max")) {
+                        best = item;
+                    }
+                }
+                return best;
+            }
+            case "sum": {
+                java.math.BigDecimal total = java.math.BigDecimal.ZERO;
+                for (Object item : items(value)) {
+                    total = total.add(new java.math.BigDecimal(text(item)));
+                }
+                return total.stripTrailingZeros().scale() <= 0 ? (Object) total.longValueExact() : total;
+            }
+            case "inject": {
+                throw new QueryException("inject(seed) { ... } is handled before this switch");
+            }
+            // --- text and number helpers ----------------------------------------------------------
+            case "touppercase":
+                return text(value).toUpperCase(java.util.Locale.ROOT);
+            case "tolowercase":
+                return text(value).toLowerCase(java.util.Locale.ROOT);
+            case "trim":
+                return text(value).trim();
+            case "length":
+                return (long) text(value).length();
+            case "startswith":
+                return text(value).startsWith(text(evaluate(args, state, runner)));
+            case "endswith":
+                return text(value).endsWith(text(evaluate(args, state, runner)));
+            case "substring": {
+                List<String> bounds = splitArgs(args);
+                String source = text(value);
+                int from = (int) number(evaluate(bounds.get(0), state, runner));
+                int to = bounds.size() > 1 ? (int) number(evaluate(bounds.get(1), state, runner))
+                        : source.length();
+                if (from < 0 || to > source.length() || from > to) {
+                    throw new QueryException("substring(" + from + ", " + to + ") is outside a string of "
+                            + source.length() + " characters");
+                }
+                return source.substring(from, to);
+            }
+            case "replace": {
+                List<String> parts = splitArgs(args);
+                if (parts.size() != 2) {
+                    throw new QueryException("replace expects replace(from, to)");
+                }
+                return text(value).replace(text(evaluate(parts.get(0), state, runner)),
+                        text(evaluate(parts.get(1), state, runner)));
+            }
+            case "split": {
+                String[] pieces = text(value).split(java.util.regex.Pattern.quote(
+                        text(evaluate(args, state, runner))), -1);
+                return new ArrayList<Object>(List.of(pieces));
+            }
+            case "abs": {
+                // keep the type: an integer's absolute value is an integer (Groovy's rule)
+                if (value instanceof Number number) {
+                    return isIntegral(number) ? (Object) Math.abs(number.longValue())
+                            : (Object) Math.abs(number.doubleValue());
+                }
+                return Math.abs(number(value));
+            }
+            case "intvalue", "tointeger":
+                return (long) number(value);
+            case "todouble":
+                return number(value);
+            case "round":
+                return Math.round(number(value));
             case "id":
                 return value instanceof GremlinElement element ? element.id() : value;
             case "label":
@@ -1092,7 +1591,11 @@ public final class GremlinScript {
                         + "toList(), toSet(), isEmpty(), next(), first(), last(), start(), end(), reverse(), "
                         + "get(i), contains(x), indexOf(x), add(x), addAll(xs), retainAll(xs), intersect(xs), "
                         + "distinct(), id(), label(), value(k), values(k...), properties(), join(sep), "
-                        + "endIds(), joinOnEnd(paths[, middleObjects])");
+                        + "endIds(), joinOnEnd(paths[, middleObjects]), unique(), flatten(), take(n), drop(n), "
+                        + "withIndex(), toSorted(), sort(), max(), min(), sum(), inject(seed) { ... }, "
+                        + "toUpperCase(), toLowerCase(), trim(), length(), startsWith(s), endsWith(s), "
+                        + "substring(from[, to]), replace(from, to), split(sep), abs(), intValue(), "
+                        + "toInteger(), toDouble(), round()");
         }
     }
 
@@ -1576,7 +2079,8 @@ public final class GremlinScript {
 
     private static Object literal(String text, State state, Runner runner) {
         if (text.startsWith("[")) {
-            return list(text, state, runner);
+            // [a, b] is a list; [a: 1, b: 2] is a map (Groovy's two uses of the same brackets)
+            return mapOrList(text, state, runner);
         }
         // a triple-quoted string is one value, newlines included
         if (text.length() >= 6 && (text.startsWith("'''") || text.startsWith("\"\"\""))) {
@@ -1622,6 +2126,18 @@ public final class GremlinScript {
                 + "(g.V(...)), a variable, a list, a string, a number, true/false or null");
     }
 
+    /** A map key as written: {@code 'a'} and {@code a} name the same key. */
+    private static String unquote(String token) {
+        String text = token.trim();
+        if (text.length() >= 2) {
+            char first = text.charAt(0);
+            if ((first == '\'' || first == '"') && text.charAt(text.length() - 1) == first) {
+                return text.substring(1, text.length() - 1);
+            }
+        }
+        return text;
+    }
+
     /** The index of the quote that closes the string starting at 0, or -1 when it is never closed. */
     private static int closingQuote(String text) {
         char quote = text.charAt(0);
@@ -1634,6 +2150,102 @@ public final class GremlinScript {
             }
         }
         return -1;
+    }
+
+    /**
+     * {@code [a, b]} (a list) or {@code [a: 1, b: 2]} (a map): Groovy tells them apart by whether the
+     * entries are {@code key: value} pairs, so this does too - all entries or none, and a script that
+     * mixes them gets told rather than silently read as one of the two.
+     */
+    private static Object mapOrList(String text, State state, Runner runner) {
+        int close = matchingBracket(text, 0);
+        String body = text.substring(1, close).trim();
+        if (body.isEmpty()) {
+            return new ArrayList<>();
+        }
+        List<String> parts = splitArgs(body);
+        boolean anyMap = false;
+        for (String part : parts) {
+            if (topLevelColon(part) >= 0) {
+                anyMap = true;
+            }
+        }
+        if (!anyMap) {
+            return list(text, state, runner);
+        }
+        Map<String, Object> map = new LinkedHashMap<>();
+        for (String part : parts) {
+            int colon = topLevelColon(part);
+            if (colon < 0) {
+                throw new QueryException("Cannot read the script value '" + text + "': a map literal needs"
+                        + " a key: value in every entry, and '" + part.trim() + "' has none");
+            }
+            map.put(unquote(part.substring(0, colon).trim()),
+                    evaluate(part.substring(colon + 1).trim(), state, runner));
+        }
+        return map;
+    }
+
+    /** The index of the first {@code [} that is not inside brackets or a string, or -1. */
+    private static int topLevelBracket(String text) {
+        char quote = 0;
+        int depth = 0;
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (quote != 0) {
+                if (c == '\\') {
+                    i++;
+                } else if (c == quote) {
+                    quote = 0;
+                }
+                continue;
+            }
+            if (c == '\'' || c == '"') {
+                quote = c;
+            } else if (c == '(' || c == '{') {
+                depth++;
+            } else if (c == ')' || c == '}') {
+                depth--;
+            } else if (c == '[' && depth == 0) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * {@code xs[i]} / {@code m['k']}: list, array, text and map indexing, with a negative index counting
+     * from the end (Groovy's rule) and an out-of-range index reported rather than answered with null.
+     */
+    private static Object indexInto(Object base, Object index, String text) {
+        if (base instanceof Map<?, ?> map) {
+            return map.get(index instanceof String key ? key : String.valueOf(index));
+        }
+        long at = index instanceof Number number ? number.longValue() : 0;
+        if (!(index instanceof Number)) {
+            throw new QueryException("Cannot index with '" + index + "': a list index has to be a number"
+                    + " in: " + text);
+        }
+        if (base instanceof String string) {
+            int i = at < 0 ? string.length() + (int) at : (int) at;
+            if (i < 0 || i >= string.length()) {
+                throw new QueryException("Index " + at + " is outside a string of " + string.length()
+                        + " characters in: " + text);
+            }
+            return String.valueOf(string.charAt(i));
+        }
+        List<?> list = base instanceof List<?> items ? items
+                : base instanceof Object[] array ? List.of(array) : null;
+        if (list == null) {
+            throw new QueryException("Cannot index " + (base == null ? "null"
+                    : base.getClass().getSimpleName()) + " in: " + text);
+        }
+        int i = at < 0 ? list.size() + (int) at : (int) at;
+        if (i < 0 || i >= list.size()) {
+            throw new QueryException("Index " + at + " is outside a list of " + list.size()
+                    + " items in: " + text);
+        }
+        return list.get(i);
     }
 
     private static List<Object> list(String text, State state, Runner runner) {

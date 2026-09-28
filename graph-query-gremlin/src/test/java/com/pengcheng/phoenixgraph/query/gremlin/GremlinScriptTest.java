@@ -262,6 +262,96 @@ class GremlinScriptTest {
     }
 
     @Test
+    void assertStopsTheScriptWithTheTextItWasGiven() {
+        assertEquals("ok", script("assert 1 == 1\n'ok'"));
+        QueryException error = assertThrows(QueryException.class, () -> script("def x = 1\nassert x == 2\nx"));
+        assertTrue(error.getMessage().contains("Assertion failed"), error.getMessage());
+        assertTrue(error.getMessage().contains("assert x == 2"), error.getMessage());
+        QueryException withMessage = assertThrows(QueryException.class,
+                () -> script("assert 1 == 2 : 'one is not two'"));
+        assertTrue(withMessage.getMessage().contains("one is not two"), withMessage.getMessage());
+    }
+
+    @Test
+    void doWhileRunsTheBodyOnceBeforeTheCondition() {
+        assertEquals(3L, script("def i = 0\ndo { i++ } while (i < 3)\ni"));
+        assertEquals(6L, script("def i = 5\ndo { i = i + 1 } while (i < 3)\ni"),
+                "the body runs even when the condition is false from the start");
+        assertEquals(2L, script("def i = 0\ndo { i++\nif (i == 2) { break } } while (true)\ni"));
+    }
+
+    @Test
+    void switchPicksTheFirstMatchingCase() {
+        String script = "def x = 2\ndef out = ''\nswitch (x) {\n  case 1: out = 'one'\n  case 2: out = 'two'\n  default: out = 'other'\n}\nout";
+        assertEquals("two", script(script));
+        assertEquals("one", script(script.replace("def x = 2", "def x = 1")));
+        assertEquals("other", script(script.replace("def x = 2", "def x = 9")));
+        assertEquals("two", script("def x = 'b'\nswitch (x) {\n  case 'a': 'one'\n  case 'b': 'two'\n}"),
+                "a case matches by ==, which is case-insensitive for text here");
+        assertEquals("many", script("def x = 3\nswitch (x) {\n  case 1, 2: 'few'\n  case 3, 4: 'many'\n}"),
+                "one case can name several values");
+    }
+
+    @Test
+    void listIndexingAndMapLiterals() {
+        assertEquals(1L, script("def xs = [1, 2, 3]\nxs[0]"));
+        assertEquals(3L, script("def xs = [1, 2, 3]\nxs[-1]"), "a negative index counts from the end");
+        assertEquals("b", script("def xs = ['a', 'b']\nxs[1]"));
+        assertEquals("b", script("def s = 'abc'\ns[1]"));
+        QueryException outside = assertThrows(QueryException.class,
+                () -> script("def xs = [1]\nxs[3]"));
+        assertTrue(outside.getMessage().contains("outside a list of 1 items"), outside.getMessage());
+
+        assertEquals(1L, script("def m = [a: 1, b: 2]\nm['a']"));
+        assertEquals(2L, script("def m = ['a': 1, b: 2]\nm.b"), "a quoted key and a bare key are the same");
+        assertEquals(List.of(1L, 2L), script("[1, 2]"), "brackets without a colon are still a list");
+        assertEquals(1L, script("def m = [n: 1]\ndef k = 'n'\nm[k]"), "a map is indexed by its key value");
+        QueryException mixed = assertThrows(QueryException.class, () -> script("def m = [a: 1, 2]\nm"));
+        assertTrue(mixed.getMessage().contains("key: value in every entry"), mixed.getMessage());
+    }
+
+    @Test
+    void collectionAndTextHelpers() {
+        assertEquals(List.of(1L, 2L), script("def xs = [1, 1, 2]\nxs.unique()"));
+        assertEquals(List.of(1L, 2L, 3L), script("def xs = [[1, 2], [3]]\nxs.flatten()"));
+        assertEquals(List.of(1L, 2L), script("def xs = [1, 2, 3]\nxs.take(2)"));
+        assertEquals(List.of(2L, 3L), script("def xs = [1, 2, 3]\nxs.drop(1)"));
+        assertEquals(List.of(1L, 2L, 3L), script("def xs = [1, 3, 2]\nxs.toSorted()"),
+                "toSorted() sorts ascending, whatever the source order");
+        assertEquals(List.of(3L, 1L), script("def xs = [1, 2, 3]\n[xs.max(), xs.min()]"));
+        assertEquals(6L, script("def xs = [1, 2, 3]\nxs.sum()"));
+        assertEquals(List.of(List.of(1L, 0L), List.of(2L, 1L)),
+                script("def xs = [1, 2]\nxs.withIndex()"));
+
+        assertEquals(List.of(3L, 2L, 1L), script("def xs = [1, 3, 2]\nxs.sort { a, b -> b <=> a }"),
+                "a closure may compare with <=>, or answer a boolean");
+        assertEquals(List.of(1L, 2L, 3L), script("def xs = [3, 1, 2]\nxs.sort { a, b -> a < b }"));
+        assertEquals("cid", script("def xs = ['ann', 'bob', 'cid']\nxs.max { a, b -> a <=> b }"));
+        assertEquals(7L, script("def xs = [1, 2, 3]\nxs.inject(1) { carry, x -> carry + x }"),
+                "inject(seed) folds the collection onto a seed (1 + 1 + 2 + 3)");
+        Map<?, ?> grouped = (Map<?, ?>) script("def xs = [1, 2, 3, 4]\nxs.groupBy { it % 2 }");
+        assertEquals(List.of(2L, 4L), grouped.get("0"));
+        assertEquals(List.of(1L, 3L), grouped.get("1"));
+        Map<?, ?> entries = (Map<?, ?>) script("def xs = ['a', 'b']\nxs.collectEntries { [it, it.toUpperCase()] }");
+        assertEquals("A", entries.get("a"));
+        assertEquals("B", entries.get("b"));
+
+        assertEquals("ABC", script("'abc'.toUpperCase()"));
+        assertEquals("abc", script("'  ABC  '.trim().toLowerCase()"));
+        assertEquals(3L, script("'abc'.length()"));
+        assertEquals("bc", script("'abc'.substring(1)"));
+        assertEquals("b", script("'abc'.substring(1, 2)"));
+        assertEquals("a-c", script("'abc'.replace('b', '-')"));
+        assertEquals(List.of("a", "b"), script("'a,b'.split(',')"));
+        assertTrue((Boolean) script("'abc'.startsWith('ab')"));
+        assertTrue((Boolean) script("'abc'.endsWith('bc')"));
+        assertEquals(3L, script("(-3).abs()"));
+        assertEquals(1L, script("1.7.intValue()"));
+        assertEquals(2L, script("1.5.round()"));
+        assertEquals("total=1.50", script("sprintf('total=%.2f', 1.5)"));
+    }
+
+    @Test
     void edgeEndedHalvesJoinOnTheirFarVertex() {
         // the second hop is outE(), so each half ends on an edge whose far vertex is the shared one
         GremlinPath sPath = new GremlinPath(List.of(vertex("s"), edge("e1", "v1", "s"), vertex("v1"),

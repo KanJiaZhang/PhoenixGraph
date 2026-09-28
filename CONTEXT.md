@@ -6670,3 +6670,25 @@ node .logs/verify-support-batch.js       # 21 项：谓词 / 新 step / 新语�
 node .logs/probe-predicates.js           # 谓词对照（before/after 两份 coverage 文本）
 ./mvnw -o -pl graph-query-gremlin test   # 268 用例（新增 GremlinPredicateTest 8 + 语法/step 用例）
 ```
+## 91. 脚本语法第二梯队（§90.3 清单的其余部分）
+
+| 新增 | 说明 |
+|---|---|
+| `assert expr [ : message ]` | 不成立则抛 `Assertion failed: <原文>[ - <message>]`（脚本立刻停） |
+| `do { ... } while (cond)` | 体内先执行一次再判条件；`break`/`continue` 与 `while` 一致 |
+| `switch (x) { case a, b: ...; default: ... }` | 用 `==` 匹配（文本按引擎既有规则忽略大小写），**首个命中生效、不 fall-through**（有意：静默滑到下一个 case 是这类脚本最不该有的惊喜） |
+| `xs[i]` / `xs[-1]` / `s[i]` / `m['k']` | 列表/数组/字符串/Map 下标；负索引从末尾数；越界**报错**（不返回 null） |
+| `[a: 1, b: 2]` 字面量、`m.a` | 括号里每一项都是 `key: value` 就是 map，否则是 list；混用报错。裸词键与引号键等价；`m.a` 是 `m['a']`（`(xs).size()` 这类链解析不受影响） |
+| 集合方法 | `unique() flatten() take(n) drop(n) withIndex() toSorted() sort() max() min() sum() inject(seed){}` |
+| 闭包方法 | `sort{} max{} min{} groupBy{} collectEntries{}`；比较器接受 `<=>`（数值）或布尔（`{ a, b -> a < b }`） |
+| 文本方法 | `toUpperCase toLowerCase trim length startsWith endsWith substring replace split`（`contains`/`indexOf` 原本就有） |
+| 数值方法 | `abs()`（整型进整型出）`intValue() toInteger() toDouble() round()` |
+| `sprintf(fmt, ...)` / `printf(fmt, ...)` | `sprintf` 返回文本；`printf` 打印并影响脚本的答案（与 `print` 一致） |
+| `a <=> b` | 太空船运算符，返回 -1/0/1（`sort{}` 的自然写法） |
+| `( ... )` 分组 | `primary` 里支持；`(-3).abs()` 这种"分组后接链"也支持 |
+
+**过程中被探针照出来的三个解析问题**（都已修）：`inject(seed) { ... }` 的闭包跟在调用之后（链解析要把闭包并进同一次调用）；`m.b` 之前会报 `Expected '(' after '.b'`；`(-3).abs()` 之前分组只认"配对括号在末尾"。
+
+**仍未做**：一等闭包（`def f = {…}` 然后 `f(3)`）、静态方法白名单（`Math.max`/`Integer.parseInt`）、GString（与 HTTP 参数替换冲突）、`try/catch`（会吞真错误）、类/导入/任意 `new`/IO/线程；step 侧的 `as/select/project/...` 仍等 `Traverser` 模型。
+
+**验证**：`graph-query-gremlin` **273 用例**（新增 assert/do-while/switch/索引与 map/集合与文本方法 5 个用例组）；线上 `.logs/verify-script-tier2.js` **19/19**。
