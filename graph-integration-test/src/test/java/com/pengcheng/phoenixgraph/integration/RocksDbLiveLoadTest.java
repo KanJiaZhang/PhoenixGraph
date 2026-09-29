@@ -112,7 +112,7 @@ class RocksDbLiveLoadTest {
                     .geoProperties(java.util.Map.of("Merchant", "location"));
             assertEquals((long) GeoMerchantDataLoader.SHOPS_WITHIN_1_KM,
                     (long) engine.execute("g.V('1','Merchant')"
-                            + ".circle('{\"lat\":31.2304,\"lon\":121.4737,\"radius\":1000}').count()").get(0));
+                            + ".circle('{\"latitude\":31.2304,\"longitude\":121.4737}', 1000).count()").get(0));
         }
     }
 

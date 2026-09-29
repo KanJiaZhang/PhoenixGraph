@@ -545,14 +545,14 @@
         ['向量 → 收款方 → 再找相似', 'Vector -> receivers -> their lookalikes', "g.V(1001,'Account').nearest(5).out('Payment').dedup().nearest(3).values('id')"],
         ['GEO + 向量 + 图 · 5km 内账户的相似账户及其出款',
           'GEO + vector + graph - lookalikes of the accounts within 5 km, and what they pay',
-          "g.V(1001,'Account').circle('{\"lat\":31.2304,\"lon\":121.4737,\"radius\":5000}').limit(10).nearest(3).outE('Payment')"],
+          "g.V(1001,'Account').circle('{\"latitude\":31.2304,\"longitude\":121.4737}', 5000).limit(10).nearest(3).outE('Payment')"],
         ['GEO + 向量 · 5km 内账户的相似账户',
           'GEO + vector - the lookalikes of the accounts within 5 km',
-          "g.V(1001,'Account').circle('{\"lat\":31.2304,\"lon\":121.4737,\"radius\":5000}').limit(5).nearest(2).out('Payment').dedup().limit(20)"],
-        ['GEO · 人民广场 5km 内最近 10 个账户', 'GEO - the 10 nearest accounts within 5 km of People\'s Square', "g.V(1001,'Account').circle('{\"lat\":31.2304,\"lon\":121.4737,\"radius\":5000}').limit(10)"],
-        ['GEO · 这 10 个账户的出款', 'GEO - the outgoing payments of those 10 accounts', "g.V(1001,'Account').circle('{\"lat\":31.2304,\"lon\":121.4737,\"radius\":5000}').limit(10).outE('Payment')"],
-        ['GEO · 这 10 个账户的收款方', 'GEO - the receivers those 10 accounts pay', "g.V(1001,'Account').circle('{\"lat\":31.2304,\"lon\":121.4737,\"radius\":5000}').limit(10).out('Payment').dedup().limit(10)"],
-        ['GEO · 带距离（米）', 'GEO - with the distance in metres', "g.V(1001,'Account').circle('{\"lat\":31.2304,\"lon\":121.4737,\"radius\":5000}').limit(5).values('id','distanceMeters')"],
+          "g.V(1001,'Account').circle('{\"latitude\":31.2304,\"longitude\":121.4737}', 5000).limit(5).nearest(2).out('Payment').dedup().limit(20)"],
+        ['GEO · 人民广场 5km 内最近 10 个账户', 'GEO - the 10 nearest accounts within 5 km of People\'s Square', "g.V(1001,'Account').circle('{\"latitude\":31.2304,\"longitude\":121.4737}', 5000).limit(10)"],
+        ['GEO · 这 10 个账户的出款', 'GEO - the outgoing payments of those 10 accounts', "g.V(1001,'Account').circle('{\"latitude\":31.2304,\"longitude\":121.4737}', 5000).limit(10).outE('Payment')"],
+        ['GEO · 这 10 个账户的收款方', 'GEO - the receivers those 10 accounts pay', "g.V(1001,'Account').circle('{\"latitude\":31.2304,\"longitude\":121.4737}', 5000).limit(10).out('Payment').dedup().limit(10)"],
+        ['GEO · 带距离（米）', 'GEO - with the distance in metres', "g.V(1001,'Account').circle('{\"latitude\":31.2304,\"longitude\":121.4737}', 5000).limit(5).values('id','distanceMeters')"],
         // --- 按属性的查找：单机 vs 分布式 -----------------------------------------------------------
         // 这个图的表是 hash(id):id 的有序表，所以一个 hash 区间就是一个连续 key 区间：g.V(DIST)/g.E(DIST)
         // 把整个扫描按区间切成 N 份，每份一个 mapper 线程（属性条件与后续遍历都在 mapper 里做，再 outE 等），
@@ -591,13 +591,13 @@
           "g.V(DIST,'Account').bothE('Payment').pagerank().unfold().limit(10)"],
       ],
       'geo-merchants-rocksdb-inline': [
-        ['GEO · 1km 内最近的 10 家商户', 'GEO - 10 nearest merchants within 1 km', "g.V('1','Merchant').circle('{\"lat\":31.2304,\"lon\":121.4737,\"radius\":1000}').limit(10)"],
-        ['GEO · 500m 内的咖啡店 + 距离(米)', 'GEO - coffee shops within 500 m + distance (m)', "g.V('1','Merchant').circle('{\"lat\":31.2304,\"lon\":121.4737}', 500).has('category','coffee').values('name','distanceMeters')"],
-        ['GEO · 2km 内有多少商户', 'GEO - how many merchants within 2 km', "g.V('1','Merchant').circle('{\"lat\":31.2304,\"lon\":121.4737,\"radius\":2000}').count()"],
+        ['GEO · 1km 内最近的 10 家商户', 'GEO - 10 nearest merchants within 1 km', "g.V('1','Merchant').circle('{\"latitude\":31.2304,\"longitude\":121.4737}', 1000).limit(10)"],
+        ['GEO · 500m 内的咖啡店 + 距离(米)', 'GEO - coffee shops within 500 m + distance (m)', "g.V('1','Merchant').circle('{\"latitude\":31.2304,\"longitude\":121.4737}', 500).has('category','coffee').values('name','distanceMeters')"],
+        ['GEO · 2km 内有多少商户', 'GEO - how many merchants within 2 km', "g.V('1','Merchant').circle('{\"latitude\":31.2304,\"longitude\":121.4737}', 2000).count()"],
       ],
       'geo-merchants-rocksdb-edge': [
-        ['GEO · 1km 内最近的 10 家商户（RocksDB-Edge）', 'GEO - 10 nearest merchants within 1 km (RocksDB-Edge)', "g.V('1','Merchant').circle('{\"lat\":31.2304,\"lon\":121.4737,\"radius\":1000}').limit(10)"],
-        ['GEO · 300m 内全部商户的距离(米)', 'GEO - distance (m) of every merchant within 300 m', "g.V('1','Merchant').circle('{\"lat\":31.2304,\"lon\":121.4737}', 300).values('distanceMeters')"],
+        ['GEO · 1km 内最近的 10 家商户（RocksDB-Edge）', 'GEO - 10 nearest merchants within 1 km (RocksDB-Edge)', "g.V('1','Merchant').circle('{\"latitude\":31.2304,\"longitude\":121.4737}', 1000).limit(10)"],
+        ['GEO · 300m 内全部商户的距离(米)', 'GEO - distance (m) of every merchant within 300 m', "g.V('1','Merchant').circle('{\"latitude\":31.2304,\"longitude\":121.4737}', 300).values('distanceMeters')"],
       ],
       'payment-graph': [
         ['135 的出账（一跳）', '135\'s outgoing payments (one hop)', "g.V('135','Account').outE('Payment').limit(10)"],

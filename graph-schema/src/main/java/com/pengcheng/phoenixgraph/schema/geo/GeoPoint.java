@@ -19,7 +19,7 @@ import java.util.Map;
  * <p>Distances use the haversine formula on a sphere of {@link #EARTH_RADIUS_METERS}, which is
  * accurate to a few metres over the ranges a radius query uses - plenty for "shops within one
  * kilometre", and cheap enough to run on every candidate a cell scan returns. Distances and
- * radii are <b>metres</b>: a radius query is written {@code "radius": 1000}.
+ * radii are <b>metres</b>: a radius query is written {@code circle('{"latitude":31.2304,"longitude":121.4737}', 1000)}.
  *
  * @param lat latitude in degrees, -90 to 90
  * @param lon longitude in degrees, -180 to 180
@@ -103,7 +103,8 @@ public record GeoPoint(double lat, double lon) {
 
     /**
      * Parses {@code "31.2304,121.4737"} or a JSON object such as
-     * {@code {"lat":31.2304,"lon":121.4737}} (a radius, if present, is ignored here).
+     * {@code {"lat":31.2304,"lon":121.4737}} (a radius, if present, is ignored here). The
+     * {@code circle} step is stricter and requires the full {@code latitude}/{@code longitude} names.
      *
      * @throws IllegalArgumentException when the text does not describe a point
      */

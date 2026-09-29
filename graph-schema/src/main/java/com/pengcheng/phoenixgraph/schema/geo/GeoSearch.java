@@ -7,12 +7,11 @@ import java.util.Map;
 /**
  * A radius search: the centre, the radius and how the search may spend its effort.
  *
- * <p>A query writes it as JSON, which is what the Gremlin {@code circle} step takes. The radius
- * is in <b>metres</b>:
+ * <p>A query writes the centre as JSON with the full coordinate names and the radius in
+ * <b>metres</b> as the step's second argument:
  *
  * <pre>
- * circle('{"lat":31.2304,"lon":121.4737,"radius":1000}')
- * circle('{"lat":31.2304,"lon":121.4737}', 2000)        // the step argument wins
+ * circle('{"latitude":31.2304,"longitude":121.4737}', 1000)
  * </pre>
  *
  * <p>The level and the cell budget come from the schema's geo property (an index is built at a
@@ -59,20 +58,19 @@ public record GeoSearch(GeoPoint center, double radiusMeters, int level, int max
     }
 
     /**
-     * Parses the step's JSON: the centre is required, the radius may come from the text or be
-     * given separately, and everything else is optional.
+     * Parses the step's arguments: the centre JSON (with the full {@code latitude}/{@code longitude}
+     * names) and the radius in metres.
      *
-     * @param json          the JSON (or {@code "lat,lon"}) text
-     * @param radiusOverride a radius in metres from the step's own argument, or {@code null}
+     * @param json           the point JSON, or the {@code "lat,lon"} text
+     * @param radiusOverride the radius in metres from the step's second argument
      * @throws IllegalArgumentException when the text holds no usable point or no radius
      */
     public static GeoSearch parse(String json, Double radiusOverride) {
         if (json == null || json.isBlank()) {
             throw new IllegalArgumentException("circle expects a point such as "
-                    + "{\"lat\":31.2304,\"lon\":121.4737,\"radius\":1000}");
+                    + "circle('{\"latitude\":31.2304,\"longitude\":121.4737}', 1000)");
         }
         GeoPoint center;
-        Double radius = radiusOverride;
         String trimmed = json.trim();
         if (trimmed.startsWith("{")) {
             Map<?, ?> parsed;
@@ -81,22 +79,42 @@ public record GeoSearch(GeoPoint center, double radiusMeters, int level, int max
             } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
                 throw new IllegalArgumentException("circle cannot read the point JSON: " + e.getOriginalMessage(), e);
             }
-            center = GeoPoint.from(parsed);
-            if (radius == null) {
-                radius = number(parsed, "radius", "radiusMeters", "r");
+            if (number(parsed, "radius", "radiusMeters", "r") != null) {
+                throw new IllegalArgumentException("circle takes the radius as its second argument, not in the"
+                        + " point JSON: circle('{\"latitude\":..,\"longitude\":..}', radiusMetres)");
             }
+            center = coordinates(parsed);
         } else {
             center = GeoPoint.parseOrNull(trimmed);
         }
         if (center == null) {
             throw new IllegalArgumentException("circle cannot read a point from: " + json
-                    + " (expected {\"lat\":..,\"lon\":..} or 'lat,lon')");
+                    + " (expected {\"latitude\":..,\"longitude\":..} or 'lat,lon')");
         }
-        if (radius == null) {
-            throw new IllegalArgumentException("circle needs a radius in metres: put \"radius\" in the point JSON "
-                    + "or pass it as the second argument");
+        if (radiusOverride == null) {
+            throw new IllegalArgumentException("circle needs a radius in metres as its second argument:"
+                    + " circle('{\"latitude\":..,\"longitude\":..}', radiusMetres)");
         }
-        return new GeoSearch(center, radius, 0, 0, 0);
+        return new GeoSearch(center, radiusOverride, 0, 0, 0);
+    }
+
+    /**
+     * The centre of a circle: the JSON must spell {@code latitude} and {@code longitude} out. The
+     * abbreviations {@code lat}/{@code lon} (and {@code lng}) are refused with a message that names
+     * the full keys, so a query cannot silently read a point written another way.
+     */
+    private static GeoPoint coordinates(Map<?, ?> map) {
+        Double latitude = number(map, "latitude");
+        Double longitude = number(map, "longitude");
+        if (latitude == null || longitude == null) {
+            if (number(map, "lat") != null || number(map, "lon") != null || number(map, "lng") != null) {
+                throw new IllegalArgumentException("circle's point JSON uses 'latitude' and 'longitude', not the"
+                        + " abbreviations 'lat'/'lon': circle('{\"latitude\":31.2304,\"longitude\":121.4737}',"
+                        + " 1000)");
+            }
+            return null;
+        }
+        return GeoPoint.isValid(latitude, longitude) ? new GeoPoint(latitude, longitude) : null;
     }
 
     /** The same search with a level (used when the index has one and the query did not ask). */

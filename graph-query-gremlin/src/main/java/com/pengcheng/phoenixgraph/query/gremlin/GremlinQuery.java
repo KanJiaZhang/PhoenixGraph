@@ -533,7 +533,7 @@ public final class GremlinQuery {
 
     /**
      * The index of the first {@code wanted} character that is not inside a quoted argument,
-     * or -1. Arguments may be JSON ({@code geoNear('{"lat":31.2}')}), so punctuation inside
+     * or -1. Arguments may be JSON ({@code circle('{"latitude":31.2,"longitude":121.4}', 1000)}), so punctuation inside
      * quotes must not be read as query syntax.
      */
     private static int indexOfOutsideQuotes(String s, char wanted) {

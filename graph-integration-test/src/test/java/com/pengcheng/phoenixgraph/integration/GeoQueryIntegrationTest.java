@@ -34,7 +34,7 @@ class GeoQueryIntegrationTest {
 
     /** The query the demo shows: the nearest shops within one kilometre of People's Square. */
     private static final String NEAREST_1KM =
-            "g.V('1','Merchant').circle('{\"lat\":31.2304,\"lon\":121.4737,\"radius\":1000}')";
+            "g.V('1','Merchant').circle('{\"latitude\":31.2304,\"longitude\":121.4737}', 1000)";
 
     @TempDir
     static Path directory;
@@ -90,17 +90,17 @@ class GeoQueryIntegrationTest {
         assertEquals(GeoMerchantDataLoader.SHOPS_WITHIN_1_KM, oneKm,
                 "the spiral puts " + GeoMerchantDataLoader.SHOPS_WITHIN_1_KM + " shops within 1 km");
         assertEquals(GeoMerchantDataLoader.MERCHANT_COUNT,
-                (long) inline.execute("g.V('1','Merchant').circle('{\"lat\":31.2304,\"lon\":121.4737}',"
+                (long) inline.execute("g.V('1','Merchant').circle('{\"latitude\":31.2304,\"longitude\":121.4737}',"
                         + " 2000).count()").get(0),
                 "a 2 km radius holds every shop");
         // a small radius holds the few shops right around the centre
-        long near = (long) inline.execute("g.V('1','Merchant').circle('{\"lat\":31.2304,\"lon\":121.4737}',"
+        long near = (long) inline.execute("g.V('1','Merchant').circle('{\"latitude\":31.2304,\"longitude\":121.4737}',"
                 + " 200).count()").get(0);
         assertTrue(near >= 20 && near <= 30, "200 m holds the first ~26 shops, got " + near);
 
         // both schemes answer the same
         for (String radius : List.of("200", "500", "1000", "1500")) {
-            String query = "g.V('1','Merchant').circle('{\"lat\":31.2304,\"lon\":121.4737}', " + radius
+            String query = "g.V('1','Merchant').circle('{\"latitude\":31.2304,\"longitude\":121.4737}', " + radius
                     + ").count()";
             assertEquals(inline.execute(query), edge.execute(query), "radius " + radius + " m");
         }
@@ -153,9 +153,9 @@ class GeoQueryIntegrationTest {
                 NEAREST_1KM + ".limit(10).values('name')",
                 NEAREST_1KM + ".count()",
                 NEAREST_1KM + ".has('category','bakery').values('name')",
-                "g.V('1','Merchant').circle('{\"lat\":31.2304,\"lon\":121.4737,\"radius\":400}')"
+                "g.V('1','Merchant').circle('{\"latitude\":31.2304,\"longitude\":121.4737}', 400)"
                         + ".limit(3).elementMap()",
-                "g.V('1','Merchant').circle('{\"lat\":31.22,\"lon\":121.48}', 600).count()");
+                "g.V('1','Merchant').circle('{\"latitude\":31.22,\"longitude\":121.48}', 600).count()");
         for (String query : queries) {
             assertEquals(inline.execute(query), edge.execute(query), "query: " + query);
         }
@@ -163,11 +163,11 @@ class GeoQueryIntegrationTest {
 
     @Test
     void anotherCentreFindsAnotherNeighbourhood() {
-        long north = (long) inline.execute("g.V('1','Merchant').circle('{\"lat\":31.2404,\"lon\":121.4737}',"
+        long north = (long) inline.execute("g.V('1','Merchant').circle('{\"latitude\":31.2404,\"longitude\":121.4737}',"
                 + " 300).count()").get(0);
         assertTrue(north > 0, "shops north of the centre");
         // the two circles overlap but are not the same set
-        long centre = (long) inline.execute("g.V('1','Merchant').circle('{\"lat\":31.2304,\"lon\":121.4737}',"
+        long centre = (long) inline.execute("g.V('1','Merchant').circle('{\"latitude\":31.2304,\"longitude\":121.4737}',"
                 + " 300).count()").get(0);
         assertTrue(north != centre, "a different centre finds a different set (" + north + " vs " + centre + ")");
     }

@@ -180,12 +180,12 @@ class GeoPropertyTest {
 
     @Test
     void aSearchIsReadFromTheStepJson() {
-        GeoSearch search = GeoSearch.parse("{\"lat\":31.2304,\"lon\":121.4737,\"radius\":1000}", null);
+        GeoSearch search = GeoSearch.parse("{\"latitude\":31.2304,\"longitude\":121.4737}", 1_000d);
         assertEquals(new GeoPoint(31.2304d, 121.4737d), search.center());
-        assertEquals(1_000d, search.radiusMeters(), "the radius is metres");
+        assertEquals(1_000d, search.radiusMeters(), "the radius is metres and the step's second argument");
 
-        // the step argument overrides the JSON radius
-        assertEquals(2_500d, GeoSearch.parse("{\"lat\":31.23,\"lon\":121.47,\"radius\":1000}", 2_500d)
+        // another radius for the same centre
+        assertEquals(2_500d, GeoSearch.parse("{\"latitude\":31.23,\"longitude\":121.47}", 2_500d)
                 .radiusMeters());
         // and the plain text form works too, as long as a radius is passed as well
         assertEquals(new GeoPoint(31.23d, 121.47d), GeoSearch.parse("31.23,121.47", 1_000d).center());
@@ -193,8 +193,16 @@ class GeoPropertyTest {
         // a limit becomes the result cap the storage applies
         assertEquals(5, search.withMaxResults(5).maxResults());
 
-        assertThrows(IllegalArgumentException.class, () -> GeoSearch.parse("{\"lat\":31.23}", 1_000d));
-        assertThrows(IllegalArgumentException.class, () -> GeoSearch.parse("{\"lat\":31.23,\"lon\":121.47}", null));
+        // the abbreviated keys are refused, naming the full ones
+        assertThrows(IllegalArgumentException.class, () -> GeoSearch.parse("{\"lat\":31.23,\"lon\":121.47}",
+                1_000d));
+        // a point without coordinates, and a radius inside the JSON
+        assertThrows(IllegalArgumentException.class, () -> GeoSearch.parse("{\"name\":\"x\"}", 1_000d));
+        assertThrows(IllegalArgumentException.class, () -> GeoSearch.parse(
+                "{\"latitude\":31.23,\"longitude\":121.47,\"radius\":1000}", null));
+        // a missing radius
+        assertThrows(IllegalArgumentException.class, () -> GeoSearch.parse("{\"latitude\":31.23,\"longitude\":121.47}",
+                null));
         assertThrows(IllegalArgumentException.class, () -> GeoSearch.of(new GeoPoint(0d, 0d), 0d));
         assertThrows(IllegalArgumentException.class, () -> GeoSearch.of(new GeoPoint(0d, 0d), 1_000d).withMaxResults(-1));
     }

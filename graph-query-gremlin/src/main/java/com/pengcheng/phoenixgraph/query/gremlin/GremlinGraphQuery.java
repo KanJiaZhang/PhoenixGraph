@@ -158,8 +158,8 @@ public class GremlinGraphQuery {
         // argument is the query's limit, which the compile step pushes in (see #pushLimits)
         registry.register("circle", args -> {
             if (args.isEmpty() || args.size() > 3) {
-                throw new QueryException("circle expects circle(pointJson[, radiusMeters][, limit]),"
-                        + " got " + args.size() + " arguments");
+                throw new QueryException("circle expects circle('{\"latitude\":..,\"longitude\":..}',"
+                        + " radiusMetres), got " + args.size() + " arguments");
             }
             Double radius = arg(args, 1, "circle") == null ? null : positiveDouble(args.get(1), "circle");
             Integer limit = arg(args, 2, "circle") == null ? null : positiveInt(args.get(2), "circle");

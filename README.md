@@ -43,7 +43,7 @@ vector hit and a geo hit are ordinary traversers, the three kinds of search comp
 // the five accounts nearest me (geo), each one's two most similar accounts (vector), and
 // what those accounts paid (graph)
 g.V(1001,'Account')
-    .circle('{"lat":31.2304,"lon":121.4737,"radius":8000}').limit(5)   // geo: the five nearest
+    .circle('{"latitude":31.2304,"longitude":121.4737}', 8000).limit(5)   // geo: the five nearest
     .nearest(2)                                                        // vector: their lookalikes
     .outE('Payment').otherV().dedup().limit(60)                        // graph: where the money went
 ```

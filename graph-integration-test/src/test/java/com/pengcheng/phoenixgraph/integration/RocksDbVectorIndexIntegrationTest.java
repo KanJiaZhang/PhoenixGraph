@@ -63,8 +63,8 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class RocksDbVectorIndexIntegrationTest {
 
-    /** The centre of the geo searches (People's Square, Shanghai) with a five-kilometre radius. */
-    private static final String CENTRE = "{\"lat\":31.2304,\"lon\":121.4737,\"radius\":5000}";
+    /** The centre of the geo searches (People's Square, Shanghai); the radius is the five-kilometre step argument. */
+    private static final String CENTRE = "{\"latitude\":31.2304,\"longitude\":121.4737}";
 
     private Path directory;
     private RocksDbEdgeStore store;
@@ -182,10 +182,10 @@ class RocksDbVectorIndexIntegrationTest {
         GremlinGraphQuery engine = engine();
         // the query the demo data is for: the accounts within five kilometres of People's Square, their
         // lookalikes, and the payments of those lookalikes, as one subgraph
-        String gremlin = "g.V('1001','Account').circle('" + CENTRE + "').limit(10).nearest(3)"
+        String gremlin = "g.V('1001','Account').circle('" + CENTRE + "', 5000).limit(10).nearest(3)"
                 + ".outE('Payment')";
         GremlinGraphQuery.Result result = engine.executeWithSubgraph(gremlin);
-        long near = engine.execute("g.V('1001','Account').circle('" + CENTRE + "').count()").stream()
+        long near = engine.execute("g.V('1001','Account').circle('" + CENTRE + "', 5000).count()").stream()
                 .mapToLong(value -> ((Number) value).longValue()).sum();
         System.out.printf(Locale.ROOT,
                 "geo+vector+graph: %d accounts within 5 km -> their lookalikes -> %d payment edges, "
@@ -200,7 +200,7 @@ class RocksDbVectorIndexIntegrationTest {
 
         // the distance travels with a geo hit, so a caller can print it
         List<Object> withDistance = engine.execute("g.V('1001','Account').circle('" + CENTRE
-                + "').limit(5).values('id','distanceMeters')");
+                + "', 5000).limit(5).values('id','distanceMeters')");
         assertEquals(10, withDistance.size(), "five hits, each with its distance");
     }
 

@@ -406,15 +406,15 @@ class GremlinGraphQueryTest {
         GremlinGraphQuery engine = new GremlinGraphQuery(graphQuery, resolver)
                 .geoProperties(Map.of("person", "location"));
 
-        // the radius rides in the JSON ...
+        // the centre JSON plus the radius as the step's second argument
         List<Object> names = engine.execute(
-                "g.V('v1','person').circle('{\"lat\":31.2304,\"lon\":121.4737,\"radius\":1000}')"
+                "g.V('v1','person').circle('{\"latitude\":31.2304,\"longitude\":121.4737}', 1000)"
                         + ".values('name')");
         assertEquals(List.of("coffee", "bakery"), names);
 
-        // ... and can be given as the step's own argument instead
+        // a wider radius finds the farther point too
         List<Object> distances = engine.execute(
-                "g.V('v1','person').circle('{\"lat\":31.2304,\"lon\":121.4737}', 2000)"
+                "g.V('v1','person').circle('{\"latitude\":31.2304,\"longitude\":121.4737}', 2000)"
                         + ".values('distanceMeters')");
         assertEquals(List.of(200d, 900d), distances);
 
@@ -500,7 +500,7 @@ class GremlinGraphQueryTest {
 
         // 20 hits inside the circle, but the query wants three ...
         List<Object> names = engine.execute(
-                "g.V('v1','person').circle('{\"lat\":31.23,\"lon\":121.47,\"radius\":5000}')"
+                "g.V('v1','person').circle('{\"latitude\":31.23,\"longitude\":121.47}', 5000)"
                         + ".limit(3).values('name')");
         assertEquals(List.of("shop-n0", "shop-n1", "shop-n2"), names);
         // ... so the storage was asked for three hits, and the three of them are one read of three ids
@@ -520,7 +520,7 @@ class GremlinGraphQueryTest {
         // without a limit every hit is read as well, and still as one batch
         org.mockito.Mockito.clearInvocations(graphQuery);
         List<Object> all = engine.execute(
-                "g.V('v1','person').circle('{\"lat\":31.23,\"lon\":121.47,\"radius\":5000}')"
+                "g.V('v1','person').circle('{\"latitude\":31.23,\"longitude\":121.47}', 5000)"
                         + ".values('name')");
         assertEquals(20, all.size());
         verify(graphQuery, org.mockito.Mockito.times(1)).readVertices(eq("person"), anyList(), anyList());
@@ -541,7 +541,7 @@ class GremlinGraphQueryTest {
 
         // the hits feed count(): nothing reads a property of them, so their records are not read at all
         List<Object> counted = engine.execute("g.V('v1','person')"
-                + ".circle('{\"lat\":31.23,\"lon\":121.47,\"radius\":1000}').count()");
+                + ".circle('{\"latitude\":31.23,\"longitude\":121.47}', 1000).count()");
         assertEquals(2L, ((Number) counted.get(0)).longValue(), "both hits are counted");
         org.mockito.Mockito.verify(graphQuery, org.mockito.Mockito.never())
                 .readVertices(eq("person"), anyList(), anyList());
@@ -557,7 +557,7 @@ class GremlinGraphQueryTest {
             return out;
         });
         assertEquals(List.of(100d, 200d), engine.execute("g.V('v1','person')"
-                + ".circle('{\"lat\":31.23,\"lon\":121.47,\"radius\":1000}').values('distanceMeters')"));
+                + ".circle('{\"latitude\":31.23,\"longitude\":121.47}', 1000).values('distanceMeters')"));
         verify(graphQuery, org.mockito.Mockito.times(1)).readVertices(eq("person"), anyList(), anyList());
     }
 
@@ -572,7 +572,7 @@ class GremlinGraphQueryTest {
                 .geoProperties(Map.of("person", "location"));
 
         assertEquals(Map.of("id", "n1", "label", "person", "name", "coffee", "distanceMeters", 250d),
-                engine.execute("g.V('v1','person').circle('{\"lat\":31.23,\"lon\":121.47,\"radius\":1000}')"
+                engine.execute("g.V('v1','person').circle('{\"latitude\":31.23,\"longitude\":121.47}', 1000)"
                         + ".elementMap()").get(0));
     }
 
@@ -581,13 +581,23 @@ class GremlinGraphQueryTest {
         GremlinGraphQuery engine = new GremlinGraphQuery(graphQuery, resolver);
         // no geo property is declared for the type
         QueryException noIndex = assertThrows(QueryException.class, () -> engine.execute(
-                "g.V('v1','person').circle('{\"lat\":31.23,\"lon\":121.47,\"radius\":1000}')"));
+                "g.V('v1','person').circle('{\"latitude\":31.23,\"longitude\":121.47}', 1000)"));
         assertTrue(noIndex.getMessage().contains("No geo index"), noIndex.getMessage());
 
-        // the point JSON without a radius anywhere
+        // the point JSON without a radius as the second argument
         QueryException noRadius = assertThrows(QueryException.class, () -> engine.execute(
-                "g.V('v1','person').circle('{\"lat\":31.23,\"lon\":121.47}')"));
+                "g.V('v1','person').circle('{\"latitude\":31.23,\"longitude\":121.47}')"));
         assertTrue(noRadius.getMessage().contains("radius"), noRadius.getMessage());
+
+        // the abbreviated keys are refused with the full names in the message
+        QueryException abbreviation = assertThrows(QueryException.class, () -> engine.execute(
+                "g.V('v1','person').circle('{\"lat\":31.23,\"lon\":121.47}', 1000)"));
+        assertTrue(abbreviation.getMessage().contains("latitude"), abbreviation.getMessage());
+
+        // a radius inside the point JSON is not the step's form any more
+        QueryException radiusInJson = assertThrows(QueryException.class, () -> engine.execute(
+                "g.V('v1','person').circle('{\"latitude\":31.23,\"longitude\":121.47,\"radius\":1000}')"));
+        assertTrue(radiusInJson.getMessage().contains("second argument"), radiusInJson.getMessage());
 
         // a point that is not a point
         QueryException badPoint = assertThrows(QueryException.class, () -> engine.execute(

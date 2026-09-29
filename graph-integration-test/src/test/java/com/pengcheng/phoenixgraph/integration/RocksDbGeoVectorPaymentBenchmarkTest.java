@@ -56,7 +56,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * accounts around it, and what those pay.
  *
  * <pre>{@code
- * g.V(1001,'Account').circle('{"lat":31.2304,"lon":121.4737,"radius":5000}').limit(10).nearest(10).outE('Payment')
+ * g.V(1001,'Account').circle('{"latitude":31.2304,"longitude":121.4737}', 5000).limit(10).nearest(10).outE('Payment')
  * }</pre>
  *
  * <p>It is the only shape in the demo that uses all three access paths one after another: the geo index
@@ -76,7 +76,7 @@ class RocksDbGeoVectorPaymentBenchmarkTest {
     /** The statement under measurement, and the three prefixes it is made of. */
     private static final String SEED = "g.V(1001,'Account')";
     private static final String CIRCLE =
-            ".circle('{\"lat\":31.2304,\"lon\":121.4737,\"radius\":5000}')";
+            ".circle('{\"latitude\":31.2304,\"longitude\":121.4737}', 5000)";
     private static final String GEO = SEED + CIRCLE + ".limit(10)";
     private static final String LOOKALIKES = GEO + ".nearest(10)";
     private static final String QUERY = LOOKALIKES + ".outE('Payment')";

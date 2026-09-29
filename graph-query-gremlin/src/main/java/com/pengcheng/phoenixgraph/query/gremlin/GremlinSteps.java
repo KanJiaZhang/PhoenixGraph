@@ -357,11 +357,10 @@ final class GremlinSteps {
      * {@link GeoIndexSchemas#DISTANCE_PROPERTY} (metres).
      *
      * <p>The circle is described by the step's JSON argument
-     * ({@code circle('{"lat":31.2304,"lon":121.4737,"radius":1000}')}) or by a point JSON plus
-     * the radius in metres as the step's own argument ({@code circle('{"lat":..,"lon":..}', 2000)})
-     * - the radius is a step parameter so a client can vary it per call. The search runs over
-     * the geo index of the vertex type the traversers are on, the same way {@code nearest} uses
-     * the HNSW index of the type.
+     * ({@code circle('{"latitude":31.2304,"longitude":121.4737}', 1000)}): the centre carries the
+     * full {@code latitude}/{@code longitude} names and the radius in metres is the second argument,
+     * so a client can vary it per call. The search runs over the geo index of the vertex type the
+     * traversers are on, the same way {@code nearest} uses the HNSW index of the type.
      *
      * <p>{@code search.maxResults()} carries a {@code limit} of the query: the search stops
      * keeping hits beyond it, so only the nearest ones are read back and collected.
