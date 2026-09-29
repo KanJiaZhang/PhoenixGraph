@@ -1,562 +1,411 @@
 # PhoenixGraph
 
-A High Scaled and High Performance HTAP Graph Database.
+A high-scale, high-performance **HTAP graph database** that puts **graph traversal, vector search and
+geo search** behind one query, and serves **knowledge graphs as context for AI agents**.
 
-> **Resuming work?** Start with [HANDOVER.md](HANDOVER.md) - current state, how
-> to start the services and what is next.
+> **Resuming work?** Start with [HANDOVER.md](HANDOVER.md) - current state, how to start the services
+> and what is next.
 
 ## What PhoenixGraph is
 
-PhoenixGraph is a graph database that joins three workloads that usually live in three systems:
+- **AI context graphs.** A knowledge graph is what an LLM needs to answer accurately: typed entities,
+  typed relations with provenance, and question-shaped query templates. The worked example in this
+  repository is the 《三国演义》 (Romance of the Three Kingdoms) graph - one unified schema serves a
+  whole domain, and a query answers "关羽 and 诸葛亮: how are they related?" from the graph instead of
+  from the model's memory alone.
+- **One query over graph, vector and geo.** A vector hit and a geo hit are ordinary traversers, so
+  "the five entities nearest me, their lookalikes, and what they are connected to" is one traversal,
+  not three round trips from an application. See [below](#one-query-over-vector-geo-and-the-graph).
+- **HTAP: OLTP on Aerospike, OLAP on RocksDB.** The transactional side answers a request by key in one
+  record (or one batch); the analytical side scans a class in ordered tables, runs graph algorithms
+  in-process or on a Gemini cluster. The backend is a property of the **schema**, so the same graph
+  definition, the same Gremlin, the same openCypher and the same HTTP API are served by any scheme.
+- **High performance and high QPS.** Keyed reads never scan; a hop reads its edges in one batched,
+  cached, projected round trip; a compiled query is cached; a set of seeds is read in parallel; an
+  attribute condition and a degree cap are pushed into the storage decode. Measured on the demo graph:
+  a one-hop query p50 **0.54-3.57 ms** (median 0.9 ms), two hops **1.22-5.16 ms** (median 2.3 ms)
+  (`AerospikeHopQueryLatencyTest`).
+- **Visualization.** `graph-web` renders the induced subgraph a query returned - the engine returns it
+  with full properties for exactly this - colours it with graph algorithms, and edits schemas and fuzzy
+  patterns in a builder page.
+- **Fraud rings from fragments.** `fuzzyLink(patternId, context)` turns the small details several
+  accounts share (an email provider, an IP /16, a card BIN, a user-name *shape*) into a link node, so a
+  query walks from the pattern to the ring (`graph-fuzzy` holds the pattern language and the
+  deterministic ids). A pattern is data (`fuzzy-patterns.json`), editable while the service runs.
 
-- **OLTP** - a request arrives with a key and one record (or one batch) answers it. The **Aerospike**
-  scheme is the transactional side: a vertex and its denormalised edges are one record, per-property
-  CAS makes concurrent updates safe, and a query that names ids never scans.
-- **OLAP, in one process** - a question names a *class* rather than an id. The **RocksDB-Edge** scheme
-  is the analytical side: one ordered table per vertex type and per edge class, so "every account",
-  "every payment of this class" or "the edges of this hub in this time window" is one range scan that
-  can be capped, projected and pushed into the decode.
-- **OLAP, over many machines** - the algorithm steps (`pagerank`, `louvain`, `cc`, `sssp`, `bfs`) run
-  in-process by default and on a Gemini cluster with the `DIST` marker (see below).
+### One query over vector, geo and the graph
 
-The engine is the same for all of them: the backend is a property of the **schema**, not of the query,
-so the same graph definition, the same Gremlin, the same openCypher and the same HTTP API are served by
-any scheme. A new backend only has to implement the `GraphQuery` port, and the engine asks it what it
-can do (`supportsScan`, `supportsEdgeReadPushdown`, `supportsPartitionedScan`, …) - either the storage
-pushes the work down or the traversal does it.
+![vector, geo and graph in one query](docs/screenshots/vector-geo-graph.png)
 
-```json
-"storage": { "type": "RocksDB-Edge", "path": "payment-graph-rocksdb-edge" }
-```
-
-| Scheme | Role | Layout |
-| --- | --- | --- |
-| `Aerospike` (**default**) | OLTP: keyed reads and writes | one record per vertex: properties + denormalised edges, per-property CAS |
-| `Aerospike-Edge` | OLTP + aggregated hub reads | Aerospike, plus `Edge_Out`/`Edge_In` tables chunked by creation time for vertices with huge degree |
-| `RocksDB-Inline` | analytical, with degree limits | one table per vertex type, one per edge type, edges folded into the record |
-| `RocksDB-Edge` | analytical, no degree limit | one table per vertex type, one edge table per class, creation-time window = range scan |
-
-## One traversal, three kinds of search
-
-Vector search, geo search and graph traversal are **steps of the same query**, so they compose instead
-of being three round trips from the application:
-
-```groovy
-g.V('a7','Account').nearest(5)                          // vector: the five most similar accounts
-g.V('m1','Merchant').circle('{"lat":31.2304,"lon":121.4737,"radius":3000}').limit(5)  // geo
-g.V('a7','Account').nearest(5).outE('Payment')          // then walk the graph from the hits
-g.V('m1','Merchant').circle('{"lat":31.2304,"lon":121.4737}', 500).has('category','coffee')
-        .values('name','distanceMeters')                // a geo hit is a normal traverser
-```
-
-- **vector** - a property marked `isVector` is indexed by HNSW (`graph-hnsw`): writes maintain the
-  layered graph, and `nearest(k[, ef])` searches it. A `has`/`filter` right after `nearest` is
-  pushed into the search, so it answers the k nearest that *match*, not the k nearest of which some
-  happen to match. The layer edge classes (`<property>_0`, one more per doubling of the data) are
-  created on demand.
-- **geo** - a property marked `isGeo` holds a point and gets an S2 cell index; `circle(point[, radius])`
-  is a range scan over that index, nearest first, with `distanceMeters` attached to each hit.
-- **graph** - every other step (`out/in/both`, `outE/inE/bothE`, filters, aggregations, algorithms)
-  walks the result, so a vector or geo hit is the seed of an ordinary traversal - which is what makes
-  "the five accounts most like this one, and what they paid" one query instead of two systems.
-
-## Knowledge graphs and AI context
-
-The engine also serves **knowledge graphs that an AI/LLM layer reads as context**: typed entities and
-relations with provenance, plus question-shaped query templates a retrieval layer can call with
-parameters. The worked example in this repository is the 《三国演义》 (Romance of the Three Kingdoms)
-graph, served in three forms (`sanguo-kg`, `sanguo-kg-rocksdb-edge`, `sanguo-kg-text`):
-
-- **Entity/relation schema** - a typed `Entity` vertex and edges carrying `relation`, `xrelation`,
-  `relationLabel` and `relationFamily`, so "who is whose lord / minister / advisor" is a filter on an
-  edge property instead of a different edge class per question.
-- **From RDF** - `SANGUO-KG.md` documents the document-to-RDF mapping (entity split, relation split,
-  validation), including the three real parsing bugs the validation caught.
-- **From free text** - `sanguo-kg-text` adds entities and relations extracted from the documents'
-  running text by a dictionary plus regular expressions (no model, fully reproducible): offices,
-  advisor / strategist / fellow relations, battles, kills, and `mentions` edges that carry the
-  sentence they came from, so an answer can point back at its evidence.
-  `SANGUO-KG-TEXT-EXTRACTION.md` lists every rule and the provenance it emits.
-- **Query templates** - `SANGUO-KG-QUERIES.md` is a handbook of question-shaped Gremlin and Cypher
-  queries ("关羽 和 诸葛亮 是什么关系？", two- and three-hop relation paths, statistics) ready to be
-  parameterised by a retrieval / agent layer.
-
-Two storage schemes serve the same graph (Aerospike with relation-sharded ids, and RocksDB-Edge with
-one record per person), and a test asserts both answer the shared questions identically.
-
-## Visualization
-
-`graph-web` (port 8080) is a single-page canvas over the HTTP API - a query returns an **induced
-subgraph**, which is exactly what a renderer needs:
-
-- **query editor** for Gremlin and openCypher, with example pickers and a script mode;
-- **graph canvas** that draws the returned subgraph with full properties, with re-balance, brush /
-  selection, zoom-to-fit and a text search;
-- **value / rows panels** for an element's properties and for tabular answers, and a legend/count;
-- **algorithm results** (PageRank, connected components, communities, …) drawn as node colours;
-- **graph builder** (`builder.html`) to author a schema and its storage, edit fuzzy-link patterns and
-  preview a demo query; and **metrics** through the `/api/v1/metrics` endpoints.
-
-## Profiles, locations and the questions they answer
-
-`payment-graph-smart` is a second payment graph whose accounts and merchants carry a 16-dimensional
-profile (`embedding`, a vector property) and a home location (`location`, a geo property). Profiles form
-five clusters and the clusters are also five districts of Shanghai, most payments stay inside a cluster
-and visits only go to shops of the same district - so similar and nearby agree, which is what makes
-these three questions answer something:
+Every account in the payment demo carries a profile (`accountVector`, a vector property) and a home
+location (`location`, a geo property); the smart graph (`payment-graph-smart` /
+`payment-graph-smart-rocksdb`) has the same two properties on `Account` and `Merchant`. Because a
+vector hit and a geo hit are ordinary traversers, the three kinds of search compose in one query:
 
 ```groovy
-g.V('a7','Account').nearest(5)                          // the five most similar accounts (all in Xujiahui)
-g.V('a7','Account').nearest(5).outE('Payment')          // ... and what those accounts pay
-g.V('a7','Account').out('Payment').dedup().nearest(5)   // each receiver, and its own lookalikes
-g.V('m1','Merchant').circle('{"lat":31.2304,"lon":121.4737,"radius":3000}').limit(5)
-                                                        // the five shops nearest a point ...
-...limit(3).nearest(2)                                  // ... and each shop's two closest neighbours
+// the five accounts nearest me (geo), each one's two most similar accounts (vector), and
+// what those accounts paid (graph)
+g.V(1001,'Account')
+    .circle('{"lat":31.2304,"lon":121.4737,"radius":8000}').limit(5)   // geo: the five nearest
+    .nearest(2)                                                        // vector: their lookalikes
+    .outE('Payment').otherV().dedup().limit(60)                        // graph: where the money went
 ```
 
-The same schema is served twice, because the two indexes live in different places: the vector index on
-Aerospike (HNSW; build it with `POST /api/v1/vector-index/rebuild`) and the geo index on RocksDB-Inline
-(a real S2 index - a community Aerospike has no geo secondary index and scans). Load the data with
-`SmartPaymentGraphLiveLoadTest`; see CONTEXT.md section 31.
+- `circle(point, radiusMetres)` is an **S2 range scan**, nearest first, with `distanceMeters` attached
+  to each hit; `has(...)`/`limit(...)` compose with it.
+- `nearest(k[, ef])` is an **HNSW search**; a `has`/`filter` right after it is pushed into the search,
+  so it answers the k nearest that *match*, not the k nearest of which some happen to match. On the
+  payment demo the HNSW layer edges (`accountVector_0`, one more per doubling of the data) are part of
+  the graph, so the search runs on any storage; the smart graph instead uses the index the write path
+  maintains (Aerospike's HNSW, built with `POST /api/v1/vector-index/rebuild`).
+- Every other step (`out/in/both`, `outE/inE/bothE`, filters, aggregations, algorithms) walks the
+  result, so the three kinds of search are steps of one pipeline rather than three systems.
 
-## System metrics
+### A knowledge graph as the context an LLM answers from
 
-Every graph collects its own counters and latency histograms, and persists them in the storage it
-already uses: an Aerospike graph writes one record per graph into the `graph_metrics` system set,
-a RocksDB graph writes one key into a `metrics` column family inside its own directory. A restart
-therefore resumes counting instead of starting over, and today's numbers stay today's.
+![the knowledge graph around a question](docs/screenshots/knowledge-graph-context.png)
 
-Collected per graph, in total and per day: vertex/edge reads and writes (with the items they moved),
-reads and writes that failed after their retries, stale property updates, edges evicted by a degree
-limit, key-value round trips, and — for queries — the count by language and caller, the elements
-they returned, the key-value reads they translated into, and the latency as mean/p50/p95/p99/max.
-
-```
-GET  /api/v1/metrics                 # every graph that recorded something
-GET  /api/v1/metrics/{graph}         # storage / quality / queries, ready for a dashboard
-POST /api/v1/metrics/{graph}/flush   # write through now (a timer does it every 30 s)
-POST /api/v1/metrics/{graph}/reset   # start the counters over
-```
-
-The counters live in `graph-metrics` (`GraphMetrics`, `LatencyStats`, `MetricsStore`,
-`MetricsRegistry`); the storage schemes count their traffic where it is issued
-(`AerospikeOperations` for Aerospike, `RocksDbHandle` for RocksDB) and the query service
-attributes the difference to each query, parallel seed reads included.
-
-## Modules
-
-| Module                | Description                                                     |
-| --------------------- | --------------------------------------------------------------- |
-| `graph-core`          | Core graph abstractions: graph, vertex, edge and exceptions     |
-| `graph-schema`        | Schema model: labels, property keys, data types, cardinalities  |
-| `graph-storage`       | Storage engine abstraction + in-memory storage implementation   |
-| `graph-storage-aerospike` | Aerospike storage: vertices and denormalised edges in one record per vertex, per-property CAS |
-| `graph-storage-rocksdb` | Shared RocksDB plumbing: key layout (fixed-width hash + id), 512-region key space, column families, property codec, vertex tables |
-| `graph-storage-rocksdb-inline` | RocksDB-Inline storage: one table per vertex type, edges folded into one table per edge type, degree limits enforced |
-| `graph-storage-rocksdb-edge` | RocksDB-Edge storage: one table per vertex type plus an edge table per edge class, creation-time window scans, no degree limit |
-| `graph-query`  | Query parsing, planning and execution                           |
-| `graph-query-gremlin` | Gremlin-style traversal engine (`out/in/both`, `bothE`, `filter`, `nearest`, ...) |
-| `graph-query-cypher`  | openCypher subset over the same query ports (`MATCH` / `WHERE` / `RETURN` + aggregation) |
-| `graph-hnsw`          | HNSW vector index: layered graph build + nearest-neighbour search |
-| `graph-compute-engine`| Graph analytics and algorithm execution (BFS, PageRank, ...)    |
-| `graph-web`           | RESTful web service (Spring Boot)                               |
-
-### Storage implementations
-
-The schema decides where a graph lives, so the same graph definition can be served by any
-backend:
-
-```json
-"storage": { "type": "RocksDB-Inline", "path": "payment-graph-rocksdb-inline" }
-```
-
-| `storage.type` | Layout | Degree limits |
-| --- | --- | --- |
-| `Aerospike` (**default**) | one record per vertex holding its properties and its denormalised edges (one bin per edge class and direction) | enforced with per-property CAS on `lastUpdatedTime` |
-| `RocksDB-Inline` | one table per vertex type; one table per edge type holding, per vertex, every edge of that class and direction (Aerospike bin names kept) | enforced: the update reads the edge list, merges by `lastUpdatedTime` and evicts the oldest beyond `maxOutDegree`/`maxInDegree`/`maxDegree` |
-| `Aerospike-Edge` | Aerospike, plus an aggregated edge table per edge class (`Edge_Out` / `Edge_In`): a vertex's edges are chunked by creation time (2000 per record) and folded into further levels until one root remains | none: written by a bulk import, read by a creation-time window (`createdBetween(from, to)`) |
-| `RocksDB-Edge` | one table per vertex type; one edge table per edge class keyed by `hash(vertexId):direction:vertexId:createdTime:edgeId` | none: a hub may have any degree, and a creation-time window is a range scan |
-
-All four schemes implement the same `GraphQuery` port, so Gremlin and Cypher
-run unchanged on all three, with the same batched/parallel reads, on-demand property projection
-and caching.
-
-```bash
-# load the demo payment graph into both RocksDB instances
-./mvnw -pl graph-integration-test -am test -Dtest=RocksDbLiveLoadTest \
-       -Drocksdb.live.dir=$PWD/.rocksdb -Dsurefire.failIfNoSpecifiedTests=false
-# serve Aerospike + both RocksDB instances (default application.yml), or only RocksDB
-java -jar graph-http/target/graph-http-*.jar
-java -jar graph-http/target/graph-http-*.jar --spring.profiles.active=rocksdb
-```
-
-### Geo search
-
-A property marked `isGeo` holds a point and gets an S2 cell index, so a radius query is a range
-scan over that index instead of a scan of the graph. Both RocksDB schemes keep it (one index
-table per geo property, maintained by the vertex writes themselves), and Aerospike uses its
-`geo2dsphere` secondary index where the server has one and scans where it does not.
+The Three Kingdoms graph is served in three forms (`sanguo-kg` on Aerospike, `sanguo-kg-rocksdb-edge`
+and `sanguo-kg-text` on RocksDB-Edge) and one traversal hands an agent the **evidence** around the
+entities of a question:
 
 ```groovy
-g.V('1','Merchant').circle('{"lat":31.2304,"lon":121.4737,"radius":1000}').limit(10)
-g.V('1','Merchant').circle('{"lat":31.2304,"lon":121.4737}', 500).has('category','coffee')
-        .values('name','distanceMeters')
+// the neighbourhood of the entities in the question, as context: relations, offices, battles,
+// and the chapters the mentions came from (the edges carry relation + provenance)
+g.V('关羽','Entity').bothE().otherV().dedup().limit(24)
+    .bothE().otherV().dedup().limit(60)
 ```
 
-The radius is in metres and a step argument, the results come back nearest first with the distance
-attached (`distanceMeters`), and they combine with the other steps (`has`, `limit`, `elementMap`, `count`).
+What makes the graph usable as context:
 
-### Reading a hub by time window
+- **One unified schema** for the domain: a typed `Entity` vertex and one relation edge class whose
+  edges carry `relation`, `xrelation`, `relationLabel` and `relationFamily`. "Who is whose lord /
+  minister / advisor" is a filter on an edge property, not a different edge class per question -
+  which is why a new relation does not need a schema change.
+- **From RDF and from free text.** `SANGUO-KG.md` documents the document-to-RDF mapping; `sanguo-kg-text`
+  adds entities and relations extracted from the documents' running text by a dictionary plus regular
+  expressions (no model, fully reproducible), with the sentence each `mentions` edge came from, so an
+  answer can point back at its evidence. `SANGUO-KG-TEXT-EXTRACTION.md` lists every rule.
+- **Question-shaped templates.** `SANGUO-KG-QUERIES.md` is a handbook of 22 question/answer queries
+  ("关羽 和 诸葛亮 是什么关系？", "谁是五虎上将？", two- and three-hop relation paths) plus the Cypher
+  equivalent of each, ready to be parameterised by a retrieval or agent layer.
+- **Two engines, one answer.** The same graph on Aerospike and on RocksDB answers the shared questions
+  identically (`SanguoRocksDbEdgeTest#matchesTheAerospikeGraphOnTheSharedQuestions`).
 
-A vertex with hundreds of millions of edges cannot live in one record, so `Aerospike-Edge` keeps its
-edges in the aggregated tables and a query has to say which window it wants:
+## Install and run
 
-```groovy
-g.V('9000001','Account').createdBetween('2025-06-01','2025-06-02').inE('Payment').limit(500)
-```
-
-The window walks the levels (root -> children whose span overlaps -> level 0 chunks), the answers are
-merged with the edges still inline in the vertex record (an update always leaves the newest copy
-there), and a query without a window is refused with a message that says to add `createdBetween`.
-
-### Two query languages
-
-The same graph answers Gremlin and openCypher. The HTTP API picks one with `language`,
-and both take a query template plus parameters (`${name}` text placeholders, and native
-`$name` references for Cypher):
-
-```bash
-curl -s -X POST http://localhost:8081/api/v1/query -H 'content-type: application/json' -d '{
-  "graphName": "payment-graph", "language": "cypher",
-  "query": "MATCH (a:Account {id: $id})-[p:Payment]->(b:Account) RETURN b.id, p.status LIMIT 5",
-  "params": { "id": "135" }, "returnSubgraph": true }'
-```
-
-Supported Cypher: one or more `MATCH` patterns (directed, undirected or variable length,
-with labels and inline properties), `WHERE` with comparisons, `AND/OR/NOT`, `IN`,
-`IS [NOT] NULL` and string predicates, `RETURN [DISTINCT]` with
-`count/sum/avg/min/max/collect`, `ORDER BY`, `SKIP` and `LIMIT`. Writes stay in the REST
-write API, and a `MATCH` always needs a starting vertex with an id (the storage has no
-label index, so nothing is scanned). The web UI has a language picker, an example picker
-and a rows table. See `CONTEXT.md` section 19.
-
-### Script mode: a Groovy subset
-
-A Gremlin query may be a **script** - the same traversals written as statements - by sending
-`"script": true` (or by leaving it out and letting the text decide: a query with `def`, `print` or a
-statement is a script). It is a sandboxed interpreter, **not** a Groovy runtime:
-
-```groovy
-def ids = g.V('Account').has('accountStatus', 'CLOSED').values('id').toList()
-println('closed accounts: ' + ids.size())
-ids.findAll { it > 1000 }.collect { it * 2 }.sum()
-```
-
-It supports statements (`def`, assignment, `return`, `print`/`println`/`printf`, `if`/`else if`/`else`,
-`for (x in ...)`, C-style `for`, `while`, `do/while`, `switch`, `break`/`continue`, `assert`), operators
-(`+ - * / %`, comparisons, `&& || !`, ternary, elvis `?:`, spaceship `<=>`, `+= -= *= /= %=`, `++`/`--`,
-`<<`, safe navigation `?.`), ranges (`1..3`, `1..<3`, `xs[1..3]`), literals (lists, maps, `m.a`/`m['k']`,
-triple-quoted strings, slashy `/regex/`), the collection/closure helpers (`each`, `collect`, `findAll`,
-`find`, `grep`, `collectMany`, `findResult`, `any`, `every`, `count`, `sum`, `sort{}`, `max{}`, `min{}`,
-`groupBy`, `collectEntries`, `inject`, `times`), the list/map/text/number methods, and the traversal
-API (`g.V(...)`, chained steps, `toList()`).
-
-**The advanced features are gated.** Whitelisted statics (`Math.max`, `Integer.parseInt`,
-`String.format`, `Integer.MAX_VALUE`, ...), a first-class closure stored in a variable and called
-(`def f = { x -> x * 2 }; f(3)`), and regular expressions (`=~`, `==~`, `String.matches`) need
-`phoenixgraph.script.advanced=true`. It defaults to on (the development gate is the script toggle
-itself); an admin deployment sets it to `false` (or wires it to a role) and those constructs are
-refused with a message that says which permission is missing. Only whitelisted static methods exist -
-there is no reflection, class loading, IO or thread entry point.
-
-**Deliberately not supported** (documented decisions, not gaps): `try/catch` (it would swallow a real
-query/storage error into "looks like no data"), GString `"${x}"` (`${...}` is the HTTP parameter
-substitution syntax, so the script parser never sees it), `class`/`interface`/`trait`/`import`/`new` of
-an arbitrary class, IO (`File`/`URL`/`Socket`), threads and reflection
-(`getClass`/`metaClass`/`invokeMethod`/`Class.forName`). See `CONTEXT.md` sections 109-110.
-
-### Vector search in one query
-
-Flag a property `"isVector": true` and the graph does the rest: writes index the
-embedding automatically, the HNSW layer edge classes (`<property>_0`, one more per
-doubling of the data) are created on demand, and the query engine exposes the
-layered search as a Gremlin step:
-
-```json
-{ "id": 2, "name": "embedding", "type": { "list": "DOUBLE" },
-  "isVector": true, "metric": "COSINE", "m": 15,
-  "efConstruction": 100, "efSearch": 30 }
-```
-
-```groovy
-g.V('4242', 'Vector').nearest(20)          // 20 nearest vectors of that id
-g.V('4242', 'Vector').nearest(20, 200)     // wider candidate list (more accurate)
-g.V('4242', 'Vector').nearest(20).values('name')
-g.V('4242', 'Vector').nearest(20).has('bucket', 3)   // the filter is pushed into the search
-```
-
-See `CONTEXT.md` ("HNSW vector index" and the schema-driven index section) for the
-design, the dataset and the measured recall, and
-`tools/download-siftsmall-dataset.sh` + `HnswGraphIntegrationTest` to build the
-demo index.
-
-### Fuzzy linking: finding the accounts that hide together
-
-A fraudster who knows the system links accounts will keep the obvious details apart -
-different names, different phones, different cards - and still reuse the small ones:
-the same email provider, the same first octets of an address, a user name that is a word
-plus digits, the same card BIN. Fuzzy linking turns those fragments into a **node**:
-every account whose fragments agree produces the same key, so they end up on one
-`FuzzyLink` vertex and a query can walk from the pattern to the ring.
-
-A pattern is data, written by an analyst:
-
-```
-emailDomain(email)+'_'+countryCode(phone)+'_'+ip2(ip)+'_'+regexValue(username, '^([a-z]+)')
-```
-
-It is evaluated against a **context** (a JSON object, or the properties of a vertex) and each
-part produces a fragment; the fragments joined are the key. A part with no value makes the
-whole pattern not apply - an account without an email is not linked by a pattern that needs
-the email domain - and `opt(...)` marks a part as optional.
-
-A regular expression is how a pattern asks for a *shape*, and there are two ways to use one:
-
-```
-regex(username, '^[a-z]+\d+$')             // requires the shape, and puts the shape in the key
-regexValue(username, '^([a-z]+)\d+$')      // requires it, and puts what it matched in the key: zhang
-regexValue(email, '@(\w+)\.(\w+)$', 2)    // a group of it: a@mail.ru -> ru (0 is the whole match)
-```
-
-The difference decides who ends up on one node. With `regex`, `zhang1988` and `xia1999` - two accounts
-that share the way their user name is built and nothing else - are linked; with `regexValue`, only
-accounts whose extracted word is the same are. The shape itself is the fragment
-(`re_<shape>_<hash>`, so a reader sees which sub-pattern it stands for and two shapes that normalise
-alike stay apart), and a value that does not have the shape makes the pattern not apply at all.
-
-Backslashes are kept as written (`\d`, `\w`, `\s`), so a class means what it says. A group a
-`regexValue` asks for but the expression does not have is reported when the pattern is used.
-
-A pattern can carry how to try it: an `example` context, a `demoTitle` and the `demoSteps` a demo
-query continues with, so the demo walks from the fragments to the ring, its payments and the account
-they reach. (The dashboard button that ran it is switched off in `app.js` for now - the endpoint and
-the pattern examples stay.)
-
-```groovy
-g.V().fuzzyLink(0, '{"email":"19880101@mail.ru","phone":"+8613800138001",
-                   "ip":"10.20.31.7","username":"zhang1988"}')
-    .out('FuzzyLinkedTo')                 // the accounts that share those fragments
-    .outE('Payment').otherV()             // where their money went
-
-g.V('fz_a1','Account').fuzzyLink(0)       // which ring does this account belong to
-```
-
-What it is made of:
-
-- **`graph-fuzzy`** (a module of its own): the pattern language
-  (`emailDomain`, `emailName`, `ip2`/`ip3`, `countryCode`, `phonePrefix`, `cardBin`,
-  `alphaPrefix`, `digitSuffix`, `regex`, `digits`, `first`/`last`, `hash`, `opt`, …),
-  the key normalisation, the deterministic ids (`pattern_<id>`, `fl_<pattern>_<key>`) and
-  the link plan - a pure function of a pattern and a context, which is why the reader and
-  the writer agree by construction;
-- **patterns as a file** (`fuzzy-patterns.json`, per graph), edited in the builder page and
-  re-read when it changes, so a new pattern is used by the next query without a restart;
-- **the `fuzzyLink` step**: it computes the key from the context, reads the link vertex with
-  that id and continues the traversal from it. It works from a context alone
-  (`g.V().fuzzyLink(0, '{...}')`) or from an account (`g.V('a1','Account').fuzzyLink(0)`,
-  whose own properties are the context);
-- **the schema**: a `FuzzyLink` vertex, a `FuzzyPattern` vertex and one `FuzzyLinkedTo`
-  edge from a link to an account, with out- and in-degree limits of 1000 - a pattern like
-  "same /16" can group a lot of accounts, and the edge has to allow it;
-- **the writes**: `POST /api/v1/graphs/{graph}/fuzzy-links` links one vertex (and the demo
-  loader seeds two rings), through the ordinary write path, so links are validated and
-  indexed like any other vertex - and linking twice leaves one node and one edge, because
-  the ids are the key.
-
-`FuzzyLinkIntegrationTest` seeds two rings (six accounts sharing an email provider, a
-country, a `/16` and a name word; four hiding behind machine-made addresses on one `/24`
-with one card BIN) plus honest accounts that share nothing, and then asserts that the
-pattern finds exactly the ring, that the link node and its members agree both ways, and
-that the query above walks to twelve payments at the collection account.
-
-### A query starts from a key or from a class
-
-The two storage implementations are not two spellings of one thing: they answer different questions.
-**Aerospike is the transactional side** - a request arrives with a key, one record (or a batch of them)
-answers it, and that is the whole read path of a request. **RocksDB-Edge is the analytical side** - one
-ordered table per vertex type and per edge class, so a question that names a *class* is one iterator
-per table, and the walk can be capped, projected and pushed into the decode.
-
-```groovy
-// by key: both stores answer this, and it is what a request path does
-g.V('135','Account').outE('Payment').limit(10).values('status')
-
-// by class: the analytical store walks the table, the transactional one says so
-g.V('Account').filter(accountStatus.equals('ACTIVE')).bothE('Payment').cc(DIST)
-g.E('Payment').pagerank(DIST, 10)
-g.E('Payment').count()
-```
-
-- A traversal may start from **one type on its own**: `g.V('Account')` is every account, `g.E('Payment')`
-  is every payment of that class. Both need a store that can scan; on one that answers by id the query
-  is refused with a message that says which store does it rather than returning nothing:
-  *`g.V('Account') starts from a whole type, which AerospikeGraphQuery cannot read: a keyed store
-  answers by id. Scan a type on a store whose tables are ordered ranges (the RocksDB-Edge scheme is the
-  analytical one), or name the ids instead.`*
-- `g.E('Payment')` reads each payment **once**, with **both** of its endpoints (`otherV()` is the far
-  one, and an algorithm step gets the whole edge).
-- The capability is one method on the query port (`supportsScan()`), so a new backend opts in without
-  the traversal changing, exactly like the pushed-down conditions.
-- A scan reads as much as the store holds, which is what the analytical side is for: `scanLimit`
-  (`GremlinGraphQuery.scanLimit(n)`, `0` = no cap) bounds every scan of an embedding in one place.
-
-### Distributed graph algorithms (Gemini)
-
-The algorithm steps also exist in a distributed form, after Gemini (OSDI '16): the graph is cut
-into contiguous chunks, one per worker, every edge is stored twice (where its destination lives for
-a push, where its source lives for a pull), and each superstep picks the cheaper direction from the
-number of active edges - the rule the paper takes from Ligra, `sparse when activeEdges < |E| / 20` -
-so a traversal pays for the work it causes rather than for a fixed strategy.
-
-```groovy
-g.V('135','Account').bothE('Payment').otherV().pagerank(DIST, 10)   // on the payment edges reached
-g.V('a1,a2,a3','Account').cc(DIST)                                  // connected components
-g.V('a1,a2,a3','Account').louvain(DIST, 20)                         // communities
-g.V('a1,a2,a3','Account').sssp(DIST, 'a1')                          // shortest paths from a1
-```
-
-- **`DIST` means the distributed engine and nothing else**: with no cluster configured the step is an
-  error, never a quiet fall back to the in-process implementation (`pagerank()` without the marker still
-  runs in memory, which is what the three algorithms that have both forms are for).
-- Workers are **processes with a port**: `graph-http` starts four on 19100-19103 by default
-  (`phoenixgraph.gemini.workers`, `first-port`, `mode=local|process`), each worker answers on its own
-  HTTP endpoint, and `GeminiWorkerMain` is the program a helper script (or a YARN container) starts. The
-  messages between workers are batched per peer and buffered on arrival, so no two workers wait on each
-  other; the launcher only decides the mode of each superstep and adds up the totals an algorithm needs.
-- The graph computed on is the **induced subgraph the traversal reached** - the same one the in-memory
-  steps use - so the two engines can be compared on one query. The edge classes come from the traversal
-  (`bothE('Payment')` means the payment edges only).
-- A whole-class seed (`g.E('payment').pagerank(DIST)` with no vertices) is not supported yet: it needs a
-  scan port, which is the same gap as counting a whole vertex type. Seed the vertices the graph is about.
-
-See `CONTEXT.md` section 36 for the mapping onto the paper (chunk partitioning, the dual edge copy,
-the signal/slot API, mirror scheduling, the bitmap-assisted CSR and doubly-compressed CSC), what was
-adapted for HTTP and single-process workers, the bugs the first runs turned up, and the measured runs:
-four workers on one machine, connected components converging in seven supersteps, PageRank matching a
-hand-written single-process reference to 1e-6, and a live `pagerank(DIST)` over the payment demo
-answering for fifty accounts in 2.8 seconds including loading the graph.
-
-## Run the whole database in Docker
-
-The stack is three containers: Aerospike (the transactional store), `graph-http` (the engine and the
-query/write API) and `graph-web` (the visualization UI). The compose file builds both images from this
-repository.
-
-```bash
-# full stack: UI on 8080, API on 8081, Aerospike on 3000
-docker compose up --build
-
-# also the write-driven vector instance (its own graph, port 8083)
-docker compose --profile hnsw up --build
-
-# stop (add -v to drop the RocksDB volume as well)
-docker compose down
-```
-
-Then open <http://localhost:8080> for the UI and <http://localhost:8081/api/v1/graphs> for the API.
-
-The two images are also built and run on their own:
-
-```bash
-docker build -f graph-http/Dockerfile -t phoenixgraph-http .
-docker build -f graph-web/Dockerfile  -t phoenixgraph-web  .
-
-docker run --rm -p 8081:8081 \
-  -e PHOENIXGRAPH_STORAGE_HOST=host.docker.internal \
-  -v phoenix-rocksdb:/data/rocksdb phoenixgraph-http
-
-docker run --rm -p 8080:8080 \
-  -e PHOENIXGRAPH_HTTP_URL=http://host.docker.internal:8081 phoenixgraph-web
-```
-
-What the images contain and how they behave:
-
-- **multi-stage build** - a Maven stage compiles the module and its dependencies, the runtime stage is
-  a JRE with only the fat jar; the whole repository is the build context (`.dockerignore` keeps
-  `target/`, `node_modules/`, `.rocksdb/`, `.logs/` and `.datasets/` out of it);
-- **non-root** - both containers run as an unprivileged `phoenixgraph` user;
-- **healthchecks** - `graph-http` is healthy when `/api/v1/graphs` answers, `graph-web` when `/`
-  answers, and `graph-web` waits for `graph-http` to be healthy (`depends_on: condition: service_healthy`);
-- **`JAVA_OPTS`** defaults to `-XX:MaxRAMPercentage=75`, so the JVM sizes its heap from the container
-  memory limit; override it to pass any other flag;
-- **configuration** - the image runs with the `docker` Spring profile
-  (`graph-http/src/main/resources/application-docker.yml`), which points the storage host at the
-  compose service, puts RocksDB under `/data/rocksdb` (a named volume) and serves the graphs whose data
-  a container can hold. Everything else is the ordinary environment:
-  `PHOENIXGRAPH_STORAGE_HOST`, `PHOENIXGRAPH_STORAGE_PORT`, `PHOENIXGRAPH_STORAGE_NAMESPACE`,
-  `PHOENIXGRAPH_STORAGE_VERTEX_SET`, `PHOENIXGRAPH_STORAGE_ROCKSDB_ROOT`.
-
-**Data.** Aerospike starts empty. Seed the demo set (`http_demo_v3`) from the host against the
-Aerospike the compose publishes on 3000:
-
-```bash
-./mvnw -pl graph-integration-test -am test -Dtest=QueryApiIntegrationTest \
-       -Dsurefire.failIfNoSpecifiedTests=false
-```
-
-For the analytical (RocksDB) graphs, build a local `.rocksdb` directory and mount it at `/data/rocksdb`:
-
-```bash
-./mvnw -pl graph-integration-test -am test -Dtest=RocksDbLiveLoadTest \
-       -Drocksdb.live.dir=$PWD/.rocksdb -Dsurefire.failIfNoSpecifiedTests=false
-# then, in docker-compose.yml, replace the named volume with a bind mount:
-#   volumes: [ "./.rocksdb:/data/rocksdb" ]
-```
-
-## Requirements
+### Requirements
 
 - JDK 21+ (the project compiles with `--release 21`)
-- Maven 3.9+ (or use the included Maven wrapper: `./mvnw`)
+- Maven 3.9+ (or the included wrapper: `./mvnw`)
+- Docker (for Aerospike, and for the container images)
 
-## Build
+### Build
 
 ```bash
 ./mvnw clean package
 ```
 
-On Windows (cmd/PowerShell):
-
-```bat
-mvnw.cmd clean package
-```
-
-## Run the web service
-
-```bash
-./mvnw -pl graph-web spring-boot:run
-```
-
-Then open <http://localhost:8080/api/v1/graph/health>.
-
-## Start and stop everything with one script
+### Run the services
 
 ```bash
 tools/start-phoenixgraph.sh                    # build, then start graph-http (8081) + graph-web (8080)
-tools/start-phoenixgraph.sh --no-build         # skip the build, start what is already built
-tools/start-phoenixgraph.sh --with-hnsw        # also start the hnsw-dynamic instance (8083)
-tools/stop-phoenixgraph.sh                     # stop the running instances
+tools/start-phoenixgraph.sh --no-build         # start what is already built
+tools/start-phoenixgraph.sh --with-hnsw        # also the write-driven vector instance (8083)
+tools/stop-phoenixgraph.sh
 ```
 
-What the start script does, in order: stop any running instance (a live service holds its jar
-open, so the build would fail otherwise), build `graph-http` + `graph-web` and their dependencies
-(`clean package`, tests skipped), start the Aerospike container if it is not running, launch the
-services detached, and wait until each answers before reporting the URLs.
+Then open <http://localhost:8080> for the UI and <http://localhost:8081/api/v1/graphs> for the API. The
+start script stops any running instance first (a live service holds its jar open), builds `graph-http` +
+`graph-web` and their dependencies, starts the Aerospike container if needed, launches the services
+detached and waits until each answers. Logs are written to `.logs/<service>.out`.
 
-- it checks that the jar really is a **fat jar** (has `BOOT-INF/lib`) and stops with a hint if a
-  build ever ran with `-Dspring-boot.repackage.skip=true`, which leaves a thin jar that cannot be
-  started with `java -jar`;
-- 8083 always gets its own Gemini ports (`--phoenixgraph.gemini.first-port=19110`), otherwise its
-  workers collide with the ones of 8081 and that instance fails to start;
-- it needs a JDK on `JAVA_HOME` (falling back to the newest `/c/Program Files/Java/jdk-*`), and
-  `curl`, `unzip`, `docker` and `powershell` on PATH;
-- logs are written to `.logs/<service>.out`, and the services outlive the script (`nohup`).
+### Run it all in Docker
+
+```bash
+docker compose up --build                 # Aerospike + graph-http (8081) + graph-web (8080)
+docker compose --profile hnsw up --build  # also the write-driven vector instance (8083)
+docker compose down                       # add -v to drop the RocksDB volume too
+```
+
+Both images are multi-stage, run as a non-root user, have healthchecks (`/api/v1/graphs` for
+`graph-http`, `/` for `graph-web`) and size the JVM from the container limit
+(`JAVA_OPTS=-XX:MaxRAMPercentage=75`). `graph-web` waits for `graph-http` to be healthy. The image runs
+with the `docker` Spring profile (`graph-http/src/main/resources/application-docker.yml`), which points
+the storage host at the compose service and puts RocksDB under `/data/rocksdb` (a named volume).
+Configuration is the ordinary environment: `PHOENIXGRAPH_STORAGE_HOST`, `PHOENIXGRAPH_STORAGE_PORT`,
+`PHOENIXGRAPH_STORAGE_NAMESPACE`, `PHOENIXGRAPH_STORAGE_VERTEX_SET`,
+`PHOENIXGRAPH_STORAGE_ROCKSDB_ROOT`.
+
+The two images also run on their own:
+
+```bash
+docker build -f graph-http/Dockerfile -t phoenixgraph-http .
+docker build -f graph-web/Dockerfile  -t phoenixgraph-web  .
+docker run --rm -p 8081:8081 -e PHOENIXGRAPH_STORAGE_HOST=host.docker.internal phoenixgraph-http
+docker run --rm -p 8080:8080 -e PHOENIXGRAPH_HTTP_URL=http://host.docker.internal:8081 phoenixgraph-web
+```
+
+Aerospike starts empty: seed the demo set (`http_demo_v3`) from the host with the integration-test
+loader, or mount a loaded `.rocksdb` directory at `/data/rocksdb` for the analytical graphs (see
+[Loading data](#loading-data)).
+
+### Distributed, high-concurrency deployment
+
+The algorithm steps and `g.V(DIST)` partitioned scans run on a **Gemini** cluster (after Gemini,
+OSDI '16): the graph is cut into contiguous chunks, one per worker, with a dual edge representation,
+and each superstep picks the cheaper direction (`sparse when activeEdges < |E| / 20`).
+
+- **`DIST` means the distributed engine and nothing else.** With no cluster configured the step is an
+  error, never a quiet fall back to the in-process implementation. `pagerank()` without the marker still
+  runs in memory.
+- **`g.V(DIST)` is a partitioned scan**: the key space is split into hash ranges, one range per mapper,
+  each mapper runs its own `GremlinContext` and pushes the attribute condition, projection and hops
+  next to the data; the reduce phase runs the whole-set steps (`order`, `limit`, `count`, ...) once.
+  The split point is the key layout (`hash(id):id`), so a range is a contiguous scan.
+- **Workers are processes with a port.** `graph-http` starts four on 19100-19103 by default
+  (`phoenixgraph.gemini.workers`, `first-port`, `mode=local|process`); each worker answers on its own
+  HTTP endpoint, and `GeminiWorkerMain` is the program a helper script or a YARN container starts.
+  Messages between workers are batched per peer and buffered on arrival, so no two workers wait on
+  each other.
+- **High-concurrency serving.** One `graph-http` instance holds one engine per graph (with a compiled
+  query cache), reads a batch of seeds in parallel (`parallelism`, default `min(8, CPU)`), keeps an
+  adaptive batch size, and serves stateless HTTP requests, so it scales horizontally behind a load
+  balancer; the storage (Aerospike, or RocksDB on a shared volume) is the only shared state.
+
+```groovy
+g.V('135','Account').bothE('Payment').otherV().pagerank(DIST, 10)   // 50 accounts, ~2.8 s incl. load
+g.V('a1,a2,a3','Account').cc(DIST)                                  // connected components
+g.V('a1,a2,a3','Account').louvain(DIST, 20)                         // communities
+g.V(DIST,'Account').has('accountStatus','ACTIVE').count()           // a partitioned class scan
+```
+
+## Storage guide: OLTP on Aerospike, OLAP on RocksDB
+
+### Where the schema says a graph lives
+
+A graph's schema declares its storage, so the same definition can be served by any backend:
+
+```json
+"storage": { "type": "RocksDB-Edge", "path": "payment-graph-rocksdb-edge" }
+
+// or, the default:
+"storage": { "type": "Aerospike" }
+```
+
+| `storage.type` | Role | Layout | Degree limits |
+| --- | --- | --- | --- |
+| `Aerospike` (**default**) | OLTP: keyed reads and writes | one record per vertex: properties + denormalised edges (one bin per class and direction), per-property CAS on `lastUpdatedTime` | enforced with CAS |
+| `Aerospike-Edge` | OLTP + aggregated hub reads | Aerospike, plus `Edge_Out`/`Edge_In` tables: a vertex's edges are chunked by creation time and indexed by further levels | none; read by a creation-time window |
+| `RocksDB-Inline` | analytical, with degree limits | one table per vertex type, one per edge type, edges folded into the record | enforced: merge by `lastUpdatedTime`, evict the oldest beyond `maxOutDegree`/`maxInDegree`/`maxDegree` |
+| `RocksDB-Edge` | analytical, no degree limit | one table per vertex type, one edge table per class keyed by `hash(vertexId):direction:vertexId:createdTime:edgeId` | none; a creation-time window is a range scan |
+
+The engine asks the storage what it can do (`supportsScan`, `supportsEdgeReadPushdown`,
+`supportsPartitionedScan`): either the storage pushes the work down or the traversal does it. A new
+backend only implements the `GraphQuery` port.
+
+### OLTP: keyed reads and writes on Aerospike
+
+A request path names ids, so one record (or one batch) answers it and nothing scans. Writes go through
+the REST write API (they are validated, indexed by the vector index, and counted by the metrics);
+concurrent updates to the same property are safe under per-property CAS.
+
+```groovy
+g.V('135','Account').outE('Payment').limit(10).values('status')   // one record + its out bin
+g.V('1001','Account').nearest(5).outE('Payment')                  // vector index + one hop
+```
+
+### OLAP: class scans and time windows on RocksDB
+
+The analytical side answers a question that names a **class**: one iterator per table, capped,
+projected and pushed into the decode.
+
+```groovy
+g.V('Account').has('accountStatus','ACTIVE').bothE('Payment').cc(DIST)
+g.E('Payment').count()
+g.V('9000001','Account').createdBetween('2025-06-01','2025-06-02').inE('Payment').limit(500)
+```
+
+A hub with hundreds of millions of edges lives in the aggregated tables and is read by walking the
+levels of a time window; a query without a window is refused with a message that says to add
+`createdBetween`. `g.E('Payment')` reads each edge once, with both endpoints (`otherV()` is the far
+one). `scanLimit` bounds every class scan of an engine in one place.
+
+### Building a schema
+
+A schema is JSON (`graph-http/src/main/resources/*.json`) with vertex types, edge endpoints, property
+types and the storage block. The UI's **builder page** (`builder.html`, the "图管理" button) authors
+one: it edits vertices/edges/properties, picks the storage type and path, and previews the draft. The
+same JSON can be generated with the tools under `tools/`.
+
+### Loading data
+
+Three ways, by scale:
+
+```bash
+# 1. the payment graphs (RocksDB-Inline + RocksDB-Edge) into a local .rocksdb directory
+./mvnw -pl graph-integration-test -am test -Dtest=RocksDbLiveLoadTest \
+       -Drocksdb.live.dir=$PWD/.rocksdb -Dsurefire.failIfNoSpecifiedTests=false
+
+# 2. the other demo graphs, one loader each (all run from graph-integration-test)
+#    SmartPaymentGraphLiveLoadTest  - the smart graph (vector + geo on Account/Merchant)
+#    GeoMerchantDataLoader          - the geo-merchants graphs (240 merchants, S2 index)
+#    SanguoGraphIntegrationTest     - the Three Kingdoms graph on Aerospike (11k points / 21k edges)
+#    SanguoRocksDbLoader            - the Three Kingdoms graph on RocksDB-Edge
+#    QueryApiIntegrationTest        - the Aerospike demo set http_demo_v3 (and the fuzzy rings)
+./mvnw -pl graph-integration-test -am test -Dtest=SmartPaymentGraphLiveLoadTest -Dsurefire.failIfNoSpecifiedTests=false
+
+# 3. bulk CSV through the batch loader (graph-batch-load: BatchLoadMain <csv-file>)
+```
+
+For a large analytical import, a loader writes straight into the ordered tables (the same layout the
+engine scans); the write API is for the transactional, request-driven path.
+
+### Querying
+
+One HTTP endpoint serves both languages and both storage roles:
+
+```bash
+curl -s -X POST http://localhost:8081/api/v1/query -H 'content-type: application/json' -d '{
+  "graphName": "payment-graph-rocksdb-edge",
+  "query": "g.V(1001,\u0027Account\u0027).out(\u0027Payment\u0027).values(\u0027id\u0027)",
+  "params": {}, "includeResult": true, "returnSubgraph": true }'
+```
+
+- `language` picks `gremlin` (default) or `cypher`; `${name}` placeholders come from `params` (Cypher
+  also takes native `$name`).
+- `returnSubgraph` adds the induced subgraph the traversal touched - what the UI draws.
+- `script: true` runs a Groovy-subset script (variables, loops, collection helpers; see
+  `CONTEXT.md` sections 109-110).
+
+The UI has a language picker, example pickers and a rows table; the same graph answers Gremlin and
+openCypher, so a team can pick the one it knows.
+
+### Monitoring
+
+Every graph collects its own counters and latency histograms and persists them in the storage it
+already uses (an Aerospike graph in a system set, a RocksDB graph in a column family of its own
+directory), so a restart resumes counting. Per graph, in total and per day: vertex/edge reads and
+writes, failed reads and writes, stale property updates, edges evicted by a degree limit, key-value
+round trips, and - for queries - the count by language and caller, the elements returned, the key-value
+reads they caused, and the latency as mean/p50/p95/p99/max.
+
+```
+GET  /api/v1/metrics                 # every graph that recorded something
+GET  /api/v1/metrics/{graph}         # storage / quality / queries, ready for a dashboard
+POST /api/v1/metrics/{graph}/flush   # write through now (a timer does it every 30 s)
+POST /api/v1/metrics/{graph}/reset
+```
+
+### The knowledge graph's unified schema
+
+The knowledge graph deliberately does **not** create an edge class per relation. One `Entity` vertex
+and one relation edge class carry the relation in a property:
+
+```
+Entity(id, name, type, ...)  --Entity_Entity{relation, xrelation, relationLabel, relationFamily}-->  Entity
+```
+
+`relation` is the machine name (`lord`, `minister`, `master`, `serves`, `holds`, `appearsIn`,
+`mentions`, ...), `relationLabel` the human label (`主公`, `义兄`, ...), `relationFamily` a grouping
+(`亲属`, `官职`, ...). Consequences:
+
+- a new relation is data, not a schema change;
+- one query asks about any relation, and a family filter answers "all kinship of 诸葛亮";
+- the same schema serves the RDF graph, the RocksDB graph and the free-text-extracted graph, so the
+  three can be compared and merged;
+- every extracted edge can carry provenance (the chapter, sometimes the sentence), which is what makes
+  the graph usable as evidence for an answer.
+
+```groovy
+g.V('诸葛亮','Entity').inE().filter(relation.equals('lord')).otherV().values('name')   // 刘备
+g.V('诸葛亮','Entity').bothE().filter(relationFamily.equals('亲属')).otherV().dedup().values('name')
+g.V('五虎上将','Entity').inE().filter(relation.equals('holds')).otherV().values('name')
+```
+
+## Graph algorithms (OLAP)
+
+The algorithm steps run over the induced subgraph a traversal reached, in-process by default and on a
+Gemini cluster with `DIST`. The UI colours the canvas with the result, which is the quickest way to see
+what an algorithm computed:
+
+![PageRank colouring the canvas](docs/screenshots/olap-pagerank.png)
+
+![Louvain communities on the canvas](docs/screenshots/olap-communities.png)
+
+| Step | Runs over | Distributed form |
+| --- | --- | --- |
+| `pagerank([iterations])` | the reached subgraph | `pagerank(DIST, 10)` |
+| `louvain([iterations])` | communities | `louvain(DIST, 20)` |
+| `cc()` | connected components | `cc(DIST)` |
+| `sssp(DIST[, root])` | shortest paths (distributed only) | `sssp(DIST, 'a1')` |
+| `bfs(DIST[, root])` | breadth-first reachability (distributed only) | `bfs(DIST, 'a1')` |
+
+```groovy
+g.V('135','Account').bothE('Payment').otherV().pagerank(10)   // in this process
+g.V('135','Account').bothE('Payment').otherV().cc(DIST)       // on the Gemini cluster
+```
+
+The UI's toolbar runs the same steps (Louvain, PageRank, connected components, shortest path) on the
+subgraph currently drawn, and the metrics endpoints report the counters and latency of every graph.
+
+## Visualization
+
+`graph-web` (8080) is a single-page canvas over the HTTP API:
+
+- **query editor** for Gremlin and openCypher, with example pickers and a script mode;
+- **graph canvas** that draws the returned induced subgraph with full properties, with re-balance,
+  brush/selection, zoom-to-fit and a text search;
+- **value / rows panels** for an element's properties and for tabular answers, and a legend/count;
+- **algorithm colouring** (PageRank, Louvain, connected components, shortest path);
+- **graph builder** (`builder.html`) to author a schema and its storage and to edit the fuzzy-link
+  patterns; and **metrics** through the `/api/v1/metrics` endpoints.
+
+## Modules
+
+| Module | Description |
+| --- | --- |
+| `graph-core` | core graph abstractions |
+| `graph-schema` | schema model: labels, property keys, data types, cardinalities |
+| `graph-storage` | storage abstraction + in-memory implementation |
+| `graph-storage-aerospike` | Aerospike: vertices and denormalised edges in one record, per-property CAS |
+| `graph-storage-rocksdb` | shared RocksDB plumbing: key layout, regions, column families, codec |
+| `graph-storage-rocksdb-inline` | RocksDB-Inline: one table per type, degree limits |
+| `graph-storage-rocksdb-edge` | RocksDB-Edge: one edge table per class, time-window scans |
+| `graph-query` | query parsing, planning and execution |
+| `graph-query-gremlin` | Gremlin traversal engine + the Groovy-subset script layer |
+| `graph-query-cypher` | openCypher subset over the same query ports |
+| `graph-fuzzy` | fuzzy-link pattern language (fraud rings) |
+| `graph-hnsw` | HNSW vector index: layered build + nearest-neighbour search |
+| `graph-gemini` | the Gemini cluster (partitioning, dual representation, workers) |
+| `graph-compute-engine` | graph analytics |
+| `graph-metrics` | per-graph counters and latency histograms |
+| `graph-http` | the query/write REST API and the engines |
+| `graph-web` | the visualization UI |
+| `graph-batch-load` | CSV/RDF bulk loader |
+
+## What is next: a data-agent component
+
+PhoenixGraph is being turned into an **open, independent component that a data agent can build on** -
+the graph side of an agent stack, not another agent. The direction:
+
+1. **Graph as agent memory and grounding.** Expose the knowledge graph as a retrievable context
+   substrate: an agent asks for the neighbourhood, the shortest relation path or the community around
+   entities, and gets back a bounded subgraph with provenance to cite - exactly the traversal shown in
+   [A knowledge graph as the context an LLM answers from](#a-knowledge-graph-as-the-context-an-llm-answers-from),
+   wrapped behind a small, stable API.
+2. **A tool/function interface for agents.** A minimal "graph tools" surface (`find_entities`,
+   `related`, `path_between`, `similar`, `nearby`, `aggregate`) that any agent framework (MCP, OpenAI
+   function calling, LangChain-style tool use) can register, so the same graph serves many agent
+   products without each writing traversal code.
+3. **Schema-on-read for context graphs.** The unified entity/relation schema and the RDF/free-text
+   ingestion let a customer bring their own corpus and get a context graph without a modelling project;
+   the builder page is the human entry point, the ingestion API is the machine one.
+4. **The three searches as retrieval plugins.** Vector, geo and graph retrieval are already steps of one
+   query, so a retrieval layer can mix them (geo filter + vector ranking + graph expansion) without
+   stitching three systems - which is the part most agent stacks currently hand-roll.
+5. **Open and independent.** The engine stays a self-contained database (four storage backends, one
+   wire API, a visualization UI), with the agent-facing layer kept thin and framework-agnostic, so it
+   can sit under any agent business rather than locking one in.
+
+See `CONTEXT.md` and `HANDOVER.md` for the design notes and the current state.

@@ -69,6 +69,13 @@ phoenixgraph:
       #   g.V('刘备','Entity').inE().filter(relation.equals('strategistOf')).otherV().values('name')
       - schema: sanguo-kg-text
         vertex-set: kg_sanguo_v1
+      # the smart payment graph: accounts and merchants carry a profile vector (embedding) and a
+      # home location (location), so a vector search, a geo search and a graph walk compose in one
+      # traversal. Loaded by SmartPaymentGraphLiveLoadTest into RocksDB-Inline:
+      #   g.V('m1','Merchant').circle('{"lat":31.2304,"lon":121.4737,"radius":3000}').limit(5)
+      #     .nearest(2).in('Visited').dedup().outE('Payment').otherV().limit(60)
+      - schema: payment-graph-smart-rocksdb
+        vertex-set: payment_smart_v1
 
     # --- the graphs the dashboard hides for now ---------------------------------
     # - schema: payment-graph-rocksdb-inline

@@ -7212,3 +7212,30 @@ IO（`File`/`URL`/`Socket`）、线程、反射（`getClass`/`metaClass`/`invoke
   （Math/Integer/String/Double、闭包调用与递归、Map 方法、String.matches）；反射/Class/IO/线程/环境仍全部拒绝。
   剩下 19 条拒绍里，除设计上不做的（try/catch、GString、class/import/new/IO/线程/反射）就是本次未列入档位的
   （`**`、`*.`、`as`、`instanceof`、`def f(x){}`、closure 默认参数、多赋值、labeled break）。
+
+## 111. README 二稿：以"AI context graph + 三种检索合一 + HTAP 使用指南"为主线（2026-09-29）
+
+按用户给的五个部分重写 `README.md`，并把界面截图纳入仓库：
+
+1. **开头概括 + 两种截图**：`What PhoenixGraph is` 五条（AI context graph、graph+vector+geo 合一、
+   OLTP/OLAP 可插拔、高性能高 QPS（引 `AerospikeHopQueryLatencyTest` 的 p50 数字）、可视化、fuzzy 关联）；
+   - `docs/screenshots/vector-geo-graph.png`：`g.V(1001,'Account').circle(...8000m).limit(5).nearest(2).outE('Payment').otherV().dedup().limit(60)`
+     （geo → vector → graph，一条查询；实测 28 点/28 边）；
+   - `docs/screenshots/knowledge-graph-context.png`：`g.V('关羽','Entity').bothE().otherV().dedup().limit(24).bothE().otherV().dedup().limit(60)`
+     （把问题实体周围的子图作为给大模型的上下文/证据）。
+2. **安装使用 + 分布式高并发部署**：要求/构建/`tools/start-phoenixgraph.sh`/`docker compose`（含两个镜像的独立用法、
+   非 root/healthcheck/`JAVA_OPTS`/`docker` profile/环境变量）；Gemini 的 `DIST`、`g.V(DIST)` 分区扫描、
+   端口式 worker、单实例水平扩展（无状态 HTTP + 每图引擎 + 并行种子读 + 批量自适应 + 编译缓存）。
+3. **OLTP on Aerospike / OLAP on RocksDB 使用指南**：存储表、schema 的 `storage` 块、键路径与类扫描/时间窗、
+   builder 建 schema、三种装载方式（`RocksDbLiveLoadTest`/`SmartPaymentGraphLiveLoadTest`/`GeoMerchantDataLoader`/
+   `Sanguo*`/`QueryApiIntegrationTest`/批量 CSV）、HTTP 查询示例（`returnSubgraph`/`script`）、
+   **知识图谱统一 schema**（一个 `Entity` + 一个 relation 边类，关系在属性里）与其好处。
+4. **OLAP 算法**：`docs/screenshots/olap-pagerank.png` 与 `olap-communities.png`（UI 画布着色），
+   `pagerank/louvain/cc` 内存版 + `sssp/bfs(DIST)` 集群版。
+5. **下一步：data agent 组件**：把图谱做成 agent 可检索的 context 基底（带 provenance 的子图/路径/社区）、
+   给 agent 的 graph tools 接口（`find_entities`/`related`/`path_between`/`similar`/`nearby`/`aggregate`）、
+   统一 schema + RDF/文本装载让客户自带语料、三种检索作为 retrieval 插件、保持引擎独立第三方可适配任意 agent 业务。
+
+配套改动：`application.yml` 把 `payment-graph-smart-rocksdb` 加入默认服务列表（向量+地理在 Account/Merchant 上，
+配合 README 的示例）；截图由 `.logs/capture-screenshots.js`（puppeteer-core + 本机 Edge headless）对真实运行的
+8080/8081 生成，放在 `docs/screenshots/`。
