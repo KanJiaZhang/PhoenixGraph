@@ -1,0 +1,51 @@
+{
+  "id": 51,
+  "name": "tpc-h-analytics",
+  "description": "The semantic layer of an enterprise data agent over the TPC-H retail model: tables, columns, metrics, dimensions, domains and queries, with lineage and attribution relations.",
+  "constraints": { "idSchemaIndex": 0, "createdTimeIndex": -2, "lastUpdatedTimeIndex": -1 },
+  "vertexSchemas": [
+    {
+      "id": 1,
+      "name": "Node",
+      "description": "A semantic-layer node: Table / Column / Metric / Dimension / Domain / Query",
+      "idSchema": { "id": 0, "name": "id", "description": "Node id (its name)", "type": "STRING" },
+      "createdTime": { "id": -2, "name": "createdTime", "description": "Creation timestamp", "type": "LONG" },
+      "lastUpdatedTime": { "id": -1, "name": "lastUpdatedTime", "description": "Last update timestamp", "type": "LONG" },
+      "properties": [
+        { "id": 1, "name": "name", "description": "Node name (table / column / metric / dimension / domain / query id)", "type": "STRING", "display": true },
+        { "id": 2, "name": "entityType", "description": "Table / Column / Metric / Dimension / Domain / Query", "type": "STRING" },
+        { "id": 3, "name": "description", "description": "Business meaning (中文说明)", "type": "STRING" },
+        { "id": 4, "name": "alias", "description": "Alternative names (多值)", "type": {"list":"STRING"} },
+        { "id": 5, "name": "dataType", "description": "Column SQL type (DECIMAL(15,2), INTEGER, CHAR(1), DATE, ...)", "type": "STRING" },
+        { "id": 6, "name": "columnRole", "description": "PK / FK / measure / attribute", "type": "STRING" },
+        { "id": 7, "name": "tableName", "description": "The table a column belongs to", "type": "STRING" },
+        { "id": 8, "name": "aggFunction", "description": "SUM / COUNT / COUNT_DISTINCT / AVG / RATIO", "type": "STRING" },
+        { "id": 9, "name": "expression", "description": "The SQL aggregation expression (the metric definition)", "type": "STRING" },
+        { "id": 10, "name": "metricKind", "description": "base / derived / ratio", "type": "STRING" },
+        { "id": 11, "name": "unit", "description": "Unit (元 / 个 / % / 天)", "type": "STRING" },
+        { "id": 12, "name": "sqlText", "description": "The SQL of a standard query (TPC-H)", "type": "STRING" },
+        { "id": 13, "name": "queryNumber", "description": "The TPC-H query number (1..22)", "type": "LONG" }
+      ]
+    }
+  ],
+  "edgeSchemas": [
+    {
+      "id": 1,
+      "name": "Relation",
+      "description": "A semantic-layer relation: hasColumn / references / computedFrom / usesColumn / groupedBy / definedBy / contributesTo / belongsTo / readsTable / dimensionColumn",
+      "idSchema": { "id": 0, "name": "id", "description": "Edge id (head|relation|tail)", "type": "STRING" },
+      "source": { "id": 1, "name": "source", "description": "Source node id", "type": "STRING", "vertex": "Node" },
+      "target": { "id": 2, "name": "target", "description": "Target node id", "type": "STRING", "vertex": "Node" },
+      "createdTime": { "id": -2, "name": "createdTime", "description": "Creation timestamp", "type": "LONG" },
+      "lastUpdatedTime": { "id": -1, "name": "lastUpdatedTime", "description": "Last update timestamp", "type": "LONG" },
+      "direction": "DIRECTED",
+      "properties": [
+        { "id": 3, "name": "relation", "description": "Relation name (hasColumn / references / computedFrom / ...)", "type": "STRING" },
+        { "id": 4, "name": "xrelation", "description": "Reverse relation name; equals relation when it has no inverse", "type": "STRING" },
+        { "id": 5, "name": "relationLabel", "description": "中文关系名 (包含字段 / 外键引用 / 取自表 / ...)", "type": "STRING" },
+        { "id": 6, "name": "relationFamily", "description": "关系家族 (结构 / 血缘 / 指标 / 归因 / 维度)", "type": "STRING" }
+      ]
+    }
+  ],
+  "storage": { "type": "RocksDB-Edge", "path": "tpc-h-analytics", "regionCount": 64, "maxVersions": 1, "cacheEdges": true }
+}

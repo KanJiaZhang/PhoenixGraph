@@ -43,7 +43,7 @@ phoenixgraph:
       # PaymentGraphRocksDbLoader); it carries a vector and a location on every
       # account, so the vector and geo steps answer here too:
       #   g.V('1001','Account').nearest(5).outE('Payment')
-      #   g.V('1001','Account').geoNear('{"lat":31.2304,"lon":121.4737,"radiusKm":5}').limit(10)
+      #   g.V('1001','Account').circle('{"latitude":31.2304,"longitude":121.4737}', 5000).limit(10)
       - schema: payment-graph-rocksdb-edge
         vertex-set: http_demo_v3
       - schema: kg-entity-graph
@@ -69,10 +69,27 @@ phoenixgraph:
       #   g.V('刘备','Entity').inE().filter(relation.equals('strategistOf')).otherV().values('name')
       - schema: sanguo-kg-text
         vertex-set: kg_sanguo_v1
+      # 企业 data agent 的语义层（TPC-H，RocksDB-Edge）：表 / 字段 / 指标 / 维度 / 业务域 / 查询 都是节点，
+      # 关系承载血缘（computedFrom / usesColumn / readsTable）与归因（contributesTo）。
+      # 由 TpchDataAgentGraphTest / TpchDataAgentGraph 装载（.rocksdb/tpc-h-analytics）：
+      #   g.V('metric/revenue','Node').values('aggFunction','expression','unit')
+      #   g.V('metric/revenue','Node').outE().filter(relation.equals('computedFrom')).otherV().values('name')
+      #   g.V('metric/revenue','Node').inE().filter(relation.equals('contributesTo')).otherV().values('name')
+      #   g.V('metric/revenue','Node').outE().filter(relation.equals('definedBy')).otherV().values('sqlText')
+      - schema: tpc-h-analytics
+        vertex-set: tpc_h_analytics_v1
+      # TPC-H 数据实例（语义层 tpc-h-analytics 的行数据）：物化的订单行事实 Sale（含反规范化的维度
+      # 与预计算指标）+ 星型模型边（ofPart/ofSupplier/ofOrder/placedBy/customerNation/nationRegion）。
+      # 由 TpchDataGraphTest / TpchDataGraph 装载（.rocksdb/tpc-h-data）：
+      #   g.V('Sale').group().by('region').by(values('revenue').sum())
+      #   g.V('Sale').values('revenue').sum()
+      #   g.V('sale_0','Sale').out('ofOrder').out('placedBy').out('customerNation').out('nationRegion').values('name')
+      - schema: tpc-h-data
+        vertex-set: tpc_h_data_v1
       # the smart payment graph: accounts and merchants carry a profile vector (embedding) and a
       # home location (location), so a vector search, a geo search and a graph walk compose in one
       # traversal. Loaded by SmartPaymentGraphLiveLoadTest into RocksDB-Inline:
-      #   g.V('m1','Merchant').circle('{"lat":31.2304,"lon":121.4737,"radius":3000}').limit(5)
+      #   g.V('m1','Merchant').circle('{"latitude":31.2304,"longitude":121.4737}', 3000).limit(5)
       #     .nearest(2).in('Visited').dedup().outE('Payment').otherV().limit(60)
       - schema: payment-graph-smart-rocksdb
         vertex-set: payment_smart_v1
