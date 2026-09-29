@@ -154,6 +154,9 @@ public final class SanguoOntology {
         FAMILY_OF.put("advisorOf", "mentorship");
         FAMILY_OF.put("fought", "conflict");
         FAMILY_OF.put("killed", "conflict");
+        FAMILY_OF.put("participatedIn", "event");
+        FAMILY_OF.put("capital", "geography");
+        FAMILY_OF.put("subordinate", "service");
     }
 
     /** Chinese labels of the families. */
@@ -162,7 +165,8 @@ public final class SanguoOntology {
             Map.entry("allegiance", "君臣"), Map.entry("mentorship", "师承"), Map.entry("submission", "归降"),
             Map.entry("recruitment", "招募"), Map.entry("service", "效力"), Map.entry("office", "官职"),
             Map.entry("origin", "籍贯"), Map.entry("appearance", "出场"), Map.entry("other", "其他"),
-            Map.entry("mention", "提及"), Map.entry("conflict", "冲突"));
+            Map.entry("mention", "提及"), Map.entry("conflict", "冲突"), Map.entry("event", "事件"),
+            Map.entry("geography", "地缘"));
 
     /**
      * The relations only the text extraction introduces (方案 C):
@@ -174,7 +178,13 @@ public final class SanguoOntology {
             new String[] {"strategistOf", "军师", "Person", "Person"},
             new String[] {"advisorOf", "谋士", "Person", "Person"},
             new String[] {"fought", "交战", "Person", "Person"},
-            new String[] {"killed", "斩杀", "Person", "Person"});
+            new String[] {"killed", "斩杀", "Person", "Person"},
+            // 参战: 事件图谱 — 传记主人参与了某战役/事件（方案 ⑧）
+            new String[] {"participatedIn", "参战", "Person", "Event"},
+            // 都城: 策展边（外部知识）— X 的都城是 Y
+            new String[] {"capital", "都城", null, "Place"},
+            // 部将: 策展边（外部知识）— X 是 Y 的部将
+            new String[] {"subordinate", "部将", "Person", "Person"});
 
     /** The family of the 方案 ③ allusion edges. They reuse the {@code mentions} relation. */
     public static final String ALLUSION_FAMILY = "allusion";

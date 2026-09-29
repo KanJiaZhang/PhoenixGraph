@@ -121,7 +121,7 @@ public final class SanguoDataset {
     public record Document(String id, String name, String gender, String courtesyName, String historicity,
                            String nativePlace, String father, String mother, String brothers, String spouses,
                            String children, String offices, String allegiance, String chapters, String years,
-                           String history, String novel) {
+                           Integer birthYear, Integer deathYear, String history, String novel) {
 
         /** The RDF class of this person. */
         public EntityType entityType() {
@@ -191,6 +191,21 @@ public final class SanguoDataset {
         return times;
     }
 
+    /** The curated 公元年份 of an event (方案 ⑧), or {@code null} when the event has none. */
+    public Integer eventYear(String event) {
+        return eventYears.get(event);
+    }
+
+    /** 区间事件的结束年（六出祁山 234），单年事件为 {@code null}. */
+    public Integer eventYearEnd(String event) {
+        return eventYearEnds.get(event);
+    }
+
+    /** The geographic coordinate [纬度, 经度] of an entity, or {@code null} (方案 ⑩). */
+    public double[] geoLocation(String name) {
+        return geoLocations.get(name);
+    }
+
     /**
      * The {@code min-max} span of the values both endpoints list, or {@code null} when either has no
      * list or the two share none. Both lists come out of a document already in order, so the first
@@ -237,17 +252,24 @@ public final class SanguoDataset {
     private final List<Relation> closedRelations;
     private final Map<String, Entity> entities;
     private final Map<String, RelationTime> times;
+    private final Map<String, Integer> eventYears;
+    private final Map<String, Integer> eventYearEnds;
+    private final Map<String, double[]> geoLocations;
     private final SanguoOntology ontology;
 
     private SanguoDataset(List<Document> documents, List<Relation> curatedRelations, List<Relation> extraRelations,
                           List<Relation> relations, List<Relation> closedRelations, Map<String, Entity> entities,
-                          SanguoOntology ontology, Map<String, RelationTime> times) {
+                          SanguoOntology ontology, Map<String, RelationTime> times, Map<String, Integer> eventYears,
+                          Map<String, Integer> eventYearEnds, Map<String, double[]> geoLocations) {
         this.documents = List.copyOf(documents);
         this.curatedRelations = List.copyOf(curatedRelations);
         this.extraRelations = List.copyOf(extraRelations);
         this.relations = List.copyOf(relations);
         this.closedRelations = List.copyOf(closedRelations);
         this.times = Collections.unmodifiableMap(new LinkedHashMap<>(times));
+        this.eventYears = Collections.unmodifiableMap(new LinkedHashMap<>(eventYears));
+        this.eventYearEnds = Collections.unmodifiableMap(new LinkedHashMap<>(eventYearEnds));
+        this.geoLocations = Collections.unmodifiableMap(new LinkedHashMap<>(geoLocations));
         // insertion order, not Map.copyOf: the RDF writers iterate the entities, and a
         // salted iteration order would make the generated files differ between JVM runs
         this.entities = Collections.unmodifiableMap(new LinkedHashMap<>(entities));
@@ -318,7 +340,7 @@ public final class SanguoDataset {
     public static SanguoDataset of(List<Document> documents, List<Relation> curated, List<Relation> extra,
                                    SanguoOntology ontology, Map<String, EntityType> typedEntities,
                                    Map<String, Long> narrativeOrder) {
-        return of(documents, curated, extra, ontology, typedEntities, narrativeOrder, Map.of());
+        return of(documents, curated, extra, ontology, typedEntities, narrativeOrder, Map.of(), Map.of());
     }
 
     /**
@@ -329,6 +351,41 @@ public final class SanguoDataset {
     public static SanguoDataset of(List<Document> documents, List<Relation> curated, List<Relation> extra,
                                    SanguoOntology ontology, Map<String, EntityType> typedEntities,
                                    Map<String, Long> narrativeOrder, Map<String, List<String>> aliases) {
+        return of(documents, curated, extra, ontology, typedEntities, narrativeOrder, aliases, Map.of());
+    }
+
+    /**
+     * The full form, plus {@code eventYears} — 事件名 to its curated 公元年份 (方案 ⑧, external knowledge
+     * like {@code triples-extra.csv}; an event without a year is simply absent).
+     */
+    public static SanguoDataset of(List<Document> documents, List<Relation> curated, List<Relation> extra,
+                                   SanguoOntology ontology, Map<String, EntityType> typedEntities,
+                                   Map<String, Long> narrativeOrder, Map<String, List<String>> aliases,
+                                   Map<String, Integer> eventYears) {
+        return of(documents, curated, extra, ontology, typedEntities, narrativeOrder, aliases, eventYears, Map.of());
+    }
+
+    /**
+     * The full form, plus {@code eventYears} / {@code eventYearEnds} — 事件名 to its curated 公元年份区间
+     * (方案 ⑧, external knowledge like {@code triples-extra.csv}; an event without a year is simply absent).
+     */
+    public static SanguoDataset of(List<Document> documents, List<Relation> curated, List<Relation> extra,
+                                   SanguoOntology ontology, Map<String, EntityType> typedEntities,
+                                   Map<String, Long> narrativeOrder, Map<String, List<String>> aliases,
+                                   Map<String, Integer> eventYears, Map<String, Integer> eventYearEnds) {
+        return of(documents, curated, extra, ontology, typedEntities, narrativeOrder, aliases, eventYears,
+                eventYearEnds, Map.of());
+    }
+
+    /**
+     * The full form, plus {@code geoLocations} — 地名 to [纬度, 经度] (方案 ⑩, curated external knowledge
+     * for the map; an entity without a coordinate is simply absent).
+     */
+    public static SanguoDataset of(List<Document> documents, List<Relation> curated, List<Relation> extra,
+                                   SanguoOntology ontology, Map<String, EntityType> typedEntities,
+                                   Map<String, Long> narrativeOrder, Map<String, List<String>> aliases,
+                                   Map<String, Integer> eventYears, Map<String, Integer> eventYearEnds,
+                                   Map<String, double[]> geoLocations) {
         Map<String, String> gender = new LinkedHashMap<>();
         for (Document document : documents) {
             gender.put(document.name(), document.gender());
@@ -452,7 +509,8 @@ public final class SanguoDataset {
                 }
             }
         }
-        return new SanguoDataset(documents, curated, extra, relations, closed, entities, ontology, times);
+        return new SanguoDataset(documents, curated, extra, relations, closed, entities, ontology, times,
+                eventYears, eventYearEnds, geoLocations);
     }
 
     /** The person documents, in file order. */
@@ -544,10 +602,44 @@ public final class SanguoDataset {
                     Csv.cell(row, header, "效力"),
                     Csv.cell(row, header, "章节列表"),
                     Csv.cell(row, header, "年代列表"),
+                    years(Csv.cell(row, header, "年龄"))[0],
+                    years(Csv.cell(row, header, "年龄"))[1],
                     clean(Csv.cell(row, header, "历史")),
                     clean(Csv.cell(row, header, "小说"))));
         }
         return documents;
+    }
+
+    /**
+     * {@code 155-220(66岁)} / {@code ？-公元前180} / {@code 虚构人物} → [出生年, 卒年]。
+     * 公元前记作负数；「？」/未知为 {@code null} —— 与 shiji-kb 一样区分「有年/无年」，不猜近似值。
+     */
+    private static Integer[] years(String age) {
+        if (age == null || age.isBlank() || age.contains("虚构") || age.contains("不详")
+                || age.contains("未知")) {
+            return new Integer[] {null, null};
+        }
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("^([^\\-\u2013]+)[\\-\u2013]([^\\(（]+)(?:[\\(（]\\d+岁[\\)）])?$")
+                .matcher(age.trim());
+        if (!m.matches()) {
+            return new Integer[] {null, null};
+        }
+        return new Integer[] {year(m.group(1).trim()), year(m.group(2).trim())};
+    }
+
+    /** {@code ？} → {@code null}, {@code 公元前180} → {@code -180}, {@code 220} → {@code 220}. */
+    private static Integer year(String text) {
+        if (text.contains("？") || text.contains("?") || text.isEmpty()) {
+            return null;
+        }
+        boolean bc = text.contains("公元前") || text.contains("前");
+        String digits = text.replaceAll("[^0-9]", "");
+        if (digits.isEmpty()) {
+            return null;
+        }
+        int value = Integer.parseInt(digits);
+        return bc ? -value : value;
     }
 
     /**

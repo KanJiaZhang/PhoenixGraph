@@ -19,7 +19,9 @@ import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -156,6 +158,76 @@ class SanguoTextGraphTest {
         assertTrue(extraction.of("son_in_law").stream()
                         .anyMatch(r -> r.head().equals("周瑜") && r.tail().equals("桥公")),
                 "小桥嫁周瑜 → 周瑜 son_in_law 桥公");
+        // 方案 ⑥ 补全的本体零实例关系
+        assertTrue(extraction.of("apprentice").stream()
+                        .anyMatch(r -> r.head().equals("卢植") && r.tail().equals("马融")),
+                "师从马融 → 卢植 apprentice 马融");
+        assertTrue(extraction.of("master").stream()
+                        .anyMatch(r -> r.head().equals("司马徽") && r.tail().equals("诸葛亮")),
+                "司马徽是诸葛亮、庞统、徐庶的学问之师");
+        assertTrue(extraction.of("sworn").stream()
+                        .anyMatch(r -> r.head().equals("关羽") && r.tail().equals("刘备")),
+                "桃园结义 → 关羽 sworn 刘备");
+        assertTrue(extraction.of("recruit").stream()
+                        .anyMatch(r -> r.head().equals("袁绍") && r.tail().equals("卢植")),
+                "袁绍辟为军师 → 袁绍 recruit 卢植");
+        assertTrue(extraction.of("surrender").stream()
+                        .anyMatch(r -> r.head().equals("耿况") && r.tail().equals("刘秀")),
+                "后归刘秀 → 耿况 surrender 刘秀");
+        // 方案 ⑧ 事件图谱：参战关系 + 事件年份
+        assertTrue(extraction.of("participatedIn").stream()
+                        .anyMatch(r -> r.head().equals("诸葛亮") && r.tail().equals("三顾茅庐")),
+                "三顾茅庐 → 诸葛亮 participatedIn");
+        assertEquals(Integer.valueOf(208), extraction.eventYears().get("赤壁之战"),
+                "赤壁之战 = 公元 208");
+        assertEquals(Integer.valueOf(208), built.dataset().eventYear("赤壁之战"));
+        assertEquals(Integer.valueOf(222), built.dataset().eventYear("夷陵之战"));
+        assertEquals(Integer.valueOf(234), built.dataset().eventYearEnd("六出祁山"),
+                "六出祁山 = 228–234");
+        // 参战去噪：只当句中有参与动词才判参战 —— 吴国太的「赤壁之战后」不是参战
+        assertTrue(extraction.of("participatedIn").stream()
+                        .noneMatch(r -> r.head().equals("吴国太") && r.tail().equals("赤壁之战")),
+                "赤壁之战后设美人计的吴国太不是参战者");
+        assertTrue(extraction.of("participatedIn").stream()
+                        .anyMatch(r -> r.head().equals("诸葛亮") && r.tail().equals("赤壁之战")),
+                "大破曹操的诸葛亮是参战者");
+        // 策展边：部将关系（外部知识，本体已声明、传记无原句）
+        assertTrue(built.dataset().relations().stream()
+                        .anyMatch(r -> r.head().equals("黄盖") && r.relation().equals("subordinate")
+                                && r.tail().equals("周瑜")),
+                "黄盖是周瑜的部将");
+        // 策展边：都城关系 + 都城地点实体（许昌/长安与人物或错误 Person 重名，加「城」消歧）
+        assertTrue(built.dataset().relations().stream()
+                        .anyMatch(r -> r.head().equals("曹操") && r.relation().equals("capital")
+                                && r.tail().equals("许昌城")),
+                "曹操的都城是许昌城");
+        // 方案 ⑩ 地理坐标（都城/战场才有，用于地图可视化）
+        assertArrayEquals(new double[] {34.03, 113.85}, built.dataset().geoLocation("许昌城"), 1e-2,
+                "许昌城 = (34.03, 113.85)");
+        assertArrayEquals(new double[] {29.72, 113.90}, built.dataset().geoLocation("赤壁之战"), 1e-2,
+                "赤壁之战 = (29.72, 113.90)");
+        assertTrue(built.dataset().relations().stream()
+                        .anyMatch(r -> r.head().equals("孙权") && r.relation().equals("capital")
+                                && r.tail().equals("建业")),
+                "孙权迁都建业, actual capitals=" + built.dataset().relations().stream()
+                        .filter(r -> r.relation().equals("capital")).toList());
+        assertEquals(SanguoDataset.EntityType.PLACE,
+                built.dataset().entities().get("许昌城").type(), "许昌城 must be a Place");
+        // 数据驱动的军事指挥关系：副将/先锋 → subordinate（替代策展）
+        assertTrue(extraction.of("subordinate").stream()
+                        .anyMatch(r -> r.head().equals("徐晃") && r.tail().equals("司马懿")),
+                "徐晃为司马懿先锋 → 徐晃 subordinate 司马懿");
+        // 数据驱动的迁都/定都 → capital（含地点实体创建）
+        assertTrue(extraction.of("capital").stream()
+                        .anyMatch(r -> r.head().equals("曹操") && r.tail().equals("许昌城")),
+                "曹操迎帝都许昌 → 曹操 capital 许昌城");
+        // 方案 ⑦ 生卒年（从被丢弃的「年龄」字段解析，公元前为负）
+        assertEquals(155, built.dataset().documentsByName().get("曹操").birthYear());
+        assertEquals(220, built.dataset().documentsByName().get("曹操").deathYear());
+        assertEquals(219, built.dataset().documentsByName().get("关羽").deathYear());
+        assertNull(built.dataset().documentsByName().get("关羽").birthYear(), "关羽 年龄=？-219");
+        assertEquals(181, built.dataset().documentsByName().get("诸葛亮").birthYear());
+        assertEquals(234, built.dataset().documentsByName().get("诸葛亮").deathYear());
 
         for (String allusion : extraction.allusionNames()) {
             assertTrue(!base.entities().containsKey(allusion),
@@ -285,6 +357,11 @@ class SanguoTextGraphTest {
                             "g.V('Entity').has('alias', within('司马德操')).values('name')"},
                     {"方案 ⑤：谁有号（前 6 人）",
                             "g.V('Entity').has('alias').limit(6).values('name')"},
+                    {"方案 ⑧：谁参战了赤壁之战",
+                            "g.V('赤壁之战','Entity').inE().filter(relation.equals('participatedIn'))"
+                                    + ".otherV().values('name')"},
+                    {"方案 ⑧：208 年发生了哪些事件",
+                            "g.V('Entity').has('eventYear',208).values('name')"},
             };
             for (String[] question : questions) {
                 List<Object> rows = gremlin.execute(question[1]);
@@ -406,6 +483,65 @@ class SanguoTextGraphTest {
             SanguoRdf.write(Path.of("..", "SANGUO-KG-TEXT-EXTRACTION.md"), out.toString());
         }
         System.out.printf("%n[text] 抽取报告已写出：%s%n", outDir.toAbsolutePath().resolve("TEXT-EXTRACTION.md"));
+    }
+
+    /**
+     * 方案 ⑪：倒排索引的性能对比 —— 同一个查询在「全扫描」和「走倒排索引」下各跑多次，结果必须
+     * 一致，并打印两边耗时。低频词（命中少）和高频词（命中多）各一个，覆盖索引的两种形态。
+     */
+    @Test
+    void fullTextIndexBeatsScan(@TempDir Path directory) {
+        GraphSchema schema = SanguoTextGraph.loadSchema();
+        SanguoTextGraph.Built built = SanguoTextGraph.build();
+        Path path = directory.resolve(schema.storage().requireRocksDbPath());
+        SanguoRocksDbLoader.load(schema, built.dataset(), path, true);
+
+        RocksDbStoreConfig config = new RocksDbStoreConfig(path.toString(), schema.storage().regionCount(),
+                schema.storage().maxVersions(), true, schema.storage().cacheEdges());
+        try (RocksDbEdgeStore store = RocksDbEdgeStore.open(schema, config)) {
+            GraphQuery graph = new RocksDbEdgeGraphQuery(store, schema);
+            // 倒排索引在写入时自动建（RocksDbVertexTable 对 isFullText 属性逐字建索引）
+            long indexRows = store.fullTextIndex().count("Entity", "history");
+            assertTrue(indexRows > 0, "history 的倒排索引已在写入时建立");
+
+            GremlinGraphQuery scan = new GremlinGraphQuery(graph, NeighborVertexResolver.from(schema))
+                    .schema(schema).fullTextIndex(false);
+            GremlinGraphQuery indexed = new GremlinGraphQuery(graph, NeighborVertexResolver.from(schema))
+                    .schema(schema).fullTextIndex(true);
+
+            String rare = "g.V('Entity').has('history', TextP.containing('赤壁')).count()";
+            String common = "g.V('Entity').has('novel', TextP.containing('之')).count()";
+
+            System.out.println();
+            System.out.println("======================================================================");
+            System.out.println(" 倒排索引 vs 全扫描（同一查询，索引开关切换）");
+            System.out.println("======================================================================");
+            System.out.println(" history 倒排索引行数（去重字符）: " + indexRows);
+            for (String query : new String[]{rare, common}) {
+                // warmup：让编译缓存和 RocksDB 块缓存热起来，两边各一次
+                scan.execute(query);
+                indexed.execute(query);
+                List<Object> scanResult = scan.execute(query);
+                List<Object> indexedResult = indexed.execute(query);
+                assertEquals(scanResult, indexedResult, "索引与扫描结果必须一致: " + query);
+                long scanMs = medianMillis(scan, query, 5);
+                long indexedMs = medianMillis(indexed, query, 5);
+                System.out.printf(" %s%n   扫描 %d ms (%s)  |  索引 %d ms (%s)%n",
+                        query, scanMs, summarise(scanResult), indexedMs, summarise(indexedResult));
+            }
+        }
+    }
+
+    /** 中位数耗时（毫秒），避免 JIT/GC 的单次毛刺。 */
+    private static long medianMillis(GremlinGraphQuery engine, String query, int rounds) {
+        long[] samples = new long[rounds];
+        for (int i = 0; i < rounds; i++) {
+            long start = System.nanoTime();
+            engine.execute(query);
+            samples[i] = (System.nanoTime() - start) / 1_000_000;
+        }
+        java.util.Arrays.sort(samples);
+        return samples[rounds / 2];
     }
 
     private static SanguoDataset.RelationTime time(SanguoDataset dataset, String head, String relation, String tail) {

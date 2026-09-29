@@ -43,11 +43,20 @@ function entityVertex(withShard) {
     { id: withShard ? 4 : 3, name: 'gender', description: '男 / 女 (documented persons only)', type: 'STRING' },
     { id: withShard ? 5 : 4, name: 'courtesyName', description: '字', type: 'STRING' },
     { id: withShard ? 6 : 5, name: 'historicity', description: '史实人物 / 虚构人物', type: 'STRING' },
-    { id: withShard ? 7 : 6, name: 'history', description: '历史简介', type: 'STRING' },
-    { id: withShard ? 8 : 7, name: 'novel', description: '演义简介', type: 'STRING' },
+    { id: withShard ? 7 : 6, name: 'history', description: '历史简介', type: 'STRING', isFullText: true },
+    { id: withShard ? 8 : 7, name: 'novel', description: '演义简介', type: 'STRING', isFullText: true },
     // 别名：字以外的称呼——号（道号水镜先生）、他人所称（称诸葛亮为卧龙）、姓+字（司马德操）。
     // 多值属性，查询靠 has('alias', TextP.containing('…'))。
     { id: withShard ? 9 : 8, name: 'alias', description: '别名/号（多值）', type: { list: 'STRING' } },
+    // 生卒年：从「年龄」字段解析（公元前记负数，未知为空）。回答「谁先去世」这类时空问题。
+    { id: withShard ? 10 : 9, name: 'birthYear', description: '出生年（公元，公元前为负）', type: 'LONG' },
+    { id: withShard ? 11 : 10, name: 'deathYear', description: '卒年（公元，公元前为负）', type: 'LONG' },
+    // 事件年份：事件/典故节点才有，来自策展表（方案 ⑧）。
+    { id: withShard ? 12 : 11, name: 'eventYear', description: '事件年份（公元，策展表）', type: 'LONG' },
+    { id: withShard ? 13 : 12, name: 'eventYearEnd', description: '事件结束年（区间事件才有，如六出祁山 234）', type: 'LONG' },
+    // 地理坐标（方案 ⑩）：都城/战场/主要城市才有，来自策展表，用于地图可视化。
+    { id: withShard ? 14 : 13, name: 'latitude', description: '纬度（WGS84）', type: 'DOUBLE' },
+    { id: withShard ? 15 : 14, name: 'longitude', description: '经度（WGS84）', type: 'DOUBLE' },
   );
   return {
     id: 1,

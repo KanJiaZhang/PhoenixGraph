@@ -17,9 +17,15 @@
         { "id": 3, "name": "gender", "description": "男 / 女 (documented persons only)", "type": "STRING" },
         { "id": 4, "name": "courtesyName", "description": "字", "type": "STRING" },
         { "id": 5, "name": "historicity", "description": "史实人物 / 虚构人物", "type": "STRING" },
-        { "id": 6, "name": "history", "description": "历史简介", "type": "STRING" },
-        { "id": 7, "name": "novel", "description": "演义简介", "type": "STRING" },
-        { "id": 8, "name": "alias", "description": "别名/号（多值）", "type": {"list":"STRING"} }
+        { "id": 6, "name": "history", "description": "历史简介", "type": "STRING", "isFullText": true },
+        { "id": 7, "name": "novel", "description": "演义简介", "type": "STRING", "isFullText": true },
+        { "id": 8, "name": "alias", "description": "别名/号（多值）", "type": {"list":"STRING"} },
+        { "id": 9, "name": "birthYear", "description": "出生年（公元，公元前为负）", "type": "LONG" },
+        { "id": 10, "name": "deathYear", "description": "卒年（公元，公元前为负）", "type": "LONG" },
+        { "id": 11, "name": "eventYear", "description": "事件年份（公元，策展表）", "type": "LONG" },
+        { "id": 12, "name": "eventYearEnd", "description": "事件结束年（区间事件才有，如六出祁山 234）", "type": "LONG" },
+        { "id": 13, "name": "latitude", "description": "纬度（WGS84）", "type": "DOUBLE" },
+        { "id": 14, "name": "longitude", "description": "经度（WGS84）", "type": "DOUBLE" }
       ]
     }
   ],

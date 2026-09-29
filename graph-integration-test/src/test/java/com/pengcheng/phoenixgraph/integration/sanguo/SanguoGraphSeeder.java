@@ -1,9 +1,11 @@
 package com.pengcheng.phoenixgraph.integration.sanguo;
 
 import com.pengcheng.phoenixgraph.schema.EdgeSchema;
+import com.pengcheng.phoenixgraph.schema.FullTextIndexSchemas;
 import com.pengcheng.phoenixgraph.schema.GraphSchema;
 import com.pengcheng.phoenixgraph.storage.WriteOutcome;
 import com.pengcheng.phoenixgraph.storage.aerospike.AerospikeEdgeStore;
+import com.pengcheng.phoenixgraph.storage.aerospike.AerospikeFullTextIndex;
 import com.pengcheng.phoenixgraph.storage.aerospike.AerospikeVertexStore;
 import com.pengcheng.phoenixgraph.storage.aerospike.EdgePropertyValue;
 import com.pengcheng.phoenixgraph.storage.aerospike.EdgeUpsert;
@@ -61,6 +63,18 @@ final class SanguoGraphSeeder {
     private static final int PROPERTY_HISTORY = 7;
     /** 顶点属性 id：别名/号（多值，见 generate-sanguo-schema.js）。 */
     private static final int PROPERTY_ALIAS = 9;
+    /** 顶点属性 id：出生年（公元，公元前为负）。 */
+    private static final int PROPERTY_BIRTH_YEAR = 10;
+    /** 顶点属性 id：卒年。 */
+    private static final int PROPERTY_DEATH_YEAR = 11;
+    /** 顶点属性 id：事件年份（策展表）。 */
+    private static final int PROPERTY_EVENT_YEAR = 12;
+    /** 顶点属性 id：事件结束年。 */
+    private static final int PROPERTY_EVENT_YEAR_END = 13;
+    /** 顶点属性 id：纬度。 */
+    private static final int PROPERTY_LATITUDE = 14;
+    /** 顶点属性 id：经度。 */
+    private static final int PROPERTY_LONGITUDE = 15;
     private static final int PROPERTY_NOVEL = 8;
 
     private static final int EDGE_PROPERTY_RELATION = 3;
@@ -127,11 +141,35 @@ final class SanguoGraphSeeder {
             failures.addAndGet(pending.size());
         });
 
+        // 倒排索引：全量重建（串行 pass）——Aerospike 的记录是读改写，整图重建用一次串行遍历，
+        // 与 RocksDB 的“写入即索引”不同（三国 text 图在 RocksDB-Edge，base 图在 Aerospike）。
+        buildFullTextIndex(vertexStore, schema, vertices);
+
         if (failures.get() > 0) {
             throw new IllegalStateException("Sanguo knowledge graph seed failed: " + failures.get()
                     + " writes failed");
         }
         return new Result((int) verticesWritten.get(), edges.size());
+    }
+
+    /** Builds the Aerospike inverted index of the {@code isFullText} properties, one n-gram record each. */
+    private static void buildFullTextIndex(AerospikeVertexStore vertexStore, GraphSchema schema,
+                                           List<VertexUpsert> vertices) {
+        List<FullTextIndexSchemas.FullTextProperty> properties =
+                FullTextIndexSchemas.fullTextProperties(schema);
+        if (properties.isEmpty()) {
+            return;
+        }
+        AerospikeFullTextIndex index = new AerospikeFullTextIndex(vertexStore.client(),
+                vertexStore.namespace(), vertexStore.set());
+        for (VertexUpsert vertex : vertices) {
+            for (FullTextIndexSchemas.FullTextProperty property : properties) {
+                VertexPropertyValue value = vertex.properties().get(property.propertyId());
+                if (value != null && value.value() instanceof String text && !text.isBlank()) {
+                    index.index(vertex.vertexSchema().name(), property.propertyName(), vertex.vertexId(), text);
+                }
+            }
+        }
     }
 
     /** One vertex per (entity, relation shard); the same entity is replicated per shard. */
@@ -169,6 +207,25 @@ final class SanguoGraphSeeder {
                 put(properties, PROPERTY_HISTORICITY, document.historicity(), timestamp);
                 put(properties, PROPERTY_HISTORY, truncate(document.history()), timestamp);
                 put(properties, PROPERTY_NOVEL, truncate(document.novel()), timestamp);
+            }
+            if (document != null && document.birthYear() != null) {
+                properties.put(PROPERTY_BIRTH_YEAR, new VertexPropertyValue((long) document.birthYear(), timestamp));
+            }
+            if (document != null && document.deathYear() != null) {
+                properties.put(PROPERTY_DEATH_YEAR, new VertexPropertyValue((long) document.deathYear(), timestamp));
+            }
+            double[] geo = dataset.geoLocation(name);
+            if (geo != null) {
+                properties.put(PROPERTY_LATITUDE, new VertexPropertyValue(geo[0], timestamp));
+                properties.put(PROPERTY_LONGITUDE, new VertexPropertyValue(geo[1], timestamp));
+            }
+            Integer eventYearEnd = dataset.eventYearEnd(name);
+            if (eventYearEnd != null) {
+                properties.put(PROPERTY_EVENT_YEAR_END, new VertexPropertyValue((long) eventYearEnd, timestamp));
+            }
+            Integer eventYear = dataset.eventYear(name);
+            if (eventYear != null) {
+                properties.put(PROPERTY_EVENT_YEAR, new VertexPropertyValue((long) eventYear, timestamp));
             }
             if (entity != null && !entity.aliases().isEmpty()) {
                 // a multi-valued property: has('alias', TextP.containing('水镜')) reads the list

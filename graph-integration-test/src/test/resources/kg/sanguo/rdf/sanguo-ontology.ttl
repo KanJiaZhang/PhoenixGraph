@@ -193,7 +193,7 @@ sg:father <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.w3.org/2
 sg:fellow <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.w3.org/2002/07/owl#ObjectProperty> ;
     <http://www.w3.org/2000/01/rdf-schema#label> "追随"@zh ;
     sg:relationName "fellow" ;
-    sg:relationFamily "其他"@zh .
+    sg:relationFamily "朋友"@zh .
 sg:fiance <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.w3.org/2002/07/owl#ObjectProperty> ;
     <http://www.w3.org/2000/01/rdf-schema#label> "未婚夫"@zh ;
     sg:relationName "fiance" ;

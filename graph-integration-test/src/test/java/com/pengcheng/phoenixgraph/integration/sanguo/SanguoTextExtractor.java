@@ -65,7 +65,10 @@ public final class SanguoTextExtractor {
                          Map<String, List<String>> samplesByRule,
                          Set<String> newPositions, Set<String> newPersons,
                          Map<String, SanguoDataset.EntityType> allusions,
-                         Map<String, List<String>> aliases) {
+                         Map<String, List<String>> aliases,
+                         Map<String, Integer> eventYears,
+                         Map<String, Integer> eventYearEnds,
+                         Set<String> newPlaces) {
 
         /** The names the biographies gave a person besides 名字/字 (方案 ⑤). */
         public List<String> aliasesOf(String person) {
@@ -228,6 +231,38 @@ public final class SanguoTextExtractor {
             .sorted(Comparator.comparingInt(String::length).reversed().thenComparing(name -> name))
             .toList();
 
+    /**
+     * 方案 ⑧ — 事件的公元年份。这是一张<b>策展表</b>（外部知识，像 triples-extra.csv 一样）：
+     * 战役/事件的年份是常识，但传记文本不写数字，所以由表补齐；未列的事件就没有年份，不猜。
+     */
+    private static final Map<String, Integer> EVENT_YEARS = Map.ofEntries(
+            Map.entry("桃园结义", 184), Map.entry("温酒斩华雄", 190), Map.entry("三英战吕布", 190),
+            Map.entry("挟天子以令诸侯", 196), Map.entry("官渡之战", 200), Map.entry("过五关斩六将", 200),
+            Map.entry("三顾茅庐", 207), Map.entry("隆中对", 207),
+            Map.entry("长阪之战", 208), Map.entry("舌战群儒", 208), Map.entry("借东风", 208),
+            Map.entry("赤壁之战", 208), Map.entry("七进七出", 208), Map.entry("八阵图", 208),
+            Map.entry("割须弃袍", 211),
+            Map.entry("水淹七军", 219), Map.entry("放水淹七军", 219), Map.entry("败走麦城", 219),
+            Map.entry("刮骨疗伤", 219), Map.entry("夷陵之战", 222), Map.entry("托孤", 223),
+            Map.entry("六出祁山", 228));
+
+    /** 区间事件的结束年：六出祁山 228–234。单年事件没有这项。 */
+    private static final Map<String, Integer> EVENT_YEAR_ENDS = Map.of("六出祁山", 234);
+
+    /**
+     * 参战判据（方案 ⑧ 去噪）：句子把事件当<b>时间状语</b>（「赤壁之战<b>后</b>，周瑜设美人计」「赤壁之战<b>前夕</b>」）
+     * 就不是参与；「三顾茅庐，遂允出山」「参与赤壁之战」「大破曹操」都是参与。
+     * 用“排除时间状语”而不是“要求战斗动词”，因为 三顾茅庐/隆中对/托孤 这类非战斗事件也是参与。
+     */
+    private static boolean temporalReference(String sentence, String event) {
+        int at = sentence.indexOf(event);
+        if (at < 0) {
+            return false;
+        }
+        String after = sentence.substring(at + event.length());
+        return after.matches("^(后|前|前夕|之后|之前|以后|以前|以后).*");
+    }
+
     private static Map<String, SanguoDataset.EntityType> allusions() {
         Map<String, SanguoDataset.EntityType> table = new LinkedHashMap<>();
         // episodes
@@ -319,6 +354,40 @@ public final class SanguoTextExtractor {
     private static final Pattern CLASSMATE = Pattern.compile("与([\\u4e00-\\u9fa5]{2,4})(?:自幼)?(?:同窗|同学|同门)");
     /** 女婿: 「次女小桥嫁周瑜」— 主人嫁女，婿是 {@code son_in_law}（头=女婿，尾=岳父，如 诸葛瞻→刘禅）。 */
     private static final Pattern DAUGHTER_MARRIES = Pattern.compile("女([\\u4e00-\\u9fa5]{1,3})嫁([\\u4e00-\\u9fa5]{2,3})");
+
+    /** 师徒（学生视角）：「师从马融」「受业于郑玄」「杜夔弟子」— 主人是 X 的徒弟。 */
+    private static final Pattern APPRENTICE_OF = Pattern.compile("(?:师从|受业于|受学于|从)([\\u4e00-\\u9fa5]{2,4})");
+    private static final Pattern DISCIPLE_OF = Pattern.compile("([\\u4e00-\\u9fa5]{2,4})(?:之)?(?:门生|弟子)");
+    /** 结拜：与X(、Y)结义/结拜 — 本体 sworn 是对称的。 */
+    private static final Pattern SWORN_WITH = Pattern.compile("与([\\u4e00-\\u9fa5]{2,4})(?:、[\\u4e00-\\u9fa5]{2,4})*(?:三人|等人)?(?:结义|结拜)");
+    /** 招募：「先为曹操征辟」「袁绍辟为军师」— X 招募了主人。 */
+    private static final Pattern RECRUITED_BY = Pattern.compile("(?:为|被)?([\\u4e00-\\u9fa5]{2,4})(?:所)?(?:征辟|辟)");
+    /** 归降：「归降于曹操」「后归曹操」— 主人降 X。 */
+    private static final Pattern SURRENDER_TO = Pattern.compile("(?:归降于|(?:遂|后|乃|于是|而)归)([\\u4e00-\\u9fa5]{2,3})");
+    /** 同乡：「与李傕同乡里」— 本体 townee 是对称的。 */
+    private static final Pattern TOWNEE_WITH = Pattern.compile("与([\\u4e00-\\u9fa5]{2,4})同乡");
+
+    /**
+     * 军事指挥（数据驱动，不是策展）：
+     * {@code X为Y(副将|先锋|部将)} → X 是 Y 的副将/先锋；{@code X为主帅…Y为副将} → Y 是 X 的副将。
+     */
+    private static final Pattern DEPUTY_OF = Pattern.compile("([\\u4e00-\\u9fa5]{2,4})为([\\u4e00-\\u9fa5]{2,4})(?:的)?(?:副将|先锋|部将)");
+    private static final Pattern COMMANDER = Pattern.compile("([\\u4e00-\\u9fa5]{2,4})为主帅");
+    private static final Pattern DEPUTY = Pattern.compile("([\\u4e00-\\u9fa5]{2,4})为副将");
+
+    /**
+     * 迁都/定都（数据驱动）：{@code 曹操迎帝都许昌}、{@code 孙权迁都建业}。
+     * X 是紧邻的主语（不是传记主人，否则「曹操迎帝都许昌」会归给韩暹）。
+     */
+    private static final Pattern CAPITAL = Pattern.compile(
+            "([\\u4e00-\\u9fa5]{2,4}?)(?:迁都|移都|定都|迎帝都)(?:于|至)?([\\u4e00-\\u9fa5]{2,3}?)");
+
+    /**
+     * 都城白名单：只有这几座城参与「迁都/定都」；许昌/长安与人名（或误建 Person）重名，映射到「X城」。
+     * 白名单外的（「定都于许时」的「许」）直接不抽 —— 避免把地名误建成 Person 与 fought 的武将冲突。
+     */
+    private static final Map<String, String> CAPITAL_CITIES = Map.of(
+            "许昌", "许昌城", "长安", "长安城", "成都", "成都", "建业", "建业", "洛阳", "洛阳", "邺城", "邺城");
 
     /** The names a sentence gives a person besides 名字/字, keyed by the person they belong to. */
     private void collectAliases(String owner, String sentence, List<String> mentioned,
@@ -478,6 +547,7 @@ public final class SanguoTextExtractor {
         Map<String, List<String>> samples = new LinkedHashMap<>();
         Set<String> newPositions = new LinkedHashSet<>();
         Set<String> newPersons = new LinkedHashSet<>();
+        Set<String> newPlaces = new LinkedHashSet<>();
         Map<String, SanguoDataset.EntityType> allusions = new LinkedHashMap<>();
         Map<String, List<String>> aliases = new LinkedHashMap<>();
         Set<String> seen = new LinkedHashSet<>();
@@ -498,7 +568,7 @@ public final class SanguoTextExtractor {
                         continue;
                     }
                     scan(document.name(), column[0], text, relations, counts, samples, newPositions, newPersons,
-                            allusions, aliases, seen);
+                            allusions, aliases, newPlaces, seen);
                 }
             }
         }
@@ -507,14 +577,39 @@ public final class SanguoTextExtractor {
                 // LinkedHashMap, not Map.copyOf: this map's order decides the order in which the
                 // allusion entities enter the ABox, and a salted order would break the frozen RDF
                 Collections.unmodifiableMap(new LinkedHashMap<>(allusions)),
-                Collections.unmodifiableMap(new LinkedHashMap<>(aliases)));
+                Collections.unmodifiableMap(new LinkedHashMap<>(aliases)),
+                Collections.unmodifiableMap(new LinkedHashMap<>(eventYears(allusions))),
+                Collections.unmodifiableMap(new LinkedHashMap<>(eventYearEnds(allusions))),
+                Set.copyOf(newPlaces));
+    }
+
+    /** The events that actually fired, with their curated year (方案 ⑧). */
+    private static Map<String, Integer> eventYears(Map<String, SanguoDataset.EntityType> allusions) {
+        Map<String, Integer> years = new LinkedHashMap<>();
+        for (String allusion : allusions.keySet()) {
+            if (EVENT_YEARS.containsKey(allusion)) {
+                years.put(allusion, EVENT_YEARS.get(allusion));
+            }
+        }
+        return years;
+    }
+
+    /** 区间事件的结束年（六出祁山 234），单年事件没有。 */
+    private static Map<String, Integer> eventYearEnds(Map<String, SanguoDataset.EntityType> allusions) {
+        Map<String, Integer> ends = new LinkedHashMap<>();
+        for (String allusion : allusions.keySet()) {
+            if (EVENT_YEAR_ENDS.containsKey(allusion)) {
+                ends.put(allusion, EVENT_YEAR_ENDS.get(allusion));
+            }
+        }
+        return ends;
     }
 
     private void scan(String owner, String field, String sentence, List<Extracted> relations,
                       Map<String, Integer> counts, Map<String, List<String>> samples,
                       Set<String> newPositions, Set<String> newPersons,
                       Map<String, SanguoDataset.EntityType> allusions, Map<String, List<String>> aliases,
-                      Set<String> seen) {
+                      Set<String> newPlaces, Set<String> seen) {
         String source = owner + ":" + field;
         List<String> mentioned = mention(sentence, owner);
 
@@ -522,11 +617,17 @@ public final class SanguoTextExtractor {
         collectAliases(owner, sentence, mentioned, aliases);
 
         // 0) allusions — 方案 ③. The relation is `mentions` (the biography names the episode); the
-        //    episode itself becomes an Event/Artifact/Idiom node instead of six invented generals
+        //    episode itself becomes an Event/Artifact/Idiom node instead of six invented generals.
+        //    方案 ⑧: an Event the owner's own biography names is an event they took part in.
         for (String allusion : allusionsIn(sentence)) {
             allusions.putIfAbsent(allusion, ALLUSIONS.get(allusion));
             add("mentions", owner, allusion, source, sentence, relations, counts, samples, seen, false,
                     newPositions, newPersons);
+            if (ALLUSIONS.get(allusion) == SanguoDataset.EntityType.EVENT
+                    && !temporalReference(sentence, allusion)) {
+                add("participatedIn", owner, allusion, source, sentence, relations, counts, samples, seen, false,
+                        newPositions, newPersons);
+            }
         }
 
         // 1) mentions — a known entity name occurs in the sentence
@@ -651,6 +752,96 @@ public final class SanguoTextExtractor {
                 add("son_in_law", groom, owner, source, sentence, relations, counts, samples, seen, false,
                         newPositions, newPersons);
             }
+        }
+        // 师徒：师从X / X弟子 → 主人是 X 的徒弟；「司马徽为…等人的学问之师」→ 主人是诸生的师傅
+        for (Matcher m = APPRENTICE_OF.matcher(sentence); m.find(); ) {
+            String teacher = m.group(1);
+            if (types.containsKey(teacher) && isPerson(teacher)) {
+                add("apprentice", owner, teacher, source, sentence, relations, counts, samples, seen, false,
+                        newPositions, newPersons);
+            }
+        }
+        for (Matcher m = DISCIPLE_OF.matcher(sentence); m.find(); ) {
+            String teacher = m.group(1);
+            if (types.containsKey(teacher) && isPerson(teacher) && !teacher.equals(owner)) {
+                add("apprentice", owner, teacher, source, sentence, relations, counts, samples, seen, false,
+                        newPositions, newPersons);
+            }
+        }
+        if (sentence.contains("学问之师") || sentence.contains("受业之师")) {
+            for (String student : mentioned) {
+                if (isPerson(student) && !student.equals(owner)) {
+                    add("master", owner, student, source, sentence, relations, counts, samples, seen, false,
+                            newPositions, newPersons);
+                }
+            }
+        }
+        // 结拜 / 招募 / 归降 / 同乡
+        for (Matcher m = SWORN_WITH.matcher(sentence); m.find(); ) {
+            String brother = m.group(1);
+            if (types.containsKey(brother) && isPerson(brother) && !brother.equals(owner)) {
+                add("sworn", owner, brother, source, sentence, relations, counts, samples, seen, false,
+                        newPositions, newPersons);
+            }
+        }
+        for (Matcher m = RECRUITED_BY.matcher(sentence); m.find(); ) {
+            String recruiter = m.group(1);
+            if (types.containsKey(recruiter) && isPerson(recruiter)) {
+                add("recruit", recruiter, owner, source, sentence, relations, counts, samples, seen, false,
+                        newPositions, newPersons);
+            }
+        }
+        for (Matcher m = SURRENDER_TO.matcher(sentence); m.find(); ) {
+            String lord = m.group(1);
+            if (types.containsKey(lord) && isPerson(lord)) {
+                add("surrender", owner, lord, source, sentence, relations, counts, samples, seen, false,
+                        newPositions, newPersons);
+            }
+        }
+        for (Matcher m = TOWNEE_WITH.matcher(sentence); m.find(); ) {
+            String mate = m.group(1);
+            if (types.containsKey(mate) && isPerson(mate)) {
+                add("townee", owner, mate, source, sentence, relations, counts, samples, seen, false,
+                        newPositions, newPersons);
+            }
+        }
+        // 军事指挥：副将/先锋/主帅 → subordinate（数据驱动）
+        for (Matcher m = DEPUTY_OF.matcher(sentence); m.find(); ) {
+            String deputy = m.group(1);
+            String superior = m.group(2);
+            if (types.containsKey(deputy) && isPerson(deputy)
+                    && types.containsKey(superior) && isPerson(superior)) {
+                add("subordinate", deputy, superior, source, sentence, relations, counts, samples, seen, false,
+                        newPositions, newPersons);
+            }
+        }
+        Matcher commander = COMMANDER.matcher(sentence);
+        if (commander.find()) {
+            // 「令老将丁奉为主帅」— 捕获可能是「老将丁奉」，personTarget 从中解析出已知人物「丁奉」
+            String superior = personTarget(commander.group(1));
+            if (superior == null) {
+                superior = commander.group(1);
+            }
+            for (Matcher d = DEPUTY.matcher(sentence); d.find(); ) {
+                String deputy = d.group(1);
+                if (types.containsKey(deputy) && isPerson(deputy) && !deputy.equals(superior)) {
+                    add("subordinate", deputy, superior, source, sentence, relations, counts, samples, seen, false,
+                            newPositions, newPersons);
+                }
+            }
+        }
+        // 迁都/定都 → capital（数据驱动；白名单映射 + 地点实体创建）
+        for (Matcher m = CAPITAL.matcher(sentence); m.find(); ) {
+            String ruler = m.group(1);
+            String city = CAPITAL_CITIES.get(m.group(2));
+            if (city == null || !types.containsKey(ruler) || !isPerson(ruler)) {
+                continue;
+            }
+            if (types.get(city) == null) {
+                newPlaces.add(city);
+            }
+            add("capital", ruler, city, source, sentence, relations, counts, samples, seen, false,
+                    newPositions, newPersons);
         }
         if (!QUOTED.matcher(sentence).find()) {
             for (Matcher m = FOUGHT_WITH.matcher(sentence); m.find(); ) {

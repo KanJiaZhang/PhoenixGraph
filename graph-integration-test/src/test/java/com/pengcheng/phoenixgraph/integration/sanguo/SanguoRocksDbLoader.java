@@ -149,6 +149,25 @@ public final class SanguoRocksDbLoader {
                 put(values, "historicity", document.historicity(), time);
                 put(values, "history", truncate(document.history()), time);
                 put(values, "novel", truncate(document.novel()), time);
+                if (document.birthYear() != null) {
+                    values.put("birthYear", new RocksDbPropertyValue((long) document.birthYear(), time));
+                }
+                if (document.deathYear() != null) {
+                    values.put("deathYear", new RocksDbPropertyValue((long) document.deathYear(), time));
+                }
+            }
+            double[] geo = dataset.geoLocation(name);
+            if (geo != null) {
+                values.put("latitude", new RocksDbPropertyValue(geo[0], time));
+                values.put("longitude", new RocksDbPropertyValue(geo[1], time));
+            }
+            Integer eventYearEnd = dataset.eventYearEnd(name);
+            if (eventYearEnd != null) {
+                values.put("eventYearEnd", new RocksDbPropertyValue((long) eventYearEnd, time));
+            }
+            Integer eventYear = dataset.eventYear(name);
+            if (eventYear != null) {
+                values.put("eventYear", new RocksDbPropertyValue((long) eventYear, time));
             }
             if (!value.aliases().isEmpty()) {
                 // a multi-valued property: has('alias', TextP.containing('水镜')) reads the list

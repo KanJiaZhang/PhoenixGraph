@@ -64,19 +64,101 @@ public final class SanguoTextGraph {
 
         // 方案 B's manual supplement, when it is on the classpath, plus 方案 C's extraction
         List<SanguoDataset.Relation> supplements = new ArrayList<>(readManualSupplement());
+        // 策展边（方案 ⑨）：外部知识，像 triples-extra.csv 一样 —— 部将关系本体已声明、传记无原句。
+        // 都城（capital）暂不能加：成都/建业/洛阳/邺城不在实体表，许昌则被一个同名人物占名。
+        for (String[] curated : CURATED_EXTRA_RELATIONS) {
+            supplements.add(new SanguoDataset.Relation(curated[0], curated[1], curated[2],
+                    SanguoDataset.RelationSource.EXTRA));
+        }
         for (SanguoTextExtractor.Extracted extracted : extraction.relations()) {
             supplements.add(new SanguoDataset.Relation(extracted.head(), extracted.relation(), extracted.tail(),
                     SanguoDataset.RelationSource.EXTRA));
         }
 
         SanguoOntology ontology = base.ontology().withTextProfile();
-        // 方案 ③'s allusion entities carry a class no relation implies, so their types travel separately;
+        // 方案 ③'s allusion entities carry a class no relation implies; 方案 ⑨'s 都城 place entities
+        // likewise, so both travel in the typedEntities map
+        Map<String, SanguoDataset.EntityType> typedEntities = new LinkedHashMap<>(extraction.allusions());
+        typedEntities.putAll(CURATED_PLACES);
+        for (String place : extraction.newPlaces()) {
+            typedEntities.putIfAbsent(place, SanguoDataset.EntityType.PLACE);
+        }
         // the narrative order (which sentence each relation was read at) travels with them, so a
         // relation can be ordered in time — see SANGUO-KG.md §7.8
         SanguoDataset dataset = SanguoDataset.of(base.documents(), base.curatedRelations(), supplements, ontology,
-                extraction.allusions(), extraction.narrativeOrder(), extraction.aliases());
+                typedEntities, extraction.narrativeOrder(), extraction.aliases(), extraction.eventYears(),
+                extraction.eventYearEnds(), CURATED_GEO);
         return new Built(dataset, extraction);
     }
+
+    /**
+     * 策展边（方案 ⑨）：{head, relation, tail}，外部知识 —— 本体已声明但传记无对应原句的关系。
+     * 方向：{@code subordinate} 的 head 是部将、tail 是上司（黄盖是周瑜的部将）；
+     * {@code capital} 的 head 是君主、tail 是都城（曹操的都城是许昌城）。
+     */
+    private static final List<String[]> CURATED_EXTRA_RELATIONS = List.of(
+            new String[] {"黄盖", "subordinate", "周瑜"},
+            new String[] {"甘宁", "subordinate", "周瑜"},
+            new String[] {"程普", "subordinate", "周瑜"},
+            new String[] {"曹操", "capital", "许昌城"},
+            new String[] {"刘备", "capital", "成都"},
+            new String[] {"孙权", "capital", "建业"},
+            new String[] {"董卓", "capital", "长安城"});
+
+    /**
+     * 都城作为 Place 实体（方案 ⑨）：成都/建业/洛阳不是人物名可直接用；许昌/长安与人物或错误
+     * Person 实体重名，加「城」消歧 —— 与 {@code 曹节[献穆皇后]} 同一条消歧原则。
+     */
+    private static final Map<String, SanguoDataset.EntityType> CURATED_PLACES = Map.of(
+            "成都", SanguoDataset.EntityType.PLACE,
+            "建业", SanguoDataset.EntityType.PLACE,
+            "洛阳", SanguoDataset.EntityType.PLACE,
+            "许昌城", SanguoDataset.EntityType.PLACE,
+            "长安城", SanguoDataset.EntityType.PLACE);
+
+    /**
+     * 地理坐标（方案 ⑩）：{name → [纬度, 经度]}，WGS84，策展表（外部知识）。
+     * 都城与主要战场才有坐标 —— 地图可视化只画这些有据可查的点，不猜籍贯州郡的坐标。
+     */
+    private static final Map<String, double[]> CURATED_GEO = Map.ofEntries(
+            // 都城
+            Map.entry("许昌城", new double[] {34.03, 113.85}),
+            Map.entry("成都", new double[] {30.57, 104.06}),
+            Map.entry("建业", new double[] {32.06, 118.79}),
+            Map.entry("洛阳", new double[] {34.62, 112.45}),
+            Map.entry("长安城", new double[] {34.34, 108.94}),
+            // 主要城市
+            Map.entry("襄阳", new double[] {32.01, 112.12}),
+            Map.entry("荆州", new double[] {30.33, 112.24}),
+            Map.entry("徐州", new double[] {34.20, 117.28}),
+            Map.entry("合肥", new double[] {31.82, 117.23}),
+            Map.entry("长沙", new double[] {28.23, 112.94}),
+            Map.entry("汉中", new double[] {33.07, 107.02}),
+            Map.entry("南阳", new double[] {33.00, 112.53}),
+            Map.entry("邺城", new double[] {36.13, 114.38}),
+            Map.entry("江夏", new double[] {30.59, 114.31}),
+            // 战场 / 事件发生地
+            Map.entry("赤壁之战", new double[] {29.72, 113.90}),
+            Map.entry("官渡之战", new double[] {34.71, 113.83}),
+            Map.entry("夷陵之战", new double[] {30.70, 111.28}),
+            Map.entry("长阪之战", new double[] {30.65, 111.80}),
+            Map.entry("七进七出", new double[] {30.65, 111.80}),
+            Map.entry("六出祁山", new double[] {34.50, 105.20}),
+            Map.entry("割须弃袍", new double[] {34.54, 110.20}),
+            Map.entry("水淹七军", new double[] {32.02, 112.12}),
+            Map.entry("败走麦城", new double[] {30.35, 111.20}),
+            Map.entry("三顾茅庐", new double[] {32.00, 112.00}),
+            Map.entry("隆中对", new double[] {32.00, 112.00}),
+            Map.entry("桃园结义", new double[] {39.49, 115.96}),
+            Map.entry("温酒斩华雄", new double[] {34.80, 113.30}),
+            Map.entry("三英战吕布", new double[] {34.80, 113.30}),
+            Map.entry("过五关斩六将", new double[] {34.03, 113.85}),
+            Map.entry("挟天子以令诸侯", new double[] {34.03, 113.85}),
+            Map.entry("借东风", new double[] {29.72, 113.90}),
+            Map.entry("舌战群儒", new double[] {29.72, 113.90}),
+            Map.entry("八阵图", new double[] {29.72, 113.90}),
+            Map.entry("刮骨疗伤", new double[] {30.30, 112.20}),
+            Map.entry("托孤", new double[] {30.70, 108.80}));
 
     /** The manual supplement if it ships with the tests, otherwise nothing. */
     private static List<SanguoDataset.Relation> readManualSupplement() {
