@@ -75,6 +75,8 @@ final class SanguoGraphSeeder {
     private static final int PROPERTY_LATITUDE = 14;
     /** 顶点属性 id：经度。 */
     private static final int PROPERTY_LONGITUDE = 15;
+    /** 顶点属性 id：角色分类（方案 ⑫，由图谱关系推断）。 */
+    private static final int PROPERTY_ROLE = 16;
     private static final int PROPERTY_NOVEL = 8;
 
     private static final int EDGE_PROPERTY_RELATION = 3;
@@ -174,6 +176,8 @@ final class SanguoGraphSeeder {
 
     /** One vertex per (entity, relation shard); the same entity is replicated per shard. */
     private static List<VertexUpsert> buildVertices(SanguoDataset dataset, GraphSchema schema, long now) {
+        // 方案 ⑫：角色分类由图谱关系推断（君主/军师/谋士/武将/文臣）
+        Map<String, String> roles = SanguoRoles.of(dataset);
         Map<String, String> nameByVertexId = new LinkedHashMap<>();
         Map<String, Integer> shardByVertexId = new LinkedHashMap<>();
         for (SanguoDataset.Relation relation : dataset.closedRelations()) {
@@ -230,6 +234,10 @@ final class SanguoGraphSeeder {
             if (entity != null && !entity.aliases().isEmpty()) {
                 // a multi-valued property: has('alias', TextP.containing('水镜')) reads the list
                 properties.put(PROPERTY_ALIAS, new VertexPropertyValue(entity.aliases(), timestamp));
+            }
+            String role = roles.get(name);
+            if (role != null) {
+                properties.put(PROPERTY_ROLE, new VertexPropertyValue(role, timestamp));
             }
             vertices.add(new VertexUpsert(vertexId, schema.vertexSchema(SanguoGraphIds.VERTEX_LABEL),
                     properties, timestamp, timestamp));

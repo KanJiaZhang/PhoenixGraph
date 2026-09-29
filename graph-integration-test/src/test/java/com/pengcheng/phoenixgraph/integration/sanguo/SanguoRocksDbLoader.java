@@ -134,6 +134,8 @@ public final class SanguoRocksDbLoader {
             throw new IllegalStateException("schema is missing the " + SanguoGraphIds.VERTEX_LABEL + " vertex");
         }
         Map<String, SanguoDataset.Document> documents = dataset.documentsByName();
+        // 方案 ⑫：角色分类由图谱关系推断（君主/军师/谋士/武将/文臣），不引入人工数据
+        Map<String, String> roles = SanguoRoles.of(dataset);
         List<RocksDbVertexUpsert> upserts = new ArrayList<>();
         long tick = 0;
         for (SanguoDataset.Entity value : dataset.entities().values()) {
@@ -172,6 +174,10 @@ public final class SanguoRocksDbLoader {
             if (!value.aliases().isEmpty()) {
                 // a multi-valued property: has('alias', TextP.containing('水镜')) reads the list
                 values.put("alias", new RocksDbPropertyValue(value.aliases(), time));
+            }
+            String role = roles.get(name);
+            if (role != null) {
+                values.put("role", new RocksDbPropertyValue(role, time));
             }
             upserts.add(new RocksDbVertexUpsert(name, entity, indexed(entity, values), time, time));
         }

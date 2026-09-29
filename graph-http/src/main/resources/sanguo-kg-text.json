@@ -25,7 +25,8 @@
         { "id": 11, "name": "eventYear", "description": "事件年份（公元，策展表）", "type": "LONG" },
         { "id": 12, "name": "eventYearEnd", "description": "事件结束年（区间事件才有，如六出祁山 234）", "type": "LONG" },
         { "id": 13, "name": "latitude", "description": "纬度（WGS84）", "type": "DOUBLE" },
-        { "id": 14, "name": "longitude", "description": "经度（WGS84）", "type": "DOUBLE" }
+        { "id": 14, "name": "longitude", "description": "经度（WGS84）", "type": "DOUBLE" },
+        { "id": 15, "name": "role", "description": "人物角色（君主/军师/谋士/武将/文臣/隐士）", "type": "STRING" }
       ]
     }
   ],

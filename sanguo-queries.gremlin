@@ -75,7 +75,7 @@ g.V('关羽','Entity').inE().filter(relation.equals('lord')).otherV().dedup().wh
 g.V('关羽','Entity').bothE('Entity_Entity').groupCount().by('relationLabel')
 g.V('诸葛亮','Entity').bothE('Entity_Entity').groupCount().by('relationLabel')
 g.V('关羽','Entity').both('Entity_Entity').dedup().where(both('Entity_Entity').hasId('诸葛亮')).groupCount().by('entityType')
-g.V('关羽','Entity').both('Entity_Entity').dedup().where(both('Entity_Entity').hasId('诸葛亮')).where(not(has('entityType','Chapter'))).values('name')
+g.V('关羽','Entity').both('Entity_Entity').dedup().where(both('Entity_Entity').hasId('诸葛亮')).not(has('entityType','Chapter')).values('name')
 g.V('关羽','Entity').outE().filter(relation.equals('appearsIn')).otherV().dedup().where(inE().filter(relation.equals('appearsIn')).otherV().hasId('诸葛亮')).count()
 g.V('关羽','Entity').repeat(both('Entity_Entity')).times(2).hasId('诸葛亮').count()
 g.V('关羽','Entity').both('Entity_Entity').dedup().where(hasId('刘备')).both('Entity_Entity').dedup().where(hasId('诸葛亮')).count()

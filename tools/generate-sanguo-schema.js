@@ -57,6 +57,8 @@ function entityVertex(withShard) {
     // 地理坐标（方案 ⑩）：都城/战场/主要城市才有，来自策展表，用于地图可视化。
     { id: withShard ? 14 : 13, name: 'latitude', description: '纬度（WGS84）', type: 'DOUBLE' },
     { id: withShard ? 15 : 14, name: 'longitude', description: '经度（WGS84）', type: 'DOUBLE' },
+    // 角色分类（方案 ⑫）：君主/军师/谋士/武将/文臣/隐士，由关系推断，多次出现时取主角色。
+    { id: withShard ? 16 : 15, name: 'role', description: '人物角色（君主/军师/谋士/武将/文臣/隐士）', type: 'STRING' },
   );
   return {
     id: 1,

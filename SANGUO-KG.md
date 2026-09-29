@@ -944,6 +944,76 @@ g.V('Entity').has('novel', TextP.containing('水镜')).values('name')  // → �
 
 ---
 
+## 7.10 方案 ⑪：倒排索引（`isFullText` 声明，Aerospike + RocksDB 双实现）
+
+`history`/`novel` 两个长文本字段声明 `isFullText`，写入时自动建**倒排索引**（逐字符 n-gram
+→ posting list），`g.V('Entity').has('history', TextP.containing('赤壁'))` 在索引开启时不再扫全表，
+而是读候选集后**回原文精确校验**。
+
+```
+schema：  { "name": "history", "type": "STRING", "isFullText": true }
+RocksDB： ftx:Entity:history 列族，key = 字符:vertexId，写入即索引（RocksDbVertexTable）
+Aerospike： {set}_ftx 集合，key = Entity:history:字符，bin=ids，seed 后串行重建
+查询：     g.V('Entity').has('history', TextP.containing('赤壁'))
+           —— 引擎开关 fullTextIndex(true/false) 控制走索引还是全扫描
+```
+
+实测（`SanguoTextGraphTest#fullTextIndexBeatsScan`，同一查询切开关，结果一致）：
+
+| 查询 | 命中 | 全扫描 | 倒排索引 |
+|---|---|---|---|
+| `history` 含「赤壁」 | 10 | 21 ms | 0 ms |
+| `novel` 含「之」 | 691 | 9 ms | 4 ms |
+
+`history` 倒排索引共 **186,320 行**（去重字符）。语义：索引是**候选生成**（字符求交不保证连续），
+后续 `has` 仍是精确校验，所以开启/关闭结果字节一致。
+
+---
+
+## 7.11 方案 ⑫：人物角色分类（君主 / 军师 / 谋士 / 武将 / 文臣）
+
+角色**由图谱关系推断**，不引入人工数据（TuGraph 三国场景"文臣/武将"顶点分类的落地）：
+
+| 角色 | 推断规则 | 命中 |
+|---|---|---|
+| 君主 | 有 `lord` 出边（有人效忠） | 5 |
+| 军师 | 有 `strategistOf` 出边 | 5 |
+| 谋士 | 有 `advisorOf` 出边 | 26 |
+| 武将 | 有 `killed` / `fought` 出边 | 296 |
+| 文臣 | 有 `holds` 出边（任官） | 1056 |
+
+一个人按 **君主 > 军师 > 谋士 > 武将 > 文臣** 的优先级只取一个角色，所以按角色分组不重复计数。
+
+```gremlin
+g.V('Entity').has('role','君主').values('name')  // → 刘表、吕布、曹操、孙权、刘备
+g.V('Entity').has('role','军师').values('name')  // → 徐庶、卢植、荀攸、庞统、王朗[司徒]
+```
+
+**已知局限（诚实）**：`武将` 由 `killed`/`fought` 的 head 推断，所以**诸葛亮**（斩过/交战过）也被归为武将——这是
+"参与战斗"而非"职业武将"的语义偏差；`文臣` 是"任过官职"（1056 人，粒度粗）；君主只有 5 个，因为 `lord` 边少。
+
+---
+
+## 7.12 数据源调研：还有哪些可用的三国数据
+
+| 数据源 | 内容 | 可用性 |
+|---|---|---|
+| `fthux/Characters_of_the_Three_Kingdoms` | JSON：字/号/别名/乳名/性别/势力/**古今出生地对照**/生卒 | ★★★ 最适合补"籍贯现代地名 + 坐标" |
+| `weiwei-uvic/sanguo` | 《三国志》全部记录人物 | ★★ 补裴注人物 |
+| TuGraph 三国 demo | 5 类顶点（主公/州/文臣/武将/战役）+ 5 类边（父亲/兄长/隶属/籍贯/参战） | ★★★ 本轮已借鉴其"角色分类" |
+| `KGQA_SG`、`knowle-graph-of-ThreeKingdoms` | 人物关系 KG + 问答 | ★ 参考实现 |
+| `shiji-kb` | 更广历史 KG（实体词表/人物关系/帝王家谱/事件索引） | ★★ 方法与词表可借鉴 |
+
+**后续可落地的思路**（按性价比）：① 籍贯古今地名对照 + 坐标（fthux 的独特字段），让地图从
+"都城/战场"扩展到"人物来源地分布"；② 势力关系网络（敌对/同盟/吞并），回答"曹操和袁绍什么关系"；
+③ 官职体系（文官/武官/军职/地方官 + 品级）；④ 事件在演义/正史的差异对照（`historicity` 已有基础）。
+
+**本轮发现的一个性能问题**：Aerospike 的倒排索引构建是 read-modify-write（每个 n-gram 一条记录），
+对 base 图（11,418 个分片副本 × 每人几百字的传记）要 8 分钟；RocksDB 的"写入即索引"没有这个代价。
+base 图不支持全类型扫描，倒排索引价值有限，后续可考虑 base 图不建索引（只声明 text 图）。
+
+---
+
 ## 8. 复现 / 已知限制
 
 ```bash

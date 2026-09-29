@@ -135,7 +135,9 @@ public final class RocksDbFullTextIndex {
                 continue;
             }
             String family = familyOf(vertexName, property.propertyName());
-            for (String ngram : FullTextTokens.ngrams(text, property.config().nGram())) {
+            // lower-case so the index agrees with the case-insensitive TextP.contains semantics
+            for (String ngram : FullTextTokens.ngrams(text.toLowerCase(java.util.Locale.ROOT),
+                    property.config().nGram())) {
                 handle.put(batch, family, key(ngram, vertexId), new byte[0]);
             }
         }
@@ -152,7 +154,8 @@ public final class RocksDbFullTextIndex {
                 continue;
             }
             String family = familyOf(vertexName, property.propertyName());
-            for (String ngram : FullTextTokens.ngrams(text, property.config().nGram())) {
+            for (String ngram : FullTextTokens.ngrams(text.toLowerCase(java.util.Locale.ROOT),
+                    property.config().nGram())) {
                 handle.delete(batch, family, key(ngram, vertexId));
             }
         }
@@ -166,13 +169,11 @@ public final class RocksDbFullTextIndex {
     }
 
     /**
-     * Searches the index of one full-text property: reads the posting lists of the term's
-     * characters and intersects them, returning the candidate vertex ids (those that contain
-     * every character of the term). The caller must still verify each candidate against the
-     * stored text.
-     *
-     * <p>The posting lists are walked from the shortest one so the intersection stays small;
-     * a term whose characters are all rare answers after a handful of point reads.
+     * Searches the index of one full-text property: walks the posting lists of the term's
+     * characters with a k-way merge (every posting is ordered by vertex id, so the intersection
+     * only advances the iterator at the smallest id and decodes lazily), returning the candidate
+     * vertex ids that contain every character of the term. The caller must still verify each
+     * candidate against the stored text.
      */
     public List<Object> search(String vertexName, String propertyName, String term) {
         FullTextIndexSchemas.FullTextProperty property =
@@ -181,36 +182,74 @@ public final class RocksDbFullTextIndex {
             return List.of();
         }
         int nGram = property.config().nGram();
-        List<String> tokens = new ArrayList<>(FullTextTokens.lookupTokens(term, nGram));
+        List<String> tokens = new ArrayList<>(
+                FullTextTokens.lookupTokens(term.toLowerCase(java.util.Locale.ROOT), nGram));
         if (tokens.isEmpty()) {
             return List.of();
         }
         String family = familyOf(vertexName, propertyName);
-        // read every posting list, smallest first, and intersect in first-seen order
-        List<List<String>> postings = new ArrayList<>(tokens.size());
-        for (String token : tokens) {
-            postings.add(readPostingList(family, token));
-        }
-        postings.sort((a, b) -> Integer.compare(a.size(), b.size()));
-        Set<String> candidates = new LinkedHashSet<>(postings.get(0));
-        for (int i = 1; i < postings.size() && !candidates.isEmpty(); i++) {
-            candidates.retainAll(postings.get(i));
-        }
-        return List.copyOf(candidates);
-    }
-
-    /** The vertex ids that carry one n-gram, in storage order. */
-    private List<String> readPostingList(String family, String token) {
-        byte[] from = key(token, "");
-        byte[] to = RocksDbKeys.prefixEnd(from);
-        List<String> ids = new ArrayList<>();
-        try (RocksDbHandle.RocksDbRange range = handle.iterator(family, from, to)) {
-            while (range.isValid()) {
-                ids.add(vertexIdOfKey(range.key()));
-                range.next();
+        List<RocksDbHandle.RocksDbRange> iterators = new ArrayList<>(tokens.size());
+        List<String> ids = new ArrayList<>(tokens.size());
+        try {
+            for (String token : tokens) {
+                RocksDbHandle.RocksDbRange iterator = handle.iterator(family, key(token, ""),
+                        RocksDbKeys.prefixEnd(key(token, "")));
+                iterators.add(iterator);
+                ids.add(iterator.isValid() ? vertexIdOfKey(iterator.key()) : null);
+            }
+            List<Object> result = new ArrayList<>();
+            while (true) {
+                String smallest = null;
+                boolean exhausted = false;
+                for (String id : ids) {
+                    if (id == null) {
+                        exhausted = true;
+                        break;
+                    }
+                    if (smallest == null || id.compareTo(smallest) < 0) {
+                        smallest = id;
+                    }
+                }
+                if (exhausted) {
+                    break; // one posting is done: no more ids can be common to all
+                }
+                boolean allEqual = true;
+                for (String id : ids) {
+                    if (!id.equals(smallest)) {
+                        allEqual = false;
+                        break;
+                    }
+                }
+                if (allEqual) {
+                    result.add(smallest);
+                    advanceAll(iterators, ids);
+                } else {
+                    advanceSmallest(iterators, ids, smallest);
+                }
+            }
+            return List.copyOf(result);
+        } finally {
+            for (RocksDbHandle.RocksDbRange iterator : iterators) {
+                iterator.close();
             }
         }
-        return ids;
+    }
+
+    private static void advanceAll(List<RocksDbHandle.RocksDbRange> iterators, List<String> ids) {
+        for (int i = 0; i < iterators.size(); i++) {
+            iterators.get(i).next();
+            ids.set(i, iterators.get(i).isValid() ? vertexIdOfKey(iterators.get(i).key()) : null);
+        }
+    }
+
+    private static void advanceSmallest(List<RocksDbHandle.RocksDbRange> iterators, List<String> ids,
+                                        String smallest) {
+        for (int i = 0; i < iterators.size(); i++) {
+            if (ids.get(i).equals(smallest)) {
+                iterators.get(i).next();
+                ids.set(i, iterators.get(i).isValid() ? vertexIdOfKey(iterators.get(i).key()) : null);
+            }
+        }
     }
 
     /** The number of indexed rows of a full-text property (diagnostics and tests). */

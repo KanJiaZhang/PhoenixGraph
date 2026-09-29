@@ -452,7 +452,7 @@ public final class SanguoRocksDbQueries {
                             + "RETURN m.entityType AS type, count(DISTINCT m.name) AS n ORDER BY n DESC"),
             new RelationStep("⑦", "共同邻居里的“人 / 势力”（去掉章回）—— 这就是中间人",
                     "g.V('{A}','Entity').both('Entity_Entity').dedup().where(both('Entity_Entity').hasId('{B}'))"
-                            + ".where(not(has('entityType','Chapter'))).values('name')",
+                            + ".not(has('entityType','Chapter')).values('name')",
                     "MATCH (a:Entity {id:'{A}'})-[:Entity_Entity]-(m:Entity)-[:Entity_Entity]-(b:Entity {id:'{B}'}) "
                             + "WHERE m.entityType <> 'Chapter' RETURN DISTINCT m.name"),
             new RelationStep("⑧", "共同出场（两人出现在同一章回的数目）",

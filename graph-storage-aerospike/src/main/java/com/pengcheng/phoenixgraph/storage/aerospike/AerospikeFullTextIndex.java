@@ -71,7 +71,7 @@ public final class AerospikeFullTextIndex {
             return;
         }
         String id = String.valueOf(vertexId);
-        for (String ngram : FullTextTokens.ngrams(text, 1)) {
+        for (String ngram : FullTextTokens.ngrams(text.toLowerCase(java.util.Locale.ROOT), 1)) {
             Key key = key(vertexName, propertyName, ngram);
             Record record = client.get(null, key);
             List<String> ids = new ArrayList<>();
@@ -94,7 +94,8 @@ public final class AerospikeFullTextIndex {
      * of the term's characters are read (smallest first) and intersected.
      */
     public List<Object> search(String vertexName, String propertyName, String term) {
-        List<String> tokens = new ArrayList<>(FullTextTokens.lookupTokens(term, 1));
+        List<String> tokens = new ArrayList<>(
+                FullTextTokens.lookupTokens(term.toLowerCase(java.util.Locale.ROOT), 1));
         if (tokens.isEmpty()) {
             return List.of();
         }

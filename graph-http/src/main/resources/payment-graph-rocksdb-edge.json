@@ -35,6 +35,7 @@
           "id": 1,
           "name": "accountStatus",
           "description": "Account status",
+          "isFullText": true,
           "type": {
             "enum": [
               "ACTIVE",

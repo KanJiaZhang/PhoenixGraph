@@ -532,6 +532,38 @@ class SanguoTextGraphTest {
         }
     }
 
+    /**
+     * 方案 ⑫：角色分类由图谱关系推断（君主/军师/谋士/武将/文臣），不引入人工数据。
+     * 验证从 lord / strategistOf / advisorOf / killed / fought / holds 边读出的角色。
+     */
+    @Test
+    void classifiesRolesFromRelations() {
+        SanguoTextGraph.Built built = SanguoTextGraph.build();
+        Map<String, String> roles = SanguoRoles.of(built.dataset());
+        Map<String, Integer> counts = SanguoRoles.counts(roles);
+        System.out.println();
+        System.out.println("======================================================================");
+        System.out.println(" 方案 ⑫：人物角色（由图谱关系推断）");
+        System.out.println("======================================================================");
+        System.out.println(" 角色分布: " + counts);
+        for (String role : SanguoRoles.PRIORITY) {
+            System.out.println(" " + role + "(" + counts.get(role) + "): " + roles.entrySet().stream()
+                    .filter(e -> e.getValue().equals(role)).map(Map.Entry::getKey).limit(15).toList());
+        }
+
+        // 有臣属的人 → 君主
+        assertEquals("君主", roles.get("曹操"));
+        assertEquals("君主", roles.get("刘备"));
+        // 军师/谋士：由 strategistOf / advisorOf 边决定（诸葛亮在 text 图里两者都没有，不在这里断言）
+        assertEquals("军师", roles.get("庞统"));
+        assertEquals("军师", roles.get("徐庶"));
+        // 武将：有 killed / fought 边（关羽既任官又交战，优先级取武将）
+        assertEquals("武将", roles.get("关羽"));
+        // 每个角色只分配一次：按角色分组不重复计数
+        int total = counts.values().stream().mapToInt(Integer::intValue).sum();
+        assertEquals(roles.size(), total, "每个名字只属于一个角色");
+    }
+
     /** 中位数耗时（毫秒），避免 JIT/GC 的单次毛刺。 */
     private static long medianMillis(GremlinGraphQuery engine, String query, int rounds) {
         long[] samples = new long[rounds];
