@@ -46,6 +46,7 @@ public final class RocksDbVertexTable {
     private final KeyLocks locks;
     private final BusinessLog businessLog;
     private final RocksDbGeoIndex geoIndex;
+    private final RocksDbFullTextIndex fullTextIndex;
 
     public RocksDbVertexTable(RocksDbHandle handle, GraphSchema schema, RocksDbStoreConfig config,
                               KeyLocks locks, BusinessLog businessLog) {
@@ -55,11 +56,17 @@ public final class RocksDbVertexTable {
         this.locks = Objects.requireNonNull(locks, "locks");
         this.businessLog = businessLog == null ? entry -> { } : businessLog;
         this.geoIndex = new RocksDbGeoIndex(handle, schema);
+        this.fullTextIndex = new RocksDbFullTextIndex(handle, schema);
     }
 
     /** The geo index of this graph (the {@code isGeo} properties are indexed by the writes). */
     public RocksDbGeoIndex geoIndex() {
         return geoIndex;
+    }
+
+    /** The full-text index of this graph (the {@code isFullText} properties are indexed by the writes). */
+    public RocksDbFullTextIndex fullTextIndex() {
+        return fullTextIndex;
     }
 
     /** The column families of the geo indexes of this graph. */
@@ -283,6 +290,15 @@ public final class RocksDbVertexTable {
                     }
                     geoIndex.index(batch, upsert.vertexName(), upsert.vertexId(), currentValues(merged));
                 }
+                // the full-text rows follow the record the same way: the old text is unindexed
+                // and the new one indexed, so a rewritten biography is never found under stale terms
+                if (fullTextIndex.hasFullTextProperties(upsert.vertexName())) {
+                    if (existing != null) {
+                        fullTextIndex.unindex(batch, upsert.vertexName(), upsert.vertexId(),
+                                currentValues(existing));
+                    }
+                    fullTextIndex.index(batch, upsert.vertexName(), upsert.vertexId(), currentValues(merged));
+                }
                 long createdTime = existing == null || existing.createdTime() == 0L
                         ? upsert.createdTime() : existing.createdTime();
                 long lastUpdatedTime = existing == null ? 0L : existing.lastUpdatedTime();
@@ -315,6 +331,9 @@ public final class RocksDbVertexTable {
             try (WriteBatch batch = handle.batch()) {
                 if (geoIndex.hasGeoProperties(vertexName)) {
                     geoIndex.unindex(batch, vertexName, vertexId, currentValues(record));
+                }
+                if (fullTextIndex.hasFullTextProperties(vertexName)) {
+                    fullTextIndex.unindex(batch, vertexName, vertexId, currentValues(record));
                 }
                 handle.delete(batch, family, key);
                 handle.write(batch);

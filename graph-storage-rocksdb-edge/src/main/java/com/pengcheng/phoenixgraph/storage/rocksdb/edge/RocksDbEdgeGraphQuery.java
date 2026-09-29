@@ -71,6 +71,22 @@ public class RocksDbEdgeGraphQuery implements GraphQuery {
         return true;
     }
 
+    /**
+     * Finds the vertices of a type whose full-text property contains the term, from the
+     * inverted index. The candidate set must be verified by the caller against the stored
+     * text (character intersection alone does not guarantee contiguity).
+     */
+    @Override
+    public List<Object> fullTextSearch(String vertexName, String propertyName, String term) {
+        SchemaProjections.requireVertex(schema, vertexName);
+        return store.fullTextIndex().search(vertexName, propertyName, term);
+    }
+
+    @Override
+    public boolean supportsFullTextSearch() {
+        return true;
+    }
+
     private void requireGeoProperty(String vertexName, String propertyName) {
         if (GeoIndexSchemas.geoProperty(schema, vertexName, propertyName) == null) {
             throw new QueryException("Property '" + propertyName + "' of vertex type '" + vertexName

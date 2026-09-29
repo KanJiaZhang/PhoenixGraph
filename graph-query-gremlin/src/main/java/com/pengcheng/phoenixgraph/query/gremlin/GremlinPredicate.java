@@ -194,6 +194,15 @@ final class GremlinPredicate {
         return negated != any;
     }
 
+    /**
+     * The substring a non-negated {@code containing(term)} / {@code contains(term)} looks for,
+     * or {@code null} for any other predicate. Used by the compiler to decide whether a
+     * {@code has(fullTextField, ...)} start can be answered by the inverted index.
+     */
+    String containingTerm() {
+        return kind == Kind.CONTAINS && !negated ? argument(0) : null;
+    }
+
     private boolean matchesOne(Object value) {
         return switch (kind) {
             case NOT -> !nested.get(0).test(value);

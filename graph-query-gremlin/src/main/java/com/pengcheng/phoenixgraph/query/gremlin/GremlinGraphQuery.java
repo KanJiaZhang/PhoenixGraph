@@ -19,6 +19,7 @@ import com.pengcheng.phoenixgraph.query.storage.VertexQueryResult;
 import com.pengcheng.phoenixgraph.schema.EdgeDirection;
 import com.pengcheng.phoenixgraph.schema.EdgeSchema;
 import com.pengcheng.phoenixgraph.schema.GraphSchema;
+import com.pengcheng.phoenixgraph.schema.VertexPropertySchema;
 import com.pengcheng.phoenixgraph.schema.VertexSchema;
 import com.pengcheng.phoenixgraph.schema.VectorIndexSchemas;
 
@@ -78,6 +79,7 @@ public class GremlinGraphQuery {
 
     /** The schema a named hop's direction is checked against ({@code null} = no check). */
     private GraphSchema schema;
+    private boolean fullTextIndexEnabled;
     private FuzzyPatternRegistry fuzzyPatterns = FuzzyPatternRegistry.empty();
     private GeminiCluster geminiCluster;
     private Supplier<Map<String, HnswIndex>> hnswIndexSource;
@@ -169,6 +171,15 @@ public class GremlinGraphQuery {
                 // a point or radius the step cannot read is a query error like any other
                 throw new QueryException(e.getMessage(), e);
             }
+        });
+        // the full-text step reads the candidate set of a TextP predicate from the inverted index;
+        // the compiler writes it for g.V('Type').has(fullTextField, TextP...) when the index is on
+        registry.register("fullText", args -> {
+            if (args.size() != 3) {
+                throw new QueryException("fullText expects fullText(vertexType, property, term), got "
+                        + args.size() + " arguments");
+            }
+            return GremlinSteps.fullText(args.get(0), args.get(1), args.get(2));
         });
         // branch steps whose arguments are sub-traversals (TinkerPop's `__` children written as
         // out('x').has('k','v')): each is resolved with this registry and run on one element
@@ -745,6 +756,21 @@ public class GremlinGraphQuery {
     }
 
     /**
+     * Turns the full-text index rewrite on or off.
+     *
+     * <p>When {@code true} and the store supports {@link GraphQuery#supportsFullTextSearch()},
+     * a {@code g.V('Type').has(fullTextField, TextP.containing(term))} start is rewritten to read
+     * the candidate set from the inverted index instead of scanning the type. When {@code false}
+     * (the default) the predicate scans every element, exactly as it always did - which is what
+     * the {@code indexed vs non-indexed} comparison measures.
+     */
+    public GremlinGraphQuery fullTextIndex(boolean enabled) {
+        this.fullTextIndexEnabled = enabled;
+        compiledCache.clear();
+        return this;
+    }
+
+    /**
      * The Gemini cluster the {@code (DIST)} forms of the algorithm steps run on.
      *
      * <p>One cluster serves every graph this engine answers for: a run loads the workers with the
@@ -1130,6 +1156,14 @@ public class GremlinGraphQuery {
             parsedSteps.addAll(expandLogic(query.logic()));
         }
         parsedSteps = foldModulators(parsedSteps);
+        // a start of g.V('Type').has(fullTextField, TextP.containing(term)) reads the candidate set
+        // from the inverted index (when the index is on and the store supports it): the empty start
+        // is replaced by a fullText step and the has stays as the exact verifier
+        if (fullTextIndexEnabled && graphQuery.supportsFullTextSearch() && schema != null) {
+            FullTextStart fullText = rewriteFullTextStart(source, parsedSteps);
+            source = fullText.source();
+            parsedSteps = fullText.steps();
+        }
         parsedSteps = optimizeSteps(parsedSteps);
         // a circle step absorbs the limit directly following it: the geo search keeps only that
         // many hits while it walks the index, so the vertex reads, the collected subgraph and
@@ -1484,6 +1518,45 @@ public class GremlinGraphQuery {
      * This avoids materialising the reached vertices (a vertex hop has exactly one
      * neighbour per edge, so the count is identical). Applied globally.
      */
+    /**
+     * Rewrites a {@code g.V('Type').has(fullTextField, TextP.containing(term))} start to read
+     * the candidate set from the inverted index: the start becomes empty and a {@code fullText}
+     * step in front produces the candidates, while the original {@code has} stays to verify each
+     * candidate against the stored text (character intersection alone does not guarantee that
+     * the characters are contiguous). Any other start is returned unchanged.
+     */
+    private FullTextStart rewriteFullTextStart(GremlinQuery.Source source, List<GremlinQuery.Step> steps) {
+        if (source.kind() != GremlinQuery.Source.Kind.VERTEX_TYPE || steps.isEmpty()) {
+            return new FullTextStart(source, steps);
+        }
+        GremlinQuery.Step first = steps.get(0);
+        if (!first.name().equals("has") || first.args().size() != 2) {
+            return new FullTextStart(source, steps);
+        }
+        String key = first.args().get(0);
+        GremlinPredicate predicate = GremlinPredicate.parse(first.args().get(1));
+        String term = predicate == null ? null : predicate.containingTerm();
+        if (term == null || term.isEmpty()) {
+            return new FullTextStart(source, steps);
+        }
+        VertexSchema vertexSchema = schema.vertexSchema(source.name());
+        if (vertexSchema == null) {
+            return new FullTextStart(source, steps);
+        }
+        VertexPropertySchema property = vertexSchema.property(key);
+        if (property == null || !property.isFullText()) {
+            return new FullTextStart(source, steps);
+        }
+        List<GremlinQuery.Step> out = new ArrayList<>(steps.size() + 1);
+        out.add(new GremlinQuery.Step("fullText", List.of(source.name(), key, term)));
+        out.addAll(steps);
+        return new FullTextStart(GremlinQuery.Source.none(), out);
+    }
+
+    /** A start and its steps after the full-text rewrite. */
+    private record FullTextStart(GremlinQuery.Source source, List<GremlinQuery.Step> steps) {
+    }
+
     private static List<GremlinQuery.Step> optimizeSteps(List<GremlinQuery.Step> steps) {
         List<GremlinQuery.Step> result = new ArrayList<>(steps);
         for (int i = 0; i < result.size(); i++) {

@@ -546,6 +546,23 @@ final class GremlinSteps {
         return out;
     }
 
+    /**
+     * The full-text index step: replaces the empty start with the candidate vertices of a
+     * {@code TextP} predicate over a full-text indexed property, read from the inverted index.
+     *
+     * <p>This is the step the compiler writes when it sees
+     * {@code g.V('Type').has(fullTextField, TextP.containing(term))} and the store supports the
+     * index: it reads the candidate ids from {@link GraphQuery#fullTextSearch} and materialises
+     * them, so the {@code has} step that follows only verifies the candidates against the stored
+     * text instead of scanning the whole type.
+     */
+    static GremlinStep fullText(String vertexName, String propertyName, String term) {
+        return (ctx, in) -> {
+            List<Object> ids = ctx.graphQuery().fullTextSearch(vertexName, propertyName, term);
+            return readVertices(ctx, vertexName, ids);
+        };
+    }
+
     /** Sets the fan-out batch size for the batched lookups that follow. */
     static GremlinStep batch(int batchSize) {
         return (ctx, in) -> {

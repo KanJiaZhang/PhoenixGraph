@@ -14,6 +14,7 @@ import com.pengcheng.phoenixgraph.storage.WriteOutcome;
 import com.pengcheng.phoenixgraph.storage.rocksdb.KeyLocks;
 import com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbEdgeUpsert;
 import com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbHash;
+import com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbFullTextIndex;
 import com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbGeoIndex;
 import com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbHandle;
 import com.pengcheng.phoenixgraph.storage.rocksdb.RocksDbMetricsStore;
@@ -115,6 +116,7 @@ public final class RocksDbEdgeStore implements AutoCloseable {
             families.add(familyOf(edgeSchema));
         }
         families.addAll(RocksDbGeoIndex.columnFamilies(schema));
+        families.addAll(RocksDbFullTextIndex.columnFamilies(schema));
         families.add(RocksDbMetricsStore.FAMILY); // the graph's metrics live next to its data
         return families;
     }
@@ -122,6 +124,11 @@ public final class RocksDbEdgeStore implements AutoCloseable {
     /** The geo index of this graph (one table per {@code isGeo} property). */
     public RocksDbGeoIndex geoIndex() {
         return vertexTable.geoIndex();
+    }
+
+    /** The full-text index of this graph (one table per {@code isFullText} property). */
+    public RocksDbFullTextIndex fullTextIndex() {
+        return vertexTable.fullTextIndex();
     }
 
     /**

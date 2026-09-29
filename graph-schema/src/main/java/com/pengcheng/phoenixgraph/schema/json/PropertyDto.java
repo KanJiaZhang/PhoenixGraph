@@ -34,33 +34,33 @@ public record PropertyDto(int id, String name, String description, PropertyType 
                           Boolean isVector, String metric, Integer m, Integer efConstruction,
                           Integer efSearch,
                           Boolean isGeo, Integer geoLevel, Integer geoMaxCells,
-                          Boolean isNull) {
+                          Boolean isNull, Boolean isFullText, Integer ftNGram) {
 
     public PropertyDto(int id, String name, String description, PropertyType type) {
         this(id, name, description, type, null, null, null, null, null, null,
-                null, null, null, null, null, null, null, null, null);
+                null, null, null, null, null, null, null, null, null, null, null);
     }
 
     public PropertyDto(int id, String name, String description, PropertyType type,
                        Number min, Number max, Integer minLength, Integer maxLength, String vertex) {
         this(id, name, description, type, min, max, minLength, maxLength, vertex, null,
-                null, null, null, null, null, null, null, null, null);
+                null, null, null, null, null, null, null, null, null, null, null);
     }
 
     public PropertyDto(int id, String name, String description, PropertyType type,
                        Number min, Number max, Integer minLength, Integer maxLength, String vertex,
                        Boolean display) {
         this(id, name, description, type, min, max, minLength, maxLength, vertex, display,
-                null, null, null, null, null, null, null, null, null);
+                null, null, null, null, null, null, null, null, null, null, null);
     }
 
-    /** The vector and geo tunables in one place (used by the codec when it rebuilds a property). */
+    /** The vector, geo and full-text tunables in one place (used by the codec when it rebuilds a property). */
     public PropertyDto(int id, String name, String description, PropertyType type,
                        Number min, Number max, Integer minLength, Integer maxLength,
                        String vertex, Boolean display,
                        Boolean isVector, String metric, Integer m, Integer efConstruction,
                        Integer efSearch, Boolean isGeo) {
         this(id, name, description, type, min, max, minLength, maxLength, vertex, display,
-                isVector, metric, m, efConstruction, efSearch, isGeo, null, null, null);
+                isVector, metric, m, efConstruction, efSearch, isGeo, null, null, null, null, null);
     }
 }

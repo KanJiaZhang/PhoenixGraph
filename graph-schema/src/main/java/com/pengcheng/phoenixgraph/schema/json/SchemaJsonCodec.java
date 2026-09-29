@@ -13,6 +13,7 @@ import com.pengcheng.phoenixgraph.schema.EdgeDirection;
 import com.pengcheng.phoenixgraph.schema.EdgeEndpointSchema;
 import com.pengcheng.phoenixgraph.schema.EdgePropertySchema;
 import com.pengcheng.phoenixgraph.schema.EdgeSchema;
+import com.pengcheng.phoenixgraph.schema.FullTextIndexConfig;
 import com.pengcheng.phoenixgraph.schema.GeoIndexConfig;
 import com.pengcheng.phoenixgraph.schema.GraphSchema;
 import com.pengcheng.phoenixgraph.schema.GraphStorageSchema;
@@ -138,6 +139,7 @@ public class SchemaJsonCodec {
         PropertyConstraints constraints = property.constraints();
         VectorIndexConfig vector = property.vectorConfig();
         GeoIndexConfig geo = property.geoConfig();
+        FullTextIndexConfig fullText = property.fullTextConfig();
         return new PropertyDto(property.id(), property.name(), property.description(), property.type(),
                 constraints.min(), constraints.max(), constraints.minLength(), constraints.maxLength(), null,
                 property.display() ? Boolean.TRUE : null,
@@ -149,7 +151,9 @@ public class SchemaJsonCodec {
                 property.isGeo() ? Boolean.TRUE : null,
                 geo == null ? null : geo.level(),
                 geo == null ? null : geo.maxCells(),
-                null);
+                null,
+                property.isFullText() ? Boolean.TRUE : null,
+                fullText == null ? null : fullText.nGram());
     }
 
     private PropertyDto toEndpointDto(EdgeEndpointSchema endpoint) {
@@ -157,7 +161,7 @@ public class SchemaJsonCodec {
         return new PropertyDto(endpoint.id(), endpoint.name(), endpoint.description(), endpoint.type(),
                 constraints.min(), constraints.max(), constraints.minLength(), constraints.maxLength(),
                 endpoint.vertexName(), null, null, null, null, null, null, null, null, null,
-                endpoint.isNull() ? Boolean.TRUE : null);
+                endpoint.isNull() ? Boolean.TRUE : null, null, null);
     }
 
     // --- DTO -> domain ---
@@ -192,7 +196,7 @@ public class SchemaJsonCodec {
                 VertexPropertySchema property = toVectorProperty(
                         new VertexPropertySchema(p.id(), p.name(), p.description(), p.type(),
                                 toConstraints(p)).display(Boolean.TRUE.equals(p.display())), p);
-                schema.property(toGeoProperty(property, p));
+                schema.property(toFullTextProperty(toGeoProperty(property, p), p));
             }
         }
         return schema;
@@ -248,6 +252,15 @@ public class SchemaJsonCodec {
             property.vector(VectorIndexConfig.of(dto.metric(), dto.m(), dto.efConstruction(), dto.efSearch()));
         }
         return property;
+    }
+
+    /** Applies the full-text index declaration of a DTO to a property. */
+    private static <T extends PropertySchema> T toFullTextProperty(T property, PropertyDto dto) {
+        if (dto.isFullText() == null || !dto.isFullText()) {
+            return property;
+        }
+        int nGram = dto.ftNGram() == null ? FullTextIndexConfig.DEFAULT_NGRAM : dto.ftNGram();
+        return (T) property.fullText(new FullTextIndexConfig(nGram));
     }
 
     private EdgePropertySchema toEdgeProperty(PropertyDto dto) {

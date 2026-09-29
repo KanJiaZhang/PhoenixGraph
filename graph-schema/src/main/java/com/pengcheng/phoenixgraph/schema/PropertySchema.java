@@ -38,6 +38,7 @@ public abstract class PropertySchema {
     private boolean display;
     private VectorIndexConfig vectorConfig;
     private GeoIndexConfig geoConfig;
+    private FullTextIndexConfig fullTextConfig;
 
     protected PropertySchema(int id, String name, String description, PropertyType type) {
         this(id, name, description, type, PropertyConstraints.NONE);
@@ -163,6 +164,39 @@ public abstract class PropertySchema {
         return geo(isGeo ? GeoIndexConfig.DEFAULT : null);
     }
 
+    /**
+     * Whether this property carries text the graph indexes with an inverted index, so a
+     * {@code TextP.containing(...)}-style predicate is answered from the posting lists instead
+     * of scanning every element. Defaults to {@code false}.
+     */
+    public boolean isFullText() {
+        return fullTextConfig != null;
+    }
+
+    /** The full-text index configuration of this property, or {@code null} when it is not indexed. */
+    public FullTextIndexConfig fullTextConfig() {
+        return fullTextConfig;
+    }
+
+    /**
+     * The full-text index configuration, falling back to {@link FullTextIndexConfig#DEFAULT}
+     * for a property that is not indexed (handy for callers that do not care whether it is).
+     */
+    public FullTextIndexConfig fullTextConfigOrDefault() {
+        return fullTextConfig == null ? FullTextIndexConfig.DEFAULT : fullTextConfig;
+    }
+
+    /** Marks this property as full-text indexed (fluent) with the given index settings. */
+    public PropertySchema fullText(FullTextIndexConfig config) {
+        this.fullTextConfig = config;
+        return this;
+    }
+
+    /** Marks this property as full-text indexed with the default index settings. */
+    public PropertySchema fullText(boolean isFullText) {
+        return fullText(isFullText ? FullTextIndexConfig.DEFAULT : null);
+    }
+
     @Override
     public String toString() {
         return getClass().getSimpleName()
@@ -171,6 +205,7 @@ public abstract class PropertySchema {
                 + ", type=" + type
                 + (display ? ", display=true" : "")
                 + (isVector() ? ", isVector=true (" + vectorConfig.describe() + ")" : "")
+                + (isFullText() ? ", isFullText=true (nGram=" + fullTextConfig.nGram() + ")" : "")
                 + '}';
     }
 }

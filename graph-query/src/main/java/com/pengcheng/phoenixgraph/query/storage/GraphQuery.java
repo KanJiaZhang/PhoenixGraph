@@ -584,4 +584,28 @@ public interface GraphQuery {
     default boolean supportsGeoSearch() {
         return false;
     }
+
+    /**
+     * Finds the vertices of one type whose full-text property contains the term, from the
+     * inverted index declared with {@code isFullText} on the property.
+     *
+     * <p>This is the full-text twin of {@link #geoNear}: it is not reached through a vertex or
+     * an edge, it asks the inverted index of a type where the matching elements are. The answer
+     * is a <em>candidate</em> set — the ids whose index tokens cover the term's tokens — so the
+     * caller must still verify each candidate against the stored text (character intersection
+     * alone does not guarantee the characters are contiguous).
+     *
+     * @param vertexName   the vertex type holding the text
+     * @param propertyName the full-text indexed property
+     * @param term         the substring to find ({@code containing(term)})
+     * @return the candidate vertex ids, in storage order (possibly empty)
+     */
+    default List<Object> fullTextSearch(String vertexName, String propertyName, String term) {
+        throw new QueryException("Full-text search is not supported by " + getClass().getSimpleName());
+    }
+
+    /** Whether {@link #fullTextSearch} is implemented (used to decide whether a predicate can use it). */
+    default boolean supportsFullTextSearch() {
+        return false;
+    }
 }

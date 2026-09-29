@@ -20,6 +20,7 @@ import com.pengcheng.phoenixgraph.storage.EdgeHeader;
 import com.pengcheng.phoenixgraph.storage.TimeRange;
 import com.pengcheng.phoenixgraph.storage.aerospike.AerospikeEdgeStore;
 import com.pengcheng.phoenixgraph.storage.aerospike.AerospikeGeoIndex;
+import com.pengcheng.phoenixgraph.storage.aerospike.AerospikeFullTextIndex;
 import com.pengcheng.phoenixgraph.storage.aerospike.AerospikeVertexStore;
 import com.pengcheng.phoenixgraph.storage.aerospike.EdgePropertyValue;
 import com.pengcheng.phoenixgraph.storage.aerospike.StoredEdgeValue;
@@ -695,6 +696,29 @@ public class AerospikeGraphQuery implements GraphQuery {
 
     @Override
     public boolean supportsGeoSearch() {
+        return true;
+    }
+
+    /**
+     * Finds the vertices of a type whose full-text property contains the term, from the client
+     * inverted index (one record per character n-gram). The candidate set must be verified by the
+     * caller against the stored text.
+     */
+    @Override
+    public List<Object> fullTextSearch(String vertexName, String propertyName, String term) {
+        VertexSchema vertexSchema = resolveVertexSchema(vertexName);
+        VertexPropertySchema propertySchema = requireVertexProperty(vertexSchema, propertyName);
+        if (!propertySchema.isFullText()) {
+            throw new QueryException("Property '" + propertyName + "' of vertex type '" + vertexName
+                    + "' is not declared with isFullText, so it has no full-text index");
+        }
+        AerospikeFullTextIndex index = new AerospikeFullTextIndex(vertexStore.client(),
+                vertexStore.namespace(), vertexStore.set());
+        return index.search(vertexName, propertyName, term);
+    }
+
+    @Override
+    public boolean supportsFullTextSearch() {
         return true;
     }
 
