@@ -3,9 +3,6 @@
 A high-scale, high-performance **HTAP graph database** that puts **graph traversal, vector search and
 geo search** behind one query, and serves **knowledge graphs as context for AI agents**.
 
-> **Resuming work?** Start with [HANDOVER.md](HANDOVER.md) - current state, how to start the services
-> and what is next.
-
 ## What PhoenixGraph is
 
 - **AI context graphs.** A knowledge graph is what an LLM needs to answer accurately: typed entities,
@@ -275,8 +272,9 @@ curl -s -X POST http://localhost:8081/api/v1/query -H 'content-type: application
 - `language` picks `gremlin` (default) or `cypher`; `${name}` placeholders come from `params` (Cypher
   also takes native `$name`).
 - `returnSubgraph` adds the induced subgraph the traversal touched - what the UI draws.
-- `script: true` runs a Groovy-subset script (variables, loops, collection helpers; see
-  `CONTEXT.md` sections 109-110).
+- `script: true` runs a Groovy-subset script (variables, loops, collection helpers; the advanced
+  constructs - whitelisted statics, first-class closures, regular expressions - need
+  `phoenixgraph.script.advanced`, on by default).
 
 The UI has a language picker, example pickers and a rows table; the same graph answers Gremlin and
 openCypher, so a team can pick the one it knows.
@@ -407,5 +405,3 @@ the graph side of an agent stack, not another agent. The direction:
 5. **Open and independent.** The engine stays a self-contained database (four storage backends, one
    wire API, a visualization UI), with the agent-facing layer kept thin and framework-agnostic, so it
    can sit under any agent business rather than locking one in.
-
-See `CONTEXT.md` and `HANDOVER.md` for the design notes and the current state.
