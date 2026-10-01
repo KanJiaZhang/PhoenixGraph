@@ -2794,7 +2794,7 @@ public class GremlinGraphQuery {
             for (String vertexName : types) {
                 store.scanVerticesPartition(vertexName, properties == null ? List.of() : properties,
                         partition, partitions, vertex -> {
-                            context.recordVertex(vertex.vertexName(), vertex.vertexId());
+                            // 同 startVertexScan：分布式扫描的起点也不进 subgraph
                             out.add(new GremlinVertex(vertex.vertexName(), vertex.vertexId(),
                                     vertex.properties(), vertex.createdTime(), vertex.lastUpdatedTime()));
                         });
@@ -3514,6 +3514,12 @@ public class GremlinGraphQuery {
     /**
      * Starts from a whole vertex type: {@code g.V('Account')}. A keyed store cannot answer this, so
      * the requirement is stated instead of surfacing as an exception from inside the store.
+     *
+     * <p>A scan is a <b>set of inputs</b>, not an answer, so it does <b>not</b> record the vertices it
+     * walked into the subgraph: {@code g.V('Sale').group().by('orderYear').by(count())} asks for a
+     * count, and drawing the 8,000 sales it scanned would bury that answer under the whole type. A
+     * graph is drawn when the question starts from a named id ({@code g.V('曹操','Entity')}) or when a
+     * hop reaches something; a scan only feeds the steps that follow it.
      */
     private static List<Object> startVertexScan(GremlinContext context, String vertexName,
                                                 List<String> properties) {
@@ -3522,7 +3528,6 @@ public class GremlinGraphQuery {
                 .scanVertices(vertexName, properties == null ? List.of() : properties, context.scanLimit());
         List<Object> out = new ArrayList<>(vertices.size());
         for (VertexQueryResult vertex : vertices) {
-            context.recordVertex(vertex.vertexName(), vertex.vertexId());
             out.add(new GremlinVertex(vertex.vertexName(), vertex.vertexId(), vertex.properties(),
                     vertex.createdTime(), vertex.lastUpdatedTime()));
         }

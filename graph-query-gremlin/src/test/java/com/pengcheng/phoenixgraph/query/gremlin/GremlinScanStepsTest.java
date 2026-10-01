@@ -314,6 +314,21 @@ class GremlinScanStepsTest {
         assertEquals(List.of(5L), engine().execute("g.V('Account').count()"));
     }
 
+    /**
+     * A scan is a <b>set of inputs</b>, not an answer: {@code g.V('Account').count()} asks for a
+     * number, and drawing the five accounts it walked would bury that number under the whole type.
+     * A graph is drawn when the question starts from a named id or a hop reaches something.
+     */
+    @Test
+    void aScanDoesNotDrawTheVerticesItWalked() {
+        assertEquals(0, engine().executeSubgraph("g.V('Account').count()").vertices().size(),
+                "a scan-seeded count() draws nothing");
+        assertEquals(1, engine().executeSubgraph("g.V('a1','Account')").vertices().size(),
+                "an id-seeded start draws the vertex it named");
+        assertEquals(2, engine().executeSubgraph("g.V('a1','Account').out('payment')").vertices().size(),
+                "a hop from a named id draws the start and what it reached");
+    }
+
     // --- starting from an edge class ---
 
     @Test
