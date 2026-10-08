@@ -54,3 +54,6 @@ target/
 /DAILY-*.md
 /HANDOVER.md
 /TRAVERSER-DESIGN.md
+
+# the agent toolkit's index artifact: regenerable from the documents (POST /api/v1/agent/ingest)
+*.agent.json

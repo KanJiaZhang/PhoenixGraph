@@ -174,6 +174,7 @@ and each superstep picks the cheaper direction (`sparse when activeEdges < |E| /
 g.V('135','Account').bothE('Payment').otherV().pagerank(DIST, 10)   // 50 accounts, ~2.8 s incl. load
 g.V('a1,a2,a3','Account').cc(DIST)                                  // connected components
 g.V('a1,a2,a3','Account').louvain(DIST, 20)                         // communities
+g.V('135','Account').bothE('Payment').otherV().betweenness(DIST, 8) // 8 sampled sources, exact with no k
 g.V(DIST,'Account').has('accountStatus','ACTIVE').count()           // a partitioned class scan
 ```
 
@@ -336,6 +337,10 @@ what an algorithm computed:
 | `pagerank([iterations])` | the reached subgraph | `pagerank(DIST, 10)` |
 | `louvain([iterations])` | communities | `louvain(DIST, 20)` |
 | `cc()` | connected components | `cc(DIST)` |
+| `degree()` | how many edges touch a vertex | `degree(DIST)` |
+| `closeness()` | how close the rest of the graph is to a vertex | `closeness(DIST[, sources])` |
+| `betweenness()` | how many shortest paths go through a vertex | `betweenness(DIST[, sources])` |
+| `eigenvector()` | influence arriving along the edges | `eigenvector(DIST[, iterations])` |
 | `sssp(DIST[, root])` | shortest paths (distributed only) | `sssp(DIST, 'a1')` |
 | `bfs(DIST[, root])` | breadth-first reachability (distributed only) | `bfs(DIST, 'a1')` |
 
@@ -344,8 +349,338 @@ g.V('135','Account').bothE('Payment').otherV().pagerank(10)   // in this process
 g.V('135','Account').bothE('Payment').otherV().cc(DIST)       // on the Gemini cluster
 ```
 
-The UI's toolbar runs the same steps (Louvain, PageRank, connected components, shortest path) on the
-subgraph currently drawn, and the metrics endpoints report the counters and latency of every graph.
+### Centrality
+
+Four centralities answer "how important is this vertex", each with its own idea of important. The
+in-memory form takes no argument; the `DIST` form runs on the cluster and takes the one parameter in
+the table above.
+
+- **`degree()`** counts the edge records that touch a vertex. Both engines count what storage
+  returned, so the number is the degree of the induced subgraph, self-loops included, and it is the
+  figure the layout already holds - a distributed run exchanges no messages at all.
+- **`closeness()`** is the Wasserman-Faust form, `(r-1)² / ((n-1) * Σd)`, where `r` counts the
+  vertices a vertex can reach (itself included) and `Σd` the hops to them. Measuring a vertex against
+  what it reaches rather than against the whole graph is what keeps a vertex of a small component from
+  scoring zero, and a vertex that reaches only itself scores zero by definition.
+- **`betweenness()`** is Brandes' algorithm, normalised by the number of pairs,
+  so a vertex every shortest path goes through scores one. The graph is undirected here (both
+  directions of every edge are read), and parallel edges are counted as parallel paths.
+- **`eigenvector()`** is the principal eigenvector of the adjacency as stored, by power iteration,
+  normalised to unit length with its largest entry positive - so `eigenvector()` and
+  `eigenvector(DIST)` answer the same vector, not merely the same direction. A bipartite graph has no
+  single dominant direction (its spectrum is symmetric), so there the iteration oscillates rather than
+  settles; `iterations` bounds it either way.
+
+The two path centralities are exact by default and cost one cluster run per source: a closeness score
+is a sum over destinations and a betweenness score a sum over sources, and neither is visible from one
+vertex's superstep. `closeness(DIST, k)` and `betweenness(DIST, k)` run `k` evenly spaced sources
+instead and scale the sums (`k` runs of a breadth-first pass, or one Brandes pass each), which is the
+sampled approximation of Brandes & Pich - exact when every source runs.
+
+```groovy
+g.V('135','Account').bothE('Payment').otherV().betweenness()          // exact, in this process
+g.V('135','Account').bothE('Payment').otherV().betweenness(DIST, 8)  // 8 sampled sources, on the cluster
+```
+
+The UI's toolbar runs the same steps (Louvain, PageRank, connected components, the four centralities
+and shortest path) on the subgraph currently drawn: a centrality colours the canvas as a heat (cold for
+the lowest score, warm for the highest) with the top 20% ringed in gold, computed in the page over the
+largest single vertex type, exactly as the component colourings narrow a mixed graph. The metrics
+endpoints report the counters and latency of every graph.
+
+## AI agent toolkit (documents → knowledge graph → tool calls)
+
+`graph-agent` turns documents into something an AI can **query with sources**, and says how good that
+knowledge is. One HTTP call ingests a document set; the tools then answer in one shape, each answer
+carrying the sentences it rests on and how much it covered.
+
+```
+documents ──extract──▶ entities + relations ──measure──▶ quality metrics (accuracy / coverage)
+                             │
+                             └──write──▶ graph (vertices, edges, vectors) + index artifact
+                                                      │
+                            tool calls ◀──recall───────┴───────expansion──▶ graph engine
+```
+
+### 1. Ingest documents
+
+Any text works (a chapter, a spec, a ticket, a CSV of triples). Known names come in as a *dictionary*
+(the gazetteer); everything a rule finds outside it becomes a new entity, typed by the rule's slot. The
+relation rules read the text *between* two mentions and the words that follow them, clause by clause, so
+Chinese word order (which is not verb-final) is handled without a parser; `知识图谱` extractors usually
+start here and swap the rule table for a model.
+
+```bash
+curl -s -X POST localhost:8081/api/v1/agent/ingest -H 'content-type: application/json' -d '{
+  "graph": "agent-demo",
+  "documents": [
+    {"id": "guanyu", "title": "三国志 · 关羽传", "text": "关羽字云长，是刘备的义弟，也是刘备的臣。\n关羽斩杀颜良，又与文丑交战。"},
+    {"id": "zhugeliang", "title": "三国志 · 诸葛亮传", "text": "诸葛亮是刘备的军师。\n诸葛亮与司马懿交战。"}
+  ],
+  "dictionary": {"关羽": "Person", "刘备": "Person", "诸葛亮": "Person", "司马懿": "Person", "颜良": "Person", "文丑": "Person"},
+  "gold": ["关羽|killed|颜良", "诸葛亮|strategist_of|刘备"],
+  "apply": true
+}'
+```
+
+`apply: false` runs the whole pipeline and writes nothing - the way to look at what an ingestion *would*
+produce before trusting it with a graph. The graph itself is created on the first ingest (schema, vertex
+and edge types, the vector property), then every later ingest upserts into it.
+
+### 2. The quality metrics it returns
+
+Two families, both computed from the extraction rather than asserted, and both per relation type:
+
+| Metric | What it means |
+| --- | --- |
+| `provenanceRate` | share of relations whose own sentence really contains both of their ends (re-read, not assumed) |
+| `typeAgreement` | share of entities whose type came from the dictionary or a typed rule slot rather than from a guessed mention |
+| `precision` / `recall` / `f1` | against a `gold` triple set, when one was given (plus `pairPrecision`/`pairRecall`, which forgive a differently named relation) |
+| `chunkCoverage` | share of chunks that produced at least one relation |
+| `entityLinkRate`, `isolatedEntities` | how much of the entity set ended up connected |
+| `dictionaryCoverage` | share of the supplied vocabulary the corpus actually uses |
+| `relationsPerThousandChars`, `relationsByType`, `relationsByRule` | density and where the facts came from |
+
+A high accuracy with a low coverage means a cautious extractor; the opposite means one that guesses.
+`GET /api/v1/agent/quality/{graph}` returns these numbers later from the artifact.
+
+### 3. Tool calls for an AI
+
+The catalog is fetched, not hard-coded: `GET /api/v1/agent/tools` returns the seven tools with their
+parameters and one shared answer shape.
+
+| Tool | Question |
+| --- | --- |
+| `find_entities(question, k)` | which entities is this about? (name matches first, then vector closeness) |
+| `related(entity[, relation][, hops])` | what is connected to it, with relation names and provenance |
+| `similar(entity, k)` | what is *like* it (vectors) |
+| `related_similar(entity, k)` | the lookalikes of everything around it (**graph → vector**) |
+| `similar_related(entity, k)` | what its lookalikes are connected to (**vector → graph**) |
+| `path_between(from, to, maxHops)` | are they connected, and by which walk |
+| `context(question, k, hops)` | the whole context of a question, with sources - the shape to hand to a model |
+
+Every answer is the same document:
+
+```json
+{
+  "tool": "context", "graph": "agent-demo",
+  "entities":  [{"id": "司马懿", "type": "Person", "name": "司马懿", "score": 0.64, "via": "name", "cites": ["三国志 · 诸葛亮传 §1"]}],
+  "relations": [{"head": "诸葛亮", "relation": "fought", "tail": "司马懿", "rule": "fought",
+                 "cite": "三国志 · 诸葛亮传 §1", "sentence": "诸葛亮与司马懿交战。"}],
+  "paths":     [{"vertices": ["水镜先生", "诸葛亮", "司马懿"], "hops": 2}],
+  "citations": [{"chunkId": "zhugeliang#0", "cite": "三国志 · 诸葛亮传 §1", "text": "..."}],
+  "coverage":  {"entities": 7, "relations": 6, "citations": 3, "seeds": 2, "hops": 1},
+  "next":      ["related(entity, relation, hops)", "context(question, k, hops)"]
+}
+```
+
+`coverage` is the part a model should quote: it says how many entities and relations the answer rests on,
+so "from 6 related entities and 11 relations" replaces a fact from nowhere. `next` names the tools worth
+trying after this one.
+
+### 4. Worked example (`docs/agent-demo/`)
+
+The two short documents in [`docs/agent-demo`](docs/agent-demo) (a 关羽 and a 诸葛亮 biography) are ingested
+into the `agent-demo` graph with the command above. Measured on this machine:
+
+| | |
+| --- | --- |
+| input | 2 documents, 4 chunks, 234 characters |
+| extracted | **17 entities, 19 relations, 10 relation types** (killed, fought, minister_of, strategist_of, sibling_of, subordinate_of, teaches, spouse_of, stationed_at, serves) |
+| accuracy | `provenanceRate` **1.0** (every relation is backed by its own sentence), `typeAgreement` **1.0** |
+| coverage | `entityLinkRate` **1.0** (no isolated entity), `dictionaryCoverage` **1.0**, `chunkCoverage` 0.5 |
+| against gold (4 triples) | `recall` **1.0**, `pairRecall` **1.0**, `precision` 0.21 (the corpus states 19 relations, 4 of them in the gold set) |
+| written | 21 vertices, 42 edges, artifact `agent-demo.agent.json` |
+
+One question, end to end - "how are 诸葛亮 and 司马懿 related?" (`POST /api/v1/agent/context`):
+
+| Step | Answer |
+| --- | --- |
+| seeds | 司马懿 (name), 诸葛亮 (name) - `via: name`, scores 0.64/0.63 |
+| expansion (1 hop) | + 张郃, 黄月英, 汉中, 刘备, 水镜先生 → **7 entities** |
+| relations | `诸葛亮-[fought]->司马懿`, `水镜先生-[teaches]->诸葛亮`, `张若-[subordinate_of]->司马懿`, `诸葛亮-[strategist_of]->刘备`, `诸葛亮-[stationed_at]->汉中`, `黄月英-[spouse_of]->诸葛亮` → **6 relations** |
+| sources | **3 citations** (`三国志 · 诸葛亮传 §1` …) |
+
+And the same example through the other tools: `related('关羽')` answers with **5 neighbours and 8 relations**
+and 3 citations; `similar('关羽')` puts 刘备 (0.95), 张飞 (0.89) and 水镜先生 (0.89) first;
+`similar_related('关羽')` reaches 诸葛亮 and 阆中 through the lookalikes; `path_between('水镜先生','司马懿')`
+finds `水镜先生 → 诸葛亮 → 司马懿` with the two relations behind the hops.
+
+### 5. What is deliberately simple
+
+- **The embedder is a hashing bag of character n-grams**, not a language model: deterministic, offline, no
+dependency - and `Embedding.Function` is the seam where a real model plugs in (ingestion, the artifact and
+the tools all go through it). Chinese needs no segmenter because the n-grams are character-based.
+- **Vector recall and rerank happen over the artifact** (exact cosine, linear in the entity count); the
+graph's own HNSW index answers the same question in sublinear time through `nearest(k)` in a query, and a
+graph with millions of entities should use that instead.
+- **Expansion happens in the graph engine** (adjacency, paths, relation filters) - the half the engine is
+best at.
+- **Ingestion writes through the REST write path**, so a graph whose store does not take REST writes (the
+RocksDB schemes, which their loaders fill) is refused with that message rather than half written. The
+*query* tools have no such limit: the artifact plus the engine answer on any scheme.
+- **The rules are data.** A new domain means a new rule table (and a dictionary), not a new engine - that
+is why the example is the one domain this repository already knows.
+
+## Building a data agent: semantic layer → execution layer → analysis layer
+
+One scenario, followed through the three layers a data agent needs, on TPC-H. Every number below was run
+on this repository's own service.
+
+> **The question** (a user, in natural language):
+> 「1996 年的净收入比 1995 年怎么样？变化是什么驱动的？」
+> "How did 1996 net revenue compare with 1995, and what drove the change?"
+
+The answer has three jobs: **know what the metric means** (semantic layer), **produce a query that is
+provably the right one** (execution layer), **explain the number** (analysis layer). Guessing any of the
+three is how analytics agents go wrong: they invent a metric, then a join, then a story.
+
+### 1. Semantic layer - the metric, its lineage and its attribution
+
+`tpc-h-analytics` is a graph of the warehouse's semantics: 8 `Table`, 61 `Column`, 17 `Metric`, 11
+`Dimension`, 6 `Domain` and 12 `Query` nodes (115 nodes, 264 relations), built by
+`node tools/generate-tpch-schema.js`. A metric is a node with its standard expression; lineage and
+attribution are edges (`computedFrom`, `usesColumn`, `groupedBy`, `contributesTo`, `references`).
+
+The agent asks the graph instead of being told:
+
+| Ask | Query | Answer (live) |
+| --- | --- | --- |
+| What *is* `revenue`? | `g.V('metric/revenue','Node').values('aggFunction','expression','unit')` | `SUM` \| `SUM(l_extendedprice * (1 - l_discount))` \| `元` |
+| Which tables? | `...outE().filter(relation.equals('computedFrom')).otherV().values('name')` | `table/lineitem` |
+| Which columns? | `...outE().filter(relation.equals('usesColumn')).otherV().values('name')` | `l_extendedprice`, `l_discount` |
+| Which dimensions? | `...outE().filter(relation.equals('groupedBy')).otherV().values('name')` | `dim/order_date`, `dim/region`, `dim/nation`, `dim/mktsegment` |
+| What drives it? | `...inE().filter(relation.equals('contributesTo')).otherV().values('name')` | `gross_revenue`, `discount_amount`, `tax_amount`, `promotion_revenue`, `order_count`, `avg_order_value` |
+| Can I see time? | `g.V('dim/order_date','Node').outE().filter(relation.equals('dimensionColumn')).otherV().values('name')` | `column/orders.o_orderdate` (`DATE`) |
+| How do I join it? | `g.V('column/lineitem.l_orderkey','Node').outE().filter(relation.equals('references')).otherV().values('name')` | `column/orders.o_orderkey` |
+
+So the agent knows, before writing anything: *net revenue is a SUM over lineitem, it can be cut by year,
+and it is driven by gross revenue and discounts* - the attribution half of the answer is already named.
+The `contributesTo` chain is why "it went down" can become "discounts grew faster than gross revenue".
+
+### 2. Execution layer - SQL assembled from the graph, then run as a graph query
+
+`tools/semantic-sql.mjs` turns the metric node plus a dimension into the SQL, by walking the graph:
+the expression from the metric, the identifiers qualified from `usesColumn`, the `GROUP BY` from
+`groupedBy` + `dimensionColumn`, and the **join path by breadth-first search over `references`** - no join
+is written by hand anywhere in the tool.
+
+```bash
+node tools/semantic-sql.mjs --metric metric/revenue
+node tools/semantic-sql.mjs --metric metric/revenue --group-by dim/order_date --grain year
+node tools/semantic-sql.mjs --metric metric/revenue --group-by dim/region --json
+```
+
+```sql
+-- metric: metric/revenue (净收入：订单行的金额扣掉折扣后的收入)
+-- expression from the graph: SUM(l_extendedprice * (1 - l_discount)), unit: 元
+-- join from references: lineitem.l_orderkey -> orders.o_orderkey
+SELECT EXTRACT(YEAR FROM orders.o_orderdate) AS order_date_year,
+       SUM(lineitem.l_extendedprice * (1 - lineitem.l_discount)) AS revenue
+FROM lineitem
+JOIN orders ON lineitem.l_orderkey = orders.o_orderkey
+GROUP BY EXTRACT(YEAR FROM orders.o_orderdate)
+ORDER BY order_date_year;
+```
+
+Ask for a dimension two hops away and the generator finds the snowflake chain itself:
+
+```bash
+node tools/semantic-sql.mjs --metric metric/revenue --group-by dim/region
+```
+
+```sql
+-- join from references: lineitem.l_suppkey -> supplier.s_suppkey
+-- join from references: supplier.s_nationkey -> nation.n_nationkey
+-- join from references: nation.n_regionkey -> region.r_regionkey
+SELECT region.r_name AS region,
+       SUM(lineitem.l_extendedprice * (1 - lineitem.l_discount)) AS revenue
+FROM lineitem
+JOIN supplier ON lineitem.l_suppkey = supplier.s_suppkey
+JOIN nation ON supplier.s_nationkey = nation.n_nationkey
+JOIN region ON nation.n_regionkey = region.r_regionkey
+GROUP BY region.r_name
+ORDER BY region;
+```
+
+A metric whose expression touches two tables brings the second one along:
+`--metric metric/promotion_revenue --group-by dim/region` adds `JOIN part ON lineitem.l_partkey =
+part.p_partkey` (its `p_type LIKE 'PROMO%'` came from `usesColumn`), on top of the same chain. The tool
+prints what it could not ground as a `-- WARNING:` comment instead of inventing it, and `--json` returns
+the parts (expression, tables, columns, joins, warnings, sql) for an agent to check before it runs.
+
+**This repository has no SQL database** - the SQL is the deliverable for a real warehouse (PostgreSQL /
+DuckDB / MySQL, `--dialect`), and the *same analysis intent* runs here as a graph query on `tpc-h-data`
+(8,000 order lines with the metrics materialised, so it is one scan):
+
+```gremlin
+g.V('Sale').group().by('orderYear').by(values('revenue').sum())
+g.V('Sale').group().by('orderYear').by(values('gross').sum())
+g.V('Sale').group().by('orderYear').by(values('discountAmount').sum())
+```
+
+The generator checks itself, so the SQL in this document cannot drift away from the graph:
+
+```bash
+node tools/semantic-sql.mjs --metric metric/revenue --group-by dim/order_date --grain year \
+  --expect "SELECT EXTRACT(YEAR FROM orders.o_orderdate) AS order_date_year, \
+            SUM(lineitem.l_extendedprice * (1 - lineitem.l_discount)) AS revenue \
+            FROM lineitem JOIN orders ON lineitem.l_orderkey = orders.o_orderkey \
+            GROUP BY EXTRACT(YEAR FROM orders.o_orderdate) ORDER BY order_date_year"   # == matches
+```
+
+### 3. Analysis layer - from the numbers to the explanation
+
+| Year | revenue (net) | gross | discountAmount |
+| --- | --- | --- | --- |
+| 1995 | 95,612,794 | 100,509,809 | 4,897,015 |
+| 1996 | 98,879,433 | 104,059,747 | 5,180,314 |
+| **Δ** | **+3,266,639 (+3.42%)** | **+3,549,938 (+3.53%)** | **+283,299 (+5.79%)** |
+
+The analysis writes itself from the attribution edges the semantic layer named:
+
+- net revenue **grew**, by 3.27M (3.42%);
+- it grew *less* than gross revenue (3.53%) because **discounts grew faster** (5.79%) - 8.0% of the gross
+growth was given away in discounts;
+- the discount share of gross moved 4.87% → 4.98%, so the gap is a pricing/promotion effect, not a
+demand collapse;
+- the next questions are therefore about the other `contributesTo` upstreams: `promotion_revenue`
+  (75,667,262 over the whole instance, computed with the definition the graph carries:
+  `p_type LIKE 'PROMO%'`) and `order_count` / `avg_order_value` (is the growth volume or basket size?).
+
+That is the difference between a number and an answer: the graph supplied the *decomposition*, the
+warehouse supplied the *numbers*, and the analyst (a person or a model) supplies the judgement.
+
+An AI reaches these three layers over the same HTTP API, in either of two ways, and it is worth knowing
+which is which:
+
+- **A curated graph** (like `tpc-h-analytics`, built by a schema generator) is queried as it stands - the
+  tables above *are* the tool surface, and they are as machine-callable as a tool call is.
+- **An ingested corpus** gets the toolkit (see [AI agent toolkit](#ai-agent-toolkit-documents--knowledge-graph--tool-calls))
+  on top: `POST /api/v1/agent/context` adds the text-to-seed stage (which entities a question is about),
+  the four vector/graph combinations, and citations with a `coverage` block - what a curated graph's own
+  fields do not carry. On `agent-demo`, `context('诸葛亮和司马懿是什么关系')` answers with the entities, the
+  relations and the source sentences in one document.
+
+Ingest when the knowledge has to be read out of documents (with provenance and a quality report); curate
+a graph when the knowledge is a standard you must not paraphrase (TPC-H's metric definitions). A data
+agent can use both, because both answer over the same API.
+
+```bash
+# reproduce the whole story: start the service, then
+node tools/semantic-sql.mjs --metric metric/revenue --group-by dim/order_date --grain year
+curl -s -X POST localhost:8081/api/v1/query -H 'content-type: application/json' \
+  -d '{"graphName":"tpc-h-data","query":"g.V(\u0027Sale\u0027).group().by(\u0027orderYear\u0027).by(values(\u0027revenue\u0027).sum())","includeResult":true}'
+# the semantic layer's 13 assertions (metrics, lineage, attribution, join paths, real numbers):
+./mvnw -o -pl graph-integration-test test -Dtest='TpchDataAgentGraphTest' -Dsurefire.failIfNoSpecifiedTests=false
+```
+
+> **Data note:** the year figures above are the ones the served `tpc-h-data` instance answers today. Its
+> per-region table, `lateDelivery`/`returned` flags and `promotionRevenue` property do **not** match
+> `TPC-H-ANALYTICS.md` §4: that document was written against an older build of the same instance (its own
+> region and year tables even disagree on the total). Re-seed before trusting §4's region/late/return
+> rows: `TPCH_ROCKSDB_RESEED=true ./mvnw -o -pl graph-integration-test test \
+> -Dtest='TpchDataAgentGraphTest#loadsTheInstanceTheServiceServes' -Dsurefire.failIfNoSpecifiedTests=false`.
 
 ## Visualization
 
@@ -354,8 +689,32 @@ subgraph currently drawn, and the metrics endpoints report the counters and late
 - **query editor** for Gremlin and openCypher, with example pickers and a script mode;
 - **graph canvas** that draws the returned induced subgraph with full properties, with re-balance,
   brush/selection, zoom-to-fit and a text search;
-- **value / rows panels** for an element's properties and for tabular answers, and a legend/count;
-- **algorithm colouring** (PageRank, Louvain, connected components, shortest path);
+- **value / rows panels** for an element's properties and for tabular answers, and a legend/count; a
+  value longer than a cell is worth reading shows a prefix and opens in full on a click, and a query
+  whose answer is not a picture (a `count()`, a `groupCount()`, a list of ids) opens the result tab
+  itself instead of leaving the stats tab in front of it;
+- **algorithm colouring** (PageRank, Louvain, connected components, the four centralities, shortest
+  path);
+- **tree and layered-DAG layouts** on the same canvas: the toolbar offers the tree (spanning, smooth
+  links, click a vertex to re-root) and a **layered DAG** (cycled broken with the reversed edges drawn
+  dashed, longest-path ranks, barycenter ordering within a layer, **every edge kept**) in left→right,
+  top→bottom, bottom→top (and radial for the tree). Both keep the links attached: a layout that skips the
+  force simulation has to resolve a link's endpoints to its vertices itself - which is exactly the bug
+  that drew tree edges at NaN until the edges, not just the vertices, were checked;
+- **a 3D demo view** (`graph-3d.html`, linked from the header): the same query answer drawn with a
+  hand-rolled 3D force layout and a perspective projection on a plain canvas - no WebGL, no three.js, no
+  new dependency; drag to rotate, wheel to zoom. It is a demo/insight mode, not the analysis surface
+  (the readability evidence is in the comparison doc below);
+- **what else is worth adopting** (Canvas 2D, WebGL at 100k+ elements, `d3-dag` if crossing minimisation
+  matters more than zero dependencies): [docs/GRAPH-VISUALIZATION.md](docs/GRAPH-VISUALIZATION.md)
+  compares the options and stages a recommendation, with the readability evidence for and against 3D;
+- **三国地图 in the same panel**: when the selected instance carries coordinates (the 三国 graphs do,
+  behind a scanning store, and only if the graph really holds a coordinate), a map icon appears in the
+  toolbar; clicking it swaps the canvas for a Leaflet map of those entities, and the "← back to the
+  graph" button on the map (or the icon again, or `Esc`) brings the picture back. A query that reads the
+  coordinates (`valueMap('name','latitude','longitude')`) puts *its* points on the map, and the note
+  switches between those and everything the graph holds. Leaflet is vendored (no CDN), OpenStreetMap is
+  the basemap and 高德 takes over with the WGS84 → GCJ-02 conversion when OSM is unreachable;
 - **graph builder** (`builder.html`) to author a schema and its storage and to edit the fuzzy-link
   patterns; and **metrics** through the `/api/v1/metrics` endpoints.
 
@@ -382,26 +741,30 @@ subgraph currently drawn, and the metrics endpoints report the counters and late
 | `graph-web` | the visualization UI |
 | `graph-batch-load` | CSV/RDF bulk loader |
 
-## What is next: a data-agent component
+## The agent-facing layer (what an agent builds on)
 
-PhoenixGraph is being turned into an **open, independent component that a data agent can build on** -
-the graph side of an agent stack, not another agent. The direction:
+PhoenixGraph is an **open, independent component that a data agent builds on** - the graph side of an
+agent stack, not another agent. Most of that surface now exists, and the two sections above are how it is
+used:
 
-1. **Graph as agent memory and grounding.** Expose the knowledge graph as a retrievable context
-   substrate: an agent asks for the neighbourhood, the shortest relation path or the community around
-   entities, and gets back a bounded subgraph with provenance to cite - exactly the traversal shown in
-   [A knowledge graph as the context an LLM answers from](#a-knowledge-graph-as-the-context-an-llm-answers-from),
-   wrapped behind a small, stable API.
-2. **A tool/function interface for agents.** A minimal "graph tools" surface (`find_entities`,
-   `related`, `path_between`, `similar`, `nearby`, `aggregate`) that any agent framework (MCP, OpenAI
-   function calling, LangChain-style tool use) can register, so the same graph serves many agent
-   products without each writing traversal code.
-3. **Schema-on-read for context graphs.** The unified entity/relation schema and the RDF/free-text
-   ingestion let a customer bring their own corpus and get a context graph without a modelling project;
-   the builder page is the human entry point, the ingestion API is the machine one.
-4. **The three searches as retrieval plugins.** Vector, geo and graph retrieval are already steps of one
-   query, so a retrieval layer can mix them (geo filter + vector ranking + graph expansion) without
-   stitching three systems - which is the part most agent stacks currently hand-roll.
-5. **Open and independent.** The engine stays a self-contained database (four storage backends, one
-   wire API, a visualization UI), with the agent-facing layer kept thin and framework-agnostic, so it
-   can sit under any agent business rather than locking one in.
+1. **Graph as agent memory and grounding.** A bounded subgraph with provenance to cite, behind a small
+   stable API: `POST /api/v1/agent/context` returns entities, relations, paths and the source sentences,
+   with a `coverage` block saying how much the answer rests on.
+2. **A tool/function interface for agents.** Seven tools (`find_entities`, `related`, `similar`,
+   `related_similar`, `similar_related`, `path_between`, `context`), described by a catalog at
+   `GET /api/v1/agent/tools` so any framework (MCP, OpenAI function calling, LangChain-style tool use)
+   registers them instead of hard-coding them in a prompt.
+3. **Schema-on-read for context graphs.** A customer brings a corpus (documents, or triples) and gets a
+   graph with vectors, provenance and a quality report (`POST /api/v1/agent/ingest`); the builder page is
+   the human entry point, the ingestion API the machine one. A standard that must not be paraphrased
+   (TPC-H's metric definitions) is curated instead, and queried through the same API.
+4. **The three searches as retrieval plugins.** Vector, geo and graph retrieval are steps of one query, so
+   a retrieval layer mixes them (geo filter + vector ranking + graph expansion) without stitching three
+   systems - and the AI toolkit adds the text-to-seed stage in front of it.
+5. **Open and independent.** The engine stays a self-contained database (four storage backends, one wire
+   API, a visualization UI) with the agent-facing layer kept thin and framework-agnostic, so it can sit
+   under any agent business rather than locking one in.
+
+What is still missing is the wrapper, not the substance: an MCP server over `/api/v1/agent/*`, `nearby`
+and `aggregate` tools, and swapping the built-in hashing embedder for a real model (the seat is already
+in the interface).

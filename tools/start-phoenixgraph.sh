@@ -63,8 +63,16 @@ fi
 export JAVA_HOME
 JAVA_EXE="$JAVA_HOME/bin/java"
 
+# curl is what the wait loop talks HTTP with; the other two are only used by parts this script can go
+# without (unzip verifies the fat jar listing, powershell stops a running service by its command line),
+# so they are a warning rather than a reason to refuse to start".
 for tool in curl unzip powershell; do
-  command -v "$tool" >/dev/null 2>&1 || { echo "!! '$tool' is not on PATH" >&2; exit 1; }
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    case "$tool" in
+      curl) echo "!! 'curl' is not on PATH: the script waits for the services with it" >&2; exit 1 ;;
+      *) echo "   note: '$tool' is not on PATH - the check it is used for is skipped" >&2 ;;
+    esac
+  fi
 done
 
 echo "PhoenixGraph"
