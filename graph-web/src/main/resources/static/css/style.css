@@ -24,6 +24,14 @@
 
 * { box-sizing: border-box; }
 
+/*
+ * `hidden` has to win. The user agent's [hidden] rule is `display: none`, but any author rule that sets
+ * display (the toolbar buttons are `display: grid`, the map's back button is `display: inline-flex`)
+ * beats it, so the element stays on screen while every `el.hidden = true` in the script says it is gone.
+ * That is how the map icon and its back button were visible outside map mode.
+ */
+[hidden] { display: none !important; }
+
 html, body {
   margin: 0;
   height: 100%;
@@ -256,6 +264,34 @@ button.btn-primary:hover, #queryBtn:hover { filter: brightness(1.07); }
 }
 #canvas { position: absolute; inset: 0; }
 #canvas svg { display: block; }
+
+/* ---------- map view (inside the canvas panel) ---------- */
+/* 地图盖在画布上：工具栏（z-index 更高）和它的地图按钮仍然可用，画布自身的工具在地图打开时变灰 */
+#mapView { position: absolute; inset: 0; z-index: 5; background: #eef2f7; }
+#mapView.nobase { background: #dbe4ef; }
+.map-note {
+  position: absolute; z-index: 8; right: 14px; bottom: 14px; max-width: 340px;
+  background: #fff; border: 1px solid var(--border); border-radius: 10px;
+  padding: 7px 10px; box-shadow: var(--shadow-md);
+  font: 12px/1.6 system-ui, sans-serif; color: var(--text-2);
+}
+/* 地图是另一层视图，所以它自己带一个“回得去”的显式按钮（工具栏图标、Esc 也都能回） */
+.map-close {
+  position: absolute; z-index: 8; top: 14px; left: 50%; transform: translateX(-50%);
+  display: inline-flex; align-items: center; gap: 7px;
+  height: 36px; padding: 0 14px 0 11px;
+  border: 1px solid var(--border); border-radius: 11px; background: #fff;
+  box-shadow: var(--shadow-md); cursor: pointer;
+  color: var(--text-2); font: 600 13px/1 system-ui, sans-serif;
+}
+.map-close::before { content: '←'; font-size: 15px; font-weight: 600; }
+.map-close:hover { color: var(--accent); border-color: #c9cff5; }
+.map-note .note-link {
+  margin-top: 3px; padding: 0; border: none; background: none; cursor: pointer;
+  color: var(--accent); font: 12px/1.6 system-ui, sans-serif; text-decoration: underline;
+}
+#canvasWrap.map-open .canvas-only { opacity: 0.4; pointer-events: none; }
+#mapBtn.active { color: #fff; background: var(--accent); border-color: var(--accent); }
 
 /* ---------- canvas toolbar ---------- */
 #toolbar {
@@ -745,6 +781,11 @@ button.btn-primary:hover, #queryBtn:hover { filter: brightness(1.07); }
 }
 .rows-table tr:hover td { background: rgba(79, 70, 229, 0.04); }
 
+/* A value longer than a cell is worth reading shows only a prefix; clicking it swaps in the whole
+   text (see formatValue/onValueClipClick). The dotted underline is the affordance. */
+.value-clip { cursor: pointer; border-bottom: 1px dotted var(--muted); }
+.value-clip.open { border-bottom-style: none; }
+
 /* ---------- compact icon button (example picker toggle) ---------- */
 .icon-btn {
   display: inline-flex;
@@ -934,3 +975,8 @@ button.btn-primary:hover, #queryBtn:hover { filter: brightness(1.07); }
 /* the graph builder is an icon next to the other actions */
 #builderBtn { text-decoration: none; }
 #builderBtn svg { width: 16px; height: 16px; }
+
+/* ---------- layout modes: a layered DAG marks the edges it had to reverse ---------- */
+/* an edge that runs backwards to break a cycle is drawn dashed, so the picture says which
+   edges the layering reinterpreted instead of hiding them */
+.edge.reversed { stroke-dasharray: 5 4; }

@@ -77,6 +77,11 @@
              stays in the markup (hidden and disabled) so bringing it back is one attribute. -->
         <option value="cypher" hidden disabled>Cypher</option>
       </select>
+      <a id="graph3dBtn" class="icon-btn" href="graph-3d.html" title="3D 视图（demo）" aria-label="3D view">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 3 3 7.5v9L12 21l9-4.5v-9z"/><path d="M3 7.5 12 12l9-4.5M12 12v9"/>
+        </svg>
+      </a>
       <a id="builderBtn" class="icon-btn" href="builder.html" title="图管理 · 建模" aria-label="graph builder"
          data-i18n-title="builder" data-i18n-aria-label="builder">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -118,8 +123,19 @@
   <main id="main">
     <div id="canvasWrap">
       <div id="canvas" aria-label="graph canvas"></div>
+      <!-- 地图视图：选中带经纬度的图实例时，点工具栏的地图图标把它打开，画布被它盖住 -->
+      <div id="mapView" hidden aria-label="map view"></div>
+      <button id="mapClose" class="map-close" type="button" hidden data-i18n="mapBack">返回图可视化</button>
+      <div id="mapNote" class="map-note" hidden></div>
       <div id="toolbar">
-        <button id="rebalanceBtn" data-i18n-title="rebalance" title="自动平衡力图" aria-label="rebalance">
+        <button id="mapBtn" data-i18n-title="mapTitle" title="地图（带经纬度的实体）"
+                aria-label="map" aria-pressed="false" hidden>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="m3 6 6-3 6 3 6-3v15l-6 3-6-3-6 3z"/>
+            <path d="M9 3v15M15 6v15"/>
+          </svg>
+        </button>
+        <button id="rebalanceBtn" class="canvas-only" data-i18n-title="rebalance" title="自动平衡力图" aria-label="rebalance">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/>
             <path d="M21 3v5h-5"/>
@@ -127,7 +143,7 @@
             <path d="M8 16H3v5"/>
           </svg>
         </button>
-        <button id="brushBtn" data-i18n-title="brush" title="框选过滤" aria-label="box select">
+        <button id="brushBtn" class="canvas-only" data-i18n-title="brush" title="框选过滤" aria-label="box select">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M3 7V5a2 2 0 0 1 2-2h2"/>
             <path d="M17 3h2a2 2 0 0 1 2 2v2"/>
@@ -135,21 +151,39 @@
             <path d="M7 21H5a2 2 0 0 1-2-2v-2"/>
           </svg>
         </button>
-        <button id="resetViewBtn" data-i18n-title="showAll" title="显示全部" aria-label="show all">
+        <button id="resetViewBtn" class="canvas-only" data-i18n-title="showAll" title="显示全部" aria-label="show all">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M15 3h6v6"/><path d="m21 3-7 7"/><path d="m3 21 7-7"/><path d="M9 21H3v-6"/>
           </svg>
         </button>
         <span class="tool-sep"></span>
-        <select id="algoSelect" data-i18n-title="algorithm" title="图算法着色">
+        <select id="algoSelect" class="canvas-only" data-i18n-title="algorithm" title="图算法着色">
           <option value="" data-i18n="algorithm">算法</option>
           <option value="louvain">Louvain</option>
           <option value="pagerank">PageRank</option>
           <option value="cc" data-i18n="cc">连通分量</option>
+          <option value="degree" data-i18n="degree">度中心性</option>
+          <option value="closeness" data-i18n="closeness">接近中心性</option>
+          <option value="betweenness" data-i18n="betweenness">介数中心性</option>
+          <option value="eigenvector" data-i18n="eigenvector">特征向量中心性</option>
           <option value="shortestpath" data-i18n="shortestPath">最短路径</option>
         </select>
+        <select id="treeSelect" class="canvas-only" data-i18n-title="treeLayout" title="树形 / DAG 布局">
+          <option value="" data-i18n="treeOff">布局</option>
+          <optgroup label="树形" data-i18n-label="treeGroup">
+            <option value="lr" data-i18n="treeLr">树 · 左→右</option>
+            <option value="tb" data-i18n="treeTb">树 · 上→下</option>
+            <option value="bt" data-i18n="treeBt">树 · 下→上</option>
+            <option value="radial" data-i18n="treeRadial">树 · 放射</option>
+          </optgroup>
+          <optgroup label="DAG 分层" data-i18n-label="dagGroup">
+            <option value="dag-lr" data-i18n="dagLr">DAG · 左→右</option>
+            <option value="dag-tb" data-i18n="dagTb">DAG · 上→下</option>
+            <option value="dag-bt" data-i18n="dagBt">DAG · 下→上</option>
+          </optgroup>
+        </select>
       </div>
-      <div id="searchBox">
+      <div id="searchBox" class="canvas-only">
         <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>
         </svg>
@@ -268,6 +302,9 @@
   </div>
 
   <script src="/vendor/d3/d3.min.js"></script>
+  <!-- 地图视图内嵌在可视化 panel 里，Leaflet 就近自带（开发服务器用 node_modules 的 d3，地图则从 static 走） -->
+  <script src="/vendor/leaflet/leaflet.js"></script>
+  <script src="js/geo-map.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>

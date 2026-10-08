@@ -113,6 +113,44 @@
       cc: '连通分量',
       louvain: 'Louvain',
       pagerank: 'PageRank',
+      degree: '度中心性',
+      closeness: '接近中心性',
+      betweenness: '介数中心性',
+      eigenvector: '特征向量中心性',
+      algoScore: '{algo}：同类型的点上就地计算，分数越高颜色越暖；最高的前 20% 加金色虚线环（{n} 个点里 {top} 个，最高：{best}）',
+      mapTitle: '地图（带经纬度的实体）',
+      mapOpenTitle: '关闭地图，回到图可视化',
+      mapBack: '返回图可视化',
+      mapLoading: '正在读取经纬度…',
+      mapEmpty: '这张图里没有带经纬度的实体',
+      mapNoGeo: '这个图实例没有经纬度属性，也没有整类扫描（按键读取的存储），所以没有地图',
+      mapFailed: '地图数据加载失败：',
+      mapPointsQuery: '本次查询返回的 {n} 个带经纬度的点',
+      mapPointsGraph: '图里全部 {n} 个带经纬度的实体',
+      mapShowAll: '显示全部',
+      mapShowQuery: '只看查询结果',
+      mapBasemap: '底图：{provider}',
+      mapBasemapFallback: '底图：{provider}（OpenStreetMap 不可达）；点位已由 WGS84 换算到 GCJ-02',
+      mapBasemapNone: '底图瓦片都不可达，已用素色背景代替；点位、缩放与弹窗照常可用',
+      mapNoLeaflet: '地图库没有加载（/vendor/leaflet/leaflet.js）',
+      mapPlace: '都城/城市',
+      mapEvent: '战役/事件',
+      mapEntity: '实体',
+      mapYear: '（{from}–{to}年）',
+      mapYearSingle: '（{from}年）',
+      treeLayout: '树形 / DAG 布局',
+      treeOff: '布局',
+      treeGroup: '树形（生成树）',
+      dagGroup: 'DAG 分层（保留全部边）',
+      treeLr: '树 · 左→右',
+      treeTb: '树 · 上→下',
+      treeBt: '树 · 下→上',
+      treeRadial: '树 · 放射',
+      dagLr: 'DAG · 左→右',
+      dagTb: 'DAG · 上→下',
+      dagBt: 'DAG · 下→上',
+      treeHint: '{mode}：{n} 个点 / {e} 条边，根是「{root}」—— 点任意点可换根（双击仍是展开一跳）',
+      dagHint: '{mode}：{n} 个点 / {e} 条边（含全部边，虚线 {r} 条是为断开环而反向的）—— 分层按最长路径，层内按重心排序',
       algoHomogeneous: '该图混了多种点（另有 {others}），{algo} 只在最多的 {type}（{n} 个点）上运算；其它类型的点被投影成 {type} 之间的 {links} 条边',
       projectedEdge: '投影边',
       searchPlaceholder: '搜索点 / 边关键词',
@@ -174,6 +212,9 @@
       exported: '已导出',
       noPath: '两点之间没有路径',
       emptyResult: '查询结果为空（未找到该点）',
+      valueClipHint: '值太长，点击展开全文',
+      valueClipCollapse: '点击收起',
+      valueTooLong: '…（后面还有 {n} 个字符，展开也只显示前 20000 个）',
       displayName: '显示名',
       queryLanguage: '查询语言（当前只有 Gremlin；Cypher 暂时隐藏）',
       examples: '示例查询',
@@ -217,6 +258,44 @@
       cc: 'Components',
       louvain: 'Louvain',
       pagerank: 'PageRank',
+      degree: 'Degree',
+      closeness: 'Closeness',
+      betweenness: 'Betweenness',
+      eigenvector: 'Eigenvector',
+      algoScore: '{algo}: computed in place on the vertices of one type - the warmer the colour the higher the score, and the top {top} of {n} carries the gold ring (highest: {best})',
+      mapTitle: 'Map (entities with coordinates)',
+      mapOpenTitle: 'Close the map and go back to the graph',
+      mapBack: 'Back to the graph',
+      mapLoading: 'Reading the coordinates…',
+      mapEmpty: 'This graph has no entity with coordinates',
+      mapNoGeo: 'This instance has no latitude/longitude properties and its store cannot scan a whole type, so it has no map',
+      mapFailed: 'Loading the map data failed: ',
+      mapPointsQuery: 'the {n} points with coordinates this query returned',
+      mapPointsGraph: 'all {n} entities of the graph that carry coordinates',
+      mapShowAll: 'Show all',
+      mapShowQuery: 'Only the query result',
+      mapBasemap: 'Basemap: {provider}',
+      mapBasemapFallback: 'Basemap: {provider} (OpenStreetMap unreachable); points converted from WGS84 to GCJ-02',
+      mapBasemapNone: 'No basemap tile was reachable - plain background instead; points, zoom and popups still work',
+      mapNoLeaflet: 'The map library did not load (/vendor/leaflet/leaflet.js)',
+      mapPlace: 'Capital / city',
+      mapEvent: 'Battle / event',
+      mapEntity: 'Entity',
+      mapYear: ' ({from}-{to} AD)',
+      mapYearSingle: ' ({from} AD)',
+      treeLayout: 'Tree / DAG layout',
+      treeOff: 'Layout',
+      treeGroup: 'Tree (spanning)',
+      dagGroup: 'Layered DAG (every edge kept)',
+      treeLr: 'Tree · left to right',
+      treeTb: 'Tree · top to bottom',
+      treeBt: 'Tree · bottom to top',
+      treeRadial: 'Tree · radial',
+      dagLr: 'DAG · left to right',
+      dagTb: 'DAG · top to bottom',
+      dagBt: 'DAG · bottom to top',
+      treeHint: '{mode}: {n} vertices / {e} edges, rooted at "{root}" - click any vertex to re-root (a double click still expands one hop)',
+      dagHint: '{mode}: {n} vertices / {e} edges (every edge kept; {r} drawn dashed because it runs backwards to break a cycle) - ranks by longest path, orders each layer by barycenter',
       algoHomogeneous: 'The graph mixes vertex types ({others}), so {algo} ran on the largest type only - {type} ({n} vertices) - with the other types projected into {links} edges between them',
       projectedEdge: 'projected edge',
       searchPlaceholder: 'Search vertices / edges',
@@ -278,6 +357,9 @@
       exported: 'Exported',
       noPath: 'No path between the two vertices',
       emptyResult: 'No result (vertex not found)',
+      valueClipHint: 'Long value - click to read it in full',
+      valueClipCollapse: 'Click to collapse',
+      valueTooLong: '... ({n} more characters; expanding shows the first 20000)',
       displayName: 'Display name',
       queryLanguage: 'Query language (Gremlin only for now; Cypher is hidden)',
       examples: 'Example queries',
@@ -351,12 +433,18 @@
     brushBtn: document.getElementById('brushBtn'),
     resetViewBtn: document.getElementById('resetViewBtn'),
     algoSelect: document.getElementById('algoSelect'),
+    treeSelect: document.getElementById('treeSelect'),
     searchInput: document.getElementById('searchInput'),
     searchClear: document.getElementById('searchClear'),
     legendCount: document.getElementById('legendCount'),
     toast: document.getElementById('toast'),
     exportBtn: document.getElementById('exportBtn'),
     canvas: document.getElementById('canvas'),
+    canvasWrap: document.getElementById('canvasWrap'),
+    mapBtn: document.getElementById('mapBtn'),
+    mapView: document.getElementById('mapView'),
+    mapNote: document.getElementById('mapNote'),
+    mapClose: document.getElementById('mapClose'),
     vertexCount: document.getElementById('vertexCount'),
     edgeCount: document.getElementById('edgeCount'),
     typeBreakdown: document.getElementById('typeBreakdown'),
@@ -383,6 +471,10 @@
   let currentNodes = []; // last rendered nodes (with x/y), for brush mapping
   let currentLinks = []; // last rendered links (for algorithm runs)
   let algoState = null; // {type:'community', communityOf} or {type:'pagerank', topKeys}
+  /** The tree layout of the canvas: '' (force layout), 'lr', 'tb', 'bt' or 'radial'. */
+  let treeMode = '';
+  /** The vertex the tree grows from (null: the first drawn one, or the first picked). */
+  let treeRootKey = null;
   let legendFilter = null; // { mode: 'label'|'community', values: Set<string> }
   let picked = []; // up to two clicked vertex keys (shortest-path endpoints)
   let pathState = null; // { pathNodes, pathEdges, shortestNodes, shortestEdges }
@@ -490,6 +582,30 @@
     gremlin: {
       // a hub with 300k payments lives in the aggregated Aerospike Edge_Out/Edge_In tables:
       // such a vertex can only be read inside a creation-time window
+      // the data agent's semantic layer (and its data instance): the metric/schema trees are what the
+      // tree layout in the toolbar is for - pick 树 · 左→右 / 上→下 / 下→上 / 放射 and read the hierarchy
+      'tpc-h-analytics': [
+        ['树 · profit 的三层归因树（11 点，用工具栏树形布局）', 'Tree - the three-level attribution tree of profit (11 vertices; use the toolbar tree layout)',
+          "g.V('metric/profit','Node').inE('Relation').filter(relation.equals('contributesTo')).otherV().inE('Relation').filter(relation.equals('contributesTo')).otherV().dedup()"],
+        ['树 · 语义层主干：业务域 → 指标 → 表 → 字段（39 点）', 'Tree - the semantic backbone: domain -> metrics -> tables -> columns (39 vertices)',
+          "g.V('domain/sales','Node').inE('Relation').filter(relation.equals('belongsTo')).otherV().outE('Relation').filter(relation.equals('computedFrom')).otherV().outE('Relation').filter(relation.equals('hasColumn')).otherV().dedup()"],
+        ['树 · 血缘：revenue 的表与字段', 'Tree - lineage: the tables and columns behind revenue',
+          "g.V('metric/revenue','Node').outE('Relation').filter(relation.equals('computedFrom') || relation.equals('usesColumn')).otherV().dedup()"],
+        ['指标定义 revenue', 'The definition of revenue', "g.V('metric/revenue','Node').values('aggFunction','expression','unit')"],
+        ['归因上游：谁驱动 revenue（六个）', 'Attribution upstream: the six metrics that drive revenue',
+          "g.V('metric/revenue','Node').inE('Relation').filter(relation.equals('contributesTo')).otherV().values('name')"],
+        ['join 路径：外键 → 主键', 'Join paths: foreign keys -> primary keys',
+          "g.V('column/lineitem.l_orderkey','Node').outE('Relation').filter(relation.equals('references')).otherV().values('name')"],
+      ],
+      'tpc-h-data': [
+        ['树 · 星型模型：Sale 的七类维度边', 'Tree - the star: the seven dimension edges around Sale',
+          "g.V('sale_0','Sale').both().dedup()"],
+        ['大区净收入', 'Net revenue by region', "g.V('Sale').group().by('region').by(values('revenue').sum())"],
+        ['按年净收入 / 毛收入 / 折扣额', 'Per year: net revenue / gross / discount',
+          "g.V('Sale').group().by('orderYear').by(values('gross').sum())"],
+        ['雪花链 join（4 跳到大区）', 'Snowflake join (four hops to the region)',
+          "g.V('sale_0','Sale').out('ofOrder').out('placedBy').out('customerNation').out('nationRegion').values('name')"],
+      ],
       'payment-graph-as-edge': [
         ['大点 · 一天窗口内的前 500 笔支付（Aerospike-Edge）', 'Hub - first 500 payments in a one-day window (Aerospike-Edge)', "g.V('9000001','Account').createdBetween('2025-06-01','2025-06-02').inE('Payment').limit(500)"],
         ['大点 · 某周窗口的笔数', 'Hub - payments in a one-week window', "g.V('9000001','Account').createdBetween('2025-11-01','2025-11-07').inE('Payment').count()"],
@@ -589,6 +705,17 @@
         ['分布式算法 · 同一个 DIST 换成 pagerank',
           'Distributed algorithm - the same DIST with pagerank',
           "g.V(DIST,'Account').bothE('Payment').pagerank().unfold().limit(10)"],
+        ['中心度 · 扫描 + 集群：FROZEN 账户支付图的介数中心性（采样 8 个源点）',
+          'Centrality - a DIST scan and the cluster: betweenness of the FROZEN payments, 8 sampled sources',
+          "g.V(DIST).has('Account','accountStatus','FROZEN').bothE('Payment').otherV().dedup().betweenness(DIST, 8)"],
+        // 中心度：不带 DIST 在本进程算，带 DIST 交给 Gemini 集群；closeness/betweenness 按源点逐个跑
+        // （betweenness(DIST, k) 采样 k 个源点，是 Brandes-Pich 式的近似，k 省略时全跑＝精确）。
+        ['中心度 · 度中心性（本进程）', 'Centrality - degree, in this process',
+          "g.V('135','Account').bothE('Payment').otherV().degree()"],
+        ['中心度 · 介数中心性（集群，采样 8 个源点）', 'Centrality - betweenness on the cluster, 8 sampled sources',
+          "g.V('135','Account').bothE('Payment').otherV().betweenness(DIST, 8)"],
+        ['中心度 · 特征向量中心性（集群）', 'Centrality - eigenvector on the cluster',
+          "g.V('135','Account').bothE('Payment').otherV().eigenvector(DIST, 20)"],
       ],
       'geo-merchants-rocksdb-inline': [
         ['GEO · 1km 内最近的 10 家商户', 'GEO - 10 nearest merchants within 1 km', "g.V('1','Merchant').circle('{\"latitude\":31.2304,\"longitude\":121.4737}', 1000).limit(10)"],
@@ -682,6 +809,11 @@
         ['问答：刘备手下谁是从曹操那过来的？', 'Q: who under Liu Bei came from Cao Cao?', "g.V('曹操','Entity').outE().filter(relation.equals('lord')).otherV().dedup().where(inE().filter(relation.equals('lord')).otherV().hasId('刘备')).values('name')"],
         ['问答：曹操的同族有谁？', 'Q: who is in Cao Cao\'s clan?', "g.V('曹操','Entity').bothE().filter(relation.equals('same_clan')).otherV().values('name')"],
         ['问答：诸葛亮和司马懿相隔多远？', 'Q: how far apart are Zhuge Liang and Sima Yi?', "g.V('诸葛亮','Entity').repeat(both('Entity_Entity')).times(2).hasId('司马懿').count()"],
+        // 地图：经纬度读成列（valueMap）→ 结果面板出坐标，点工具栏地图图标在 panel 里画出这些点
+        ['地图 · 全部 26 个带经纬度的实体（点工具栏地图图标）', 'Map - all 26 entities with coordinates (then click the map icon in the toolbar)',
+          "g.V('Entity').has('latitude').valueMap('name','entityType','eventYear','latitude','longitude')"],
+        ['地图 · 赤壁之战的位置', 'Map - where the battle of Red Cliffs was',
+          "g.V('赤壁之战','Entity').valueMap('name','eventYear','latitude','longitude')"],
       ],
       'sanguo-kg-text': [
         ['方案 C：谁是五虎上将（自动抽到）', 'Plan C: who are the Five Tiger Generals (auto-extracted)', "g.V('五虎上将','Entity').inE().filter(relation.equals('holds')).otherV().values('name')"],
@@ -695,6 +827,16 @@
         ['方案 ③：关羽提到哪些典故/事件', 'Plan C-3: which episodes Guan Yu\'s biography names', "g.V('关羽','Entity').outE().filter(relation.equals('mentions')).otherV().has('entityType','Event').values('name')"],
         ['方案 ③：谁的传记提到过五关斩六将', 'Plan C-3: whose biography names the five passes', "g.V('过五关斩六将','Entity').inE().filter(relation.equals('mentions')).otherV().values('name')"],
         ['方案 ③：关羽的器物（青龙偃月刀）', 'Plan C-3: Guan Yu\'s weapon', "g.V('关羽','Entity').outE().filter(relation.equals('mentions')).otherV().has('entityType','Artifact').values('name')"],
+        // 地图：valueMap 把经纬度读成列 → 结果面板出坐标，点工具栏的地图图标就在 panel 里画出这些点
+        // （地图默认画图里全部 26 个带坐标的实体，说明区可以切回「只看查询结果」）
+        ['地图 · 全部 26 个带经纬度的实体（点工具栏地图图标）', 'Map - all 26 entities with coordinates (then click the map icon in the toolbar)',
+          "g.V('Entity').has('latitude').valueMap('name','entityType','eventYear','latitude','longitude')"],
+        ['地图 · 六座都城/城市', 'Map - the six capitals and cities',
+          "g.V('Entity').has('entityType','Place').has('latitude').valueMap('name','latitude','longitude')"],
+        ['地图 · 公元 210 年之后的战役（6 场）', 'Map - the battles after 210 AD (6 of them)',
+          "g.V('Entity').has('entityType','Event').has('latitude').has('eventYear', gt(210)).valueMap('name','eventYear','latitude','longitude')"],
+        ['地图 · 赤壁之战的位置', 'Map - where the battle of Red Cliffs was',
+          "g.V('赤壁之战','Entity').valueMap('name','eventYear','latitude','longitude')"],
       ],
       'hnsw-sift': [
         ['4242 最近的 20 个向量', '20 nearest vectors to 4242', "g.V('4242','Vector').nearest(20)"],
@@ -993,6 +1135,7 @@
       .data(links)
       .join('path')
       .attr('class', 'edge')
+      .classed('reversed', (d) => !!d.reversed)
       .attr('marker-end', 'url(#arrow)')
       .on('click', (event, d) => { event.stopPropagation(); selectEdge(d); });
 
@@ -1001,7 +1144,7 @@
       .data(nodes)
       .join('g')
       .attr('class', 'node')
-      .classed('pr-highlight', (d) => algoState && algoState.type === 'pagerank' && algoState.topKeys.has(d.key))
+      .classed('pr-highlight', (d) => !!algoState && !!algoState.topKeys && algoState.topKeys.has(d.key))
       .on('click', onNodeClick);
 
     nodeSel.append('circle').attr('class', 'ring').attr('r', 14.4);
@@ -1033,31 +1176,44 @@
       }));
 
     const big = nodes.length > 1000; // scale down forces/iterations for very large subgraphs
-    simulation = d3.forceSimulation(nodes)
-      .force('link', d3.forceLink(links).id((d) => d.key).distance(big ? 24 : 70))
-      .force('charge', d3.forceManyBody().strength(big ? -55 : -260))
-      .force('center', d3.forceCenter(width / 2, height / 2))
-      .force('x', d3.forceX(width / 2).strength(0.05))
-      .force('y', d3.forceY(height / 2).strength(0.05))
-      .velocityDecay(0.55)   // more friction -> slower, gentler motion
-      .alphaDecay(0.02)
-      .stop();
-    if (!big) simulation.force('collide', d3.forceCollide(24));
+    const dag = treeMode.startsWith('dag');
+    if (dag) {
+      // a layered DAG keeps every edge and ranks the vertices by dependency - the shape of the semantic
+      // layer (contributesTo / computedFrom / usesColumn), where a spanning tree would drop the cross links
+      layoutDag(nodes, links, treeMode);
+    } else if (treeMode) {
+      // a tree is a different question: where does each vertex sit in the hierarchy, not how do the
+      // forces settle. The hierarchy is the spanning tree of what was drawn (breadth first from the
+      // root), and the orientation is the reader's choice.
+      layoutTree(nodes, links);
+    } else {
+      simulation = d3.forceSimulation(nodes)
+        .force('link', d3.forceLink(links).id((d) => d.key).distance(big ? 24 : 70))
+        .force('charge', d3.forceManyBody().strength(big ? -55 : -260))
+        .force('center', d3.forceCenter(width / 2, height / 2))
+        .force('x', d3.forceX(width / 2).strength(0.05))
+        .force('y', d3.forceY(height / 2).strength(0.05))
+        .velocityDecay(0.55)   // more friction -> slower, gentler motion
+        .alphaDecay(0.02)
+        .stop();
+      if (!big) simulation.force('collide', d3.forceCollide(24));
 
-    // lay out synchronously so the first paint is already settled, then fit to view
-    const ticks = big ? 180 : 400;
-    for (let i = 0; i < ticks; i += 1) simulation.tick();
+      // lay out synchronously so the first paint is already settled, then fit to view
+      const ticks = big ? 180 : 400;
+      for (let i = 0; i < ticks; i += 1) simulation.tick();
+
+      simulation.on('tick', () => {
+        linkSel.each(function (d) { setEdgeGeometry(this, d); });
+        nodeSel.attr('transform', (d) => `translate(${d.x},${d.y})`);
+        for (const n of nodes) positions.set(n.key, { x: n.x, y: n.y });
+      });
+      simulation.on('end', () => fitView(true));
+    }
     linkSel.each(function (d) { setEdgeGeometry(this, d); });
+    // the layout decides which edges run backwards, so the class has to follow the layout, not the join
+    linkSel.classed('reversed', (d) => !!d.reversed);
     nodeSel.attr('transform', (d) => `translate(${d.x},${d.y})`);
     for (const n of nodes) positions.set(n.key, { x: n.x, y: n.y });
-
-    simulation.on('tick', () => {
-      linkSel.each(function (d) { setEdgeGeometry(this, d); });
-      nodeSel.attr('transform', (d) => `translate(${d.x},${d.y})`);
-      for (const n of nodes) positions.set(n.key, { x: n.x, y: n.y });
-    });
-    simulation.on('end', () => fitView(true));
-
     renderLegend();
 
     applyBrush();
@@ -1071,6 +1227,314 @@
     applyPathFilter();
     applyPickedHighlight();
     fitView(false);
+    if (treeMode) { refreshTreeHint(); }
+  }
+
+  // ---- tree layout: the hierarchy the drawn subgraph makes ----------------------------------------
+
+  /**
+   * Lays the drawn subgraph out as a tree: the spanning tree of the graph, breadth first from the root,
+   * through {@code d3.tree()} and then into the chosen orientation.
+   *
+   * A graph is not a tree, so this is a *reading* of it: the first path that reaches a vertex owns it, and
+   * the edges outside the spanning tree are still drawn but do not order anything. That is what makes it
+   * useful for the shapes that are trees in practice - an attribution chain (metric -> the metrics that
+   * drive it), a schema (domain -> table -> column), a call graph - and why the root matters: the same
+   * graph read from another root is another hierarchy, which is what a click on a vertex changes.
+   */
+  function layoutTree(nodes, links) {
+    const byKey = new Map(nodes.map((node) => [node.key, node]));
+    const adjacency = new Map(nodes.map((node) => [node.key, []]));
+    for (const link of links) {
+      const sourceKey = typeof link.source === 'object' ? link.source.key : link.source;
+      const targetKey = typeof link.target === 'object' ? link.target.key : link.target;
+      if (!adjacency.has(sourceKey) || !adjacency.has(targetKey) || sourceKey === targetKey) continue;
+      // the geometry reads a link's endpoints as vertices, so a layout that skips the force simulation
+      // has to resolve the keys itself - otherwise every path is drawn at NaN (the bug the tree layout
+      // had until the edges were looked at instead of only the vertices)
+      link.source = byKey.get(sourceKey);
+      link.target = byKey.get(targetKey);
+      adjacency.get(sourceKey).push(targetKey);
+      adjacency.get(targetKey).push(sourceKey);
+      link.layout = null;
+      link.reversed = false;
+    }
+
+    // the root is what the reader picked, else the first drawn vertex; every component gets a tree, so a
+    // disconnected answer is a forest laid out side by side rather than one tree with orphans
+    const roots = [];
+    if (treeRootKey && byKey.has(treeRootKey)) roots.push(treeRootKey);
+    for (const node of nodes) {
+      if (!roots.includes(node.key)) roots.push(node.key);
+    }
+    const seen = new Set();
+    const forest = [];
+    for (const root of roots) {
+      if (seen.has(root)) continue;
+      const queue = [root];
+      seen.add(root);
+      const children = new Map([[root, []]]);
+      while (queue.length) {
+        const key = queue.shift();
+        for (const next of adjacency.get(key) || []) {
+          if (seen.has(next)) continue;
+          seen.add(next);
+          children.get(key).push(next);
+          children.set(next, []);
+          queue.push(next);
+        }
+      }
+      forest.push(children);
+    }
+
+    // count the leaves of every subtree, so a sibling group is as tall as what hangs under it
+    const leaves = (children, key) => {
+      const kids = children.get(key) || [];
+      if (!kids.length) return 1;
+      return kids.reduce((sum, kid) => sum + leaves(children, kid), 0);
+    };
+
+    let offset = 0;
+    // the whole forest's leaf count, so the radial layout spreads its components around the circle instead
+    // of stacking them on the same spokes
+    const globalLeaves = Math.max(1, forest.reduce((sum, children) =>
+      sum + leaves(children, [...children.keys()][0]), 0));
+    for (const children of forest) {
+      const rootKey = [...children.keys()][0];
+      const hierarchy = { key: rootKey, children: [] };
+      const build = (node, key) => {
+        for (const kid of children.get(key) || []) {
+          const child = { key: kid, children: [] };
+          node.children.push(child);
+          build(child, kid);
+        }
+      };
+      build(hierarchy, rootKey);
+
+      const root = d3.hierarchy(hierarchy, (node) => node.children);
+      // A tidy tree numbers the leaves left to right and puts every parent in the middle of its children.
+      // The number has to be *absolute* (one counter for the whole tree): numbering each sibling group
+      // from zero - the obvious first version - makes the groups of different parents overlap, and two
+      // vertices of the same depth end up drawn on top of each other.
+      let nextLeaf = 0;
+      root.eachAfter((node) => {
+        if (!node.children || !node.children.length) {
+          node.slot = nextLeaf;
+          nextLeaf += 1;
+          return;
+        }
+        const first = node.children[0];
+        const last = node.children[node.children.length - 1];
+        node.slot = (first.slot + last.slot) / 2;
+      });
+
+      const depthStep = treeMode === 'radial' ? 92 : 150;
+      const leafStep = treeMode === 'radial' ? 0 : 56;
+      const walk = (node, depth) => {
+        const target = byKey.get(node.data.key);
+        const along = offset + node.slot; // the leaf slot, in the whole forest's numbering
+        if (target) {
+          if (treeMode === 'radial') {
+            // radial: the depth is the radius, the position among the leaves the angle
+            const angle = ((along + 0.5) / globalLeaves) * Math.PI * 2 - Math.PI / 2;
+            target.x = Math.cos(angle) * (depth * depthStep + 40);
+            target.y = Math.sin(angle) * (depth * depthStep + 40);
+          } else if (treeMode === 'lr') {
+            target.x = depth * depthStep;
+            target.y = along * leafStep;
+          } else if (treeMode === 'tb') {
+            target.x = along * leafStep;
+            target.y = depth * depthStep;
+          } else { // 'bt': the same tree read from the leaves up
+            target.x = along * leafStep;
+            target.y = -depth * depthStep;
+          }
+        }
+        (node.children || []).forEach((child) => walk(child, depth + 1));
+      };
+      walk(root, 0);
+      offset += Math.max(1, nextLeaf);
+    }
+
+    // the edges of the spanning tree get the elbow that says "parent to child"; the rest stay straight,
+    // because they are a graph's extra edges and drawing them as a hierarchy would be a lie
+    const treeEdges = new Set();
+    for (const children of forest) {
+      for (const [key, kids] of children) {
+        for (const kid of kids) treeEdges.add(`${key}->${kid}`);
+        for (const kid of kids) treeEdges.add(`${kid}->${key}`);
+      }
+    }
+    for (const link of links) {
+      const source = typeof link.source === 'object' ? link.source.key : link.source;
+      const target = typeof link.target === 'object' ? link.target.key : link.target;
+      link.tree = treeEdges.has(`${source}->${target}`);
+      link.layout = link.tree ? 'hierarchy' : null;
+      link.reversed = false;
+    }
+  }
+  /**
+   * Lays the drawn subgraph out as a **layered DAG** (Sugiyama in three steps, without the library):
+   *
+   * <ol>
+   *   <li><b>break the cycles</b> - a depth-first walk marks the edges that close a cycle; they are drawn
+   *       <em>dashed</em> and laid out in the direction that keeps the rest acyclic, so the reader can see
+   *       which edges a layered picture had to reinterpret;</li>
+   *   <li><b>rank</b> by longest path (sources at layer 0, every other vertex one past its deepest
+   *       predecessor), so an edge always runs at least one layer down and lineage reads downwards;</li>
+   *   <li><b>order</b> each layer by the barycenter of its neighbours, swept down and up a few times, which
+   *       is the cheap half of crossing minimisation - and then give the vertices their coordinates.</li>
+   * </ol>
+   *
+   * Unlike the tree layout this keeps **every** edge: a DAG is what the semantic layer is
+   * (`contributesTo`, `computedFrom`, `usesColumn`), and a spanning tree would have to drop the cross
+   * links that make it a DAG at all. Edges that span more than one layer are drawn straight through with
+   * the same smooth link, which is the honest picture: the layer assignment is a ranking, not a distance.
+   */
+  function layoutDag(nodes, links, mode) {
+    const byKey = new Map(nodes.map((node) => [node.key, node]));
+    const out = new Map(nodes.map((node) => [node.key, []]));
+    const allEdges = [];
+    for (const link of links) {
+      const sourceKey = typeof link.source === 'object' ? link.source.key : link.source;
+      const targetKey = typeof link.target === 'object' ? link.target.key : link.target;
+      link.layout = null;
+      link.reversed = false;
+      if (!byKey.has(sourceKey) || !byKey.has(targetKey) || sourceKey === targetKey) continue;
+      // resolve the endpoints the way the force simulation does: the geometry needs vertices, not keys
+      link.source = byKey.get(sourceKey);
+      link.target = byKey.get(targetKey);
+      link.layout = 'dag';
+      const edge = { link, source: sourceKey, target: targetKey };
+      allEdges.push(edge);
+      out.get(sourceKey).push(edge);
+    }
+
+    // 1. depth first, marking the edges that close a cycle (they run backwards in the layering)
+    const state = new Map();
+    const back = new Set();
+    const visit = (key) => {
+      state.set(key, 1);
+      for (const edge of out.get(key) || []) {
+        const seen = state.get(edge.target) || 0;
+        if (seen === 1) {
+          back.add(edge);
+          edge.link.reversed = true;
+          continue;
+        }
+        if (seen === 0) visit(edge.target);
+      }
+      state.set(key, 2);
+    };
+    for (const node of nodes) {
+      if (!state.get(node.key)) visit(node.key);
+    }
+    const dagEdges = allEdges.filter((edge) => !back.has(edge));
+
+    // 2. longest-path ranking (Kahn: a vertex is ranked once its predecessors are)
+    const indegree = new Map(nodes.map((node) => [node.key, 0]));
+    for (const edge of dagEdges) indegree.set(edge.target, indegree.get(edge.target) + 1);
+    const successors = new Map(nodes.map((node) => [node.key, []]));
+    for (const edge of dagEdges) successors.get(edge.source).push(edge.target);
+    const rank = new Map(nodes.map((node) => [node.key, 0]));
+    const queue = nodes.filter((node) => indegree.get(node.key) === 0).map((node) => node.key);
+    for (let head = 0; head < queue.length; head += 1) {
+      const key = queue[head];
+      for (const next of successors.get(key)) {
+        rank.set(next, Math.max(rank.get(next), rank.get(key) + 1));
+        indegree.set(next, indegree.get(next) - 1);
+        if (indegree.get(next) === 0) queue.push(next);
+      }
+    }
+
+    // 3. order within the layers: barycenter sweeps, down then up, a few times
+    const depths = Math.max(0, ...nodes.map((node) => rank.get(node.key)));
+    const layers = [];
+    for (let depth = 0; depth <= depths; depth += 1) {
+      layers.push(nodes.filter((node) => rank.get(node.key) === depth).map((node) => node.key));
+    }
+    const successorsOf = new Map(nodes.map((node) => [node.key, []]));
+    const predecessorsOf = new Map(nodes.map((node) => [node.key, []]));
+    for (const edge of allEdges) {
+      const from = edge.link.reversed ? edge.target : edge.source;
+      const to = edge.link.reversed ? edge.source : edge.target;
+      successorsOf.get(from).push(to);
+      predecessorsOf.get(to).push(from);
+    }
+    const orderIn = (list, neighbours, index) => {
+      const mean = new Map(list.map((key, at) => [key, at]));
+      return [...list].sort((a, b) => {
+        const around = (key) => {
+          const keys = neighbours.get(key).filter((other) => index.has(other));
+          if (!keys.length) return mean.get(key);
+          return keys.reduce((sum, other) => sum + index.get(other), 0) / keys.length;
+        };
+        return around(a) - around(b) || mean.get(a) - mean.get(b);
+      });
+    };
+    for (let sweep = 0; sweep < 4; sweep += 1) {
+      for (let depth = 1; depth <= depths; depth += 1) {
+        const index = new Map(layers[depth - 1].map((key, at) => [key, at]));
+        layers[depth] = orderIn(layers[depth], predecessorsOf, index);
+      }
+      for (let depth = depths - 1; depth >= 0; depth -= 1) {
+        const index = new Map(layers[depth + 1].map((key, at) => [key, at]));
+        layers[depth] = orderIn(layers[depth], successorsOf, index);
+      }
+    }
+
+    // 4. coordinates: the layer is one axis, the position in the layer the other, each layer centred
+    const near = mode === 'dag-tb' || mode === 'dag-bt' ? 64 : 170; // spacing along the layer
+    const depthStep = mode === 'dag-tb' || mode === 'dag-bt' ? 170 : 150;
+    const widest = Math.max(1, ...layers.map((layer) => layer.length));
+    layers.forEach((layer, depth) => {
+      const start = (widest - layer.length) / 2;
+      layer.forEach((key, at) => {
+        const node = byKey.get(key);
+        const along = (start + at) * near;
+        if (mode === 'dag-lr') {
+          node.x = depth * depthStep;
+          node.y = along;
+        } else if (mode === 'dag-tb') {
+          node.x = along;
+          node.y = depth * depthStep;
+        } else { // 'dag-bt'
+          node.x = along;
+          node.y = -depth * depthStep;
+        }
+      });
+    });
+  }
+
+  /** Turns a layout mode on (or off) and lays out what is drawn with it. */
+  function applyTreeMode(value) {
+    treeMode = value || '';
+    if (!treeMode) {
+      treeRootKey = null;
+      render();
+      return;
+    }
+    if (!treeMode.startsWith('dag') && !treeRootKey) {
+      treeRootKey = (picked[0] || (currentNodes[0] && currentNodes[0].key)) || null;
+    }
+    render();
+  }
+
+  /** Says what the tree (or the DAG) view is showing: the mode, the size, and the root it grew from. */
+  function refreshTreeHint() {
+    if (!treeMode || !el.legendCount) return;
+    const root = currentNodes.find((node) => node.key === treeRootKey);
+    const name = treeMode === 'lr' ? 'treeLr' : treeMode === 'tb' ? 'treeTb' : treeMode === 'bt' ? 'treeBt'
+      : treeMode === 'radial' ? 'treeRadial'
+        : treeMode === 'dag-lr' ? 'dagLr' : treeMode === 'dag-tb' ? 'dagTb' : 'dagBt';
+    const reversed = currentLinks.filter((link) => link.reversed).length;
+    el.legendCount.hidden = false;
+    el.legendCount.textContent = (treeMode.startsWith('dag') ? t('dagHint') : t('treeHint'))
+      .replace('{mode}', t(name))
+      .replace('{n}', String(currentNodes.length))
+      .replace('{e}', String(currentLinks.length))
+      .replace('{r}', String(reversed))
+      .replace('{root}', root ? displayLabel(root) : '—');
   }
 
   // stop each line at the node edge so the arrow head stays visible above the node
@@ -1157,6 +1621,18 @@
     const ux = dx / len, uy = dy / len;
     const sx = x1 + ux * off, sy = y1 + uy * off;
     const ex = x2 - ux * off, ey = y2 - uy * off;
+    if (l.layout && !l.arc) {
+      // a hierarchy or a layered DAG gets a smooth link that leaves its source along one axis and arrives
+      // at its target along the same one - the shape d3's linkHorizontal/linkVertical draw, which is what
+      // makes an edge of a layout read as *connected* rather than as a straight line through the picture
+      const horizontal = treeMode === 'lr' || treeMode === 'dag-lr';
+      const c1x = horizontal ? (sx + ex) / 2 : sx;
+      const c1y = horizontal ? sy : (sy + ey) / 2;
+      const c2x = horizontal ? (sx + ex) / 2 : ex;
+      const c2y = horizontal ? ey : (sy + ey) / 2;
+      el.setAttribute('d', `M ${sx} ${sy} C ${c1x} ${c1y} ${c2x} ${c2y} ${ex} ${ey}`);
+      return;
+    }
     const arc = l.arc || 0;
     if (!arc) {
       el.setAttribute('d', `M ${sx} ${sy} L ${ex} ${ey}`);
@@ -1504,10 +1980,23 @@
     });
   }
 
-  // ---- algorithm-driven coloring (louvain / cc / pagerank) ----
+  // ---- algorithm-driven coloring (louvain / cc / pagerank / the centralities) ----
   function communityColor(cid) {
     const hue = (cid * 137.508) % 360; // golden-angle spacing for distinct hues
     return `hsl(${hue.toFixed(1)}, 62%, 52%)`;
+  }
+
+  /**
+   * A centrality is one number per vertex, so the canvas shows it as a heat: the lowest score of the
+   * analysed set is cold, the highest is warm - the same set whose top 20% carries the gold ring.
+   */
+  function scoreColor(score) {
+    const range = algoState && algoState.scoreRange;
+    if (!range || !(range.max > range.min)) {
+      return '#f6c85f'; // every vertex scored the same: one colour says it
+    }
+    const t = (score - range.min) / (range.max - range.min);
+    return d3.interpolateYlOrRd(0.12 + 0.8 * t);
   }
 
   function nodeColor(d) {
@@ -1516,6 +2005,12 @@
         return '#c9d1e0'; // not part of the analysed subset (another vertex type)
       }
       return communityColor(algoState.communityOf.get(d.key));
+    }
+    if (algoState && algoState.type === 'score') {
+      if (!algoState.scores.has(d.key)) {
+        return '#c9d1e0'; // outside the analysed subset, like a community run on a mixed graph
+      }
+      return scoreColor(algoState.scores.get(d.key));
     }
     return colorFor(d.label, d.id);
   }
@@ -1638,6 +2133,120 @@
     return rank;
   }
 
+  /** The hop distance from a source to every vertex it reaches (one breadth-first walk). */
+  function bfsDistances(adj, source) {
+    const distance = new Map([[source, 0]]);
+    const queue = [source];
+    for (let head = 0; head < queue.length; head += 1) {
+      const v = queue[head];
+      const next = distance.get(v) + 1;
+      for (const w of adj.get(v) || []) {
+        if (!distance.has(w)) { distance.set(w, next); queue.push(w); }
+      }
+    }
+    return distance;
+  }
+
+  /** Degree centrality: how many edges of the drawn subgraph touch a vertex. */
+  function degreeScores(nodes, adj) {
+    const scores = new Map();
+    for (const n of nodes) scores.set(n.key, (adj.get(n.key) || []).length);
+    return scores;
+  }
+
+  /**
+   * Closeness centrality in the Wasserman-Faust form: a vertex of a small component is measured
+   * against the vertices it can reach rather than against the whole graph.
+   */
+  function closenessScores(nodes, adj) {
+    const scores = new Map();
+    for (const n of nodes) {
+      const distance = bfsDistances(adj, n.key);
+      let sum = 0;
+      for (const d of distance.values()) sum += d;
+      const reach = distance.size - 1; // without the vertex itself, which sits at zero
+      scores.set(n.key, reach <= 0 || sum <= 0 ? 0 : (reach * reach) / ((nodes.length - 1) * sum));
+    }
+    return scores;
+  }
+
+  /** Betweenness centrality by Brandes' algorithm, normalised by the number of pairs. */
+  function betweennessScores(nodes, adj) {
+    const scores = new Map(nodes.map((n) => [n.key, 0]));
+    for (const n of nodes) brandesFrom(adj, n.key, scores);
+    const pairs = ((nodes.length - 1) * (nodes.length - 2)) / 2;
+    const out = new Map();
+    for (const [key, raw] of scores) out.set(key, pairs <= 0 ? 0 : raw / 2 / pairs);
+    return out;
+  }
+
+  /** One source of Brandes: the shortest-path counts, then the dependencies back down the levels. */
+  function brandesFrom(adj, source, scores) {
+    const distance = new Map([[source, 0]]);
+    const sigma = new Map([[source, 1]]);
+    const delta = new Map();
+    const predecessors = new Map();
+    const order = [source];
+    for (let head = 0; head < order.length; head += 1) {
+      const v = order[head];
+      for (const w of adj.get(v) || []) {
+        if (!distance.has(w)) { distance.set(w, distance.get(v) + 1); order.push(w); }
+        if (distance.get(w) === distance.get(v) + 1) {
+          sigma.set(w, (sigma.get(w) || 0) + sigma.get(v));
+          if (!predecessors.has(w)) predecessors.set(w, []);
+          predecessors.get(w).push(v);
+        }
+      }
+    }
+    for (let i = order.length - 1; i >= 0; i -= 1) {
+      const w = order[i];
+      for (const v of predecessors.get(w) || []) {
+        const share = (1 + (delta.get(w) || 0)) * (sigma.get(v) / sigma.get(w));
+        delta.set(v, (delta.get(v) || 0) + share);
+      }
+      if (w !== source) scores.set(w, scores.get(w) + (delta.get(w) || 0));
+    }
+  }
+
+  /**
+   * Eigenvector centrality by power iteration over the drawn links, thirty rounds and a unit vector at
+   * the end - the same normalisation the server-side step applies.
+   */
+  function eigenvectorScores(nodes, adj) {
+    const incoming = new Map(nodes.map((n) => [n.key, []]));
+    for (const [key, targets] of adj) {
+      for (const target of targets) {
+        if (incoming.has(target)) incoming.get(target).push(key);
+      }
+    }
+    let x = new Map(nodes.map((n) => [n.key, 1]));
+    for (let iteration = 0; iteration < 30; iteration += 1) {
+      const next = new Map();
+      for (const n of nodes) {
+        let sum = 0;
+        for (const u of incoming.get(n.key)) sum += x.get(u) || 0;
+        next.set(n.key, sum);
+      }
+      x = unitVector(next);
+    }
+    return x;
+  }
+
+  /** A score vector of unit L2 length, signed so its largest entry is positive. */
+  function unitVector(scores) {
+    let squares = 0;
+    let largest = 0;
+    for (const value of scores.values()) {
+      squares += value * value;
+      if (Math.abs(value) > Math.abs(largest)) largest = value;
+    }
+    const norm = Math.sqrt(squares);
+    const sign = largest < 0 ? -1 : 1;
+    const out = new Map();
+    for (const [key, value] of scores) out.set(key, norm === 0 ? 0 : (value / norm) * sign);
+    return out;
+  }
+
   function applyAlgorithm(name) {
     pathState = null;
     if (!name) {
@@ -1672,9 +2281,363 @@
         const sorted = [...rank.entries()].sort((a, b) => b[1] - a[1]);
         const topCount = Math.max(1, Math.ceil(sorted.length * 0.2));
         algoState = { type: 'pagerank', topKeys: new Set(sorted.slice(0, topCount).map((e) => e[0])) };
+      } else if (CENTRALITIES.includes(name)) {
+        // a centrality is a property of one kind of vertex, exactly like a component: on a graph that
+        // mixes Account, IP and Phone a closeness score would only say which addresses everything hangs
+        // off. So they run on the largest single type too, with the other types projected into edges
+        // between the kept vertices, and the canvas dims what was not analysed.
+        const subset = largestTypeSubgraph(currentNodes, currentLinks);
+        if (subset.skippedTypes.length) {
+          const message = t('algoHomogeneous')
+            .replaceAll('{algo}', t(name))
+            .replaceAll('{type}', String(subset.label))
+            .replaceAll('{n}', String(subset.nodes.length))
+            .replaceAll('{others}', subset.skippedTypes.join(' / '))
+            .replaceAll('{links}', String(subset.projected));
+          toast(message, 5200);
+          setStatus(message);
+        }
+        const scores = centralityScores(name, subset.nodes, subset.adj);
+        const sorted = [...scores.entries()].sort((a, b) => b[1] - a[1]);
+        const topCount = Math.max(1, Math.ceil(sorted.length * 0.2));
+        const topKeys = new Set(sorted.slice(0, topCount).map((e) => e[0]));
+        const scoreRange = [...scores.values()].reduce(
+          (range, value) => ({ min: Math.min(range.min, value), max: Math.max(range.max, value) }),
+          { min: 0, max: 0 });
+        algoState = { type: 'score', scores, topKeys, scoreRange };
+        const best = sorted.length ? nodeById(sorted[0][0]) : null;
+        const summary = t('algoScore')
+          .replaceAll('{algo}', t(name))
+          .replaceAll('{top}', String(topCount))
+          .replaceAll('{n}', String(scores.size))
+          .replaceAll('{best}', best ? displayLabel(best) : '-');
+        if (!subset.skippedTypes.length) {
+          setStatus(summary);
+        }
       }
     }
     refreshAlgoView();
+  }
+
+  /** The centralities the toolbar can colour the canvas with. */
+  const CENTRALITIES = ['degree', 'closeness', 'betweenness', 'eigenvector'];
+
+  /** One of the four centrality scores over the vertices and adjacency a run is about. */
+  function centralityScores(name, nodes, adj) {
+    if (name === 'degree') return degreeScores(nodes, adj);
+    if (name === 'closeness') return closenessScores(nodes, adj);
+    if (name === 'betweenness') return betweennessScores(nodes, adj);
+    return eigenvectorScores(nodes, adj);
+  }
+
+  /** The drawn vertex with an id, for a message that names the top of a ranking. */
+  function nodeById(key) {
+    return currentNodes.find((n) => n.key === key) || null;
+  }
+
+  // ---- the map view: the entities of the selected graph that carry coordinates ---------------------
+  //
+  // It lives inside the canvas panel (not on a page of its own): the toolbar shows a map icon when the
+  // selected instance can answer the question - its schema has a latitude/longitude pair on a vertex
+  // type and its store can scan a whole type (a keyed store cannot, so those instances get no icon).
+  // Clicking swaps the canvas for the map; clicking again brings the picture back.
+
+  let mapOpen = false;
+  /** What the selected graph's map needs (null when it has none). */
+  let mapPlan = null;
+  /** Per-graph schema plans, so switching back and forth does not re-read the schema. */
+  const geoPlans = new Map();
+  /** Per-graph "does it hold a single coordinate", so the probe runs once. */
+  const geoHasData = new Map();
+  /** Where the basemap stands ({kind, provider}) and how the points are doing ({kind, n|message}). */
+  let mapBasemap = null;
+  let mapPointsState = null;
+  /** The rows of the last answer: a query that read coordinates drives the map with them. */
+  let lastAnswerRows = null;
+  /** What the open map shows: 'query' (the last answer's points) or 'all' (the graph's own). */
+  let mapSource = 'all';
+
+  /**
+   * What a graph's map needs: the vertex type carrying latitude/longitude, the property a point is
+   * labelled with and the extra properties worth reading (the kind of entity, the years of an event).
+   * Null when no type has a coordinate pair - then there is nothing to draw.
+   */
+  function geoPlanOf(schema) {
+    for (const type of (schema && schema.vertexSchemas) || []) {
+      const properties = (type.properties || []).map((p) => p.name);
+      const has = (name) => properties.some((p) => p && p.toLowerCase() === name);
+      if (!has('latitude') || !has('longitude')) { continue; }
+      return {
+        type: type.name,
+        latitude: properties.find((p) => p && p.toLowerCase() === 'latitude'),
+        longitude: properties.find((p) => p && p.toLowerCase() === 'longitude'),
+        label: ((type.properties || []).find((p) => p.display) || {}).name || null,
+        extras: ['entityType', 'eventYear', 'eventYearEnd'].filter((name) => properties.includes(name)),
+      };
+    }
+    return null;
+  }
+
+  /** The selected graph's map plan, read from its schema once. */
+  async function geoPlanFor(graphName) {
+    if (geoPlans.has(graphName)) { return geoPlans.get(graphName); }
+    let plan = null;
+    try {
+      const response = await fetch(`/api/schema/${encodeURIComponent(graphName)}`);
+      plan = response.ok ? geoPlanOf(await response.json()) : null;
+    } catch (err) {
+      plan = null;
+    }
+    geoPlans.set(graphName, plan);
+    return plan;
+  }
+
+  /** Whether a store can answer a whole-type scan (the ordered tables can, the keyed ones cannot). */
+  function storageScans(storage) {
+    return String(storage || '').startsWith('RocksDB');
+  }
+
+  /**
+   * Shows or hides the map icon for the selected instance. Three things have to hold, and the icon is
+   * simply absent when they do not - a graph without coordinates gets no map button at all:
+   * <ol>
+   *   <li>the schema declares a latitude/longitude pair on a vertex type;</li>
+   *   <li>the store can scan that type (an Aerospike instance answers by key only, and
+   *       {@code g.V('Entity')} is refused there);</li>
+   *   <li>the graph actually holds one coordinate: a declared property with no data behind it would
+   *       open an empty map, which reads as a broken button rather than as an empty graph.</li>
+   * </ol>
+   */
+  async function refreshMapButton() {
+    closeMap();
+    el.mapBtn.hidden = true;
+    mapPlan = null;
+    if (!currentGraph) { return; }
+    const plan = await geoPlanFor(currentGraph.name);
+    if (!plan || !storageScans(currentGraph.storage)) { return; }
+    if (!(await graphHasCoordinates(currentGraph.name, plan))) { return; }
+    mapPlan = plan;
+    el.mapBtn.hidden = false;
+  }
+
+  /** Whether the instance holds at least one entity with coordinates (probed once per graph). */
+  async function graphHasCoordinates(graphName, plan) {
+    if (geoHasData.has(graphName)) { return geoHasData.get(graphName); }
+    let found = false;
+    try {
+      const query = "g.V('" + plan.type + "').has('" + plan.latitude + "').limit(1).valueMap('"
+        + plan.latitude + "','" + plan.longitude + "')";
+      const response = await fetch('/api/query', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ graphName: graphName, language: 'gremlin', query: query,
+          includeResult: true, returnSubgraph: false }),
+      });
+      const body = await response.json();
+      const rows = Array.isArray(body) ? body : (body && body.result) || [];
+      found = !body.error && rows.length > 0;
+    } catch (err) {
+      found = false;
+    }
+    geoHasData.set(graphName, found);
+    return found;
+  }
+
+  function toggleMap() {
+    if (mapOpen) { closeMap(); } else { openMap(); }
+  }
+
+  async function openMap() {
+    if (!mapPlan) { toast(t('mapNoGeo')); return; }
+    if (!window.PhoenixGeoMap || !window.PhoenixGeoMap.available()) {
+      mapBasemap = { kind: 'noleaflet' };
+      renderMapNote();
+      toast(t('mapNoLeaflet'));
+      return;
+    }
+    mapOpen = true;
+    mapBasemap = null;
+    mapPointsState = { kind: 'loading' };
+    renderMapNote();
+    el.mapView.hidden = false;
+    if (el.mapClose) { el.mapClose.hidden = false; }
+    el.canvasWrap.classList.add('map-open');
+    el.mapBtn.classList.add('active');
+    el.mapBtn.setAttribute('aria-pressed', 'true');
+    el.mapBtn.dataset.i18nTitle = 'mapOpenTitle';
+    el.mapBtn.title = t('mapOpenTitle');
+    hideValue(); // the floating value window belongs to the canvas underneath
+    await showMapPoints('auto');
+  }
+
+  /**
+   * Puts points on the map. `source` is 'auto' (the last answer's points when it has any, else every
+   * coordinate of the graph), 'query' (the last answer) or 'all' (the graph's own list).
+   */
+  async function showMapPoints(source) {
+    const fromQuery = geoAnswerPoints(mapPlan);
+    const wanted = source === 'auto' ? (fromQuery.length ? 'query' : 'all') : source;
+    if (wanted === 'query' && fromQuery.length) {
+      mapSource = 'query';
+      applyMapPoints(fromQuery);
+      return;
+    }
+    // the graph's own list is a query of the map's own: it has to be read before it can be drawn
+    mapSource = 'all';
+    mapPointsState = { kind: 'loading' };
+    renderMapNote();
+    try {
+      const points = await geoPoints(mapPlan);
+      if (!mapOpen) { return; } // closed while the query ran
+      applyMapPoints(points);
+    } catch (err) {
+      mapPointsState = { kind: 'failed', message: err && err.message ? err.message : String(err) };
+      renderMapNote();
+      if (window.PhoenixGeoMap) { window.PhoenixGeoMap.hide(el.mapView); }
+    }
+  }
+
+  /** Hands the points to the map component and says in the note what was drawn. */
+  function applyMapPoints(points) {
+    mapPointsState = points.length
+      ? { kind: 'points', n: points.length, source: mapSource }
+      : { kind: 'empty' };
+    renderMapNote();
+    const shown = window.PhoenixGeoMap.show(el.mapView, points, { onNote: onMapBasemap });
+    if (!shown) { closeMap(); }
+  }
+
+  /**
+   * The points of the last answer: its rows that carry the coordinate columns. A query that read them
+   * (a {@code valueMap('name','latitude','longitude')}) maps the very rows it returned; one that read
+   * something else leaves the map with the graph's own list.
+   */
+  function geoAnswerPoints(plan) {
+    if (!plan || !lastAnswerRows) { return []; }
+    return lastAnswerRows
+      .filter((row) => row && typeof row === 'object' && !Array.isArray(row))
+      .map((row) => geoPoint(plan, row))
+      .filter(Boolean);
+  }
+
+  function closeMap() {
+    if (!mapOpen) { return; }
+    if (window.PhoenixGeoMap) { window.PhoenixGeoMap.hide(el.mapView); }
+    el.mapView.hidden = true;
+    if (el.mapClose) { el.mapClose.hidden = true; }
+    el.mapNote.hidden = true;
+    el.canvasWrap.classList.remove('map-open');
+    el.mapBtn.classList.remove('active');
+    el.mapBtn.setAttribute('aria-pressed', 'false');
+    el.mapBtn.dataset.i18nTitle = 'mapTitle';
+    el.mapBtn.title = t('mapTitle');
+    mapOpen = false;
+    mapBasemap = null;
+    mapPointsState = null;
+    // the canvas was covered while it may have been resized: draw it again
+    render();
+  }
+
+  /**
+   * Every entity of the graph that carries a coordinate, read with the schema's own names (nothing about
+   * sanguo is hard-coded: any graph with a latitude/longitude pair gets a map).
+   */
+  async function geoPoints(plan) {
+    const columns = [plan.label, plan.latitude, plan.longitude].concat(plan.extras).filter(Boolean);
+    const query = "g.V('" + plan.type + "').has('" + plan.latitude + "').valueMap("
+      + columns.map((column) => "'" + column + "'").join(',') + ")";
+    const response = await fetch('/api/query', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        graphName: currentGraph.name,
+        language: 'gremlin',
+        query: query,
+        includeResult: true,
+        returnSubgraph: false,
+      }),
+    });
+    const body = await response.json();
+    if (body && body.error) { throw new Error(body.error); }
+    if (!response.ok) { throw new Error('HTTP ' + response.status); }
+    const rows = Array.isArray(body) ? body : (body && body.result) || [];
+    return rows.map((row) => geoPoint(plan, row)).filter(Boolean);
+  }
+
+  /** One row of the answer as a point: without usable coordinates the point is dropped. */
+  function geoPoint(plan, row) {
+    const latitude = propertyNumber(row[plan.latitude]);
+    const longitude = propertyNumber(row[plan.longitude]);
+    if (!isFinite(latitude) || !isFinite(longitude)) { return null; }
+    const kind = scalarValue(row.entityType) || plan.type;
+    const from = propertyNumber(row.eventYear);
+    const to = propertyNumber(row.eventYearEnd);
+    const note = isFinite(from)
+      ? t(isFinite(to) ? 'mapYear' : 'mapYearSingle').replace('{from}', String(from)).replace('{to}', String(to))
+      : '';
+    return {
+      name: String(scalarValue(row[plan.label]) || ''),
+      latitude: latitude,
+      longitude: longitude,
+      kind: kind,
+      kindLabel: t(kind === 'Place' ? 'mapPlace' : (kind === 'Event' ? 'mapEvent' : 'mapEntity')),
+      note: note,
+    };
+  }
+
+  /** A property value that may arrive as a one-element list (a multi-valued property). */
+  function scalarValue(value) {
+    return Array.isArray(value) ? value[0] : value;
+  }
+
+  function propertyNumber(value) {
+    const scalar = scalarValue(value);
+    return scalar === null || scalar === undefined || scalar === '' ? NaN : Number(scalar);
+  }
+
+  /** The basemap the component ended up with (it falls back when OSM is unreachable). */
+  function onMapBasemap(message) {
+    mapBasemap = message || null;
+    renderMapNote();
+  }
+
+  /** The note under the map: what was drawn, which basemap is behind it, and how to switch scope. */
+  function renderMapNote() {
+    const lines = [];
+    if (mapPointsState) {
+      if (mapPointsState.kind === 'points') {
+        lines.push(t(mapPointsState.source === 'query' ? 'mapPointsQuery' : 'mapPointsGraph')
+          .replace('{n}', String(mapPointsState.n)));
+      } else if (mapPointsState.kind === 'failed') {
+        lines.push(t('mapFailed') + mapPointsState.message);
+      } else {
+        lines.push(t(mapPointsState.kind === 'empty' ? 'mapEmpty' : 'mapLoading'));
+      }
+    }
+    if (mapBasemap) {
+      if (mapBasemap.kind === 'provider' || mapBasemap.kind === 'fallback') {
+        const template = mapBasemap.kind === 'fallback' ? 'mapBasemapFallback' : 'mapBasemap';
+        lines.push(t(template).replace('{provider}', String(mapBasemap.provider || '')));
+      } else if (mapBasemap.kind === 'none') {
+        lines.push(t('mapBasemapNone'));
+      } else if (mapBasemap.kind === 'noleaflet') {
+        lines.push(t('mapNoLeaflet'));
+      }
+    }
+    // a query that returned coordinates can drive the map, and the note offers the other scope
+    const switchable = geoAnswerPoints(mapPlan).length > 0;
+    const toggle = switchable
+      ? `<button type="button" class="note-link" data-map-source="${mapSource === 'query' ? 'all' : 'query'}">`
+        + escapeHtml(t(mapSource === 'query' ? 'mapShowAll' : 'mapShowQuery')) + '</button>'
+      : '';
+    el.mapNote.innerHTML = lines.map((line) => `<div>${escapeHtml(line)}</div>`).join('') + toggle;
+    el.mapNote.hidden = !lines.length && !toggle;
+  }
+
+  /** The note's scope switch: "all 26" or "only this query's points". */
+  function onMapNoteClick(event) {
+    const button = event.target.closest && event.target.closest('[data-map-source]');
+    if (button) { showMapPoints(button.dataset.mapSource); }
   }
 
   /**
@@ -1753,11 +2716,12 @@
     root.selectAll('.node').select('circle.body')
       .attr('fill', (d) => nodeColor(d));
     root.selectAll('.node')
-      .classed('pr-highlight', (d) => algoState && algoState.type === 'pagerank' && algoState.topKeys.has(d.key))
-      // a vertex outside the analysed subset (community detection on a mixed graph) is dimmed, so
-      // the picture says which vertices the colours are about
-      .classed('algo-out', (d) => !!algoState && algoState.type === 'community'
-        && !algoState.communityOf.has(d.key));
+      .classed('pr-highlight', (d) => !!algoState && !!algoState.topKeys && algoState.topKeys.has(d.key))
+      // a vertex outside the analysed subset (community detection or a centrality on a mixed graph) is
+      // dimmed, so the picture says which vertices the colours are about
+      .classed('algo-out', (d) => !!algoState
+        && ((algoState.type === 'community' && !algoState.communityOf.has(d.key))
+          || (algoState.type === 'score' && !algoState.scores.has(d.key))));
     applyLegendFilter();
     applyPathFilter();
     applyPickedHighlight();
@@ -1812,6 +2776,9 @@
   // single click selects (and toggles a shortest-path pick); a quick second click expands one hop
   function onNodeClick(event, d) {
     event.stopPropagation();
+    // in the tree layout a vertex is a root as much as it is an element: clicking it re-reads the whole
+    // drawing from there (and still selects it, because the properties panel is the other question)
+    if (treeMode) { treeRootKey = d.key; }
     const now = Date.now();
     if (lastNodeClick.key === d.key && now - lastNodeClick.at < 380) {
       lastNodeClick = { key: null, at: 0 };
@@ -1826,6 +2793,7 @@
     }
     lastNodeClick = { key: d.key, at: now };
     selectVertex(d);
+    if (treeMode) { render(); } // the tree is read from the new root right away
   }
 
   function selectVertex(d) {
@@ -1993,8 +2961,38 @@
 
   function formatValue(v) {
     if (v === null || v === undefined) return '<span class="muted">—</span>';
-    if (typeof v === 'object') return escapeHtml(JSON.stringify(v));
-    return escapeHtml(String(v));
+    const text = typeof v === 'object' ? JSON.stringify(v) : String(v);
+    if (text.length <= VALUE_CLIP) return escapeHtml(text);
+    // A long value - a text blob, a nested object, the properties column - would make one cell
+    // unreadable and the table hundreds of lines tall. The cell shows a prefix and carries the whole
+    // text, so one click opens it (see onValueClipClick); beyond VALUE_EXPAND_MAX even that is
+    // abbreviated, because a ten-megabyte string in the DOM freezes the panel it was meant to explain.
+    const full = text.length > VALUE_EXPAND_MAX
+      ? text.slice(0, VALUE_EXPAND_MAX) + t('valueTooLong').replace('{n}', String(text.length - VALUE_EXPAND_MAX))
+      : text;
+    const short = text.slice(0, VALUE_CLIP) + '…';
+    return `<span class="value-clip" data-short="${escapeHtml(short)}" data-full="${escapeHtml(full)}"`
+      + ` title="${escapeHtml(t('valueClipHint'))}">${escapeHtml(short)}</span>`;
+  }
+
+  /** How many characters of one value a cell shows before it abbreviates the rest. */
+  const VALUE_CLIP = 140;
+
+  /** How much of a long value the click reveals: the DOM does not need the whole of a huge blob. */
+  const VALUE_EXPAND_MAX = 20000;
+
+  /**
+   * Opens or closes an abbreviated value in a cell. The table (or the property list) keeps both forms
+   * in the element itself, so opening one costs nothing and closing it puts the short form back.
+   */
+  function onValueClipClick(event) {
+    const clip = event.target.closest && event.target.closest('.value-clip');
+    if (!clip) return;
+    const open = clip.dataset.open !== '1';
+    clip.textContent = open ? clip.dataset.full : clip.dataset.short;
+    clip.dataset.open = open ? '1' : '0';
+    clip.classList.toggle('open', open);
+    clip.title = t(open ? 'valueClipCollapse' : 'valueClipHint');
   }
 
   function formatTime(ts) {
@@ -2126,31 +3124,49 @@
 
   /** Puts one answer on the canvas: the subgraph, the rows tab and the value window. */
   function showQueryResult(result, query) {
+    // the answer is a picture: it belongs on the canvas, so the map (if it was up) steps aside
+    if (mapOpen) { closeMap(); }
     // Cypher answers with columns/rows plus the subgraph; Gremlin with the subgraph,
     // optionally next to the traversers it produced (includeResult)
     const subgraph = responseSubgraph(result);
     resetGraph();
     const { addedV, addedE } = merge(subgraph);
     const value = responseValue(result);
+    // remembered so a query that read coordinates can drive the map (see geoAnswerPoints)
+    lastAnswerRows = Array.isArray(value) ? value : null;
+    // A query whose answer is not a picture - a count, a groupCount, a list of ids, an elementMap - has
+    // its answer in the result tab, and the canvas only shows what the traversal walked on the way. The
+    // sidebar goes to the result tab itself then, instead of leaving the user on a stats tab that says
+    // nothing about the number they asked for. A traversal that answers with vertices or edges stays on
+    // the canvas: there the picture <em>is</em> the answer.
+    let rowsOnly = false;
     if (result && result.columns) {
       rowsReady = true;
       refreshRowsTab();
       showRows(result.columns, result.rows || []);
     } else if (Array.isArray(value)) {
-      // the answer is a list - of elements, of values, of elementMaps: the canvas already shows
-      // the elements it touched, so the result tab is where the list itself is read
       showGremlinRows(value);
+      rowsOnly = value.length > 0 && !elementValues(value);
     } else {
       clearRows();
     }
     showValue(value, result);
     clearAlgo();
     render();
-    const empty = !graph.vertices.size && !(result && result.rows && result.rows.length);
-    if (empty) toast(t('emptyResult'));
+    if (rowsOnly) {
+      activateTab('rows');
+    } else if (emptyCanvas() && !(result && result.rows && result.rows.length)) {
+      // nothing was drawn and no rows came back: the query found nothing, and the toast says so
+      toast(t('emptyResult'));
+    }
     const rows = result && result.rows ? `、行 ${result.rows.length}` : '';
     const answer = Array.isArray(value) ? `结果 ${value.length} 项、` : '';
     setStatus(`查询完成：${answer}子图 点 ${graph.vertices.size}、边 ${graph.edges.size}${rows}（新增点 ${addedV}、边 ${addedE}）`);
+  }
+
+  /** Whether the canvas holds nothing at all (the answer is not a picture). */
+  function emptyCanvas() {
+    return !graph.vertices.size && !graph.edges.size;
   }
 
   /** The subgraph part of a response (the response itself is one for a plain Gremlin query). */
@@ -2355,8 +3371,9 @@
       ? t('rowsTruncated').replace('{shown}', String(shown.length)).replace('{total}', String(rows.length))
       : t('rowsHint');
     el.rowsTableWrap.hidden = false;
-    // do not steal the tab: the query's tab choice belongs to the user (stats by default), so the
-    // result tab only gets a marker that there is something to read
+    // The query's tab choice belongs to the user, so an answer that also has a picture only gets a
+    // marker that there is something to read. A rows-only answer has no picture to look at, and the
+    // caller switches to this tab itself (see showQueryResult).
     if (!document.querySelector('.tab[data-tab="rows"]').classList.contains('active')) {
       markRowsUnread(true);
     }
@@ -2606,9 +3623,19 @@
         lang = node.dataset.lang === 'en' ? 'en' : 'zh';
         localStorage.setItem('pg.lang', lang);
         applyI18n();
+        renderMapNote(); // the map's note is built from descriptors, so it follows the language too
       });
     });
+    if (el.treeSelect) {
+      el.treeSelect.addEventListener('change', () => applyTreeMode(el.treeSelect.value));
+    }
+    el.mapBtn.addEventListener('click', toggleMap);
+    if (el.mapClose) el.mapClose.addEventListener('click', closeMap);
+    if (el.mapNote) el.mapNote.addEventListener('click', onMapNoteClick);
     document.querySelectorAll('.tab').forEach((t) => t.addEventListener('click', onTabChange));
+    // one abbreviated value opens where it is drawn, in either list
+    if (el.rowsTable) el.rowsTable.addEventListener('click', onValueClipClick);
+    if (el.propsContent) el.propsContent.addEventListener('click', onValueClipClick);
     const metricsRefresh = document.getElementById('metricsRefresh');
     if (metricsRefresh) metricsRefresh.addEventListener('click', () => loadMetrics());
     document.querySelectorAll('[data-close]').forEach((node) => {
@@ -2617,6 +3644,8 @@
     document.addEventListener('keydown', (event) => {
       if (event.key === 'Escape' && el.errorModal && !el.errorModal.hidden) {
         closeModal('errorModal');
+      } else if (event.key === 'Escape' && mapOpen) {
+        closeMap(); // the map is a view of its own: Escape is the way back from it as well
       }
     });
     if (el.errorCopy) {
@@ -2631,11 +3660,19 @@
   function onGraphChange(g) {
     currentGraph = g;
     refreshFuzzyButton().catch(() => {});
+    // the map icon follows the instance: only a graph with coordinates behind a scanning store has one
+    refreshMapButton().catch(() => {});
     // the metrics panel follows the graph selection
     if (!document.getElementById('metricsPanel').hidden) {
       loadMetrics();
     }
     displayFields = g.displayProperties || {};
+    // another graph's map, another list of points: the last answer does not carry over
+    lastAnswerRows = null;
+    // and another graph's tree: the root belonged to the vertices of the previous drawing
+    treeRootKey = null;
+    if (el.treeSelect) { el.treeSelect.value = ''; }
+    treeMode = '';
     graph.vertices.clear();
     graph.edges.clear();
     selected = null;
