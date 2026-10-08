@@ -249,9 +249,9 @@ public final class GeminiWorker {
         computation.share(shared);
     }
 
-    /** The per-worker summary the driver adds up (Louvain's community weights). */
+    /** The per-worker summary the driver adds up (Louvain's community weights, a power iteration's norm). */
     public Map<Object, Double> aggregate() {
-        return computation.aggregate();
+        return computation.aggregate(state);
     }
 
     /** The total edge count of the whole graph, which the mode rule is relative to. */

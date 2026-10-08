@@ -338,6 +338,85 @@ class GremlinDistStepsTest {
         assertEquals(Map.of(), answer.get(0), "no vertices, no computation");
     }
 
+    @Test
+    void theCentralitiesAgreeWithTheirInMemoryForms() {
+        // the strongest check there is on a centrality: the same graph, the same question, two engines -
+        // one traversal through the storage and this process, one across four workers
+        GremlinGraphQuery engine = engine();
+        for (String step : List.of("degree", "closeness", "betweenness", "eigenvector")) {
+            String traversal = "g.V('a1,a2,a3,a4,a5','Account')";
+            Map<?, ?> local = assertInstanceOf(Map.class, engine.execute(traversal + "." + step + "()").get(0));
+            Map<?, ?> distributed = assertInstanceOf(Map.class,
+                    engine.execute(traversal + "." + step + "(DIST)").get(0));
+
+            assertEquals(local.keySet(), distributed.keySet(), step + " covers the same vertices");
+            for (Object id : local.keySet()) {
+                assertEquals(((Number) local.get(id)).doubleValue(),
+                        ((Number) distributed.get(id)).doubleValue(), 1e-9, step + " of " + id);
+            }
+        }
+    }
+
+    @Test
+    void theCentralitiesOfThePaymentChainAreWhatTheGraphSays() {
+        // a1-a2-a3-a4-a1 with a5 hanging off a4: a2 and a4 sit on the four-cycle, a5 does not
+        GremlinGraphQuery engine = engine();
+        Map<?, ?> degree = assertInstanceOf(Map.class,
+                engine.execute("g.V('a1,a2,a3,a4,a5','Account').degree(DIST)").get(0));
+
+        assertEquals(2L, degree.get("a1")); // a2 pays it, and it pays a4
+        assertEquals(3L, degree.get("a4")); // a3 pays a4, while a4 pays a1 and a5
+        assertEquals(1L, degree.get("a5"));
+
+        Map<?, ?> closeness = assertInstanceOf(Map.class,
+                engine.execute("g.V('a1,a2,a3,a4,a5','Account').closeness(DIST)").get(0));
+        assertTrue(((Number) closeness.get("a4")).doubleValue() > ((Number) closeness.get("a5")).doubleValue(),
+                "a4 reaches a5 in one hop and everything else in two: " + closeness);
+
+        Map<?, ?> betweenness = assertInstanceOf(Map.class,
+                engine.execute("g.V('a1,a2,a3,a4,a5','Account').betweenness(DIST)").get(0));
+        assertEquals(0.0, ((Number) betweenness.get("a5")).doubleValue(), 1e-9,
+                "nothing has to go through a leaf: " + betweenness);
+        assertTrue(((Number) betweenness.get("a1")).doubleValue() > 0, "the cycle carries the paths");
+    }
+
+    @Test
+    void aSampledCentralityStillAnswersEveryVertex() {
+        // two runs of a centrality that would run one pass per source: an approximation, but of the same
+        // shape (every vertex, and every answer a number it could be)
+        GremlinGraphQuery engine = engine();
+        for (String step : List.of("closeness", "betweenness")) {
+            Map<?, ?> values = assertInstanceOf(Map.class,
+                    engine.execute("g.V('a1,a2,a3,a4,a5','Account')." + step + "(DIST, 2)").get(0));
+
+            assertEquals(5, values.size(), step + " answers every seeded account: " + values);
+            for (Object value : values.values()) {
+                assertTrue(((Number) value).doubleValue() >= 0, step + " is a non-negative score: " + values);
+            }
+        }
+    }
+
+    @Test
+    void aCentralityStepWithoutAClusterSaysSo() {
+        GremlinGraphQuery withoutCluster = new GremlinGraphQuery(graph(),
+                NeighborVertexResolver.of(Map.of("payment", "Account"), Map.of()));
+
+        for (String step : List.of("degree", "closeness", "betweenness", "eigenvector")) {
+            QueryException error = assertThrows(QueryException.class,
+                    () -> withoutCluster.execute("g.V('a1,a2,a3,a4,a5','Account')." + step + "(DIST)"));
+            assertTrue(error.getMessage().contains("needs a Gemini cluster"), error.getMessage());
+        }
+    }
+
+    @Test
+    void anInMemoryCentralityTakesNoArgument() {
+        QueryException error = assertThrows(QueryException.class,
+                () -> engine().execute("g.V('a1,a2,a3,a4,a5','Account').betweenness(3)"));
+
+        assertTrue(error.getMessage().contains("takes no argument"), error.getMessage());
+        assertTrue(error.getMessage().contains("betweenness(DIST)"), error.getMessage());
+    }
+
     /** Keeps the compiler honest about the map type the steps return. */
     private static Map<Object, Object> empty() {
         return new LinkedHashMap<>();

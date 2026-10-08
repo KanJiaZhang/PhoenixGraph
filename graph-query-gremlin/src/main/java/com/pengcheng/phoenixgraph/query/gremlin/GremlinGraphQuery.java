@@ -129,7 +129,9 @@ public class GremlinGraphQuery {
         // runs on a Gemini cluster, asked for with the DIST marker. A query that asks for DIST and has
         // no cluster is an error, never a quiet fallback - the marker is there to say which engine runs.
         for (String algorithm : new String[]{GeminiAlgorithms.PAGERANK, GeminiAlgorithms.LOUVAIN,
-                GeminiAlgorithms.CONNECTED_COMPONENTS, GeminiAlgorithms.SSSP, GeminiAlgorithms.BFS}) {
+                GeminiAlgorithms.CONNECTED_COMPONENTS, GeminiAlgorithms.SSSP, GeminiAlgorithms.BFS,
+                GeminiAlgorithms.DEGREE_CENTRALITY, GeminiAlgorithms.CLOSENESS_CENTRALITY,
+                GeminiAlgorithms.BETWEENNESS_CENTRALITY, GeminiAlgorithms.EIGENVECTOR_CENTRALITY}) {
             registry.register(algorithm, args -> {
                 if (GremlinDistAlgorithms.wantsDistributed(args)) {
                     return GremlinDistAlgorithms.dist(geminiCluster, algorithm, args);
@@ -790,9 +792,9 @@ public class GremlinGraphQuery {
     /**
      * The in-memory form of an algorithm step: the default when no {@code DIST} marker is given.
      *
-     * <p>Three of the five have an in-memory implementation (they are small enough to run over the
-     * traversers in one process); a shortest path step exists only in its distributed form, and says
-     * so instead of answering with something else.
+     * <p>Shortest paths have no in-memory implementation (they are small enough to run over the
+     * traversers in one process only when the graph is; the step says so instead of answering with
+     * something else), and every other algorithm answers from this process.
      */
     private static GremlinStep inMemoryAlgorithm(String algorithm, java.util.List<String> args) {
         if (!args.isEmpty()) {
@@ -803,6 +805,10 @@ public class GremlinGraphQuery {
             case GeminiAlgorithms.PAGERANK -> GremlinAlgorithms.pagerank();
             case GeminiAlgorithms.LOUVAIN -> GremlinAlgorithms.louvain();
             case GeminiAlgorithms.CONNECTED_COMPONENTS -> GremlinAlgorithms.cc();
+            case GeminiAlgorithms.DEGREE_CENTRALITY -> GremlinAlgorithms.degree();
+            case GeminiAlgorithms.CLOSENESS_CENTRALITY -> GremlinAlgorithms.closeness();
+            case GeminiAlgorithms.BETWEENNESS_CENTRALITY -> GremlinAlgorithms.betweenness();
+            case GeminiAlgorithms.EIGENVECTOR_CENTRALITY -> GremlinAlgorithms.eigenvector();
             default -> throw new QueryException(algorithm + " has no in-memory implementation; ask for the"
                     + " distributed one with " + algorithm + "(DIST)");
         };
@@ -2654,9 +2660,10 @@ public class GremlinGraphQuery {
     private static final Set<String> GLOBAL_STEPS = Set.of("order", "limit", "skip", "range", "tail",
             "sample", "dedup", "count", "sum", "mean", "max", "min", "groupCount", "fold", "cap",
             "group", "aggregate", "timeLimit", "path", "simplePath", "cyclicPath",
-            // an algorithm runs over the whole reached subgraph: pagerank/louvain/cc/sssp/bfs are the
-            // cluster's steps in a distributed run and the reduce phase's in any case
-            "pagerank", "louvain", "cc", "sssp", "bfs");
+            // an algorithm runs over the whole reached subgraph: pagerank/louvain/cc/sssp/bfs and the
+            // centralities are the cluster's steps in a distributed run and the reduce phase's in any case
+            "pagerank", "louvain", "cc", "sssp", "bfs",
+            "degree", "closeness", "betweenness", "eigenvector");
 
     /** Where the map phase ends: the first step that needs the whole set. */
     private static int mapStepCount(CompiledQuery compiled) {

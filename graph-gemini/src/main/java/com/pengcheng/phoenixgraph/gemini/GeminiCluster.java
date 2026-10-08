@@ -22,8 +22,9 @@ import java.util.Set;
  *
  * <p>The mode of a superstep is global and decided by the launcher from the workers' reports:
  * {@code activeEdges} is the sum over the workers, and Gemini's rule picks the sparse (push) mode when
- * it is below {@code |E| / 20} and the dense (pull) mode otherwise. Louvain's community weights take
- * the same route: every worker reports its aggregate, the launcher adds them up and hands the sum
+ * it is below {@code |E| / 20} and the dense (pull) mode otherwise - unless the algorithm has only one
+ * half and named it ({@link GeminiComputation#preferredMode()}). Louvain's community weights take the
+ * same route: every worker reports its aggregate, the launcher adds them up and hands the sum
  * back before the next superstep - the paper's {@code reduce}.
  */
 public final class GeminiCluster implements AutoCloseable {
@@ -208,7 +209,6 @@ public final class GeminiCluster implements AutoCloseable {
         List<String> modes = new ArrayList<>();
         int supersteps = 0;
         boolean converged = false;
-        Map<String, Object> shared = Map.of();
         // the algorithm is validated here, before any worker is told about it, so a typo is a caller
         // error rather than four workers failing to parse the layout
         GeminiComputation computation = GeminiAlgorithms.of(algorithm, effective);
@@ -216,20 +216,24 @@ public final class GeminiCluster implements AutoCloseable {
             // The workers are told the totals every round, the first one included: an algorithm whose
             // decision depends on them (Louvain's modularity gain) must not take its first decision
             // without them, or it merges with whatever is closest to the lowest id and never undoes it.
+            // The round number travels with them: it is the frontier level of the push-only algorithms.
             Map<String, Object> totals = collectShared();
-            if (!totals.isEmpty()) {
-                for (int i = 0; i < config.workers(); i++) {
-                    share(i, totals);
-                }
+            totals.put("superstep", (double) round);
+            for (int i = 0; i < config.workers(); i++) {
+                share(i, totals);
             }
-            shared = totals;
             // phase one: every worker reports how many edges its active vertices have, so the launcher
             // can pick one mode for all of them (Gemini's rule, from the whole graph's edge count)
             long activeEdges = 0;
             for (int i = 0; i < config.workers(); i++) {
                 activeEdges += probe(i);
             }
-            boolean sparse = activeEdges < totalEdges / 20;
+            // an algorithm that has only one half says so; otherwise Gemini's rule decides from the work
+            boolean sparse = switch (computation.preferredMode()) {
+                case SPARSE -> true;
+                case DENSE -> false;
+                case AUTO -> activeEdges < totalEdges / 20;
+            };
             modes.add(sparse ? "sparse" : "dense");
             for (int i = 0; i < config.workers(); i++) {
                 exchange(i, round, sparse);
@@ -265,11 +269,12 @@ public final class GeminiCluster implements AutoCloseable {
     /**
      * The aggregate every worker reports, added up - the paper's {@code reduce}.
      *
-     * <p>Only the per-community totals are sums: a worker reports the degree mass of each community
-     * it holds a piece of, and the pieces add up to the community's total. A value that describes the
-     * whole run (Louvain's total edge weight) is reported by every worker and must <b>not</b> be added
-     * up: four workers reporting the same total would multiply it by four every round, and the
-     * modularity gain would lose its resolution term entirely.
+     * <p>A key that names a per-partition total (Louvain's community weights, the sum of squares a
+     * power iteration normalises by) starts with {@code sum:} or {@code community:} and the parts are
+     * added up. A value that describes the whole run (Louvain's total edge weight) is reported by
+     * every worker and must <b>not</b> be added up: four workers reporting the same total would
+     * multiply it by four every round, and the modularity gain would lose its resolution term
+     * entirely.
      */
     private Map<String, Object> collectShared() {
         Map<String, Object> totals = new LinkedHashMap<>();
@@ -279,7 +284,7 @@ public final class GeminiCluster implements AutoCloseable {
                     continue;
                 }
                 double value = number.doubleValue();
-                if (!entry.getKey().startsWith("community:")) {
+                if (!isSummed(entry.getKey())) {
                     totals.putIfAbsent(entry.getKey(), value);
                     continue;
                 }
@@ -289,6 +294,11 @@ public final class GeminiCluster implements AutoCloseable {
             }
         }
         return totals;
+    }
+
+    /** Whether an aggregate key names a per-partition total that the parts add up to. */
+    private static boolean isSummed(String key) {
+        return key.startsWith("sum:") || key.startsWith("community:");
     }
 
     // ------------------------------------------------------------------ worker access (HTTP or in-process)

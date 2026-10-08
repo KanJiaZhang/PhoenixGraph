@@ -22,7 +22,7 @@ import java.util.Set;
  * are supported; heterogeneous vertices are not supported yet.
  *
  * <p>Each step returns a single {@link Map} (wrapped in a list): vertex id to
- * PageRank score / Louvain community id / connected-component id.
+ * PageRank score / Louvain community id / connected-component id / centrality score.
  */
 final class GremlinAlgorithms {
 
@@ -39,6 +39,25 @@ final class GremlinAlgorithms {
 
     static GremlinStep cc() {
         return (ctx, in) -> List.of(connectedComponents(buildAdjacency(ctx, vertexIds(in), EdgeSide.BOTH)));
+    }
+
+    /** How many iterations the in-memory eigenvector run takes (the distributed form can be told). */
+    static final int EIGENVECTOR_ITERATIONS = 30;
+
+    static GremlinStep degree() {
+        return (ctx, in) -> List.of(degreeCentrality(buildAdjacency(ctx, vertexIds(in), EdgeSide.BOTH)));
+    }
+
+    static GremlinStep closeness() {
+        return (ctx, in) -> List.of(closenessCentrality(buildAdjacency(ctx, vertexIds(in), EdgeSide.BOTH)));
+    }
+
+    static GremlinStep betweenness() {
+        return (ctx, in) -> List.of(betweennessCentrality(buildAdjacency(ctx, vertexIds(in), EdgeSide.BOTH)));
+    }
+
+    static GremlinStep eigenvector() {
+        return (ctx, in) -> List.of(eigenvectorCentrality(buildAdjacency(ctx, vertexIds(in), EdgeSide.OUT)));
     }
 
     // --- internals ---
@@ -170,6 +189,208 @@ final class GremlinAlgorithms {
             compId++;
         }
         return comp;
+    }
+
+    /**
+     * Degree centrality: how many edges the induced subgraph gives a vertex. The adjacency was read in
+     * both directions, so the count is every incident edge record (a self-loop twice) - the same figure
+     * the distributed step reads from its partition, which is why the two engines agree on a graph.
+     */
+    static Map<Object, Long> degreeCentrality(Map<Object, List<Object>> adj) {
+        Map<Object, Long> degree = new LinkedHashMap<>();
+        for (Map.Entry<Object, List<Object>> entry : adj.entrySet()) {
+            degree.put(entry.getKey(), (long) entry.getValue().size());
+        }
+        return degree;
+    }
+
+    /**
+     * Closeness centrality, Wasserman-Faust normalised: {@code (r-1)^2 / ((n-1) * sum of distances)},
+     * where {@code r} is how many vertices the vertex can reach (itself included) and the sum runs over
+     * those. Dividing by {@code r-1} rather than {@code n-1} is what keeps a vertex of a small component
+     * from being punished for the vertices it cannot reach; a vertex that reaches only itself scores
+     * zero. The graph is undirected, so "can reach" and "is reached by" are the same set and the
+     * distributed step's breadth-first runs accumulate the very same sum.
+     */
+    static Map<Object, Double> closenessCentrality(Map<Object, List<Object>> adj) {
+        int n = adj.size();
+        Map<Object, Double> closeness = new LinkedHashMap<>();
+        for (Object v : adj.keySet()) {
+            Map<Object, Integer> distance = breadthFirstDistances(adj, v);
+            int reached = distance.size(); // the vertex itself is at distance zero, so it counts
+            double sum = 0;
+            for (int d : distance.values()) {
+                sum += d;
+            }
+            closeness.put(v, reached <= 1 || sum <= 0.0
+                    ? 0.0
+                    : (reached - 1.0) * (reached - 1.0) / ((n - 1.0) * sum));
+        }
+        return closeness;
+    }
+
+    /** The hop distance from a source to every vertex it reaches (one breadth-first walk). */
+    static Map<Object, Integer> breadthFirstDistances(Map<Object, List<Object>> adj, Object source) {
+        Map<Object, Integer> distance = new LinkedHashMap<>();
+        Deque<Object> queue = new ArrayDeque<>();
+        distance.put(source, 0);
+        queue.add(source);
+        while (!queue.isEmpty()) {
+            Object v = queue.poll();
+            int next = distance.get(v) + 1;
+            for (Object w : adj.getOrDefault(v, List.of())) {
+                if (!distance.containsKey(w)) {
+                    distance.put(w, next);
+                    queue.add(w);
+                }
+            }
+        }
+        return distance;
+    }
+
+    /**
+     * Betweenness centrality by Brandes' algorithm: for every source a breadth-first pass counts the
+     * shortest paths, and the dependencies are accumulated on the way back up the levels. The graph is
+     * undirected, so every pair is walked from both of its endpoints and the total is halved; dividing by
+     * the number of unordered pairs leaves a vertex that every shortest path goes through at one.
+     */
+    static Map<Object, Double> betweennessCentrality(Map<Object, List<Object>> adj) {
+        int n = adj.size();
+        Map<Object, Double> betweenness = new LinkedHashMap<>();
+        for (Object v : adj.keySet()) {
+            betweenness.put(v, 0.0);
+        }
+        for (Object source : adj.keySet()) {
+            brandesFrom(adj, source, betweenness);
+        }
+        double pairs = (n - 1.0) * (n - 2.0) / 2.0;
+        Map<Object, Double> out = new LinkedHashMap<>();
+        for (Map.Entry<Object, Double> entry : betweenness.entrySet()) {
+            out.put(entry.getKey(), pairs <= 0.0 ? 0.0 : entry.getValue() / 2.0 / pairs);
+        }
+        return out;
+    }
+
+    /** One source of Brandes' algorithm: the forward pass, then the dependency pass back down. */
+    private static void brandesFrom(Map<Object, List<Object>> adj, Object source,
+                                    Map<Object, Double> betweenness) {
+        Map<Object, Integer> distance = new LinkedHashMap<>();
+        Map<Object, Double> sigma = new LinkedHashMap<>();
+        Map<Object, Double> delta = new LinkedHashMap<>();
+        Map<Object, List<Object>> predecessors = new LinkedHashMap<>();
+        List<Object> order = new ArrayList<>();
+        Deque<Object> queue = new ArrayDeque<>();
+        distance.put(source, 0);
+        sigma.put(source, 1.0);
+        queue.add(source);
+        while (!queue.isEmpty()) {
+            Object v = queue.poll();
+            order.add(v);
+            for (Object w : adj.getOrDefault(v, List.of())) {
+                if (!distance.containsKey(w)) {
+                    distance.put(w, distance.get(v) + 1);
+                    queue.add(w);
+                }
+                // every edge record that continues a shortest path carries its share of the paths: two
+                // predecessors at the same level (or parallel edges) both count, which is what the
+                // distributed pass accumulates too
+                if (distance.get(w) == distance.get(v) + 1) {
+                    sigma.merge(w, sigma.get(v), Double::sum);
+                    predecessors.computeIfAbsent(w, k -> new ArrayList<>()).add(v);
+                }
+            }
+        }
+        for (Object v : order) {
+            delta.putIfAbsent(v, 0.0);
+        }
+        for (int i = order.size() - 1; i >= 0; i--) {
+            Object w = order.get(i);
+            for (Object v : predecessors.getOrDefault(w, List.of())) {
+                delta.merge(v, sigma.get(v) / sigma.get(w) * (1 + delta.get(w)), Double::sum);
+            }
+            if (!w.equals(source)) {
+                betweenness.merge(w, delta.get(w), Double::sum); // the source's own dependency is not a score
+            }
+        }
+    }
+
+    /**
+     * Eigenvector centrality by power iteration over the adjacency as stored (out-edges): a vertex's
+     * score is the sum of the scores of the vertices that point at it, so the vector settles on the
+     * principal eigenvector of the adjacency matrix. A vertex nothing points at scores zero.
+     *
+     * <p>The vector is normalised every round, or it would grow by the dominant eigenvalue each time
+     * and overflow after a few dozen iterations; the result is normalised once more (unit L2 length,
+     * sign fixed), which is exactly what the launcher does with what a distributed run collected - so
+     * {@code eigenvector()} and {@code eigenvector(DIST)} answer the same vector, not just the same
+     * direction.
+     */
+    static Map<Object, Double> eigenvectorCentrality(Map<Object, List<Object>> outAdj) {
+        Map<Object, List<Object>> inAdj = new LinkedHashMap<>();
+        for (Object v : outAdj.keySet()) {
+            inAdj.put(v, new ArrayList<>());
+        }
+        for (Map.Entry<Object, List<Object>> entry : outAdj.entrySet()) {
+            for (Object target : entry.getValue()) {
+                inAdj.computeIfAbsent(target, k -> new ArrayList<>()).add(entry.getKey());
+            }
+        }
+        Map<Object, Double> x = new LinkedHashMap<>();
+        for (Object v : outAdj.keySet()) {
+            x.put(v, 1.0);
+        }
+        for (int iteration = 0; iteration < EIGENVECTOR_ITERATIONS; iteration++) {
+            Map<Object, Double> next = new LinkedHashMap<>();
+            for (Object v : outAdj.keySet()) {
+                double sum = 0;
+                for (Object u : inAdj.getOrDefault(v, List.of())) {
+                    sum += x.getOrDefault(u, 0.0);
+                }
+                next.put(v, sum);
+            }
+            Map<Object, Double> normalised = normalizeScores(next);
+            if (maxChange(x, normalised) < 1e-12) {
+                x = normalised;
+                break; // converged: the distributed run's fixed iteration count cannot do better
+            }
+            x = normalised;
+        }
+        return normalizeScores(x);
+    }
+
+    /**
+     * A score vector scaled to unit L2 length, with the sign fixed so its largest entry is positive.
+     *
+     * <p>Both engines end here. The sign of a principal eigenvector is arbitrary, and leaving it to the
+     * order an iteration happened to visit vertices would make a distributed run differ from an
+     * in-memory one by a sign; the launcher and the step therefore fix it the same way.
+     */
+    static Map<Object, Double> normalizeScores(Map<Object, Double> scores) {
+        double squares = 0;
+        double largest = 0;
+        for (double value : scores.values()) {
+            squares += value * value;
+            if (Math.abs(value) > Math.abs(largest)) {
+                largest = value;
+            }
+        }
+        double norm = Math.sqrt(squares);
+        double sign = largest < 0 ? -1.0 : 1.0;
+        Map<Object, Double> out = new LinkedHashMap<>();
+        for (Map.Entry<Object, Double> entry : scores.entrySet()) {
+            out.put(entry.getKey(), norm == 0.0 ? 0.0 : entry.getValue() / norm * sign);
+        }
+        return out;
+    }
+
+    /** The largest absolute difference between two vectors (how a power iteration knows it settled). */
+    private static double maxChange(Map<Object, Double> before, Map<Object, Double> after) {
+        double largest = 0;
+        for (Map.Entry<Object, Double> entry : after.entrySet()) {
+            double change = Math.abs(entry.getValue() - before.getOrDefault(entry.getKey(), 0.0));
+            largest = Math.max(largest, change);
+        }
+        return largest;
     }
 
     /** Single-level greedy Louvain (modularity optimization) over an undirected adjacency map. */

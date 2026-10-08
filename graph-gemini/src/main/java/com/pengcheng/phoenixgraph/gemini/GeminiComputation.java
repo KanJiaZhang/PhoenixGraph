@@ -23,8 +23,31 @@ import java.util.Map;
  */
 public interface GeminiComputation {
 
+    /**
+     * Which half of a superstep an algorithm runs in.
+     *
+     * <p>Gemini picks the mode from the work: {@code sparse = activeEdges < |E| / 20}. An algorithm
+     * whose frontier <em>is</em> the level structure (a breadth-first pass, a dependency pass that
+     * walks back down the levels) is written push-only and says so here: the paper lets an algorithm
+     * supply one mode when it is known to prefer it, and pretending to have a pull half it does not
+     * have would be worse than forcing the half it does.
+     */
+    enum Mode {
+        /** The driver's rule decides (the default). */
+        AUTO,
+        /** Always push - the algorithm has only a sparse half. */
+        SPARSE,
+        /** Always pull - the algorithm has only a dense half. */
+        DENSE
+    }
+
     /** The name the driver uses to pick the computation on a worker. */
     String name();
+
+    /** Which mode every superstep of this algorithm runs in (the driver's rule by default). */
+    default Mode preferredMode() {
+        return Mode.AUTO;
+    }
 
     /** Whether the algorithm treats the graph as directed. */
     default boolean directed() {
@@ -92,10 +115,28 @@ public interface GeminiComputation {
 
     /**
      * What a worker reports to the driver after a superstep: the totals the next round needs
-     * (Louvain's community weights), or an empty map when the algorithm needs none.
+     * (Louvain's community weights, the norm a power iteration divides by), or an empty map when the
+     * algorithm needs none.
+     *
+     * <p>A key that starts with {@code sum:} is added up across the workers - it names a per-partition
+     * total whose parts make the whole. Every other key is taken once: it describes the run (Louvain's
+     * total edge weight), and every worker reports the same value for it.
+     *
+     * <p>This form is for totals the algorithm keeps itself; {@link #aggregate(WorkerState)} is the one
+     * to use for a total over the current values, which the worker - not the computation - holds.
      */
     default Map<Object, Double> aggregate() {
         return Map.of();
+    }
+
+    /**
+     * What a worker reports to the driver, with the worker's state in reach.
+     *
+     * <p>An algorithm whose reduction is a function of the values (the sum of squares an eigenvector
+     * carries) reads them from the state here rather than mirroring every write in its own maps.
+     */
+    default Map<Object, Double> aggregate(WorkerState state) {
+        return aggregate();
     }
 
     /**
@@ -103,6 +144,10 @@ public interface GeminiComputation {
      *
      * <p>Louvain needs the total weight per community, which no worker can know alone; the driver
      * adds up what the workers reported through {@link #aggregate()} and passes the sum in here.
+     *
+     * <p>The map always carries {@code superstep}, the number of the round about to run, so an
+     * algorithm can be a function of the clock: the path centralities use it as the frontier level
+     * (which is why {@code share} is called even when no worker reported a total).
      */
     default void share(Map<String, Object> shared) {
     }

@@ -28,6 +28,11 @@ import java.util.Set;
  * same graph the in-memory steps use, and only the edge classes the traversal went through
  * ({@code g.E('payment').pagerank(DIST)} means the payment edges) - so the two engines can be
  * compared on one query.
+ *
+ * <p>Two centralities are not one run of the cluster but many: a closeness score sums over the whole
+ * graph as seen from one vertex, and a betweenness score sums over every source. The launcher runs the
+ * cluster once per source (or per sampled source) and adds the answers up here, which is why those two
+ * steps say in their javadoc what one run costs.
  */
 final class GremlinDistAlgorithms {
 
@@ -36,7 +41,9 @@ final class GremlinDistAlgorithms {
 
     private static final Set<String> DISTRIBUTED = Set.of(
             GeminiAlgorithms.PAGERANK, GeminiAlgorithms.LOUVAIN, GeminiAlgorithms.CONNECTED_COMPONENTS,
-            GeminiAlgorithms.SSSP, GeminiAlgorithms.BFS);
+            GeminiAlgorithms.SSSP, GeminiAlgorithms.BFS, GeminiAlgorithms.DEGREE_CENTRALITY,
+            GeminiAlgorithms.CLOSENESS_CENTRALITY, GeminiAlgorithms.BETWEENNESS_CENTRALITY,
+            GeminiAlgorithms.EIGENVECTOR_CENTRALITY);
 
     private GremlinDistAlgorithms() {
     }
@@ -69,22 +76,165 @@ final class GremlinDistAlgorithms {
                 return List.of(Map.of());
             }
             GeminiGraph graph = GeminiGraph.of(ctx.graphQuery(), scope, directed(algorithm));
-            GeminiCluster.Result result = cluster.run(graph, algorithm, params(algorithm, args, graph));
-            Map<Object, Object> values = new LinkedHashMap<>();
-            for (int v = 0; v < graph.vertexCount(); v++) {
-                Object value = result.value(graph.id(v));
-                if (value != null) {
-                    values.put(graph.id(v), value);
-                }
+            Map<Object, Object> values = switch (algorithm) {
+                // a closeness score is a sum over destinations, and a betweenness score a sum over
+                // sources: neither is visible from one vertex's superstep, so the launcher runs the
+                // cluster once per source and adds the runs up
+                case GeminiAlgorithms.CLOSENESS_CENTRALITY -> closeness(cluster, graph, samples(args));
+                case GeminiAlgorithms.BETWEENNESS_CENTRALITY -> betweenness(cluster, graph, samples(args));
+                default -> oneRun(cluster, algorithm, args, graph);
+            };
+            if (GeminiAlgorithms.EIGENVECTOR_CENTRALITY.equals(algorithm)) {
+                // the run answers with the vector up to a constant factor (each superstep normalises it
+                // so the values stay finite); what the caller asked for is the unit vector, signed the
+                // same way the in-memory step signs its answer
+                values = new LinkedHashMap<>(GremlinAlgorithms.normalizeScores(numeric(values)));
             }
             return List.of(values);
         };
     }
 
+    /** One distributed run of an algorithm: the values the workers hold, by the ids the traversal used. */
+    private static Map<Object, Object> oneRun(GeminiCluster cluster, String algorithm, List<String> args,
+                                              GeminiGraph graph) {
+        GeminiCluster.Result result = cluster.run(graph, algorithm, params(algorithm, args, graph));
+        Map<Object, Object> values = new LinkedHashMap<>();
+        for (int v = 0; v < graph.vertexCount(); v++) {
+            Object value = result.value(graph.id(v));
+            if (value != null) {
+                values.put(graph.id(v), value);
+            }
+        }
+        return values;
+    }
+
+    /**
+     * Closeness centrality, assembled from the cluster's breadth-first runs.
+     *
+     * <p>One run per source answers how far everything is from that source. The graph is undirected, so
+     * "how far is everything from s" and "how far is s from everything" are the same column of the
+     * distance matrix: a run fills in the total distance of every vertex at once, and the score is the
+     * Wasserman-Faust form the in-memory step computes - a vertex of a small component is measured
+     * against the vertices it can reach, not against the whole graph, and a vertex that reaches nobody
+     * scores zero.
+     *
+     * <p>The work is {@code k} runs of a breadth-first pass, each on the cluster (the same graph, one
+     * root at a time); {@code k = n} is exact (the default), a smaller {@code k} samples the sources and
+     * scales the sums by {@code n/k}.
+     */
+    private static Map<Object, Object> closeness(GeminiCluster cluster, GeminiGraph graph, int samples) {
+        int n = graph.vertexCount();
+        List<Integer> sources = sampleSources(n, samples);
+        double[] total = new double[n];
+        int[] reached = new int[n];
+        for (int root : sources) {
+            GeminiCluster.Result result = cluster.run(graph, GeminiAlgorithms.BFS,
+                    Map.of("root", root, "vertices", n));
+            for (int v = 0; v < n; v++) {
+                double distance = result.number(graph.id(v));
+                if (distance >= 0) {
+                    reached[v]++;
+                    total[v] += distance; // the vertex itself is at zero: reached, but no distance to add
+                }
+            }
+        }
+        // n sources in all: a sampled one stands for n/k of them, which is what turns the sum of every
+        // source's distance into the sum of the distances to every destination
+        double scale = (double) n / sources.size();
+        Map<Object, Object> values = new LinkedHashMap<>();
+        for (int v = 0; v < n; v++) {
+            double sum = total[v] * scale;
+            double reach = (reached[v] - 1) * scale;
+            values.put(graph.id(v), sum <= 0 || reach <= 0 ? 0.0 : reach * reach / ((n - 1.0) * sum));
+        }
+        return values;
+    }
+
+    /**
+     * Betweenness centrality, one Brandes pass per source (or per sampled source) on the cluster.
+     *
+     * <p>The run of one source accumulates the dependency of every vertex on the shortest paths from that
+     * source ({@link GeminiAlgorithms#betweennessCentrality}); adding the runs up and halving the total
+     * is the undirected count over pairs, which is then divided by the number of unordered pairs - the
+     * same two normalisations the in-memory step applies, so the two engines answer the same figure. A
+     * sampled source stands for the sources that were not run (Brandes-Pich style), and the estimate is
+     * scaled by {@code n/k}.
+     */
+    private static Map<Object, Object> betweenness(GeminiCluster cluster, GeminiGraph graph, int samples) {
+        int n = graph.vertexCount();
+        List<Integer> sources = sampleSources(n, samples);
+        Map<Object, Double> total = new LinkedHashMap<>();
+        for (Object id : graph.ids()) {
+            total.put(id, 0.0);
+        }
+        for (int root : sources) {
+            GeminiCluster.Result result = cluster.run(graph, GeminiAlgorithms.BETWEENNESS_CENTRALITY,
+                    Map.of("root", root, "vertices", n));
+            for (Object id : graph.ids()) {
+                total.merge(id, result.number(id), Double::sum);
+            }
+        }
+        // every pair is walked from both of its endpoints, and a sampled source stands for n/k of them
+        double scale = n / (2.0 * sources.size());
+        double pairs = (n - 1.0) * (n - 2.0) / 2.0;
+        Map<Object, Object> values = new LinkedHashMap<>();
+        for (Map.Entry<Object, Double> entry : total.entrySet()) {
+            values.put(entry.getKey(), pairs <= 0 ? 0.0 : entry.getValue() * scale / pairs);
+        }
+        return values;
+    }
+
+    /**
+     * The sources a per-source centrality runs from: every vertex ({@code samples <= 0}, the exact
+     * answer) or the requested number of them, spread evenly over the dense numbering.
+     *
+     * <p>Evenly and deterministically: a sample that changed between two runs of the same query could
+     * not be compared with anything, and the nearest thing to a random source that a hash-ordered vertex
+     * set can offer is a stride through the numbering.
+     */
+    private static List<Integer> sampleSources(int vertexCount, int samples) {
+        List<Integer> sources = new ArrayList<>();
+        if (samples <= 0 || samples >= vertexCount) {
+            for (int v = 0; v < vertexCount; v++) {
+                sources.add(v);
+            }
+            return sources;
+        }
+        for (int i = 0; i < samples; i++) {
+            sources.add((int) ((long) i * vertexCount / samples));
+        }
+        return sources;
+    }
+
+    /** The number of sources a centrality samples: the second argument after {@code DIST}, 0 when absent. */
+    private static int samples(List<String> args) {
+        if (args.size() > 2) {
+            throw new QueryException("A centrality takes at most one parameter besides DIST, got "
+                    + (args.size() - 1));
+        }
+        if (args.size() < 2 || args.get(1) == null || args.get(1).isBlank()) {
+            return 0; // every source: the exact answer
+        }
+        return number(args.get(1).trim());
+    }
+
+    /** A score map read as doubles, whatever the wire handed back. */
+    private static Map<Object, Double> numeric(Map<Object, Object> values) {
+        Map<Object, Double> out = new LinkedHashMap<>();
+        for (Map.Entry<Object, Object> entry : values.entrySet()) {
+            out.put(entry.getKey(), entry.getValue() instanceof Number number ? number.doubleValue() : 0.0);
+        }
+        return out;
+    }
+
     /** Whether the algorithm follows the edges as they are stored (out-edges) or both ways. */
     private static boolean directed(String algorithm) {
+        // a centrality that counts influence (PageRank, eigenvector) follows the edges the way they are
+        // stored; the ones that count paths (closeness, betweenness) and the community steps are
+        // undirected, so they see both directions of every edge
         return GeminiAlgorithms.PAGERANK.equals(algorithm) || GeminiAlgorithms.SSSP.equals(algorithm)
-                || GeminiAlgorithms.BFS.equals(algorithm);
+                || GeminiAlgorithms.BFS.equals(algorithm)
+                || GeminiAlgorithms.EIGENVECTOR_CENTRALITY.equals(algorithm);
     }
 
     /** The graph to compute on: the reached vertices, the edge classes, and the weight property. */
@@ -119,7 +269,10 @@ final class GremlinDistAlgorithms {
      *
      * <ul>
      *   <li>{@code pagerank(DIST[, iterations])}, {@code louvain(DIST[, iterations])}</li>
+     *   <li>{@code eigenvector(DIST[, iterations])}</li>
      *   <li>{@code sssp(DIST[, rootVertexId])}, {@code bfs(DIST[, rootVertexId])}</li>
+     *   <li>{@code closeness(DIST[, samples])}, {@code betweenness(DIST[, samples])} - the sources the
+     *       per-source runs start from, all of them when absent</li>
      * </ul>
      */
     private static Map<String, Object> params(String algorithm, List<String> args, GeminiGraph graph) {
@@ -127,10 +280,11 @@ final class GremlinDistAlgorithms {
         if (args.size() > 1 && args.get(1) != null && !args.get(1).isBlank()) {
             String second = args.get(1).trim();
             switch (algorithm) {
-                case GeminiAlgorithms.PAGERANK, GeminiAlgorithms.LOUVAIN -> params.put("iterations", number(second));
+                case GeminiAlgorithms.PAGERANK, GeminiAlgorithms.LOUVAIN,
+                        GeminiAlgorithms.EIGENVECTOR_CENTRALITY -> params.put("iterations", number(second));
                 case GeminiAlgorithms.SSSP, GeminiAlgorithms.BFS -> params.put("root", rootOf(second, graph));
                 default -> {
-                    // connected components takes no parameter
+                    // connected components and degree take no parameter
                 }
             }
         } else if (GeminiAlgorithms.SSSP.equals(algorithm) || GeminiAlgorithms.BFS.equals(algorithm)) {

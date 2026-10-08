@@ -483,6 +483,10 @@ public class GremlinStepRegistry {
         register("pagerank", args -> GremlinAlgorithms.pagerank());
         register("louvain", args -> GremlinAlgorithms.louvain());
         register("cc", args -> GremlinAlgorithms.cc());
+        register("degree", args -> GremlinAlgorithms.degree());
+        register("closeness", args -> GremlinAlgorithms.closeness());
+        register("betweenness", args -> GremlinAlgorithms.betweenness());
+        register("eigenvector", args -> GremlinAlgorithms.eigenvector());
     }
 
     /** Hop steps accept zero args (all edge classes) or one or several (a list of classes). */

@@ -17,7 +17,8 @@ import java.util.Map;
  * adds a pushed score into the neighbour, the dense signal adds up the incoming scores - while Louvain
  * is push-only, because its update accumulates a weight per community at the destination and that
  * accumulation is exactly what a local push does (the paper allows supplying one mode when the
- * algorithm is known to prefer it).
+ * algorithm is known to prefer it). {@link GeminiComputation#preferredMode()} is how an algorithm says
+ * so: the betweenness pass, whose frontier is a level, names the push mode and has no pull half.
  */
 public final class GeminiAlgorithms {
 
@@ -30,6 +31,19 @@ public final class GeminiAlgorithms {
     public static final String CONNECTED_COMPONENTS = "cc";
     public static final String SSSP = "sssp";
     public static final String BFS = "bfs";
+    /**
+     * The centralities: how important a vertex is - by how many edges touch it, by how close the rest
+     * of the graph is to it, by how many shortest paths go through it, by how much influence arrives.
+     *
+     * <p>{@link #CLOSENESS_CENTRALITY} has a name here but no computation of its own: the launcher
+     * assembles it from the cluster's breadth-first runs (one root per source, see
+     * {@link GremlinDistAlgorithms} in the query layer), because a closeness score is a sum over
+     * destinations that no single vertex's superstep can see.
+     */
+    public static final String DEGREE_CENTRALITY = "degree";
+    public static final String CLOSENESS_CENTRALITY = "closeness";
+    public static final String BETWEENNESS_CENTRALITY = "betweenness";
+    public static final String EIGENVECTOR_CENTRALITY = "eigenvector";
 
     /** Builds a computation by name; unknown names are a caller error, not a silent default. */
     public static GeminiComputation of(String name, Map<String, Object> params) {
@@ -41,10 +55,19 @@ public final class GeminiAlgorithms {
                     doubleParam(settings, "resolution", 1.0),
                     doubleParam(settings, "totalWeight", 1.0));
             case CONNECTED_COMPONENTS -> connectedComponents();
-            case SSSP -> sssp(intParam(settings, "root", 0), stringParam(settings, "weightProperty"));
-            case BFS -> bfs(intParam(settings, "root", 0));
+            case SSSP -> sssp(intParam(settings, "root", 0), stringParam(settings, "weightProperty"),
+                    intParam(settings, "vertices", 0));
+            case BFS -> bfs(intParam(settings, "root", 0), intParam(settings, "vertices", 0));
+            case DEGREE_CENTRALITY -> degreeCentrality();
+            case EIGENVECTOR_CENTRALITY -> eigenvectorCentrality(intParam(settings, "iterations", 30));
+            case BETWEENNESS_CENTRALITY -> betweennessCentrality(intParam(settings, "root", 0),
+                    intParam(settings, "vertices", 1));
+            case CLOSENESS_CENTRALITY -> throw new IllegalArgumentException(CLOSENESS_CENTRALITY
+                    + " is assembled by the launcher from the cluster's breadth-first runs; it is not a"
+                    + " single computation");
             default -> throw new IllegalArgumentException("Unknown Gemini algorithm '" + name
-                    + "'; known: " + String.join(", ", PAGERANK, LOUVAIN, CONNECTED_COMPONENTS, SSSP, BFS));
+                    + "'; known: " + String.join(", ", PAGERANK, LOUVAIN, CONNECTED_COMPONENTS, SSSP, BFS,
+                    DEGREE_CENTRALITY, EIGENVECTOR_CENTRALITY, BETWEENNESS_CENTRALITY));
         };
     }
 
@@ -229,9 +252,10 @@ public final class GeminiAlgorithms {
     /**
      * Single source shortest paths, unweighted unless a weight property was given: the sparse slot
      * relaxes every out-edge, the dense signal takes the smallest incoming relaxation, and the dense
-     * slot keeps the minimum.
+     * slot keeps the minimum. The vertex count (when the launcher knows it) raises the superstep limit,
+     * so a path graph longer than {@link GeminiComputation#maxSupersteps()}'s default still finishes.
      */
-    public static GeminiComputation sssp(int root, String weightProperty) {
+    public static GeminiComputation sssp(int root, String weightProperty, int vertexCount) {
         return new GeminiComputation() {
 
             @Override
@@ -307,13 +331,22 @@ public final class GeminiAlgorithms {
             public Object result(int vertex, Object value, WorkerState state) {
                 return asDouble(value) == Double.MAX_VALUE ? -1.0 : value;
             }
+
+            @Override
+            public int maxSupersteps() {
+                return Math.max(200, vertexCount + 2);
+            }
         };
     }
 
     // ------------------------------------------------------------------ BFS
 
-    /** Breadth first search: the frontier is the active set, and the depth is the value. */
-    public static GeminiComputation bfs(int root) {
+    /**
+     * Breadth first search: the frontier is the active set, and the depth is the value. The vertex
+     * count (when the launcher knows it) raises the superstep limit, so a path longer than the default
+     * still reaches its end.
+     */
+    public static GeminiComputation bfs(int root, int vertexCount) {
         return new GeminiComputation() {
 
             @Override
@@ -377,6 +410,11 @@ public final class GeminiAlgorithms {
                     return 1;
                 }
                 return 0;
+            }
+
+            @Override
+            public int maxSupersteps() {
+                return Math.max(200, vertexCount + 2);
             }
         };
     }
@@ -579,6 +617,356 @@ public final class GeminiAlgorithms {
         }
     }
 
+    // ------------------------------------------------------------------ degree centrality
+
+    /**
+     * Degree centrality: the number of edges the graph hands a vertex - its out-edges when the run is
+     * directed, every incident edge when it is not (the launcher reads both directions then).
+     *
+     * <p>The degree is already in the layout (a partition holds the out-degrees of the whole graph), so
+     * this run is a distributed read rather than a message round: every worker reports its own chunk's
+     * degrees and the run is over at once. It is still a cluster run - which is what {@code degree(DIST)}
+     * promises - and the figure is the one the in-memory step counts, because both count the edge
+     * records the traversal's graph is made of.
+     */
+    public static GeminiComputation degreeCentrality() {
+        return new GeminiComputation() {
+
+            @Override
+            public String name() {
+                return DEGREE_CENTRALITY;
+            }
+
+            @Override
+            public Object initialValue(int vertex, int outDegree, int inDegree) {
+                return (long) outDegree;
+            }
+
+            @Override
+            public boolean startsActive(int vertex, int outDegree, int inDegree) {
+                return false; // no frontier, no messages: the degree is already known where it lives
+            }
+
+            @Override
+            public Object sparseSignal(int vertex, Object value, WorkerState state) {
+                return null;
+            }
+
+            @Override
+            public int sparseSlot(int vertex, Object message, List<GeminiGraph.Edge> edges, WorkerState state) {
+                return 0;
+            }
+
+            @Override
+            public Object denseSignal(int vertex, List<GeminiGraph.Edge> inEdges, WorkerState state) {
+                return null;
+            }
+
+            @Override
+            public int denseSlot(int vertex, Object message, WorkerState state) {
+                return 0;
+            }
+
+            @Override
+            public boolean converged(int activated, int superstep) {
+                return true;
+            }
+
+            @Override
+            public int maxSupersteps() {
+                return 1;
+            }
+        };
+    }
+
+    // ------------------------------------------------------------------ eigenvector centrality
+
+    /**
+     * Eigenvector centrality by power iteration: a vertex's score is the weighted sum of the scores of
+     * the vertices that point at it, so the vector converges to the principal eigenvector of the
+     * adjacency matrix.
+     *
+     * <p>Both halves are written: the push sends the score along the out-edges and adds it to the
+     * destination, the pull reads the sources this partition owns and sums their scores - the same sum
+     * either way, which is what makes the mode the driver picks a question of speed alone.
+     *
+     * <p>The vector is normalised every superstep by its L2 norm: without it the values grow by the
+     * dominant eigenvalue each round ({@code λ^iterations} overflows a double long before a large graph
+     * settles). The norm is a sum over every worker's chunk, so it travels the driver's aggregate/share
+     * path - the reduce the paper puts between supersteps. What comes back is the vector up to a
+     * constant factor; the launcher normalises the values it collected, which is also where the sign is
+     * fixed, so a distributed run and an in-memory one answer the same thing.
+     */
+    public static GeminiComputation eigenvectorCentrality(int iterations) {
+        return new GeminiComputation() {
+
+            private double norm = 1.0;
+
+            @Override
+            public String name() {
+                return EIGENVECTOR_CENTRALITY;
+            }
+
+            @Override
+            public boolean accumulative() {
+                // the new score of a vertex is the influence that arrived this superstep, and a vertex
+                // nothing points at has none
+                return true;
+            }
+
+            @Override
+            public Object initialValue(int vertex, int outDegree, int inDegree) {
+                return 1.0; // the all-ones vector: every vertex starts equally important
+            }
+
+            @Override
+            public Map<Object, Double> aggregate(WorkerState state) {
+                // the sum of squares of this worker's chunk; the driver adds the parts up
+                double squares = 0;
+                for (int v = 0; v < state.vertexCount(); v++) {
+                    Object value = state.owns(v) ? state.value(v) : null;
+                    if (value instanceof Number number) {
+                        squares += number.doubleValue() * number.doubleValue();
+                    }
+                }
+                return Map.of("sum:squares", squares);
+            }
+
+            @Override
+            public void share(Map<String, Object> shared) {
+                double squares = asDouble(shared.getOrDefault("sum:squares", 0.0));
+                if (squares > 0) {
+                    norm = Math.sqrt(squares);
+                }
+            }
+
+            @Override
+            public Object sparseSignal(int vertex, Object value, WorkerState state) {
+                return asDouble(value) / norm; // the share of influence, not the raw score
+            }
+
+            @Override
+            public int sparseSlot(int vertex, Object message, List<GeminiGraph.Edge> edges, WorkerState state) {
+                double contribution = asDouble(message);
+                int activated = 0;
+                for (GeminiGraph.Edge edge : edges) {
+                    state.accumulate(edge.target(), contribution * edge.weight());
+                    state.activate(edge.target());
+                    activated++;
+                }
+                return activated;
+            }
+
+            @Override
+            public Object denseSignal(int vertex, List<GeminiGraph.Edge> inEdges, WorkerState state) {
+                double sum = 0;
+                for (GeminiGraph.Edge edge : inEdges) {
+                    Object source = state.value(edge.source());
+                    if (source != null) {
+                        sum += asDouble(source) / norm * edge.weight();
+                    }
+                }
+                return sum;
+            }
+
+            @Override
+            public int denseSlot(int vertex, Object message, WorkerState state) {
+                state.accumulate(vertex, asDouble(message));
+                state.activate(vertex);
+                return 1;
+            }
+
+            @Override
+            public boolean converged(int activated, int superstep) {
+                // a fixed number of iterations is this algorithm's stopping condition, like PageRank's
+                return superstep + 1 >= iterations;
+            }
+
+            @Override
+            public int maxSupersteps() {
+                return iterations;
+            }
+
+            @Override
+            public Object result(int vertex, Object value, WorkerState state) {
+                return value == null ? 0.0 : value;
+            }
+        };
+    }
+
+    // ------------------------------------------------------------------ betweenness centrality
+
+    /**
+     * Brandes' betweenness centrality for one source: the shortest-path counts of a forward
+     * breadth-first pass, then the dependency pass that walks back down the levels.
+     *
+     * <p>Two passes in one run: both walk the same graph, and the value of a vertex carries what both
+     * need - {@code [distance, sigma, delta]}, the hops from the source, the number of shortest paths
+     * that reach it, and the dependency it carries. The push-only mode is forced because the frontier
+     * of both passes <em>is</em> a level, and the level is what the push filters on.
+     *
+     * <p>The clock is the superstep number, which the driver shares with every worker:
+     * <ul>
+     *   <li><b>forward</b> - a vertex whose distance is the current round pushes its sigma, and a
+     *       destination one level out accumulates it. A vertex discovered this round takes the message as
+     *       its sigma, one already at that distance adds it, so two predecessors at the same level (or
+     *       parallel edges) count every shortest path;</li>
+     *   <li><b>backward</b> - the round in which nothing was discovered is the end of the forward pass,
+     *       and the largest distance is then known from the clock (the vertices discovered last stand at
+     *       level {@code round-1}). A vertex pushes {@code (1+delta)/sigma} when the clock counts down to
+     *       its level, and a predecessor one level below adds {@code sigma * message} to its delta - which
+     *       is Brandes' {@code delta[v] += sigma[v]/sigma[w] * (1 + delta[w])}, with the division done by
+     *       the sender because the receiver's sigma is its own.</li>
+     * </ul>
+     * The pass stops with the push from level 2 into level 1: a push from level 1 would only reach the
+     * source, whose delta is never part of the answer, so it stays zero.
+     *
+     * <p>One source per run. The launcher runs this per source (or per sampled source) and adds the
+     * deltas up; a multi-source form would have to keep a distance map per vertex, which is the whole
+     * distance matrix.
+     */
+    public static GeminiComputation betweennessCentrality(int root, int vertexCount) {
+        return new BetweennessComputation(root, vertexCount);
+    }
+
+    /** The two passes of Brandes' algorithm over one source, as one run. */
+    static final class BetweennessComputation implements GeminiComputation {
+
+        private final int root;
+        private final int vertexCount;
+        /** The round about to run, from the shared clock. */
+        private int round;
+        /** How many vertices this worker discovered in the round that just finished. */
+        private int discovered;
+        private boolean backward;
+        /** The largest distance the forward pass reached, known when it ends. */
+        private int maxLevel;
+
+        BetweennessComputation(int root, int vertexCount) {
+            this.root = root;
+            this.vertexCount = Math.max(1, vertexCount);
+        }
+
+        @Override
+        public String name() {
+            return BETWEENNESS_CENTRALITY;
+        }
+
+        @Override
+        public Mode preferredMode() {
+            return Mode.SPARSE;
+        }
+
+        @Override
+        public Object initialValue(int vertex, int outDegree, int inDegree) {
+            return vertex == root ? new double[]{0, 1, 0} : new double[]{-1, 0, 0};
+        }
+
+        @Override
+        public boolean startsActive(int vertex, int outDegree, int inDegree) {
+            return vertex == root;
+        }
+
+        @Override
+        public List<Integer> roots() {
+            return List.of(root);
+        }
+
+        @Override
+        public Map<Object, Double> aggregate() {
+            // how much of the graph this worker discovered in the last round: the driver adds the parts
+            // up, and the sum tells every worker whether the forward pass is over
+            return Map.of("sum:discovered", (double) discovered);
+        }
+
+        @Override
+        public void share(Map<String, Object> shared) {
+            round = asInt(shared.get("superstep"), round);
+            double found = asDouble(shared.getOrDefault("sum:discovered", 0.0));
+            discovered = 0;
+            if (!backward && round > 0 && found == 0) {
+                backward = true;
+                maxLevel = round - 1;
+            }
+        }
+
+        @Override
+        public Object sparseSignal(int vertex, Object value, WorkerState state) {
+            double[] triple = asTriple(value);
+            if (!backward) {
+                return triple[0] == round ? triple[1] : null;
+            }
+            int level = 2 * maxLevel + 1 - round;
+            if (level <= 1 || triple[0] != level || triple[1] <= 0) {
+                return null;
+            }
+            return (1 + triple[2]) / triple[1];
+        }
+
+        @Override
+        public int sparseSlot(int vertex, Object message, List<GeminiGraph.Edge> edges, WorkerState state) {
+            int activated = 0;
+            double sent = asDouble(message);
+            for (GeminiGraph.Edge edge : edges) {
+                double[] target = asTriple(state.value(edge.target()));
+                if (!backward) {
+                    int level = round + 1;
+                    if (target[0] < 0) {
+                        target[0] = level;
+                        target[1] = sent;
+                        state.activate(edge.target()); // the new level is the next frontier
+                        activated++;
+                        discovered++;
+                    } else if (target[0] == level) {
+                        target[1] += sent;
+                    }
+                } else {
+                    int level = 2 * maxLevel + 1 - round;
+                    if (target[0] == level - 1) {
+                        target[2] += sent * target[1];
+                        activated++;
+                    }
+                }
+            }
+            return activated;
+        }
+
+        @Override
+        public Object denseSignal(int vertex, List<GeminiGraph.Edge> inEdges, WorkerState state) {
+            throw new IllegalStateException(name() + " runs push-only; the launcher must honour"
+                    + " preferredMode()");
+        }
+
+        @Override
+        public int denseSlot(int vertex, Object message, WorkerState state) {
+            throw new IllegalStateException(name() + " runs push-only; the launcher must honour"
+                    + " preferredMode()");
+        }
+
+        @Override
+        public boolean converged(int activated, int superstep) {
+            if (!backward) {
+                if (activated > 0) {
+                    return false;
+                }
+                backward = true;
+                maxLevel = superstep; // the frontier that found nothing stood at this level
+            }
+            // the dependency pass ends with the round that pushes level 2 into level 1
+            return superstep >= 2 * maxLevel - 1;
+        }
+
+        @Override
+        public int maxSupersteps() {
+            return 2 * vertexCount + 4; // both passes are bounded by the number of vertices
+        }
+
+        @Override
+        public Object result(int vertex, Object value, WorkerState state) {
+            return asTriple(value)[2];
+        }
+    }
+
     // ------------------------------------------------------------------ helpers
 
     /** A value or a message read as a double (the wire may hand either boxed type back). */
@@ -589,6 +977,19 @@ public final class GeminiAlgorithms {
     /** A value or a message read as a long. */
     private static long asLong(Object value) {
         return ((Number) value).longValue();
+    }
+
+    /** A value or a message read as an int, or the fallback when it is missing. */
+    private static int asInt(Object value, int fallback) {
+        return value instanceof Number number ? number.intValue() : fallback;
+    }
+
+    /** The {@code [distance, sigma, delta]} a betweenness run keeps per vertex. */
+    private static double[] asTriple(Object value) {
+        if (value instanceof double[] triple) {
+            return triple;
+        }
+        throw new IllegalStateException("A betweenness value is not a triple: " + value);
     }
 
     private static int intParam(Map<String, Object> settings, String name, int fallback) {

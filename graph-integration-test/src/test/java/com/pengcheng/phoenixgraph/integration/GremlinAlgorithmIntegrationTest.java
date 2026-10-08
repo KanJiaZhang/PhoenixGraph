@@ -73,6 +73,24 @@ class GremlinAlgorithmIntegrationTest {
             Map<Object, Long> lvMap = (Map<Object, Long>) lv.get(0);
             assertEquals(ccMap.size(), lvMap.size());
             System.out.println("  louvain  -> " + lvMap.size() + " vertices, " + lvMap.values().stream().distinct().count() + " communities");
+
+            // the centralities over the same neighbourhood: degree, closeness, betweenness and
+            // eigenvector all answer for every vertex the algorithms above reached
+            for (String step : List.of("degree", "closeness", "betweenness", "eigenvector")) {
+                List<Object> answer = gremlin.execute(base + "." + step + "()");
+                assertEquals(1, answer.size(), step + " answers with one map");
+                @SuppressWarnings("unchecked")
+                Map<Object, Number> scores = (Map<Object, Number>) answer.get(0);
+                assertEquals(ccMap.size(), scores.size(), step + " covers the same vertices as cc");
+                assertTrue(scores.values().stream().allMatch(v -> v.doubleValue() >= 0),
+                        step + " is a non-negative score: " + scores);
+                System.out.println("  " + step + " -> " + scores.size() + " vertices (top: "
+                        + scores.entrySet().stream()
+                                .sorted(Map.Entry.<Object, Number>comparingByValue(
+                                        java.util.Comparator.comparingDouble(Number::doubleValue)).reversed())
+                                .limit(2).map(e -> e.getKey() + "=" + String.format("%.4f", e.getValue().doubleValue())).toList()
+                        + ")");
+            }
         }
     }
 

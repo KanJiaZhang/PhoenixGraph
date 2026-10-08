@@ -66,6 +66,125 @@ class GremlinAlgorithmsTest {
         assertNotEquals(comm.get("a"), comm.get("e"));
     }
 
+    /** A path v0-v1-...-v(n-1), both directions, as the in-memory steps build it. */
+    private static Map<Object, List<Object>> path(int n) {
+        Map<Object, List<Object>> adj = new LinkedHashMap<>();
+        for (int i = 0; i < n; i++) {
+            adj.put("v" + i, new java.util.ArrayList<>());
+        }
+        for (int i = 0; i + 1 < n; i++) {
+            adj.get("v" + i).add("v" + (i + 1));
+            adj.get("v" + (i + 1)).add("v" + i);
+        }
+        return adj;
+    }
+
+    @Test
+    void degreeCentralityCountsTheIncidentEdges() {
+        Map<Object, Long> degree = GremlinAlgorithms.degreeCentrality(path(5));
+
+        assertEquals(1L, degree.get("v0"));
+        assertEquals(2L, degree.get("v2"));
+        assertEquals(1L, degree.get("v4"));
+    }
+
+    @Test
+    void closenessRanksTheMiddleOfAPathHighest() {
+        // a path of five: the middle is 2+1+1+2 = 6 hops from everything, an end is 1+2+3+4 = 10
+        Map<Object, Double> closeness = GremlinAlgorithms.closenessCentrality(path(5));
+
+        assertEquals(16.0 / (4 * 6), closeness.get("v2"), 1e-12);
+        assertEquals(16.0 / (4 * 10), closeness.get("v0"), 1e-12);
+        assertTrue(closeness.get("v2") > closeness.get("v1"));
+        assertTrue(closeness.get("v1") > closeness.get("v0"));
+    }
+
+    @Test
+    void closenessOfACliqueIsNotPunishedForUnreachableVertices() {
+        // a triangle plus two vertices nothing connects to: the Wasserman-Faust form measures a vertex
+        // against the vertices it can reach, so the score does not drop because the graph is bigger
+        Map<Object, List<Object>> adj = path(3); // v0-v1-v2, made a triangle below
+        adj.get("v0").add("v2");
+        adj.get("v2").add("v0");
+        adj.put("v3", new java.util.ArrayList<>());
+        adj.put("v4", new java.util.ArrayList<>());
+
+        Map<Object, Double> closeness = GremlinAlgorithms.closenessCentrality(adj);
+
+        // three vertices, two hops each, in a graph of five: (3-1)^2 / ((5-1) * 2) = 1/2. The
+        // (n-1)-normalised form would say 1/4 and blame the vertex for the two it cannot reach.
+        assertEquals(0.5, closeness.get("v0"), 1e-12);
+        assertEquals(0.0, closeness.get("v3"), 1e-12, "a vertex that reaches nobody scores zero");
+    }
+
+    @Test
+    void betweennessCountsTheShortestPathsThroughAVertex() {
+        // on a path of five the middle is on four of the six pairs around it (its own included, as the
+        // normalisation counts them), b and d on three, the ends on none
+        Map<Object, Double> betweenness = GremlinAlgorithms.betweennessCentrality(path(5));
+
+        assertEquals(4.0 / 6.0, betweenness.get("v2"), 1e-12);
+        assertEquals(3.0 / 6.0, betweenness.get("v1"), 1e-12);
+        assertEquals(3.0 / 6.0, betweenness.get("v3"), 1e-12);
+        assertEquals(0.0, betweenness.get("v0"), 1e-12);
+        assertEquals(0.0, betweenness.get("v4"), 1e-12);
+    }
+
+    @Test
+    void betweennessOnAStarIsAllOnTheHub() {
+        Map<Object, List<Object>> adj = new LinkedHashMap<>();
+        for (Object v : List.of("hub", "l1", "l2", "l3")) {
+            adj.put(v, new java.util.ArrayList<>());
+        }
+        for (String leaf : List.of("l1", "l2", "l3")) {
+            adj.get("hub").add(leaf);
+            adj.get(leaf).add("hub");
+        }
+
+        Map<Object, Double> betweenness = GremlinAlgorithms.betweennessCentrality(adj);
+
+        assertEquals(1.0, betweenness.get("hub"), 1e-12, "every path between the leaves goes through it");
+        assertEquals(0.0, betweenness.get("l1"), 1e-12);
+    }
+
+    @Test
+    void eigenvectorCentralityFindsThePrincipalVectorOfACompleteGraph() {
+        // a complete graph of four plus an isolated vertex: the principal eigenvector is the all-ones
+        // vector (every vertex of a complete graph is equally central, and a vertex nothing connects to
+        // has no influence), and the gap to the next eigenvalue is wide enough for a power iteration to
+        // settle in the iterations the step runs
+        Map<Object, List<Object>> adj = new LinkedHashMap<>();
+        for (int i = 0; i < 5; i++) {
+            adj.put("v" + i, new java.util.ArrayList<>());
+        }
+        for (int i = 0; i < 4; i++) {
+            for (int j = 0; j < 4; j++) {
+                if (i != j) {
+                    adj.get("v" + i).add("v" + j);
+                }
+            }
+        }
+
+        Map<Object, Double> eigenvector = GremlinAlgorithms.eigenvectorCentrality(adj);
+
+        for (int i = 0; i < 4; i++) {
+            assertEquals(0.5, eigenvector.get("v" + i), 1e-9, "the four are equal: " + eigenvector);
+        }
+        assertEquals(0.0, eigenvector.get("v4"), 1e-12, "nothing points at it and it points at nothing");
+    }
+
+    @Test
+    void normalizeScoresFixesTheLengthAndTheSign() {
+        Map<Object, Double> normalised = GremlinAlgorithms.normalizeScores(
+                new LinkedHashMap<>(Map.of("a", -3.0, "b", -4.0)));
+
+        // the vector is scaled to unit length, and the sign is chosen so its largest entry is positive
+        assertEquals(0.6, normalised.get("a"), 1e-12);
+        assertEquals(0.8, normalised.get("b"), 1e-12);
+        assertEquals(1.0, Math.hypot(normalised.get("a"), normalised.get("b")), 1e-12);
+        assertEquals(0.0, GremlinAlgorithms.normalizeScores(new LinkedHashMap<>(Map.of("a", 0.0))).get("a"));
+    }
+
     @Test
     void ccStepRunsInMemoryAlgorithm() {
         GraphQuery gq = new GraphQuery() {
