@@ -43,6 +43,11 @@
             <groupId>com.pengcheng.phoenixgraph</groupId>
             <artifactId>graph-query-cypher</artifactId>
         </dependency>
+        <!-- the AI toolkit: document ingestion, quality metrics and the tool layer -->
+        <dependency>
+            <groupId>com.pengcheng.phoenixgraph</groupId>
+            <artifactId>graph-agent</artifactId>
+        </dependency>
         <dependency>
             <groupId>com.pengcheng.phoenixgraph</groupId>
             <artifactId>graph-metrics</artifactId>

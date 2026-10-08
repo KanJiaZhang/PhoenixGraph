@@ -1,0 +1,221 @@
+{
+  "id" : 53,
+  "name" : "agent-demo",
+  "description" : "Built from docs/agent-demo/*.md by the agent toolkit (example graph)",
+  "constraints" : {
+    "idSchemaIndex" : 0,
+    "createdTimeIndex" : -2,
+    "lastUpdatedTimeIndex" : -1
+  },
+  "storage" : null,
+  "vertexSchemas" : [ {
+    "id" : 1,
+    "name" : "Entity",
+    "description" : "An extracted entity",
+    "idSchema" : {
+      "id" : 0,
+      "name" : "id",
+      "description" : "Vertex id",
+      "type" : "STRING"
+    },
+    "createdTime" : {
+      "id" : -2,
+      "name" : "createdTime",
+      "description" : "Property creation time (epoch milliseconds)",
+      "type" : "LONG"
+    },
+    "lastUpdatedTime" : {
+      "id" : -1,
+      "name" : "lastUpdatedTime",
+      "description" : "Property last-update time (epoch milliseconds)",
+      "type" : "LONG"
+    },
+    "properties" : [ {
+      "id" : 1,
+      "name" : "name",
+      "description" : "The name the documents use",
+      "type" : "STRING",
+      "display" : true
+    }, {
+      "id" : 2,
+      "name" : "entityType",
+      "description" : "Person / Place / Mention ...",
+      "type" : "STRING"
+    }, {
+      "id" : 3,
+      "name" : "description",
+      "description" : "The context card the embedding was built from",
+      "type" : "STRING"
+    }, {
+      "id" : 4,
+      "name" : "chunkIds",
+      "description" : "The chunks this entity was read from",
+      "type" : {
+        "list" : "STRING"
+      }
+    }, {
+      "id" : 5,
+      "name" : "embedding",
+      "description" : "The entity's vector (HNSW indexed)",
+      "type" : {
+        "list" : "DOUBLE"
+      },
+      "isVector" : true,
+      "metric" : "L2",
+      "m" : 15,
+      "efConstruction" : 100,
+      "efSearch" : 50
+    } ]
+  }, {
+    "id" : 7,
+    "name" : "Chunk",
+    "description" : "A chunk of an ingested document",
+    "idSchema" : {
+      "id" : 0,
+      "name" : "id",
+      "description" : "Vertex id",
+      "type" : "STRING"
+    },
+    "createdTime" : {
+      "id" : -2,
+      "name" : "createdTime",
+      "description" : "Property creation time (epoch milliseconds)",
+      "type" : "LONG"
+    },
+    "lastUpdatedTime" : {
+      "id" : -1,
+      "name" : "lastUpdatedTime",
+      "description" : "Property last-update time (epoch milliseconds)",
+      "type" : "LONG"
+    },
+    "properties" : [ {
+      "id" : 1,
+      "name" : "documentId",
+      "description" : "The document id",
+      "type" : "STRING"
+    }, {
+      "id" : 2,
+      "name" : "title",
+      "description" : "The document title",
+      "type" : "STRING"
+    }, {
+      "id" : 3,
+      "name" : "ordinal",
+      "description" : "The position of the chunk in its document",
+      "type" : "LONG"
+    }, {
+      "id" : 4,
+      "name" : "text",
+      "description" : "The chunk itself",
+      "type" : "STRING"
+    } ]
+  } ],
+  "edgeSchemas" : [ {
+    "id" : 14,
+    "name" : "Relates",
+    "description" : "An extracted relation",
+    "idSchema" : {
+      "id" : 0,
+      "name" : "id",
+      "description" : "Edge id",
+      "type" : "LONG"
+    },
+    "source" : {
+      "id" : 12,
+      "name" : "source",
+      "description" : "Endpoint (source) in Entity",
+      "type" : "STRING",
+      "vertex" : "Entity"
+    },
+    "target" : {
+      "id" : 13,
+      "name" : "target",
+      "description" : "Endpoint (target) in Entity",
+      "type" : "STRING",
+      "vertex" : "Entity"
+    },
+    "createdTime" : {
+      "id" : -2,
+      "name" : "createdTime",
+      "description" : "Property creation time (epoch milliseconds)",
+      "type" : "LONG"
+    },
+    "lastUpdatedTime" : {
+      "id" : -1,
+      "name" : "lastUpdatedTime",
+      "description" : "Property last-update time (epoch milliseconds)",
+      "type" : "LONG"
+    },
+    "direction" : "DIRECTED",
+    "properties" : [ {
+      "id" : 1,
+      "name" : "relation",
+      "description" : "The canonical relation name",
+      "type" : "STRING"
+    }, {
+      "id" : 2,
+      "name" : "rule",
+      "description" : "The rule that read it",
+      "type" : "STRING"
+    }, {
+      "id" : 3,
+      "name" : "sentence",
+      "description" : "The sentence it was read from",
+      "type" : "STRING"
+    }, {
+      "id" : 4,
+      "name" : "chunkId",
+      "description" : "The chunk it was read from",
+      "type" : "STRING"
+    } ],
+    "maxOutgoingEdges" : 0,
+    "maxIncomingEdges" : 0,
+    "maxDegree" : 0
+  }, {
+    "id" : 21,
+    "name" : "Mentions",
+    "description" : "A chunk mentions an entity",
+    "idSchema" : {
+      "id" : 0,
+      "name" : "id",
+      "description" : "Edge id",
+      "type" : "LONG"
+    },
+    "source" : {
+      "id" : 19,
+      "name" : "source",
+      "description" : "Endpoint (source) in Chunk",
+      "type" : "STRING",
+      "vertex" : "Chunk"
+    },
+    "target" : {
+      "id" : 20,
+      "name" : "target",
+      "description" : "Endpoint (target) in Entity",
+      "type" : "STRING",
+      "vertex" : "Entity"
+    },
+    "createdTime" : {
+      "id" : -2,
+      "name" : "createdTime",
+      "description" : "Property creation time (epoch milliseconds)",
+      "type" : "LONG"
+    },
+    "lastUpdatedTime" : {
+      "id" : -1,
+      "name" : "lastUpdatedTime",
+      "description" : "Property last-update time (epoch milliseconds)",
+      "type" : "LONG"
+    },
+    "direction" : "DIRECTED",
+    "properties" : [ {
+      "id" : 1,
+      "name" : "sentence",
+      "description" : "The sentence the mention occurs in",
+      "type" : "STRING"
+    } ],
+    "maxOutgoingEdges" : 0,
+    "maxIncomingEdges" : 0,
+    "maxDegree" : 0
+  } ]
+}

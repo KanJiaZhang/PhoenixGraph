@@ -28,6 +28,7 @@
         <module>graph-query-gremlin</module>
         <module>graph-hnsw</module>
         <module>graph-query-cypher</module>
+        <module>graph-agent</module>
         <module>graph-compute-engine</module>
         <module>graph-web</module>
         <module>graph-http</module>
@@ -130,6 +131,11 @@
             <dependency>
                 <groupId>com.pengcheng.phoenixgraph</groupId>
                 <artifactId>graph-query-cypher</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.pengcheng.phoenixgraph</groupId>
+                <artifactId>graph-agent</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>

@@ -62,6 +62,13 @@ phoenixgraph:
       #   g.V('姜维','Entity').bothE().filter(xrelation.equals('master')).otherV()
       - schema: sanguo-kg-rocksdb-edge
         vertex-set: kg_sanguo_v1
+      # the agent toolkit's example graph: built from docs/agent-demo/*.md by
+      #   POST /api/v1/agent/ingest {"graph":"agent-demo", ...}
+      # (see the README's "AI agent toolkit" section); it holds the extracted entities, the
+      # relations with their provenance sentences, the chunks, and one embedding per entity,
+      # so find_entities/similar answer with the vector index the write path maintains
+      - schema: agent-demo
+        vertex-set: agent_demo_v2
       # 方案 C：同一份数据 + 从文档自由文本（历史/小说）抽出的实体与关系，也是 RocksDB-Edge。
       # 比 sanguo-kg-rocksdb-edge 多 ~42 实体 / ~969 关系（mentions / holds / 军师 / 谋士 / 交战 / 斩杀），
       # 由 SanguoTextGraphTest / SanguoTextGraph 装载（.rocksdb/sanguo-kg-text）：
