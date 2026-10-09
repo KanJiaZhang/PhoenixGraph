@@ -675,12 +675,43 @@ curl -s -X POST localhost:8081/api/v1/query -H 'content-type: application/json' 
 ./mvnw -o -pl graph-integration-test test -Dtest='TpchDataAgentGraphTest' -Dsurefire.failIfNoSpecifiedTests=false
 ```
 
-> **Data note:** the year figures above are the ones the served `tpc-h-data` instance answers today. Its
-> per-region table, `lateDelivery`/`returned` flags and `promotionRevenue` property do **not** match
-> `TPC-H-ANALYTICS.md` §4: that document was written against an older build of the same instance (its own
-> region and year tables even disagree on the total). Re-seed before trusting §4's region/late/return
-> rows: `TPCH_ROCKSDB_RESEED=true ./mvnw -o -pl graph-integration-test test \
+> **Data note:** the year figures above are the ones the served `tpc-h-data` instance answers today. Three
+> things in that build are *not* what a TPC-H reader would expect, and one earlier note here was wrong:
+> (1) `lateDelivery` and `returned` are **not** empty - they are integers (`0`/`1`), so
+> `has('lateDelivery', true)` matches nothing while `has('lateDelivery', 1)` matches 771 of the 8,000 sales
+> (the previous version of this note concluded "all false" from the boolean form: that was a predicate-type
+> bug in the question, not missing data); (2) the `nation -> region` assignment is cyclic instead of the
+> TPC-H reference - only 7 of 25 nations sit where TPC-H puts them (the United States in MIDDLE EAST, China
+> in EUROPE), so any per-region figure is meaningless, and `region` and `segment` come out to the same five
+> sums because the loader derives both from the same cyclic index; (3) `promotionRevenue` is absent. The
+> per-region table of `TPC-H-ANALYTICS.md` §4 was written against an older build of the same instance (its
+> own region and year tables even disagree on the total). Re-seed before trusting §4:
+> `TPCH_ROCKSDB_RESEED=true ./mvnw -o -pl graph-integration-test test \
 > -Dtest='TpchDataAgentGraphTest#loadsTheInstanceTheServiceServes' -Dsurefire.failIfNoSpecifiedTests=false`.
+> [docs/AGENT-CASES.md](docs/AGENT-CASES.md) case B walks through all three findings as a worked example of
+> an agent auditing its own analysis before reporting it.
+
+### 4. Two worked cases, one per shape of graph
+
+[docs/AGENT-CASES.md](docs/AGENT-CASES.md) walks two full cases end to end - every step shows the query and
+its measured output, and `.logs/verify-agent-cases.mjs` re-checks all 63 figures against the running service:
+
+- **case A (三国) - the agent audits the knowledge graph's own edges.** 关羽's ten `killed` relations are
+  matched one by one against the `history` texts stored on the same vertices: only **2** hold (颜良, 庞德);
+  **4** are refuted - by the history (华雄 → 孙坚, 蔡阳 → 刘备, 文丑 → 曹操) or by a timeline (庞会 is in
+  景元四年/263, 44 years after 关羽's death); **3** are novel-only or unprovable because the evidence field
+  is truncated at 120 characters (566 of 2,743 entities hit the cap); and the whole relation family turns
+  out to be **300/300 `provenance=EXTRA`** - a *quantified* source bias rather than noise, which is what
+  makes the fix obvious (split the relation by source, not "clean the data").
+- **case B (TPC-H) - the agent refuses a per-region answer.** The obvious region ranking looks usable
+  (ASIA leads EUROPE by 327k) until three self-checks fire: **18 of 25 nations** sit in the wrong TPC-H
+  region, `region` and `segment` return the **same five sums to the cent**, and `has('lateDelivery', true)`
+  silently returns **0** where the integer `1` returns **771** rows. It then delivers what *is* defensible:
+  revenue +3.42% against discounts +5.79% and late-delivery revenue +10.15%; RAIL/SHIP late at 10.4%/10.1%
+  against MAIL at 8.5%; and no return-rate signal by priority (4.06%-4.69%).
+
+The two checks they share are the point: **case A asks whether a relation can be believed, case B whether a
+dimension can be used** - and both find the check that would overturn the answer *before* reporting it.
 
 ## Visualization
 
