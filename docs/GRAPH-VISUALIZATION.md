@@ -122,26 +122,38 @@ caps what it draws.
 Staged, each step useful on its own. Steps 1 and 4 are **done in this repository today**:
 
 1. **Keep SVG for the query answer; keep and extend the *layouts*.** Done: the tree layout (four
-   orientations, click-to-re-root) **and the layered DAG** (`layoutDag` in `js/app.js`: depth-first cycle
-   breaking with the reversed edges drawn dashed, longest-path ranking, four barycenter sweeps, three
-   orientations, **every edge kept**). Both are ~120 lines of our own code with **no new dependency and no
-   build step**, because the input is small (a query's answer) and the data shape is fixed
-   (`{vertices, edges}`). If crossing minimisation ever matters more than zero dependencies, `d3-dag` is
-   the drop-in upgrade: the layout function is the only thing that would change.
+   orientations - left→right, **right→left**, top→bottom, bottom→top - plus radial, with click-to-re-root)
+   **and the layered DAG** (`layoutDag` in `js/app.js`: depth-first cycle breaking with the reversed edges
+   drawn dashed, longest-path ranking, four barycenter sweeps, **four orientations, every edge kept**). Both
+   are ~120 lines of our own code with **no new dependency and no build step**, because the input is small
+   (a query's answer) and the data shape is fixed (`{vertices, edges}`). Right-to-left is the same layering
+   with the depth axis negated, so the crossing order the barycenter sweeps found is preserved rather than
+   mirrored into a different count. If crossing minimisation ever matters more than zero dependencies,
+   `d3-dag` is the drop-in upgrade: the layout function is the only thing that would change.
 2. **Canvas 2D when the subgraph is big.** A `renderer: svg | canvas` switch: past ~2k elements draw the
    same D3 data on `<canvas>` (labels only above a zoom threshold). Low risk, no new dependency, and it
    removes the first hard wall.
 3. **WebGL behind a toggle for "the whole graph"** (sigma.js if the graph model matters, cosmos.gl if the
    size does). This is where a *streaming/partitioned* render path belongs; it is also the point where
    the UI stops being "the answer" and becomes "the map".
-4. **A 3D view as a demo/insight mode - done at the smallest possible cost**: `graph-3d.html` +
-   `js/graph3d.js` (a page of its own, linked from the header) run a 3D spring/charge layout and a
-   perspective projection on a 2D canvas: drag to rotate, wheel to zoom, labels only for the near
-   vertices, painter's algorithm for depth. **Zero dependencies, no build step**, and it draws any
-   query's answer on any served graph. Measured on this machine: the payment demo's 2-hop subgraph
-   (51 vertices / 136 edges) lays out in ~12 ms for 260 iterations, and the 三国 1-hop (178 / 225)
-   redraws without complaint; rotating moves every projected point (17 depth bands). If 3D ever stops
-   being a demo, three.js or `3d-force-graph` goes behind the same page - the data shape does not change.
+4. **A 3D view as a mode of the canvas - done at the smallest possible cost, and then made to agree with
+   everything else.** `js/graph3d.js` is a *renderer* (a 3D spring/charge layout, a perspective
+   projection, painter's algorithm, labels only for the near vertices, a chevron on each edge so the
+   direction survives the projection) and `app.js` hands it the answer with **the colours, alphas and
+   rings the 2D canvas has already computed** (`readCanvasState` reads the DOM, so 3D can never disagree
+   with 2D about what a filter dimmed or a search hit). It is toggled by the toolbar's cube icon inside
+   the visualization panel - the same place as the map, and the two views are mutually exclusive - so
+   there is no second page, no second palette and no second data path to keep in step. **Zero
+   dependencies, no build step.** Measured on this machine: the payment 2-hop answer (51 / 136) settles in
+   ~12 ms for 260 iterations; the semantic layer's 39 / 36 draws with its four vertex types and three
+   relation types in the colours the legend shows; the 三国 1-hop (178 / 225) redraws; rotating moves every
+   projected point, and the canvas is genuinely painted (sampled). Two bugs this step found and fixed, both
+   invisible in 2D: pulling once per *edge* let parallel edges multiply the spring force (333 edges over 54
+   vertices flew apart until the projection collapsed to a dot - the layout now has one weighted spring per
+   *pair*, and normalises the settled world before projecting), and a `<canvas>` is a replaced element, so
+   `inset: 0` alone left it at its intrinsic 320×240 - it needs `width/height: 100%`. If 3D ever stops
+   being a demo, three.js or `3d-force-graph` goes behind the same data contract: the module already only
+   knows `{key, label, fill, alpha, ring}` and `{source, target, stroke, alpha, width, dashed}`.
 5. **Immersive: watch, do not build yet.**
 
 What we should *not* do: swap the whole UI to a graph framework (G6/Cytoscape/vis-network). Our canvas is

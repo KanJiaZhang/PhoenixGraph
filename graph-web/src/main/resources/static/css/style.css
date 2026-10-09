@@ -293,6 +293,20 @@ button.btn-primary:hover, #queryBtn:hover { filter: brightness(1.07); }
 #canvasWrap.map-open .canvas-only { opacity: 0.4; pointer-events: none; }
 #mapBtn.active { color: #fff; background: var(--accent); border-color: var(--accent); }
 
+/* ---------- 3D view (the same panel, a different reading of the same answer) ---------- */
+/* 深色底：三维场景里“远近”要靠明暗读，白底会把深度线索冲干；配色仍用 2D 的同一套值 */
+/* width/height 100% 是必须的：<canvas> 是替换元素，只写 inset:0 时宽度会取它的固有尺寸（320×240），
+   那样画布只有一个小方块、缩放比例也接近 0，看起来就像「3D 什么都没画」 */
+#view3d {
+  position: absolute; inset: 0; z-index: 5; display: block; width: 100%; height: 100%;
+  background: radial-gradient(circle at 50% 40%, #16213c 0%, #0b1120 70%);
+}
+#canvasWrap.view3d-open .canvas-only { opacity: 0.4; pointer-events: none; }
+#view3dBtn.active { color: #fff; background: var(--accent); border-color: var(--accent); }
+/* 3D 里的回退按钮和地图的同一个形状，只是深底上要更亮 */
+.view3d-close { color: var(--text-2); }
+.view3d-close:hover { color: var(--accent); }
+
 /* ---------- canvas toolbar ---------- */
 #toolbar {
   position: absolute;
@@ -554,7 +568,7 @@ button.btn-primary:hover, #queryBtn:hover { filter: brightness(1.07); }
 .node.selected circle.ring { stroke: var(--danger); }
 .node.pr-highlight circle.ring { stroke: var(--warn); stroke-width: 3.5; stroke-dasharray: 3 2.5; }
 
-.edge { fill: none; stroke: #a9b4c6; stroke-opacity: 0.5; stroke-width: 1.44; cursor: pointer; transition: stroke-opacity 0.12s, stroke 0.12s; marker-end: url(#arrow); }
+.edge { fill: none; stroke: var(--edge-color, #a9b4c6); stroke-opacity: 0.5; stroke-width: 1.44; cursor: pointer; transition: stroke-opacity 0.12s, stroke 0.12s; marker-end: url(#arrow); }
 .edge:hover { stroke-opacity: 0.85; }
 .edge.selected { stroke: var(--danger); stroke-opacity: 1; stroke-width: 2.88; }
 

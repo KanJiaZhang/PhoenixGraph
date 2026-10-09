@@ -77,11 +77,6 @@
              stays in the markup (hidden and disabled) so bringing it back is one attribute. -->
         <option value="cypher" hidden disabled>Cypher</option>
       </select>
-      <a id="graph3dBtn" class="icon-btn" href="graph-3d.html" title="3D 视图（demo）" aria-label="3D view">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M12 3 3 7.5v9L12 21l9-4.5v-9z"/><path d="M3 7.5 12 12l9-4.5M12 12v9"/>
-        </svg>
-      </a>
       <a id="builderBtn" class="icon-btn" href="builder.html" title="图管理 · 建模" aria-label="graph builder"
          data-i18n-title="builder" data-i18n-aria-label="builder">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -127,12 +122,21 @@
       <div id="mapView" hidden aria-label="map view"></div>
       <button id="mapClose" class="map-close" type="button" hidden data-i18n="mapBack">返回图可视化</button>
       <div id="mapNote" class="map-note" hidden></div>
+      <!-- 3D 视图：同一份答案、同一套颜色与高亮，只是换成能转的三维场景（canvas 2D 透视投影，无 WebGL 依赖） -->
+      <canvas id="view3d" hidden aria-label="3D view"></canvas>
+      <button id="view3dClose" class="map-close view3d-close" type="button" hidden data-i18n="view3dBack">返回图可视化</button>
       <div id="toolbar">
         <button id="mapBtn" data-i18n-title="mapTitle" title="地图（带经纬度的实体）"
                 aria-label="map" aria-pressed="false" hidden>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="m3 6 6-3 6 3 6-3v15l-6 3-6-3-6 3z"/>
             <path d="M9 3v15M15 6v15"/>
+          </svg>
+        </button>
+        <button id="view3dBtn" class="canvas-only" data-i18n-title="view3d" data-i18n-aria-label="view3d"
+                title="3D 视图" aria-label="3D view" aria-pressed="false">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 3 3 7.5v9L12 21l9-4.5v-9z"/><path d="M3 7.5 12 12l9-4.5M12 12v9"/>
           </svg>
         </button>
         <button id="rebalanceBtn" class="canvas-only" data-i18n-title="rebalance" title="自动平衡力图" aria-label="rebalance">
@@ -172,12 +176,14 @@
           <option value="" data-i18n="treeOff">布局</option>
           <optgroup label="树形" data-i18n-label="treeGroup">
             <option value="lr" data-i18n="treeLr">树 · 左→右</option>
+            <option value="rl" data-i18n="treeRl">树 · 右→左</option>
             <option value="tb" data-i18n="treeTb">树 · 上→下</option>
             <option value="bt" data-i18n="treeBt">树 · 下→上</option>
             <option value="radial" data-i18n="treeRadial">树 · 放射</option>
           </optgroup>
           <optgroup label="DAG 分层" data-i18n-label="dagGroup">
             <option value="dag-lr" data-i18n="dagLr">DAG · 左→右</option>
+            <option value="dag-rl" data-i18n="dagRl">DAG · 右→左</option>
             <option value="dag-tb" data-i18n="dagTb">DAG · 上→下</option>
             <option value="dag-bt" data-i18n="dagBt">DAG · 下→上</option>
           </optgroup>
@@ -305,6 +311,8 @@
   <!-- 地图视图内嵌在可视化 panel 里（不再是单独的 map.html），Leaflet 就近自带 -->
   <script src="/vendor/leaflet/leaflet.js"></script>
   <script src="js/geo-map.js"></script>
+  <!-- 3D 是画布 panel 的一种视图（不再是单独的 graph-3d.html）：同一份 {vertices, edges}，自带渲染器 -->
+  <script src="js/graph3d.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>

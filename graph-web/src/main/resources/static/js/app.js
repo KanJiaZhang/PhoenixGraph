@@ -143,14 +143,20 @@
       treeGroup: '树形（生成树）',
       dagGroup: 'DAG 分层（保留全部边）',
       treeLr: '树 · 左→右',
+      treeRl: '树 · 右→左',
       treeTb: '树 · 上→下',
       treeBt: '树 · 下→上',
       treeRadial: '树 · 放射',
       dagLr: 'DAG · 左→右',
+      dagRl: 'DAG · 右→左',
       dagTb: 'DAG · 上→下',
       dagBt: 'DAG · 下→上',
       treeHint: '{mode}：{n} 个点 / {e} 条边，根是「{root}」—— 点任意点可换根（双击仍是展开一跳）',
       dagHint: '{mode}：{n} 个点 / {e} 条边（含全部边，虚线 {r} 条是为断开环而反向的）—— 分层按最长路径，层内按重心排序',
+      view3d: '3D 视图',
+      view3dOpenTitle: '关闭 3D，回到平面图',
+      view3dBack: '返回图可视化',
+      view3dHint: '3D：{n} 个点 / {e} 条边 · 颜色与高亮跟 2D 一致 · 拖动旋转、滚轮缩放 · 单击选中（树/DAG 下换根）、双击展开一跳',
       algoHomogeneous: '该图混了多种点（另有 {others}），{algo} 只在最多的 {type}（{n} 个点）上运算；其它类型的点被投影成 {type} 之间的 {links} 条边',
       projectedEdge: '投影边',
       searchPlaceholder: '搜索点 / 边关键词',
@@ -288,14 +294,20 @@
       treeGroup: 'Tree (spanning)',
       dagGroup: 'Layered DAG (every edge kept)',
       treeLr: 'Tree · left to right',
+      treeRl: 'Tree · right to left',
       treeTb: 'Tree · top to bottom',
       treeBt: 'Tree · bottom to top',
       treeRadial: 'Tree · radial',
       dagLr: 'DAG · left to right',
+      dagRl: 'DAG · right to left',
       dagTb: 'DAG · top to bottom',
       dagBt: 'DAG · bottom to top',
       treeHint: '{mode}: {n} vertices / {e} edges, rooted at "{root}" - click any vertex to re-root (a double click still expands one hop)',
       dagHint: '{mode}: {n} vertices / {e} edges (every edge kept; {r} drawn dashed because it runs backwards to break a cycle) - ranks by longest path, orders each layer by barycenter',
+      view3d: '3D view',
+      view3dOpenTitle: 'Leave 3D and go back to the flat graph',
+      view3dBack: 'Back to the graph',
+      view3dHint: '3D: {n} vertices / {e} edges · colours and highlights match 2D · drag to rotate, wheel to zoom · click to select (re-roots in a tree/DAG), double click expands one hop',
       algoHomogeneous: 'The graph mixes vertex types ({others}), so {algo} ran on the largest type only - {type} ({n} vertices) - with the other types projected into {links} edges between them',
       projectedEdge: 'projected edge',
       searchPlaceholder: 'Search vertices / edges',
@@ -396,6 +408,9 @@
     document.querySelectorAll('[data-i18n-title]').forEach((n) => { n.title = t(n.dataset.i18nTitle); });
     document.querySelectorAll('[data-i18n-aria-label]').forEach((n) => { n.setAttribute('aria-label', t(n.dataset.i18nAriaLabel)); });
     document.querySelectorAll('[data-i18n-placeholder]').forEach((n) => { n.placeholder = t(n.dataset.i18nPlaceholder); });
+    // an <optgroup> has no text node to set: its label is an attribute, so the layout menu used to stay
+    // in Chinese under an English UI (the two groups were the only untranslated labels left)
+    document.querySelectorAll('[data-i18n-label]').forEach((n) => { n.label = t(n.dataset.i18nLabel); });
     document.querySelectorAll('.lang-opt').forEach((n) => n.classList.toggle('active', n.dataset.lang === lang));
     renderLegend();
     refreshExamples(); // the example titles are per language too
@@ -445,6 +460,9 @@
     mapView: document.getElementById('mapView'),
     mapNote: document.getElementById('mapNote'),
     mapClose: document.getElementById('mapClose'),
+    view3d: document.getElementById('view3d'),
+    view3dBtn: document.getElementById('view3dBtn'),
+    view3dClose: document.getElementById('view3dClose'),
     vertexCount: document.getElementById('vertexCount'),
     edgeCount: document.getElementById('edgeCount'),
     typeBreakdown: document.getElementById('typeBreakdown'),
@@ -1135,6 +1153,7 @@
       .data(links)
       .join('path')
       .attr('class', 'edge')
+      .style('--edge-color', (d) => edgeColor(d))
       .classed('reversed', (d) => !!d.reversed)
       .attr('marker-end', 'url(#arrow)')
       .on('click', (event, d) => { event.stopPropagation(); selectEdge(d); });
@@ -1228,6 +1247,8 @@
     applyPickedHighlight();
     fitView(false);
     if (treeMode) { refreshTreeHint(); }
+    // the 3D view draws the same answer: pick up the colours and the highlights that were just applied
+    syncView3D();
   }
 
   // ---- tree layout: the hierarchy the drawn subgraph makes ----------------------------------------
@@ -1341,6 +1362,11 @@
             target.y = Math.sin(angle) * (depth * depthStep + 40);
           } else if (treeMode === 'lr') {
             target.x = depth * depthStep;
+            target.y = along * leafStep;
+          } else if (treeMode === 'rl') {
+            // the same hierarchy read right to left: the depth runs the other way, the leaves keep their
+            // order, so a lineage that is written "the thing depends on ..." still flows towards the left
+            target.x = -depth * depthStep;
             target.y = along * leafStep;
           } else if (treeMode === 'tb') {
             target.x = along * leafStep;
@@ -1484,16 +1510,19 @@
     }
 
     // 4. coordinates: the layer is one axis, the position in the layer the other, each layer centred
-    const near = mode === 'dag-tb' || mode === 'dag-bt' ? 64 : 170; // spacing along the layer
-    const depthStep = mode === 'dag-tb' || mode === 'dag-bt' ? 170 : 150;
+    const vertical = mode === 'dag-tb' || mode === 'dag-bt';
+    const near = vertical ? 64 : 170; // spacing along the layer
+    const depthStep = vertical ? 170 : 150;
     const widest = Math.max(1, ...layers.map((layer) => layer.length));
     layers.forEach((layer, depth) => {
       const start = (widest - layer.length) / 2;
       layer.forEach((key, at) => {
         const node = byKey.get(key);
         const along = (start + at) * near;
-        if (mode === 'dag-lr') {
-          node.x = depth * depthStep;
+        if (mode === 'dag-lr' || mode === 'dag-rl') {
+          // right to left is the same layering with the depth axis negated, so the crossing order the
+          // barycenter sweeps found is preserved instead of being mirrored into a different crossing count
+          node.x = (mode === 'dag-rl' ? -1 : 1) * depth * depthStep;
           node.y = along;
         } else if (mode === 'dag-tb') {
           node.x = along;
@@ -1524,9 +1553,11 @@
   function refreshTreeHint() {
     if (!treeMode || !el.legendCount) return;
     const root = currentNodes.find((node) => node.key === treeRootKey);
-    const name = treeMode === 'lr' ? 'treeLr' : treeMode === 'tb' ? 'treeTb' : treeMode === 'bt' ? 'treeBt'
+    const name = treeMode === 'lr' ? 'treeLr' : treeMode === 'rl' ? 'treeRl' : treeMode === 'tb' ? 'treeTb'
+      : treeMode === 'bt' ? 'treeBt'
       : treeMode === 'radial' ? 'treeRadial'
-        : treeMode === 'dag-lr' ? 'dagLr' : treeMode === 'dag-tb' ? 'dagTb' : 'dagBt';
+        : treeMode === 'dag-lr' ? 'dagLr' : treeMode === 'dag-rl' ? 'dagRl'
+          : treeMode === 'dag-tb' ? 'dagTb' : 'dagBt';
     const reversed = currentLinks.filter((link) => link.reversed).length;
     el.legendCount.hidden = false;
     el.legendCount.textContent = (treeMode.startsWith('dag') ? t('dagHint') : t('treeHint'))
@@ -1625,7 +1656,8 @@
       // a hierarchy or a layered DAG gets a smooth link that leaves its source along one axis and arrives
       // at its target along the same one - the shape d3's linkHorizontal/linkVertical draw, which is what
       // makes an edge of a layout read as *connected* rather than as a straight line through the picture
-      const horizontal = treeMode === 'lr' || treeMode === 'dag-lr';
+      const horizontal = treeMode === 'lr' || treeMode === 'rl'
+        || treeMode === 'dag-lr' || treeMode === 'dag-rl';
       const c1x = horizontal ? (sx + ex) / 2 : sx;
       const c1y = horizontal ? sy : (sy + ey) / 2;
       const c2x = horizontal ? (sx + ex) / 2 : ex;
@@ -1674,6 +1706,7 @@
       rows.classed('legend-hit', false).classed('legend-dim', false);
       edges.classed('legend-hit', false).classed('legend-dim', false);
       showLegendCount(null);
+      scheduleSyncView3D(); // clearing a filter is a change of state too: the 3D view has to see it
       return;
     }
     const communityOf = algoState && algoState.type === 'community' ? algoState.communityOf : null;
@@ -1699,6 +1732,7 @@
     edges.classed('legend-hit', keepEdge).classed('legend-dim', (d) => !keepEdge(d));
     // how much the selection actually covers, in the bottom-left corner
     showLegendCount({ vertices: rows.filter(nodeHit).size(), edges: edges.filter(keepEdge).size() });
+    scheduleSyncView3D();
   }
 
   /** The bottom-left chip that says what the legend selection covers (null hides it). */
@@ -1719,6 +1753,7 @@
   function applyPickedHighlight() {
     if (!root) return;
     root.selectAll('.node').classed('picked', (d) => picked.includes(d.key));
+    scheduleSyncView3D();
   }
 
   function truncate(text, max) {
@@ -1826,6 +1861,7 @@
     if (!pathState) {
       nodes.classed('path-hit', false).classed('path-shortest', false).classed('path-dim', false);
       edges.classed('path-hit', false).classed('path-shortest', false).classed('path-dim', false);
+      scheduleSyncView3D();
       return;
     }
     const { pathNodes, pathEdges, shortestNodes, shortestEdges } = pathState;
@@ -1838,6 +1874,7 @@
       .classed('path-shortest', (d) => shortestEdges.has(edgeIdOf(d)))
       .classed('path-hit', (d) => !shortestEdges.has(edgeIdOf(d)) && pathEdges.has(edgeIdOf(d)))
       .classed('path-dim', (d) => !pathEdges.has(edgeIdOf(d)));
+    scheduleSyncView3D();
   }
 
   // ---- CSV export ----
@@ -1997,6 +2034,17 @@
     }
     const t = (score - range.min) / (range.max - range.min);
     return d3.interpolateYlOrRd(0.12 + 0.8 * t);
+  }
+
+  /**
+   * The colour of an edge: by its relation type, through the same hash-of-label colour the legend's edge
+   * swatch uses. Before this every edge was one grey, which made the legend claim a colour the drawing did
+   * not have - and left a graph whose edges are of several kinds (Payment, owns, contributesTo) with no way
+   * to tell them apart by looking. It reaches the stylesheet as the `--edge-color` custom property, so the
+   * highlight rules (search/legend/path) keep overriding it the way they always did.
+   */
+  function edgeColor(l) {
+    return colorFor(l.label, String(l.label));
   }
 
   function nodeColor(d) {
@@ -2456,6 +2504,7 @@
       return;
     }
     mapOpen = true;
+    if (view3dOpen) closeView3D(); // one canvas, one view: 3D gives way to the map as much as the other way round
     mapBasemap = null;
     mapPointsState = { kind: 'loading' };
     renderMapNote();
@@ -2640,6 +2689,154 @@
     if (button) { showMapPoints(button.dataset.mapSource); }
   }
 
+  // ---- 3D view: the same answer, from an angle, inside the panel ------------------------------------
+  //
+  // 3D is a *mode of the canvas*, not a page of its own (it used to be graph-3d.html, which meant a
+  // second data path, a second palette and no shared highlighting). The renderer (js/graph3d.js) knows
+  // nothing about graphs or queries: this side resolves what the 2D canvas is showing - the fill of every
+  // vertex, the stroke of every edge, the alpha a filter left behind, the ring a highlight drew - and
+  // hands those computed colours over. That is what makes a legend filter, a search hit, a shortest path
+  // or a PageRank heat look the same in 3D as in 2D: they *are* the same values.
+
+  let view3dOpen = false;
+  let view3dController = null;
+  let sync3dQueued = false;
+
+  function ensureView3D() {
+    if (view3dController || !window.PhoenixGraph3D || !el.view3d) return view3dController;
+    view3dController = window.PhoenixGraph3D.mount(el.view3d, {
+      autoRelax: true, // relax on animation frames, so a new answer visibly settles
+      onPick: (key) => {
+        const node = currentNodes.find((n) => n.key === key);
+        if (node) handleNodePick(node);
+      },
+    });
+    // what a test (or a probe) reads back, the way the old standalone 3D page exposed window.graph3d
+    window.phoenixView3D = view3dController;
+    return view3dController;
+  }
+
+  function toggleView3D() {
+    if (view3dOpen) closeView3D(); else openView3D();
+  }
+
+  function openView3D() {
+    if (!ensureView3D()) { toast(t('view3d')); return; }
+    if (mapOpen) closeMap(); // one canvas, one view: the map and 3D cannot both cover it
+    view3dOpen = true;
+    el.view3d.hidden = false;
+    if (el.view3dClose) el.view3dClose.hidden = false;
+    el.canvasWrap.classList.add('view3d-open');
+    el.view3dBtn.classList.add('active');
+    el.view3dBtn.setAttribute('aria-pressed', 'true');
+    el.view3dBtn.dataset.i18nTitle = 'view3dOpenTitle';
+    el.view3dBtn.title = t('view3dOpenTitle');
+    hideValue(); // the floating value window belongs to the canvas underneath
+    // a canvas that was hidden has no size: measure it now that it is displayed, then draw
+    view3dController.resize();
+    syncView3D();
+  }
+
+  function closeView3D() {
+    if (!view3dOpen) return;
+    view3dOpen = false;
+    if (view3dController) view3dController.stop();
+    el.view3d.hidden = true;
+    if (el.view3dClose) el.view3dClose.hidden = true;
+    el.canvasWrap.classList.remove('view3d-open');
+    el.view3dBtn.classList.remove('active');
+    el.view3dBtn.setAttribute('aria-pressed', 'false');
+    el.view3dBtn.dataset.i18nTitle = 'view3d';
+    el.view3dBtn.title = t('view3d');
+    el.legendCount.hidden = true;
+    // the canvas was covered while it may have been resized, and the hint above belongs to 3D
+    render();
+  }
+
+  /**
+   * Reads the *rendered* state of the 2D canvas: one record per vertex and per edge with the colour, the
+   * alpha and the ring it currently has. Reading the DOM instead of recomputing the filters means 3D can
+   * never disagree with 2D about what is dimmed, hit or selected - including for the filters added later.
+   */
+  function readCanvasState() {
+    const nodes = [];
+    const links = [];
+    const dimmed = new Set(['legend-dim', 'path-dim', 'search-dim', 'algo-out']);
+    if (!root) return { nodes, links };
+    root.selectAll('.node').each(function (d) {
+      const element = this;
+      const body = element.querySelector('circle.body');
+      const ring = element.querySelector('circle.ring');
+      const isDim = [...dimmed].some((name) => element.classList.contains(name));
+      let stroke = null;
+      if (ring && !isTransparent(getComputedStyle(ring).stroke)) stroke = getComputedStyle(ring).stroke;
+      else if (element.classList.contains('legend-hit') || element.classList.contains('search-hit')
+        || element.classList.contains('path-hit') || element.classList.contains('path-shortest')) {
+        stroke = getComputedStyle(body).stroke;
+      }
+      nodes.push({
+        key: d.key,
+        id: d.id,
+        label: displayLabel(d),
+        fill: body ? getComputedStyle(body).fill : nodeColor(d),
+        alpha: isDim ? 0.18 : 1,
+        ring: isDim ? null : stroke,
+        seed: { x: d.x, y: d.y },
+      });
+    });
+    root.selectAll('.edge').each(function (d) {
+      const style = getComputedStyle(this);
+      const endpoint = (side) => {
+        const value = d[side];
+        return value && typeof value === 'object' ? value.key : value;
+      };
+      const opacity = Number(style.strokeOpacity);
+      links.push({
+        source: endpoint('source'),
+        target: endpoint('target'),
+        stroke: style.stroke,
+        // an edge starts at half opacity in 2D (that is what the stylesheet says), so 3D normalises it:
+        // 0.5 is "nothing special", anything lower is a filter that dimmed it
+        alpha: Number.isFinite(opacity) ? Math.min(1, opacity / 0.5) : 1,
+        width: Number(style.strokeWidth) || 1.44,
+        dashed: !!d.reversed, // the DAG's cycle-breaking edges are dashed in 2D; keep that in 3D
+      });
+    });
+    return { nodes, links };
+  }
+
+  function isTransparent(color) {
+    const text = String(color || '');
+    return !text || text === 'none' || text === 'transparent' || /^rgba\(0,\s*0,\s*0,\s*0\)$/.test(text);
+  }
+
+  /** Hands the current answer to the 3D renderer. Called after every render and after every filter. */
+  function syncView3D() {
+    if (!view3dOpen || !ensureView3D()) return;
+    const { nodes, links } = readCanvasState();
+    view3dController.resize();
+    view3dController.setData(nodes, links);
+    view3dController.start();
+    refreshView3DHint();
+  }
+
+  /** Coalesces the many state changes one interaction makes (a click dims, selects and re-renders). */
+  function scheduleSyncView3D() {
+    if (!view3dOpen || sync3dQueued) return;
+    sync3dQueued = true;
+    const run = () => { sync3dQueued = false; syncView3D(); };
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run); else run();
+  }
+
+  /** Says what the 3D view is showing, in the same place the tree/DAG hint uses. */
+  function refreshView3DHint() {
+    if (!view3dOpen || !el.legendCount) return;
+    el.legendCount.hidden = false;
+    el.legendCount.textContent = t('view3dHint')
+      .replace('{n}', String(currentNodes.length))
+      .replace('{e}', String(currentLinks.length));
+  }
+
   /**
    * The largest single vertex type, with the other types folded away, and the types that were left
    * out. Connected components and Louvain only mean something within one kind of vertex, so a mixed
@@ -2776,6 +2973,16 @@
   // single click selects (and toggles a shortest-path pick); a quick second click expands one hop
   function onNodeClick(event, d) {
     event.stopPropagation();
+    handleNodePick(d);
+  }
+
+  /**
+   * What a click on a vertex does, from either canvas: re-root the tree (the vertices are the hierarchy's
+   * nodes), select it and open its properties - or, on a double click, expand one hop. 3D picks a vertex
+   * through hit testing instead of the DOM, but this is the part that decides what the click *means*, so
+   * both views behave identically.
+   */
+  function handleNodePick(d) {
     // in the tree layout a vertex is a root as much as it is an element: clicking it re-reads the whole
     // drawing from there (and still selects it, because the properties panel is the other question)
     if (treeMode) { treeRootKey = d.key; }
@@ -2832,6 +3039,7 @@
       selected && selected.type === 'vertex' && selected.id === d.id && selected.label === d.label);
     root.selectAll('.edge').classed('selected', (d) =>
       selected && selected.type === 'edge' && selected.id === d.id && selected.label === d.label);
+    scheduleSyncView3D();
   }
 
   // ---- keyword search (fuzzy) over the displayed subgraph ----
@@ -2892,6 +3100,7 @@
       nodes.classed('search-hit', false).classed('search-dim', false);
       edges.classed('search-hit', false).classed('search-dim', false);
       lastNoMatch = null;
+      scheduleSyncView3D();
       return;
     }
     const tokens = query.split(/\s+/).filter(Boolean);
@@ -2942,6 +3151,7 @@
     } else {
       lastNoMatch = null;
     }
+    scheduleSyncView3D();
   }
 
   function showProps(rows) {
@@ -3632,6 +3842,8 @@
     el.mapBtn.addEventListener('click', toggleMap);
     if (el.mapClose) el.mapClose.addEventListener('click', closeMap);
     if (el.mapNote) el.mapNote.addEventListener('click', onMapNoteClick);
+    if (el.view3dBtn) el.view3dBtn.addEventListener('click', toggleView3D);
+    if (el.view3dClose) el.view3dClose.addEventListener('click', closeView3D);
     document.querySelectorAll('.tab').forEach((t) => t.addEventListener('click', onTabChange));
     // one abbreviated value opens where it is drawn, in either list
     if (el.rowsTable) el.rowsTable.addEventListener('click', onValueClipClick);
@@ -3646,12 +3858,15 @@
         closeModal('errorModal');
       } else if (event.key === 'Escape' && mapOpen) {
         closeMap(); // the map is a view of its own: Escape is the way back from it as well
+      } else if (event.key === 'Escape' && view3dOpen) {
+        closeView3D(); // and so is 3D - checked after the map, which cannot be open at the same time
       }
     });
     if (el.errorCopy) {
       el.errorCopy.addEventListener('click', () => copyText(errorReport()));
     }
     window.addEventListener('resize', render);
+    window.addEventListener('resize', () => { if (view3dOpen) { ensureView3D().resize(); } });
 
     applyI18n();
     render();

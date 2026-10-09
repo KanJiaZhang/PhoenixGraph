@@ -696,15 +696,26 @@ curl -s -X POST localhost:8081/api/v1/query -H 'content-type: application/json' 
 - **algorithm colouring** (PageRank, Louvain, connected components, the four centralities, shortest
   path);
 - **tree and layered-DAG layouts** on the same canvas: the toolbar offers the tree (spanning, smooth
-  links, click a vertex to re-root) and a **layered DAG** (cycled broken with the reversed edges drawn
+  links, click a vertex to re-root) and a **layered DAG** (cycles broken with the reversed edges drawn
   dashed, longest-path ranks, barycenter ordering within a layer, **every edge kept**) in left→right,
-  top→bottom, bottom→top (and radial for the tree). Both keep the links attached: a layout that skips the
-  force simulation has to resolve a link's endpoints to its vertices itself - which is exactly the bug
-  that drew tree edges at NaN until the edges, not just the vertices, were checked;
-- **a 3D demo view** (`graph-3d.html`, linked from the header): the same query answer drawn with a
-  hand-rolled 3D force layout and a perspective projection on a plain canvas - no WebGL, no three.js, no
-  new dependency; drag to rotate, wheel to zoom. It is a demo/insight mode, not the analysis surface
-  (the readability evidence is in the comparison doc below);
+  right→left, top→bottom, bottom→top (and radial for the tree). Both keep the links attached: a layout
+  that skips the force simulation has to resolve a link's endpoints to its vertices itself - which is
+  exactly the bug that drew tree edges at NaN until the edges, not just the vertices, were checked. The
+  menu itself is translated like the rest of the UI (an `<optgroup>`'s label is an attribute, which the
+  i18n pass used to miss - the two layout groups were the last labels that stayed Chinese under an
+  English UI);
+- **the 3D view is a mode of the canvas, not a page of its own** (the toolbar's cube icon toggles it,
+  `Esc` or the back button leaves it): the same answer drawn with a hand-rolled 3D force layout and a
+  perspective projection on a plain canvas - no WebGL, no three.js, no new dependency. It reads the
+  colours the 2D canvas has *already* computed, so **vertices and edges keep their per-type colours and
+  every highlight and filter (legend, search, shortest path, centrality heat, selection) looks the same
+  in 3D**: legend dimming dims, a search hit keeps its ring, a filtered edge stays faded, and the
+  drawing re-renders with the query. Drag to rotate, wheel to zoom, click to select (double click
+  expands, and in a tree/DAG a click re-roots), the sibling "back to the graph" button or the icon again
+  returns to the flat picture;
+- **edges are coloured by their relation type** (the hash-of-label colour the legend swatch has always
+  used, handed to the stylesheet as `--edge-color`) instead of one grey for every relation, which is
+  what makes a multi-relation answer readable - and what lets 3D paint what the legend promised;
 - **what else is worth adopting** (Canvas 2D, WebGL at 100k+ elements, `d3-dag` if crossing minimisation
   matters more than zero dependencies): [docs/GRAPH-VISUALIZATION.md](docs/GRAPH-VISUALIZATION.md)
   compares the options and stages a recommendation, with the readability evidence for and against 3D;
