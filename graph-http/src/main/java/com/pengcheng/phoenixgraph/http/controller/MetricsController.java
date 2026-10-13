@@ -1,8 +1,11 @@
 package com.pengcheng.phoenixgraph.http.controller;
 
 import com.pengcheng.phoenixgraph.http.dto.MetricsView;
+import com.pengcheng.phoenixgraph.http.service.PrometheusFormat;
+import com.pengcheng.phoenixgraph.http.service.RequestLimits;
 import com.pengcheng.phoenixgraph.metrics.MetricsRegistry;
 import com.pengcheng.phoenixgraph.metrics.MetricsSnapshot;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -22,15 +25,21 @@ import java.util.Map;
  * {@code GET /api/v1/metrics/{graph}} with one graph in the grouped shape the dashboard
  * reads. {@code POST .../flush} writes the numbers through to storage (the timer does it
  * anyway) and {@code POST .../reset} starts a graph's counters over.
+ *
+ * <p>The same numbers are served in <b>Prometheus text format</b> at {@code /prometheus} (every graph, plus
+ * the request gate's counters) and {@code /{graph}/prometheus}, so a monitoring system and the dashboard
+ * read one source of truth instead of two measurements of it.
  */
 @RestController
 @RequestMapping("/api/v1/metrics")
 public class MetricsController {
 
     private final MetricsRegistry metrics;
+    private final RequestLimits limits;
 
-    public MetricsController(MetricsRegistry metrics) {
+    public MetricsController(MetricsRegistry metrics, RequestLimits limits) {
         this.metrics = metrics;
+        this.limits = limits;
     }
 
     /** Every graph with metrics, in the grouped view, plus the flat counter dump. */
@@ -75,5 +84,31 @@ public class MetricsController {
     public Map<String, Object> reset(@PathVariable("graph") String graph) {
         metrics.reset(graph);
         return Map.of("reset", graph);
+    }
+
+    /**
+     * Every graph in Prometheus text exposition format, plus the request gate's own counters.
+     *
+     * <p>This is the endpoint a scraper uses; the JSON endpoints above stay for the dashboard. The gate's
+     * counters are here rather than in a graph's snapshot because admission happens before a graph is known,
+     * and "how many requests were refused" is exactly the number an alert wants.
+     */
+    @GetMapping(value = "/prometheus", produces = MediaType.TEXT_PLAIN_VALUE)
+    public String prometheus() {
+        StringBuilder out = new StringBuilder();
+        for (MetricsSnapshot snapshot : metrics.snapshotAll().values()) {
+            out.append(PrometheusFormat.of(snapshot));
+        }
+        out.append(PrometheusFormat.ofInstance(limits.counters()));
+        return out.toString();
+    }
+
+    /** One graph in Prometheus text exposition format. */
+    @GetMapping(value = "/{graph}/prometheus", produces = MediaType.TEXT_PLAIN_VALUE)
+    public ResponseEntity<String> prometheusOne(@PathVariable("graph") String graph) {
+        if (!metrics.graphs().contains(graph) && metrics.storeOf(graph).load(graph) == null) {
+            return ResponseEntity.notFound().build();
+        }
+        return ResponseEntity.ok(PrometheusFormat.of(metrics.snapshot(graph)));
     }
 }

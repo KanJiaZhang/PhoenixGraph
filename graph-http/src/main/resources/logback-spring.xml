@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  One line per request, with the request id first class.
+
+  The line format is what the request filter writes for every /api request:
+
+      2026-10-13 15:04:11.812 INFO  [a1b2c3d4] c.p.p.h.controller.QueryController - POST /api/v1/query ...
+
+  The bracketed id is the MDC value the filter sets (from the caller's X-Request-Id when it sends one), so a
+  user reporting "this query failed" can be answered by grepping one string. Plain text, not JSON: the log is
+  read by a human first and by a collector second, and a JSON encoder without a JSON library in the
+  classpath would be a hand-rolled one.
+
+  Set PG_LOG_LEVEL=DEBUG to see the rejected-request details (the ApiExceptionHandler logs those at debug so a
+  hostile caller cannot flood the log with 400s).
+-->
+<configuration>
+    <property name="PG_LOG_LEVEL" value="${PG_LOG_LEVEL:-INFO}"/>
+
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%X{requestId:--}] %logger{28} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <logger name="com.pengcheng.phoenixgraph" level="${PG_LOG_LEVEL}"/>
+    <!-- Spring's own start-up noise stays at WARN unless the level above is DEBUG -->
+    <logger name="org.springframework" level="WARN"/>
+    <logger name="com.aerospike" level="WARN"/>
+
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+    </root>
+</configuration>

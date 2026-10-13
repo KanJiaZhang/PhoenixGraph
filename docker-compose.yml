@@ -14,7 +14,8 @@
 services:
 
   aerospike:
-    image: aerospike/aerospike-server:latest
+    # pinned: the version this repository is tested against (docker inspect on the running container)
+    image: aerospike/aerospike-server:8.1.2.5
     ports:
       - "3000:3000"
     healthcheck:

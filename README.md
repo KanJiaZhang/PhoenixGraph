@@ -30,6 +30,33 @@ geo search** behind one query, and serves **knowledge graphs as context for AI a
   query walks from the pattern to the ring (`graph-fuzzy` holds the pattern language and the
   deterministic ids). A pattern is data (`fuzzy-patterns.json`), editable while the service runs.
 
+### Limitations — what this is *not* (read this before deploying)
+
+This is a **0.1 engine**: wide and tested, but not yet a hardened product. The gaps are known and tracked in
+[docs/ROADMAP-1.0.md](docs/ROADMAP-1.0.md); the short version:
+
+- **No authentication, no authorization, no TLS.** Every endpoint is open to anyone who can reach the port,
+  and an error response includes a Java stack trace. Run it behind a trusted boundary only.
+- **Single node, no failover.** One `graph-http` holds the engines; RocksDB is a single-writer store on a
+  local or shared volume; the Aerospike container runs without replicas. A restart is a short outage.
+- **No backup/restore tooling, no schema migration.** Moving a graph's schema forward is a manual edit today
+  (the schema files carry no version field).
+- **No per-request resource limits.** A slow or malicious query can occupy the instance; `timeLimit` is a
+  step the *caller* has to add.
+- **Demo-scale data.** The served examples are 10²-10⁴ vertices. The performance numbers above are measured
+  on that scale; there is no published benchmark at 10⁷+ vertices.
+- **Not every Gremlin/Cypher construct.** `as/select/match/project/sack/...` need the traverser model that is
+  designed but not built (`TRAVERSER-DESIGN.md`, local); unsupported syntax is *rejected*, never silently
+  ignored.
+
+What it *does* have is unusual for this stage: **885 unit tests**, a published **live verification suite**
+(`verification/`), and documentation whose numbers are re-checked by that suite.
+
+Start here: [QUICKSTART.md](QUICKSTART.md) (10 minutes) · [docs/API.md](docs/API.md) (48 endpoints,
+error model, limits) · [docs/DATA-QUALITY.md](docs/DATA-QUALITY.md) (the numbers not to trust) ·
+[docs/AGENT-CASES.md](docs/AGENT-CASES.md) (two worked analyses) ·
+[docs/ROADMAP-1.0.md](docs/ROADMAP-1.0.md) (what 1.0 still needs) · [CHANGELOG.md](CHANGELOG.md).
+
 ### One query over vector, geo and the graph
 
 ![vector, geo and graph in one query](docs/screenshots/vector-geo-graph.png)
@@ -90,6 +117,9 @@ What makes the graph usable as context:
   identically (`SanguoRocksDbEdgeTest#matchesTheAerospikeGraphOnTheSharedQuestions`).
 
 ## Install and run
+
+**In a hurry? [QUICKSTART.md](QUICKSTART.md) is ten minutes from clone to the first query, algorithm and
+agent tool call.** This section is the reference for the same steps.
 
 ### Requirements
 
@@ -169,6 +199,12 @@ and each superstep picks the cheaper direction (`sparse when activeEdges < |E| /
   query cache), reads a batch of seeds in parallel (`parallelism`, default `min(8, CPU)`), keeps an
   adaptive batch size, and serves stateless HTTP requests, so it scales horizontally behind a load
   balancer; the storage (Aerospike, or RocksDB on a shared volume) is the only shared state.
+- **What one instance will spend is configured, not hoped for.** `phoenixgraph.limits` bounds requests in
+  flight, requests per second per graph, and the wall clock a query may run (`request-timeout`), answering
+  `429`/`503` with `Retry-After`; every request carries an `X-Request-Id` that is also on its log line. See
+  [docs/API.md](docs/API.md#2-limits-and-the-status-codes-a-client-must-handle). Horizontal scaling is a
+  deployment story (M3 of the roadmap, unverified at multiple instances): the limits make one instance
+  *safe*, not *fast enough*.
 
 ```groovy
 g.V('135','Account').bothE('Payment').otherV().pagerank(DIST, 10)   // 50 accounts, ~2.8 s incl. load
@@ -292,6 +328,7 @@ reads they caused, and the latency as mean/p50/p95/p99/max.
 ```
 GET  /api/v1/metrics                 # every graph that recorded something
 GET  /api/v1/metrics/{graph}         # storage / quality / queries, ready for a dashboard
+GET  /api/v1/metrics/prometheus      # the same numbers in Prometheus text format (+ the request gate)
 POST /api/v1/metrics/{graph}/flush   # write through now (a timer does it every 30 s)
 POST /api/v1/metrics/{graph}/reset
 ```

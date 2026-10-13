@@ -45,7 +45,7 @@ import java.util.List;
  * graphs served by the same instance, each with its own vertex set.
  */
 @Configuration
-@EnableConfigurationProperties(StorageProperties.class)
+@EnableConfigurationProperties({StorageProperties.class, LimitsProperties.class})
 public class StorageConfig {
 
     /**

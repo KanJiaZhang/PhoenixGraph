@@ -116,3 +116,16 @@ phoenixgraph:
     #   vertex-set: payment_smart_v1
     # - schema: payment-graph-smart-rocksdb
     #   vertex-set: payment_smart_v1
+
+    # --- request limits (see docs/API.md and docs/ROADMAP-1.0.md M2) ---
+    # One instance has a fixed number of threads and connections; these are the numbers that keep one
+    # expensive or hostile request from spending them for everybody else. The defaults are conservative
+    # enough for a demo instance, and a deployment that needs more says so here.
+  limits:
+    enabled: true
+    max-concurrent: 64        # requests in flight on this instance
+    queue-wait: 2s            # how long a request waits for a slot before it is refused
+    per-graph-concurrent: 8   # one hot graph cannot take the whole instance
+    per-graph-per-second: 200 # 0 switches the rate limit off
+    request-timeout: 30s      # wall clock a query may run; the engine checks it between steps
+    retry-after-seconds: 1    # what a 429/503 answer tells the client to wait

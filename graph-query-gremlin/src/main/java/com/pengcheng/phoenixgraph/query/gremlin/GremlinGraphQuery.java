@@ -5,6 +5,7 @@ import com.pengcheng.phoenixgraph.gemini.GeminiAlgorithms;
 import com.pengcheng.phoenixgraph.gemini.GeminiCluster;
 import com.pengcheng.phoenixgraph.hnsw.HnswFilter;
 import com.pengcheng.phoenixgraph.hnsw.HnswIndex;
+import com.pengcheng.phoenixgraph.query.QueryDeadline;
 import com.pengcheng.phoenixgraph.query.QueryException;
 import com.pengcheng.phoenixgraph.query.result.Subgraph;
 import com.pengcheng.phoenixgraph.query.traversal.NeighborVertexResolver;
@@ -2619,6 +2620,9 @@ public class GremlinGraphQuery {
         int hopFanOut = 0;
         boolean filterSinceHop = false;
         for (int i = from; i < to; i++) {
+            // the request's deadline, if it has one: a step boundary is the natural place, because every
+            // step (a hop, a filter, an algorithm) is bounded work the caller can recognise
+            QueryDeadline.check();
             String name = compiled.stepNames.get(i);
             int before = current.size();
             long started = System.nanoTime();
@@ -2648,6 +2652,8 @@ public class GremlinGraphQuery {
                 step.put("millis", (System.nanoTime() - started) / 1e6);
                 profile.add(step);
             }
+            // and after it: a step that took the whole budget must not let the next one start
+            QueryDeadline.check();
         }
         return current;
     }

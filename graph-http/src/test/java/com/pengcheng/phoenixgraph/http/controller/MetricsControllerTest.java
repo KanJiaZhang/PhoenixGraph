@@ -1,6 +1,8 @@
 package com.pengcheng.phoenixgraph.http.controller;
 
+import com.pengcheng.phoenixgraph.http.config.LimitsProperties;
 import com.pengcheng.phoenixgraph.http.dto.MetricsView;
+import com.pengcheng.phoenixgraph.http.service.RequestLimits;
 import com.pengcheng.phoenixgraph.metrics.GraphMetrics;
 import com.pengcheng.phoenixgraph.metrics.InMemoryMetricsStore;
 import com.pengcheng.phoenixgraph.metrics.Metrics;
@@ -22,6 +24,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class MetricsControllerTest {
 
+    /** A gate with generous limits: it is here because the controller exports its counters, not to limit the test. */
+    private static RequestLimits gate() {
+        return new RequestLimits(new LimitsProperties(true, 64, Duration.ofMillis(10), 8, 0, Duration.ofSeconds(5), 1));
+    }
+
     private static MetricsRegistry registry() {
         MetricsRegistry registry = new MetricsRegistry(new InMemoryMetricsStore(), Duration.ZERO);
         GraphMetrics graph = registry.forGraph("payment-graph");
@@ -42,7 +49,7 @@ class MetricsControllerTest {
 
     @Test
     void oneGraphComesBackGroupedWithTotalsAndToday() {
-        Map<String, Object> body = new MetricsController(registry()).one("payment-graph").getBody();
+        Map<String, Object> body = new MetricsController(registry(), gate()).one("payment-graph").getBody();
 
         assertEquals("payment-graph", body.get("graph"));
         @SuppressWarnings("unchecked")
@@ -62,7 +69,7 @@ class MetricsControllerTest {
     void theQuerySectionCarriesTheSourcesTheTranslationAndThePercentiles() {
         @SuppressWarnings("unchecked")
         Map<String, Object> queries = (Map<String, Object>)
-                new MetricsController(registry()).one("payment-graph").getBody().get("queries");
+                new MetricsController(registry(), gate()).one("payment-graph").getBody().get("queries");
 
         @SuppressWarnings("unchecked")
         Map<String, Map<String, Long>> byLanguage = (Map<String, Map<String, Long>>) queries.get("byLanguageAndSource");
@@ -84,7 +91,7 @@ class MetricsControllerTest {
 
     @Test
     void everyGraphIsListedAndTheFlatCountersComeAlong() {
-        Map<String, Object> body = new MetricsController(registry()).all();
+        Map<String, Object> body = new MetricsController(registry(), gate()).all();
 
         @SuppressWarnings("unchecked")
         List<MetricsView> graphs = (List<MetricsView>) body.get("graphs");
@@ -97,13 +104,13 @@ class MetricsControllerTest {
 
     @Test
     void anUnknownGraphIsNotFound() {
-        assertEquals(404, new MetricsController(registry()).one("nope").getStatusCode().value());
+        assertEquals(404, new MetricsController(registry(), gate()).one("nope").getStatusCode().value());
     }
 
     @Test
     void flushAndResetActOnTheRegistry() {
         MetricsRegistry registry = registry();
-        MetricsController controller = new MetricsController(registry);
+        MetricsController controller = new MetricsController(registry, gate());
 
         assertEquals(Map.of("flushed", "payment-graph", "counters", registry.snapshot("payment-graph")
                 .counters().size()), controller.flush("payment-graph"));

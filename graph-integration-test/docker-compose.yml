@@ -1,6 +1,7 @@
 services:
   aerospike:
-    image: aerospike/aerospike-server-community
+    # pinned like the deployment compose: the store the integration tests were written against
+    image: aerospike/aerospike-server-community:8.1.2.5
     container_name: aerospike
     ports:
       - "3000:3000"
