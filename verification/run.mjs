@@ -116,11 +116,13 @@ for (const check of selected) {
   const output = `${run.stdout || ''}${run.stderr || ''}`.split(/\r?\n/).filter(Boolean);
   const ok = output.filter((line) => line.startsWith('ok ')).length;
   const bad = output.filter((line) => line.startsWith('FAIL')).length;
-  const passed = run.status === 0;
+  const skippedItself = run.status === 0 && ok === 0 && output.some((line) => line.startsWith('skip '));
+  const passed = run.status === 0 && !skippedItself;
   const flakyNow = passed && attempt > 0;
-  if (!passed) failed += 1;
+  if (!passed && !skippedItself) failed += 1;
+  else if (skippedItself) skipped += 1;
   else if (flakyNow) flaky += 1;
-  results.push([check.file, passed ? (flakyNow ? 'flaky' : 'pass') : 'FAIL',
+  results.push([check.file, skippedItself ? 'skipped' : passed ? (flakyNow ? 'flaky' : 'pass') : 'FAIL',
     `${ok} assertion(s)${bad ? `, ${bad} failed` : ''} in ${((Date.now() - started) / 1000).toFixed(1)}s`]);
   // a failing check prints *all* its FAIL lines, not just the tail: a flake nobody can read is useless
   const interesting = passed && !flakyNow ? output.slice(-1) : output.filter((line) => line.startsWith('FAIL') || line.startsWith('ok ') || /FAILURES/.test(line)).slice(-14);
