@@ -1,0 +1,24 @@
+# One command for the whole deployment:
+#
+#   kubectl apply -k deploy/k8s
+#   kubectl -n default rollout status deploy/graph-http
+#
+# The images are pinned here (and in the manifests): a deployment that pulls `latest` cannot be rolled back.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - configmap.yaml
+  - storage.yaml
+  - graph-http.yaml
+  - graph-web.yaml
+
+images:
+  - name: phoenixgraph-http
+    newTag: 0.2.0
+  - name: phoenixgraph-web
+    newTag: 0.2.0
+
+labels:
+  - includeSelectors: false
+    pairs:
+      app.kubernetes.io/part-of: phoenixgraph

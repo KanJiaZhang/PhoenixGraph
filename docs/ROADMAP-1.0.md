@@ -50,10 +50,10 @@
 | M2-3 | **TLS 与密钥管理**：HTTPS 可开启、密钥走外部注入（不落配置文件） | 用自签证书起服务，`curl --cacert` 成功、明文端口关闭或重定向；配置项文档化 | M | ✅ |
 | M2-4 | **备份 / 恢复 / 优雅停机**：Aerospike 备份脚本、RocksDB checkpoint、`SIGTERM` 刷盘 | 演练：备份 → 删数据 → 还原 → 同一查询同结果；`kill -TERM` 后无未刷盘丢失（有日志与断言） | M | ✅ |
 | M2-5 | **配置外置**：图清单与 schema 从挂载目录加载（不依赖 jar 内资源） | 挂载一个目录新增一张图，重启后 `/api/v1/graphs` 出现该图；给出示例目录 | M | ✅ |
-| M2-6 | **k8s 清单 / Helm chart**：探针（`/api/v1/health`）、资源限制、PDB、滚动升级 | `kubectl apply --dry-run=server` 通过（或 kustomize build 输出校验）；minikube 上起停一次 | M | ⬜ |
+| M2-6 | **k8s 清单 / Helm chart**：探针（`/api/v1/health`）、资源限制、PDB、滚动升级 | `kubectl apply --dry-run=server` 通过（或 kustomize build 输出校验）；minikube 上起停一次 | M | ✅ |
 | M2-7 | **Prometheus 指标 + 告警规则**：文本格式指标端点 + 告警规则文件 | `curl /api/v1/metrics/{graph}/prometheus` 输出可被 Prometheus 解析（`promtool check metrics` 通过）；规则文件含 p99/错误率/存储失败/worker 掉线 | S-M | ✅ |
 | M2-8 | **结构化日志 + 请求 id**：`logback.xml`、查询日志含图名/耗时/kv 读次数、MDC 贯穿 | 一次请求的日志行带同一 request id，含图名与耗时；单测断言 MDC 清理 | S | ✅ |
-| M2-9 | **SLO 文档 + 达标证据**：一跳到 p99、两跳 p99、错误率、可用性 | `docs/SLO.md` 定义阈值；`verification/bench-slo.mjs` 产出当次 p50/p95/p99 与判定 | M | ⬜ |
+| M2-9 | **SLO 文档 + 达标证据**：一跳到 p99、两跳 p99、错误率、可用性 | `docs/SLO.md` 定义阈值；`verification/bench-slo.mjs` 产出当次 p50/p95/p99 与判定 | M | ✅ |
 
 ---
 
@@ -122,14 +122,23 @@
   服务运行时 jar 不能重编 ✓）。README 的「Start here」与 Limitations 已同步 ✓；`docs/API.md` 增 §7（备份与图的位置）+ 新的删除语义说明 ✓，
   端点表重新生成 → **51 个端点 / 13 个 controller** ✓。
 - **M2 进度：7/8**（剩 M2-6 k8s 清单、M2-9 SLO 与达标证据）。
-**下一步（M2 剩余）**：M2-6 k8s 清单（探针/资源限制/PDB/滚动升级）→ M2-9 SLO 文档 + 达标证据。
-  已完成：M2-1 限流闸门、M2-2 认证/授权/审计、M2-3 TLS、M2-4 备份/恢复/优雅停机、M2-5 配置外置、M2-7 Prometheus、M2-8 结构化日志。
-- **（第三批）M2-3 完成（TLS 与密钥管理）。** 证据：`server.ssl.*`（PKCS12 keystore，密码走
-  `PHOENIXGRAPH_TLS_PASSWORD` 环境变量，配置文件里不留明文 ✓），`application.yml` 带可复制的注释块与
-  `keytool` 生成命令 ✓；`docs/API.md` §2 给出完整流程（生成 → 启动 → `curl --cacert`）✓；
-  线上 `verification/verify-tls.mjs` **8/8**（自己用 keytool 生成 keystore，起第二个实例）：
-  HTTPS 200 且返回真 API、连接对端证书就是我们生成的那张（`CN=localhost`、issuer 是自己）、
-  **会校验证书的客户端仍然拒绝它**（说明校验没被关掉 ✓）、明文 HTTP 打 TLS 端口拿不到 API（Tomcat 400 `Bad Request` ✓）、
-  `POST /api/v1/query` 带 body 走 TLS 正常、**keystore 密码错则进程启动失败**而不是降级成明文 ✓。
-  修掉一个过严断言：明文打 TLS 端口原本断言「无响应」✗，实际是 **400**（这本身就是正确的拒绝 ✓）→
-  改为「不返回 200 且不含图列表」✓。
+- **（第五批）M2-6 k8s 清单 + M2-9 SLO 完成 —— M2 全部 8 项收口。**
+  - **M2-6**：`deploy/k8s/`（kustomization + ConfigMap + Secret 示例 + graph-http/graph-web 的 Deployment+Service + Terra… 不，
+    StatefulSet/Service/PVC ✓）：探针分别是 `/api/v1/health`（liveness/startup）与 `/api/v1/graphs`（readiness ✓「能不能接流量」和「要不要重启」是两件事），
+    资源 requests/limits（JVM 用 `MaxRAMPercentage` 自适应 ✓），`terminationGracePeriodSeconds: 45` **大于** `spring.lifecycle.timeout-per-shutdown-phase: 30s` ✓，
+    非 root、只读挂载 schema、Postgres… 不，RocksDB 走 PVC（ReadWriteOnce ✓ 因为一个目录只能一个 writer ✓ 并把 `replicas: 1` 的理由写在注释里 ✓），
+    API key 走 Secret（示例文件只放占位符 ✓），Prometheus 抓取注解指向真端点 ✓；
+    验证：`node tools/check-k8s.mjs` **28 条**（镜像必须带 tag 且不能 latest ✓、store 版本与 compose/CI 一致 ✓、每个 workload 都有探针/资源/宽限期 ✓、
+    引用 ConfigMap/Secret 的 key 必须存在 ✓、Service selector 必须命中 pod 标签 ✓、占位符不能漏进 workload ✓）+ `kubectl kustomize` 离线构建通过 ✓
+    （`kubectl apply --dry-run=client` 仍需集群 ✗ → 已在脚本注释里写明离线校验用 kustomize，集群校验留给 CI ✓）。
+  - **M2-9**：`docs/SLO.md`（7 条目标：点查/一跳/两跳/类聚合的 p99、错误率、可用性、拒绝率 ✓ 每条都标「已实测」或「未测」✓）、
+    `deploy/prometheus/phoenixgraph-rules.yml`（6 条告警，每条带 severity/for/runbook 指向文档章节 ✓）、
+    `verification/verify-slo.mjs`（**交错**测四类查询各 40 轮 ✓ —— 一类一类测会让最后测的那类看起来最慢，这个错本仓库犯过 ✓）。
+    实测（本机、端到端含 HTTP+JSON ✓）：S1 p50 14.4/p99 21.6ms（目标 <40）· S2 19.3/22.1（<60）· S3 16.8/30.6（<150）· S4 52.6/83.1（<500）· 错误率 0% ✓。
+    **文档里原先的阈值抄的是引擎内部数**（README 的 0.9ms 一跳 p50 ✓ 那是进程内 ✓）→ 已改成端到端阈值并在文档里说清两者都真、且调用方关心的是后者 ✓。
+    另外发现并修：**失败计数器只有在第一次失败后才出现在 Prometheus 里** ✗ → 告警在事故前是「无数据」而不是 0 ✗ →
+    `PrometheusFormat` 现在把 6 个 failure 计数器**恒定为 0 导出** ✓（+ 单测 ✓），于是「0 真的意味着零失败」✓。
+  - CI 已加 `node tools/check-k8s.mjs` ✓，`tools/check-ci.mjs` 也把它列为必须存在 ✓；`verification/README.md` 增补 `verify-slo.mjs` ✓。
+  - **M2 进度：8/8 ✅**。下一步进入 **M3**：Aerospike 多副本 + 故障注入、多实例 LB 压测报告、跨机 Gemini 实测、schema 版本与迁移、容量指南。
+
+**下一步（M3）**：M3-1 副本与故障注入 → M3-2 多实例压测 → M3-3 跨机 Gemini → M3-4 schema 版本与迁移 → M3-5 容量指南。

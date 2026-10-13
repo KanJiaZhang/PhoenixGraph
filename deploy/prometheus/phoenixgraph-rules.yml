@@ -1,0 +1,83 @@
+# Alerting rules for PhoenixGraph.
+#
+#   kubectl apply -f deploy/prometheus/phoenixgraph-rules.yml        # as a PrometheusRule (operator)
+#   promtool check rules deploy/prometheus/phoenixgraph-rules.yml    # syntax
+#
+# They match docs/SLO.md one for one, and verification/verify-slo.mjs fails if a rule names a metric the
+# running instance does not export, or a threshold this file and the document disagree about. The annotations
+# carry the first thing to look at, because an alert that only says "something is wrong" costs the responder
+# the time it was supposed to save.
+groups:
+  - name: phoenixgraph-slo
+    rules:
+      # S1/S2/S3: the keyed and hop query classes are what an interactive caller waits on.
+      - alert: PhoenixGraphQueryLatencyHigh
+        expr: phoenixgraph_query_latency_language_gremlin_p99_millis > 60
+        for: 10m
+        labels:
+          severity: warning
+          slo: S1-S3
+        annotations:
+          summary: "Gremlin p99 above 60 ms on {{ $labels.graph }}"
+          runbook: "docs/SLO.md section 3: check /api/v1/metrics/{{ $labels.graph }} (language, storage counters), then the audit trail for the slow statement"
+
+      # S4: the analytical class scan is slower by nature, so it gets its own threshold.
+      - alert: PhoenixGraphAggregateLatencyHigh
+        expr: phoenixgraph_query_latency_language_gremlin_p99_millis{graph=~"tpc-h-data|tpc-h-analytics"} > 500
+        for: 15m
+        labels:
+          severity: warning
+          slo: S4
+        annotations:
+          summary: "class-scan p99 above 500 ms on {{ $labels.graph }}"
+          runbook: "docs/SLO.md section 3: is the query a whole-class aggregate? Check the storage counters and whether a wider time window is needed"
+
+      # S5: an error rate, not a count - one 500 at one request per minute is not the same as one at 10k/s.
+      - alert: PhoenixGraphErrorRateHigh
+        expr: |
+          sum(rate(phoenixgraph_query_failed_language_gremlin_source_http_total[5m]))
+            / clamp_min(sum(rate(phoenixgraph_query_count_language_gremlin_source_http_total[5m])), 0.001) > 0.005
+        for: 5m
+        labels:
+          severity: critical
+          slo: S5
+        annotations:
+          summary: "more than 0.5% of queries are failing"
+          runbook: "docs/SLO.md section 3: the error body carries the message and the stack; quote X-Request-Id when reporting it"
+
+      # S7: a refusal is a *deliberate* answer, so it is a warning with a question, not a page.
+      - alert: PhoenixGraphRefusingRequests
+        expr: increase(phoenixgraph_requests_refused_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          slo: S7
+        annotations:
+          summary: "the request gate is refusing calls"
+          runbook: "docs/SLO.md section 3: compare admitted/refused and check phoenixgraph.limits.* - real load (scale out) or one caller (rate limit)"
+
+      - alert: PhoenixGraphStorageFailures
+        expr: increase(phoenixgraph_storage_edge_read_failed_total[10m]) > 0
+          or increase(phoenixgraph_storage_edge_write_failed_total[10m]) > 0
+          or increase(phoenixgraph_storage_vertex_read_failed_total[10m]) > 0
+          or increase(phoenixgraph_storage_vertex_write_failed_total[10m]) > 0
+          or increase(phoenixgraph_storage_kv_read_failed_total[10m]) > 0
+          or increase(phoenixgraph_storage_kv_write_failed_total[10m]) > 0
+        for: 10m
+        labels:
+          severity: critical
+          slo: storage
+        annotations:
+          summary: "storage reads or writes are failing on {{ $labels.graph }}"
+          runbook: "docs/OPERATIONS.md section 6 (what to watch) and section 4 (restore)"
+
+      # S6: if the scrape is gone, every other rule above is blind.
+      - alert: PhoenixGraphDown
+        expr: up{job="phoenixgraph"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          slo: S6
+        annotations:
+          summary: "PhoenixGraph is not answering the scrape"
+          runbook: "docs/OPERATIONS.md section 1 (what runs where)"

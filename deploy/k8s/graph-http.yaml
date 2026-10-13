@@ -1,0 +1,140 @@
+# The engine: the graph service, the query API and the write API.
+#
+# The three things that make this a *deployment* rather than a container:
+#   - probes that mean something: /api/v1/health says the process is alive, /api/v1/graphs says it can reach
+#     its storage and has graphs to serve (the difference between "restart me" and "do not send traffic yet")
+#   - resources, so the JVM (which sizes itself from MaxRAMPercentage) and the node agree on how much memory
+#     this needs
+#   - graceful shutdown: terminationGracePeriodSeconds is longer than the lifecycle timeout, so the engine
+#     finishes in-flight requests, flushes the metrics and closes RocksDB before the pod goes away
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: graph-http
+  labels:
+    app.kubernetes.io/name: phoenixgraph
+    app.kubernetes.io/component: engine
+spec:
+  # one replica: the RocksDB graphs live on a ReadWriteOnce volume and only one process may open a directory
+  # (the keyed Aerospike graphs could be served by many - that is a different, multi-instance deployment)
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: phoenixgraph
+      app.kubernetes.io/component: engine
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: phoenixgraph
+        app.kubernetes.io/component: engine
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8081"
+        prometheus.io/path: /api/v1/metrics/prometheus
+    spec:
+      # longer than spring.lifecycle.timeout-per-shutdown-phase (30s): the engine gets to finish
+      terminationGracePeriodSeconds: 45
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        fsGroup: 999
+      containers:
+        - name: graph-http
+          image: phoenixgraph-http:0.2.0          # pin a tag (or a digest); never `latest`
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8081
+          envFrom:
+            - configMapRef:
+                name: phoenixgraph-config
+          env:
+            - name: PHOENIXGRAPH_SECURITY_KEYS
+              valueFrom:
+                secretKeyRef:
+                  name: phoenixgraph-secrets
+                  key: PHOENIXGRAPH_SECURITY_KEYS
+            - name: JAVA_OPTS
+              value: "-XX:MaxRAMPercentage=75 -XX:+UseContainerSupport"
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          livenessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 4
+          readinessProbe:
+            httpGet:
+              path: /api/v1/graphs
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          startupProbe:
+            # the first start builds nothing but does open every RocksDB directory and read every schema
+            httpGet:
+              path: /api/v1/health
+              port: http
+            periodSeconds: 5
+            failureThreshold: 24
+          volumeMounts:
+            - name: rocksdb
+              mountPath: /data/rocksdb
+            - name: schemas
+              mountPath: /etc/phoenixgraph/schemas
+              readOnly: true
+      volumes:
+        - name: rocksdb
+          persistentVolumeClaim:
+            claimName: phoenixgraph-rocksdb
+        - name: schemas
+          configMap:
+            name: phoenixgraph-schemas
+            optional: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: graph-http
+  labels:
+    app.kubernetes.io/name: phoenixgraph
+    app.kubernetes.io/component: engine
+spec:
+  selector:
+    app.kubernetes.io/name: phoenixgraph
+    app.kubernetes.io/component: engine
+  ports:
+    - name: http
+      port: 8081
+      targetPort: http
+---
+# One replica, so a PodDisruptionBudget cannot actually protect it - and that is the honest configuration:
+# this is a single-writer deployment (one process per RocksDB directory), so a node drain *will* interrupt it,
+# and saying so is better than a budget that only looks reassuring. It becomes meaningful with the keyed
+# (Aerospike-only) variant of this deployment, where several instances are interchangeable.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: graph-http
+  labels:
+    app.kubernetes.io/name: phoenixgraph
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: phoenixgraph
+      app.kubernetes.io/component: engine

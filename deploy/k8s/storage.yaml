@@ -1,0 +1,96 @@
+# The RocksDB graphs: one volume, one writer. ReadWriteOnce on purpose - the engine opens the directory
+# exclusively, so two pods must not mount it at once; that is also why graph-http has one replica.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: phoenixgraph-rocksdb
+  labels:
+    app.kubernetes.io/name: phoenixgraph
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+  # storageClassName: your-class        # take the cluster default when this is omitted
+---
+# Aerospike for the keyed graphs, as a single-replica StatefulSet with its own volume.
+#
+# This is a *development* shape: no replication factor, no rack awareness, no backup sidecar. A production
+# deployment runs the Aerospike Kubernetes Operator (or a managed Aerospike), and this instance keeps its
+# namespace and set names so the engine's configuration does not change.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: aerospike
+  labels:
+    app.kubernetes.io/name: phoenixgraph
+    app.kubernetes.io/component: store
+spec:
+  serviceName: aerospike
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: phoenixgraph
+      app.kubernetes.io/component: store
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: phoenixgraph
+        app.kubernetes.io/component: store
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: aerospike
+          image: aerospike/aerospike-server:8.1.2.5   # the version this repository is tested against
+          ports:
+            - name: service
+              containerPort: 3000
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          livenessProbe:
+            exec:
+              command: ["asinfo", "-v", "-c", "status"]
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 4
+          readinessProbe:
+            exec:
+              command: ["asinfo", "-v", "-c", "status"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+          volumeMounts:
+            - name: data
+              mountPath: /opt/aerospike/data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aerospike
+  labels:
+    app.kubernetes.io/name: phoenixgraph
+    app.kubernetes.io/component: store
+spec:
+  clusterIP: None            # a headless service: the StatefulSet pod is addressed by name (aerospike-0)
+  selector:
+    app.kubernetes.io/name: phoenixgraph
+    app.kubernetes.io/component: store
+  ports:
+    - name: service
+      port: 3000
+      targetPort: service

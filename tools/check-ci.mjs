@@ -29,12 +29,13 @@ for (const job of ['unit', 'deployment', 'nightly']) {
 check('the nightly job is scheduled, not per-push', /cron:/.test(workflow) && /if: github\.event_name == 'schedule'/.test(workflow));
 
 // 2. the commands exist as files, and the checks the plan promised are wired in
-for (const path of ['tools/api-endpoints.mjs', 'verification/run.mjs', 'tools/check-ci.mjs']) {
+for (const path of ['tools/api-endpoints.mjs', 'verification/run.mjs', 'tools/check-ci.mjs', 'tools/check-k8s.mjs']) {
   check(`the workflow calls ${path}, and it exists`, workflow.includes(path) && existsSync(path));
 }
 check('the workflow drives the deployment through docker compose',
   /docker compose (config --quiet|build|up -d|logs|down)/.test(workflow) && existsSync('docker-compose.yml'));
 check('the unit job runs the generated-docs check', /api-endpoints\.mjs --check/.test(workflow));
+check('the unit job checks the kubernetes manifests', /check-k8s.mjs/.test(workflow) && existsSync('deploy/k8s'));
 check('the deployment job asserts the 404/405 error contract, not just a 200',
   /%\{http_code\}/.test(workflow) && /404/.test(workflow) && /error/.test(workflow));
 

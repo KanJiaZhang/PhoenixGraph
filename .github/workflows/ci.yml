@@ -55,6 +55,9 @@ jobs:
       - name: the CI workflow itself is coherent
         run: node tools/check-ci.mjs
 
+      - name: the kubernetes manifests are coherent
+        run: node tools/check-k8s.mjs
+
   deployment:
     name: container path (build, start, smoke)
     runs-on: ubuntu-latest

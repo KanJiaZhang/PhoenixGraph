@@ -28,6 +28,15 @@ import java.util.TreeMap;
  */
 public final class PrometheusFormat {
 
+    /**
+     * Counters that describe something going wrong. Exported as a zero rather than omitted, so a rule can tell
+     * "nothing has failed" from "this metric does not exist".
+     */
+    private static final java.util.List<String> ALWAYS_EXPORTED_FAILURES = java.util.List.of(
+            "storage.vertex.read.failed", "storage.edge.read.failed",
+            "storage.vertex.write.failed", "storage.edge.write.failed",
+            "storage.kv.read.failed", "storage.kv.write.failed");
+
     private PrometheusFormat() {
     }
 
@@ -41,7 +50,13 @@ public final class PrometheusFormat {
         out.append("phoenixgraph_uptime_info{graph=\"").append(graph).append("\",updated_at=\"")
                 .append(snapshot.updatedAt()).append("\"} 1\n");
 
+        // Failure counters are exported even when they are still zero. A series that only appears once
+        // something has already gone wrong cannot be alerted on: "no data" and "no failures" look the same to
+        // a rule, and the rule would stay silent through exactly the incident it exists for.
         Map<String, Long> counters = new TreeMap<>(snapshot.counters());
+        for (String failure : ALWAYS_EXPORTED_FAILURES) {
+            counters.putIfAbsent(failure, 0L);
+        }
         for (Map.Entry<String, Long> entry : counters.entrySet()) {
             String name = "phoenixgraph_" + metricName(entry.getKey()) + "_total";
             out.append("# TYPE ").append(name).append(" counter\n");

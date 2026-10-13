@@ -124,3 +124,22 @@ semantic layer, and the visualization workbench. See `README.md` for what each o
   stayed visible across a restart. Found by the backup drill (write a vertex, delete it, read it back), fixed
   in one place, and covered by a unit test. It also explains the `asrestore` "skipped"/"fresher" behaviour the
   restore drill hit. See `docs/DATA-QUALITY.md` §8.
+
+### Added
+
+- **Kubernetes manifests** (M2-6) in `deploy/k8s`: a kustomization with the engine, the UI, the store, the PVC,
+  the ConfigMap and a Secret *example* (placeholders only). Probes are split the way they should be
+  (`/api/v1/health` for liveness and startup, `/api/v1/graphs` for readiness), resources are declared, the
+  termination grace period is longer than the shutdown phase, secrets are referenced by key, and
+  `tools/check-k8s.mjs` fails a manifest that loses any of that, pins `latest`, or selects nothing.
+- **Service level objectives** (M2-9) in `docs/SLO.md`, with the alert rules in
+  `deploy/prometheus/phoenixgraph-rules.yml` and the measurement in `verification/verify-slo.mjs`: four query
+  classes measured end to end (p50/p95/p99 against their objectives, interleaved so one busy period cannot make
+  the last class look slow), plus checks that every metric an alert names exists in the live exposition and
+  every threshold in the rules is stated in the document.
+
+### Changed
+
+- **Failure counters are exported while they are still zero.** A series that appears only after something has
+  already failed cannot be alerted on: "no data" and "no failures" look the same to a rule. The six storage
+  failure counters are now always exposed, so `0` really means zero.

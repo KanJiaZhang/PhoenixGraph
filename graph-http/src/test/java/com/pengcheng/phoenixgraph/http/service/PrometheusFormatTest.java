@@ -45,6 +45,15 @@ class PrometheusFormatTest {
     }
 
     @Test
+    void failureCountersAreExportedEvenWhileTheyAreZero() {
+        String text = PrometheusFormat.of(snapshot());
+        // a rule cannot fire on a metric that appears only after the first failure
+        assertTrue(text.contains("phoenixgraph_storage_edge_read_failed_total{graph=\"payment-graph\"} 0"), text);
+        assertTrue(text.contains("phoenixgraph_storage_vertex_read_failed_total{graph=\"payment-graph\"} 0"));
+        assertTrue(text.contains("phoenixgraph_storage_kv_write_failed_total{graph=\"payment-graph\"} 0"));
+    }
+
+    @Test
     void latenciesAreExportedAsTheSummaryGaugesTheEngineComputes() {
         String text = PrometheusFormat.of(snapshot());
         for (String suffix : new String[] {"_count", "_mean_millis", "_p50_millis", "_p95_millis", "_p99_millis", "_max_millis"}) {

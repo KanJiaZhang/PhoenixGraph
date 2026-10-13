@@ -1,0 +1,46 @@
+# The graphs this instance serves, and the limits it lives within.
+#
+# Everything here can also be given as environment variables (PHOENIXGRAPH_...), but a ConfigMap makes the
+# difference between "what is running" and "what the repository says" visible in one object.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: phoenixgraph-config
+  labels:
+    app.kubernetes.io/name: phoenixgraph
+data:
+  # --- storage -----------------------------------------------------------------------------------------
+  PHOENIXGRAPH_STORAGE_HOST: aerospike
+  PHOENIXGRAPH_STORAGE_PORT: "3000"
+  PHOENIXGRAPH_STORAGE_NAMESPACE: test
+  PHOENIXGRAPH_STORAGE_VERTEX_SET: http_demo_v3
+  PHOENIXGRAPH_STORAGE_SCHEMA: payment-graph
+  PHOENIXGRAPH_STORAGE_ROCKSDB_ROOT: /data/rocksdb
+  # every *.json in this directory becomes a graph, without rebuilding the image
+  PHOENIXGRAPH_STORAGE_SCHEMA_DIR: /etc/phoenixgraph/schemas
+
+  # --- who may call ------------------------------------------------------------------------------------
+  PHOENIXGRAPH_SECURITY_ENABLED: "true"
+
+  # --- what one instance will spend --------------------------------------------------------------------
+  PHOENIXGRAPH_LIMITS_MAX_CONCURRENT: "64"
+  PHOENIXGRAPH_LIMITS_QUEUE_WAIT: 2s
+  PHOENIXGRAPH_LIMITS_PER_GRAPH_CONCURRENT: "8"
+  PHOENIXGRAPH_LIMITS_PER_GRAPH_PER_SECOND: "200"
+  PHOENIXGRAPH_LIMITS_REQUEST_TIMEOUT: 30s
+
+  # --- the UI's link to the engine ---------------------------------------------------------------------
+  PHOENIXGRAPH_HTTP_URL: http://graph-http:8081
+---
+# The keystore for HTTPS, mounted read-only. The *password* is a Secret (see secret.example.yaml), because a
+# file is read by more people than a secret should be.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: phoenixgraph-tls
+  labels:
+    app.kubernetes.io/name: phoenixgraph
+data:
+  # placeholder: replace the whole key with `kubectl create configmap phoenixgraph-tls --from-file=tls.p12=...`
+  README: |
+    Put the PKCS12 keystore here as tls.p12 (see docs/OPERATIONS.md), or mount it from a secret manager.

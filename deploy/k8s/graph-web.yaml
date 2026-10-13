@@ -1,0 +1,79 @@
+# The visualization UI. It holds no state (it proxies /api to the engine), so it can be scaled and restarted
+# freely - which is why it is a separate deployment with its own probe and no volume.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: graph-web
+  labels:
+    app.kubernetes.io/name: phoenixgraph
+    app.kubernetes.io/component: ui
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: phoenixgraph
+      app.kubernetes.io/component: ui
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: phoenixgraph
+        app.kubernetes.io/component: ui
+    spec:
+      terminationGracePeriodSeconds: 20
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        fsGroup: 999
+      containers:
+        - name: graph-web
+          image: phoenixgraph-web:0.2.0            # pin a tag (or a digest); never `latest`
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: phoenixgraph-config
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 4
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: graph-web
+  labels:
+    app.kubernetes.io/name: phoenixgraph
+    app.kubernetes.io/component: ui
+spec:
+  selector:
+    app.kubernetes.io/name: phoenixgraph
+    app.kubernetes.io/component: ui
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
