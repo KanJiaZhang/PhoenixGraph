@@ -1,6 +1,7 @@
 {
   "id": 2,
   "name": "kg-entity-graph",
+  "schemaVersion": 1,
   "description": "One Entity vertex type, relation-sharded by floorMod(relation.hashCode(), 10); directed Entity_Entity relations (max out-/in-degree 2000) carrying relation/xrelation",
   "constraints": { "idSchemaIndex": 0, "createdTimeIndex": -2, "lastUpdatedTimeIndex": -1 },
   "vertexSchemas": [

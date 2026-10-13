@@ -86,9 +86,21 @@ public final class PrometheusFormat {
         return out.toString();
     }
 
-    /** The counters the request gate keeps, which are not part of a graph's snapshot. */
+    /**
+     * The instance's own numbers: the request gate's counters, and how much heap the JVM is using.
+     *
+     * <p>The heap is read at scrape time rather than counted, because it is a *gauge*: a value that goes down is
+     * not a counter that lost data, and a capacity plan needs to see it move with the load (docs/CAPACITY.md).
+     */
     public static String ofInstance(Map<String, Long> counters) {
         StringBuilder out = new StringBuilder();
+        Runtime runtime = Runtime.getRuntime();
+        long used = runtime.totalMemory() - runtime.freeMemory();
+        out.append("# HELP phoenixgraph_jvm_heap_used_bytes Heap in use by this instance (gauge, read at scrape).\n");
+        out.append("# TYPE phoenixgraph_jvm_heap_used_bytes gauge\n");
+        out.append("phoenixgraph_jvm_heap_used_bytes ").append(used).append('\n');
+        out.append("# TYPE phoenixgraph_jvm_heap_max_bytes gauge\n");
+        out.append("phoenixgraph_jvm_heap_max_bytes ").append(runtime.maxMemory()).append('\n');
         for (Map.Entry<String, Long> entry : new TreeMap<>(counters).entrySet()) {
             String name = "phoenixgraph_" + metricName(entry.getKey()) + "_total";
             out.append("# TYPE ").append(name).append(" counter\n");

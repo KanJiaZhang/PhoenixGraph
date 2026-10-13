@@ -1,6 +1,7 @@
 {
   "id": 6,
   "name": "sanguo-kg-text",
+  "schemaVersion": 1,
   "description": "方案 C: the same 《三国演义》 graph on RocksDB-Edge, but the data set is extended with what the document free text (历史/小说) yields — mentions, offices, 军师/谋士, 交战/斩杀 — so it holds more entities and relations than sanguo-kg-rocksdb-edge. Vertex id = the entity name; max out-/in-degree 2000.",
   "constraints": { "idSchemaIndex": 0, "createdTimeIndex": -2, "lastUpdatedTimeIndex": -1 },
   "vertexSchemas": [

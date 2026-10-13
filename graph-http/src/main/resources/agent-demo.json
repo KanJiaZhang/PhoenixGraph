@@ -1,6 +1,7 @@
 {
   "id" : 53,
   "name" : "agent-demo",
+  "schemaVersion": 1,
   "description" : "Built from docs/agent-demo/*.md by the agent toolkit (example graph)",
   "constraints" : {
     "idSchemaIndex" : 0,

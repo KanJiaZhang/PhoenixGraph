@@ -1,6 +1,7 @@
 {
   "id": 11,
   "name": "payment-graph-rocksdb-inline",
+  "schemaVersion": 1,
   "description": "Account / IP / Phone graph served by the RocksDB-Inline storage (one table per vertex type, edges folded into per-edge-type records, degree limits enforced)",
   "constraints": {
     "idSchemaIndex": 0,

@@ -1,6 +1,7 @@
 {
   "id": 3,
   "name": "hnsw-sift",
+  "schemaVersion": 1,
   "description": "HNSW vector index of 10000 128-d vectors over 15 layers",
   "constraints": {
     "idSchemaIndex": 0,

@@ -1,6 +1,7 @@
 {
   "id": 1,
   "name": "payment-graph",
+  "schemaVersion": 1,
   "description": "Account / IP / Phone graph schema",
   "constraints": {
     "idSchemaIndex": 0,

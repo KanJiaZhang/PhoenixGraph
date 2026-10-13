@@ -178,7 +178,7 @@ await engineB2.stop();
 // backup, is deleted, and has to come back from the restore. The set is restored into itself, because this
 // asrestore cannot rename one (its -s/--set-list is a *filter* on what to restore); a drill that needs
 // isolation uses a second namespace or cluster, not this script.
-const container = execFileSync('docker', ['ps', '-qf', 'name=aerospike'], { encoding: 'utf8', env: DOCKER_ENV })
+const container = execFileSync('docker', ['ps', '-qf', 'name=^aerospike$'], { encoding: 'utf8', env: DOCKER_ENV })
   .trim().split(NL).filter(Boolean)[0];
 if (!container) {
   check('an Aerospike container is running (needed for the set drill)', false, 'docker ps found none');

@@ -1,6 +1,7 @@
 {
   "id": 51,
   "name": "tpc-h-analytics",
+  "schemaVersion": 1,
   "description": "The semantic layer of an enterprise data agent over the TPC-H retail model: tables, columns, metrics, dimensions, domains and queries, with lineage and attribution relations.",
   "constraints": { "idSchemaIndex": 0, "createdTimeIndex": -2, "lastUpdatedTimeIndex": -1 },
   "vertexSchemas": [

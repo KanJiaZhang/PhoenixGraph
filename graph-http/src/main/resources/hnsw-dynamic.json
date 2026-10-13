@@ -1,6 +1,7 @@
 {
   "id": 8,
   "name": "hnsw-dynamic",
+  "schemaVersion": 1,
   "description": "HNSW vector index of 600 128-d vectors over 11 layers",
   "constraints": {
     "idSchemaIndex": 0,

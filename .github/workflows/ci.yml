@@ -115,6 +115,15 @@ jobs:
           node-version: '20'
       - name: Build
         run: ./mvnw -B -ntp -DskipTests package
+      - name: Start the drill cluster (two nodes, replication-factor 2)
+        run: |
+          docker compose -f deploy/aerospike-cluster/docker-compose.yml up -d
+          for i in $(seq 1 30); do
+            docker exec aerospike-1 asinfo -v statistics | grep -q "cluster_size=2" && break
+            sleep 2
+          done
+          docker exec aerospike-1 asinfo -v statistics | grep cluster_size
+
       - name: Start the engine and the UI
         run: |
           nohup java -jar graph-http/target/graph-http-*.jar > /tmp/http.log 2>&1 &

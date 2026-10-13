@@ -1,6 +1,7 @@
 {
   "id": 5,
   "name": "sanguo-kg-rocksdb-edge",
+  "schemaVersion": 1,
   "description": "The same 《三国演义》knowledge graph served by the RocksDB-Edge storage: the vertex id is the plain entity name (no relation shard), and the edges live in an edge table per edge class, so a whole person is one range scan instead of ten sharded records. Directed Entity_Entity relations (max out-/in-degree 2000) carrying relation/xrelation/relationLabel/relationFamily",
   "constraints": { "idSchemaIndex": 0, "createdTimeIndex": -2, "lastUpdatedTimeIndex": -1 },
   "vertexSchemas": [

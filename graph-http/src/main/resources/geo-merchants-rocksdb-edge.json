@@ -1,6 +1,7 @@
 {
   "id": 22,
   "name": "geo-merchants-rocksdb-edge",
+  "schemaVersion": 1,
   "description": "Shops with a geo index, served by RocksDB-Edge (the same S2 geo index, edges in per-class edge tables)",
   "constraints": {
     "idSchemaIndex": 0,

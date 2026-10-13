@@ -1,6 +1,7 @@
 {
   "id": 4,
   "name": "sanguo-kg",
+  "schemaVersion": 1,
   "description": "《三国演义》knowledge graph: one Entity vertex type (person / faction / place / office / chapter), relation-sharded by floorMod(relation.hashCode(), 10); directed Entity_Entity relations (max out-/in-degree 2000) carrying relation/xrelation/relationLabel/relationFamily",
   "constraints": { "idSchemaIndex": 0, "createdTimeIndex": -2, "lastUpdatedTimeIndex": -1 },
   "vertexSchemas": [

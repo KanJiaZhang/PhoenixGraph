@@ -31,7 +31,7 @@ java -jar graph-http.jar \
 | Setting | Why you would touch it |
 |---|---|
 | `phoenixgraph.storage.rocksdb-root` | where the analytical graphs live (a mounted volume). **Created if missing.** |
-| `phoenixgraph.storage.schema-dir` | a directory of schema JSON files; every one becomes a graph, no image rebuild. Vertex set = the file name with what a set name cannot hold folded to `_` |
+| `phoenixgraph.storage.schema-dir` | a directory of schema JSON files; every one becomes a graph, no image rebuild. Vertex set = the file name with what a set name cannot hold folded to `_`. **Each file needs its own `"id"`** - two graphs sharing a schema id are refused at startup (`Graph schema id N is already registered as ...`), which is what an operator meets the first time they copy a file to make a second graph |
 | `phoenixgraph.storage.graphs[]` | the explicit list (primary graph first); an entry **wins** over a file of the same name, so mounting a directory can never silently re-point a graph |
 | `phoenixgraph.limits.*` | `max-concurrent`, `queue-wait`, `per-graph-concurrent`, `per-graph-per-second`, `request-timeout` |
 | `phoenixgraph.security.*` | `enabled`, and the keys with their role and graph scope (token or its SHA-256) |
@@ -41,9 +41,28 @@ Adding a graph without touching the image (*drill*: `verification/verify-backup-
 
 ```bash
 cp /etc/phoenixgraph/schemas/new-graph.json /mnt/schemas/     # the schema says its own storage
+#   ... and give the copy its own "id" and "name" before restarting
 # restart, then:
 curl -s localhost:8081/api/v1/graphs | grep new-graph
 ```
+
+## 2b. Running against a replicated store
+
+`deploy/aerospike-cluster/docker-compose.yml` starts a **two-node cluster with replication-factor 2** (with the
+comments that came out of getting it to work: the mesh seeds belong inside `network.heartbeat`, Aerospike 8 has
+no `memory-size`, and the image's entrypoint would otherwise overwrite the configuration). With it up:
+
+```bash
+docker compose -f deploy/aerospike-cluster/docker-compose.yml up -d
+docker exec aerospike-1 asinfo -v statistics | tr ';' '\n' | grep cluster_size   # -> 2
+node verification/verify-aerospike-ha.mjs                                        # the whole drill
+```
+
+What the drill measures: killing one node costs **1 s** of failover and no correctness, writes continue while it
+is down, the node rejoins in 2 s and replication catches up in 1 s, and a *running* engine keeps answering even
+if the node it was configured with is the one that dies. **The engine takes one storage seed**, so a restart
+*while that seed is down* cannot connect - point `phoenixgraph.storage.host` at a load-balanced address
+(`docs/CAPACITY.md` §6 lists this as the known gap).
 
 ## 3. Backups
 
@@ -144,6 +163,16 @@ half a minute of counters, and RocksDB must be closed cleanly.
   on one directory.
 - **A fresh root must exist for RocksDB** - now created at startup, but a *container* with a read-only mount
   will still fail; check the volume.
+- **An engine in a container must share a network with its store.** An Aerospike node tells its clients which
+  addresses to use next, and those are container addresses: a process on the host cannot reach them
+  (`Peers not reachable: 172.18.0.3 3000`), and on Docker Desktop's default bridge a container *name* does not
+  resolve either. Put both on a user-defined network and use the service name
+  (`deploy/aerospike-cluster/docker-compose.yml`), or keep the engine on the host and publish the store's port
+  as the served deployment does. `verification/verify-aerospike-ha.mjs` runs its engine inside the network;
+  `verification/verify-multi-instance.mjs` runs two engines that reach the store through
+  `host.docker.internal`.
+- **`docker ps -f name=aerospike` also matches `aerospike-1`/`aerospike-2`.** The scripts here pin
+  `name=^aerospike$`: once a drill cluster exists, a loose filter picks up the wrong store.
 - **`docker exec` paths from Git Bash**: MSYS rewrites `/tmp/...` into `C:/cygwin64/tmp/...` before `docker`
   sees it, so `asbackup -d /tmp/x` writes nowhere. Set `MSYS2_ARG_CONV_EXCL='*'` (the scripts here do).
 - **The jar cannot be rebuilt while the service runs** (Windows holds it): stop the service first.

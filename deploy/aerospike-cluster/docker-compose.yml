@@ -1,0 +1,57 @@
+# A two-node Aerospike cluster with replication-factor 2, for the availability drill.
+#
+# Why a separate compose file instead of extending the main one: the single-container deployment in
+# docker-compose.yml is what a laptop wants (fast, no cluster to form), while this is a *drill* - three
+# containers that have to find each other, hold every record twice, and survive one of them being killed.
+# Running both at once would put two clusters on port 3000.
+#
+#   docker compose -f deploy/aerospike-cluster/docker-compose.yml up -d
+#   docker exec aerospike-1 asinfo -v cluster-size          # -> 2
+#   tools/ha-drill.sh                                       # the whole drill, with its assertions
+#   docker compose -f deploy/aerospike-cluster/docker-compose.yml down -v
+#
+# The nodes use the memory storage engine: the drill is about replication and failover, and a memory namespace
+# needs no volumes to keep the two nodes identical. A deployment uses device/SSD storage and the Aerospike
+# operator (docs/OPERATIONS.md).
+name: phoenixgraph-aerospike-cluster
+
+services:
+  aerospike-1:
+    image: aerospike/aerospike-server:8.1.2.5
+    container_name: aerospike-1
+    hostname: aerospike-1
+    networks: [aerospike-mesh]
+    entrypoint: ["/usr/bin/asd"]
+    command: ["--config-file", "/opt/aerospike/etc/aerospike.conf", "--foreground"]
+    volumes:
+      - ./aerospike-1.conf:/opt/aerospike/etc/aerospike.conf
+    ports:
+      - "3100:3000"        # the host sees node 1 on 3100, so the single-node deployment keeps 3000
+      - "3103:3003"
+    healthcheck:
+      test: ["CMD", "asinfo", "-v", "-c", "status"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  aerospike-2:
+    image: aerospike/aerospike-server:8.1.2.5
+    container_name: aerospike-2
+    hostname: aerospike-2
+    networks: [aerospike-mesh]
+    entrypoint: ["/usr/bin/asd"]
+    command: ["--config-file", "/opt/aerospike/etc/aerospike.conf", "--foreground"]
+    volumes:
+      - ./aerospike-2.conf:/opt/aerospike/etc/aerospike.conf
+    ports:
+      - "3200:3000"
+      - "3203:3003"
+    healthcheck:
+      test: ["CMD", "asinfo", "-v", "-c", "status"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+networks:
+  aerospike-mesh:
+    name: phoenixgraph-aerospike-mesh

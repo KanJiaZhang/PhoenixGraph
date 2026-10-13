@@ -22,7 +22,7 @@ GRAPH="${1:-}"
 shift || true
 DIR="./backups"
 API="http://localhost:8081"
-AEROSPIKE_CONTAINER="${AEROSPIKE_CONTAINER:-$(docker ps -qf name=aerospike | head -1)}"
+AEROSPIKE_CONTAINER="${AEROSPIKE_CONTAINER:-$(docker ps -qf name=^aerospike$ | head -1)}"
 NAMESPACE="${PHOENIXGRAPH_STORAGE_NAMESPACE:-test}"
 
 while [ $# -gt 0 ]; do

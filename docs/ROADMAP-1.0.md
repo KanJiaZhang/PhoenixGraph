@@ -61,11 +61,11 @@
 
 | 编号 | 事项 | 验收标准 | 工作量 | 状态 |
 |---|---|---|---|---|
-| M3-1 | **Aerospike 多副本 + 故障注入用例** | 杀一个存储节点，查询仍成功（用例与演练记录） | M-L | ⬜ |
-| M3-2 | **多实例 + LB 压测报告**：写路径幂等性、共享存储下的 p99 | `verification/bench-multi-instance.mjs` 产出报告；含 2 实例与 1 实例对照 | M | ⬜ |
-| M3-3 | **跨机 Gemini 实测**：3 机、跨机 superstep 开销、worker 失败重入 | 报告含跨机 vs 同机对比与 worker 重启后的正确性断言 | M | ⬜ |
-| M3-4 | **schema 版本与迁移**：JSON 带 `schemaVersion`、向上兼容读取、`--dry-run` 校验 | 旧 schema 文件被新版本正确读取；不兼容变更被 `dry-run` 拒绝 | M-L | ⬜ |
-| M3-5 | **容量与调优指南**：内存/连接池/`parallelism`/批大小与数据规模的关系 | `docs/CAPACITY.md` 含实测表格（不同点边规模下的 p99 与内存） | M | ⬜ |
+| M3-1 | **Aerospike 多副本 + 故障注入用例** | 杀一个存储节点，查询仍成功（用例与演练记录） | M-L | ✅ |
+| M3-2 | **多实例 + LB 压测报告**：写路径幂等性、共享存储下的 p99 | `verification/bench-multi-instance.mjs` 产出报告；含 2 实例与 1 实例对照 | M | ✅ |
+| M3-3 | **跨机 Gemini 实测**：3 机、跨机 superstep 开销、worker 失败重入 | 报告含跨机 vs 同机对比与 worker 重启后的正确性断言 | M | 🚫 |
+| M3-4 | **schema 版本与迁移**：JSON 带 `schemaVersion`、向上兼容读取、`--dry-run` 校验 | 旧 schema 文件被新版本正确读取；不兼容变更被 `dry-run` 拒绝 | M-L | ✅ |
+| M3-5 | **容量与调优指南**：内存/连接池/`parallelism`/批大小与数据规模的关系 | `docs/CAPACITY.md` 含实测表格（不同点边规模下的 p99 与内存） | M | ✅ |
 
 ---
 
@@ -141,4 +141,28 @@
   - CI 已加 `node tools/check-k8s.mjs` ✓，`tools/check-ci.mjs` 也把它列为必须存在 ✓；`verification/README.md` 增补 `verify-slo.mjs` ✓。
   - **M2 进度：8/8 ✅**。下一步进入 **M3**：Aerospike 多副本 + 故障注入、多实例 LB 压测报告、跨机 Gemini 实测、schema 版本与迁移、容量指南。
 
-**下一步（M3）**：M3-1 副本与故障注入 → M3-2 多实例压测 → M3-3 跨机 Gemini → M3-4 schema 版本与迁移 → M3-5 容量指南。
+- **（第六批）M3-1 高可用（多副本 + 故障注入）、M3-2 多实例与写幂等、M3-4 schema 版本与迁移、M3-5 容量指南 —— 除 M3-3 外 M3 全部完成。**
+  - **M3-1**：`deploy/aerospike-cluster/`（**两节点真集群**，RF=2）+ `verification/verify-aerospike-ha.mjs` **14/14**：
+    一个节点被杀 → **1 秒内故障切换**、答案不变 ✓；节点停机期间**写入仍成功** ✓；节点回来后 **2 秒组回集群**、
+    复制 **1 秒追平** ✓；**杀掉引擎配置里的那个 seed 节点**，运行中的引擎照常回答 ✓（启动期依赖 seed 这件事记进了 OPERATIONS + CAPACITY ✓）。
+    踩坑三连（都是真经验，已写进注释/手册）：镜像 entrypoint 会**覆盖** `/etc/aerospike/aerospike.conf` ✗（挂 `:ro` 直接起不来 ✗）→ 改为挂到 `/opt/aerospike/etc/` 并用 `asd --config-file` 直启 ✓；
+    `mesh-seed-address-port` 必须写在 `network.heartbeat` 里 ✗（写在 `cluster{}` 里被静默忽略 → `cluster_size=1` ✓）；Aerospike 8 移除了 `memory-size`（拒启 ✓）→ 用镜像自己的 file-backed memory 形状 ✓。
+    另外：Aerospike 会向客户端**通告容器地址**，宿主进程跟不过去 ✗（`Peers not reachable: 172.18.0.3 3000` ✓）→ 引擎必须以容器形式`--network` 进同一网络 ✓。
+  - **M3-2**：`verification/verify-multi-instance.mjs`（两个引擎共享一个 store，客户端轮询 = LB 行为）**8/8**：
+    写幂等（同一次写经两个实例都成功、只存一个值 ✓）、**过期写被拒**（`SUCCESS_STALE`，新值保留 ✓）、更新的写能落地 ✓、
+    四路并发同键创建全部成功且两实例读到的结果一致 ✓；基准（25 轮**交错**）：一台 **p50 46.8 / p95 63.4 / p99 91.7 ms，20.9 ops/s**，
+    两台 **47.9 / 65.7 / 71.0 ms，20.1 ops/s** → **96%** —— 该负载在**存储侧**受限，第二个引擎买的是可用性与 CPU 侧余量，不是速度 ✓（如实写进 `docs/CAPACITY.md` ✓）。
+  - **M3-4**：schema 文件格式带 `schemaVersion`（`SchemaJsonCodec.SCHEMA_VERSION=1` ✓）：写入时总是写 ✓，缺失视为 1（向后兼容 ✓），
+    来自未来的版本**按名字拒绝**并说明两个版本号 ✓（"读一半"会静默丢约束 ✗）；`POST /api/v1/schema/version` 判定任意文件 ✓；
+    `tools/schema-version.mjs`（`--check/--write/--dry-run`，版本号向服务要以免工具与引擎各写一份 ✓）**把仓库里 17 个 schema 全部盖章** ✓；
+    `verification/verify-schema-version.mjs` **9/9**：盖章/未盖章都兼容 ✓；schema 目录里放一个未来版本文件 → **服务照常启动**、那张图不被服务、
+    日志点名两个版本号 ✓。修掉一个真 bug：拒绝消息里 `dto.name()` 拼接被写成了字面量 ✗（报文里出现 `+ dto.name() +` ✓）。
+  - **M3-5**：`docs/CAPACITY.md` —— 服务规模（5 张图，点/边/磁盘实测：8,000 sales = 87 MB ✓）、四类查询的端到端 p50/p95/p99、
+    一台 vs 两台的对照、故障时间（1s 切换 / 2s 重组 / 1s 追平）、**调优旋钮表**（limits/regionCount/cacheEdges/parallelism/磁盘与堆 ✓）、
+    以及**明确没测什么**（>10⁴ 规模、跨机 DIST、写吞吐、第二个 seed 这个真实缺口 ✓）。并给 Prometheus 加了
+    `phoenixgraph_jvm_heap_used_bytes`（Gauge，抓取时读 ✓ + 单测 ✓），让"堆"不再是猜的 ✓。
+  - **M3-3（跨机 Gemini）按要求不做** ✓；`docs/ROADMAP-1.0.md` 里 M3-1/2/4/5 标 ✅、M3-3 保持 ⬜ 并注明"按要求跳过" ✓。
+- **本轮新增的 API 事实（已记入 `docs/API.md`）**：属性写入的 `index` 是**schema 里的属性 id**（从 1 开始，0 是 id 属性 ✓），不是列表位置 ✓；
+  边写入需要 `edgeId` 且端点是 `destination`（不是 `target` ✓）；删边还要 `edgeSchemaName` 查询参数 ✓ —— 三条都是被演练逼出来的 ✓。
+
+**M3 之后**：M3-3（跨机 Gemini）按要求暂不做；1.0 的剩余工作是 把 M2/M3 的结论固化成发布（版本号、镜像、发布说明）与日常运行（值班手册、告警演练）。

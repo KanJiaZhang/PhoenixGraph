@@ -92,6 +92,15 @@ class PrometheusFormatTest {
     }
 
     @Test
+    void theInstanceViewCarriesTheHeapAndTheGateCounters() {
+        String text = PrometheusFormat.ofInstance(Map.of("requests.admitted", 7L));
+        // a capacity plan needs the heap, and it is a gauge: read at scrape time, not accumulated
+        assertTrue(text.contains("phoenixgraph_jvm_heap_used_bytes "), text);
+        assertTrue(text.contains("phoenixgraph_jvm_heap_max_bytes "));
+        assertTrue(text.contains("phoenixgraph_requests_admitted_total 7"));
+    }
+
+    @Test
     void theGateCountersAreExposedWithoutAGraphLabel() {
         String text = PrometheusFormat.ofInstance(Map.of("requests.admitted", 7L, "requests.refused", 2L));
         assertTrue(text.contains("phoenixgraph_requests_admitted_total 7"), text);

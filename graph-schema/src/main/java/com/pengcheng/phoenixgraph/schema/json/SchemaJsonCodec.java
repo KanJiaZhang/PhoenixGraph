@@ -44,6 +44,16 @@ import java.util.LinkedHashSet;
  */
 public class SchemaJsonCodec {
 
+    /**
+     * The version of the schema *file format* this build writes.
+     *
+     * <p>Bumped when the JSON changes in a way an older build cannot read. Reading is deliberately generous:
+     * a file without the field is version 1 (that is what every file written before the field existed is), and
+     * a file that claims a version this build does not know is refused by name - because the alternative, a
+     * best-effort parse, is how a schema silently loses a constraint.
+     */
+    public static final int SCHEMA_VERSION = 1;
+
     private final ObjectMapper mapper;
 
     public SchemaJsonCodec() {
@@ -65,9 +75,41 @@ public class SchemaJsonCodec {
     /** Parses a graph schema from its JSON definition. */
     public GraphSchema fromJson(String json) {
         try {
-            return toDomain(mapper.readValue(json, GraphSchemaDto.class));
+            GraphSchemaDto dto = mapper.readValue(json, GraphSchemaDto.class);
+            requireReadableVersion(dto);
+            return toDomain(dto);
         } catch (IOException e) {
             throw new UncheckedIOException("Failed to parse graph schema JSON", e);
+        }
+    }
+
+    /** The version a JSON document declares, or {@link #SCHEMA_VERSION} when it declares none. */
+    public int versionOf(String json) {
+        try {
+            GraphSchemaDto dto = mapper.readValue(json, GraphSchemaDto.class);
+            return dto.schemaVersion() == null ? 1 : dto.schemaVersion();
+        } catch (IOException e) {
+            throw new UncheckedIOException("Failed to parse graph schema JSON", e);
+        }
+    }
+
+    /** True when this build can read the document (the versions it writes, or an older one). */
+    public boolean canRead(String json) {
+        return versionOf(json) <= SCHEMA_VERSION;
+    }
+
+    /**
+     * Refuses a document from the future, by name.
+     *
+     * <p>Reading a newer file "as far as possible" would drop whatever the newer build added - a property
+     * constraint, a storage setting - and the result would be a graph that looks fine and behaves differently.
+     */
+    private static void requireReadableVersion(GraphSchemaDto dto) {
+        int version = dto.schemaVersion() == null ? 1 : dto.schemaVersion();
+        if (version > SCHEMA_VERSION) {
+            throw new IllegalArgumentException("Schema '" + dto.name() + "' declares schemaVersion " + version
+                    + ", and this build reads up to " + SCHEMA_VERSION
+                    + ": upgrade the service (or the file) instead of loading it partially");
         }
     }
 
@@ -78,7 +120,8 @@ public class SchemaJsonCodec {
                 schema.id(), schema.name(), schema.description(), schema.constraints(),
                 toStorageDto(schema.storage()),
                 schema.vertexSchemas().stream().map(this::toVertexDto).toList(),
-                schema.edgeSchemas().stream().map(this::toEdgeDto).toList());
+                schema.edgeSchemas().stream().map(this::toEdgeDto).toList(),
+                SCHEMA_VERSION);
     }
 
     /** The storage block, or {@code null} for the Aerospike default (keeps old JSON unchanged). */

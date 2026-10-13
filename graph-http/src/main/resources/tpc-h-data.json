@@ -1,6 +1,7 @@
 {
   "id": 52,
   "name": "tpc-h-data",
+  "schemaVersion": 1,
   "description": "The TPC-H data instance: materialised lineitem fact rows (with denormalised dimensions) and the star-schema links, so the metrics of the semantic layer can be answered with real numbers.",
   "constraints": { "idSchemaIndex": 0, "createdTimeIndex": -2, "lastUpdatedTimeIndex": -1 },
   "vertexSchemas": [

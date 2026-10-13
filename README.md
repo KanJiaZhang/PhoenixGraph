@@ -50,19 +50,25 @@ This is a **0.1 engine**: wide and tested, but not yet a hardened product. The g
   (the schema files carry no version field).
 - **No per-request resource limits.** A slow or malicious query can occupy the instance; `timeLimit` is a
   step the *caller* has to add.
-- **Demo-scale data.** The served examples are 10²-10⁴ vertices. The performance numbers above are measured
-  on that scale; there is no published benchmark at 10⁷+ vertices.
+- **Demo-scale data.** The served examples are 10²-10⁴ vertices (the largest is 6,594 vertices / 45,081 edges).
+  The performance numbers above are measured on that scale; there is no published benchmark at 10⁷ vertices -
+  [docs/CAPACITY.md](docs/CAPACITY.md) states the sizes it covers and what it deliberately does not.
 - **Not every Gremlin/Cypher construct.** `as/select/match/project/sack/...` need the traverser model that is
   designed but not built (`TRAVERSER-DESIGN.md`, local); unsupported syntax is *rejected*, never silently
   ignored.
 
-What it *does* have is unusual for this stage: **885 unit tests**, a published **live verification suite**
-(`verification/`), and documentation whose numbers are re-checked by that suite.
+What it *does* have is unusual for this stage: **938 unit tests**, a published **live verification suite**
+(`verification/`, 18 checks / 280+ assertions), and documentation whose numbers are re-checked by that suite.
+It also has the things a 1.0 needs rather than a demo: API keys with per-graph roles, TLS, request limits with
+`429`/`503` answers, an audit trail, backup and restore that are drilled, a Kubernetes manifest set, and service
+level objectives - see [docs/ROADMAP-1.0.md](docs/ROADMAP-1.0.md) for what is done and what is not.
 
-Start here: [QUICKSTART.md](QUICKSTART.md) (10 minutes) · [docs/OPERATIONS.md](docs/OPERATIONS.md) (backups, restores, upgrades, traps) · [docs/API.md](docs/API.md) (51 endpoints, keys and roles,
+Start here: [QUICKSTART.md](QUICKSTART.md) (10 minutes) · [docs/OPERATIONS.md](docs/OPERATIONS.md) (backups, restores, HA, upgrades, traps) · [docs/API.md](docs/API.md) (51 endpoints, keys and roles,
 error model, limits) · [docs/DATA-QUALITY.md](docs/DATA-QUALITY.md) (the numbers not to trust) ·
 [docs/AGENT-CASES.md](docs/AGENT-CASES.md) (two worked analyses) ·
 [docs/ROADMAP-1.0.md](docs/ROADMAP-1.0.md) (what 1.0 still needs) · [CHANGELOG.md](CHANGELOG.md).
+And when you need numbers to size or tune it: [docs/SLO.md](docs/SLO.md) (the objectives) and
+[docs/CAPACITY.md](docs/CAPACITY.md) (measured latency, one engine vs two, failover timing, the knobs).
 
 ### One query over vector, geo and the graph
 

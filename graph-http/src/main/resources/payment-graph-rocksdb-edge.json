@@ -1,6 +1,7 @@
 {
   "id": 12,
   "name": "payment-graph-rocksdb-edge",
+  "schemaVersion": 1,
   "description": "Account / IP / Phone graph served by the RocksDB-Edge storage (one table per vertex type plus an edge table per edge class, time-window scans, no degree limit)",
   "constraints": {
     "idSchemaIndex": 0,

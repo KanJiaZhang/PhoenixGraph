@@ -23,7 +23,7 @@ SET=""
 API="http://localhost:8081"
 ROCKSDB_ROOT="${PHOENIXGRAPH_STORAGE_ROCKSDB_ROOT:-.rocksdb}"
 INTO=""
-AEROSPIKE_CONTAINER="${AEROSPIKE_CONTAINER:-$(docker ps -qf name=aerospike | head -1)}"
+AEROSPIKE_CONTAINER="${AEROSPIKE_CONTAINER:-$(docker ps -qf name=^aerospike$ | head -1)}"
 
 while [ $# -gt 0 ]; do
   case "$1" in

@@ -1,6 +1,7 @@
 {
   "id": 42,
   "name": "payment-graph-smart-rocksdb",
+  "schemaVersion": 1,
   "description": "The same graph in RocksDB-Inline, where the S2 geo index is a real index",
   "constraints": {
     "idSchemaIndex": 0,

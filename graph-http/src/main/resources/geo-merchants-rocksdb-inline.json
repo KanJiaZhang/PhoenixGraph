@@ -1,6 +1,7 @@
 {
   "id": 21,
   "name": "geo-merchants-rocksdb-inline",
+  "schemaVersion": 1,
   "description": "Shops with a geo index, served by RocksDB-Inline (the S2 cell id of every shop is indexed in a table of its own)",
   "constraints": {
     "idSchemaIndex": 0,

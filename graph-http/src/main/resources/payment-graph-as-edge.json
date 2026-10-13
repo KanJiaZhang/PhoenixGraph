@@ -1,6 +1,7 @@
 {
   "id": 31,
   "name": "payment-graph-as-edge",
+  "schemaVersion": 1,
   "description": "Account / IP / Phone graph served by Aerospike-Edge: the big vertices keep their edges in the aggregated Edge_Out / Edge_In tables (chunked by creation time and indexed by two more levels), written by a bulk import; a query reads them by time window",
   "constraints": {
     "idSchemaIndex": 0,

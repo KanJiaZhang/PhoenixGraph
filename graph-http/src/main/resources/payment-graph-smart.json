@@ -1,6 +1,7 @@
 {
   "id": 41,
   "name": "payment-graph-smart",
+  "schemaVersion": 1,
   "description": "Accounts and merchants with an embedding and a location: vectors on Aerospike, geo cells on RocksDB",
   "constraints": {
     "idSchemaIndex": 0,
