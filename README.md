@@ -35,12 +35,13 @@ geo search** behind one query, and serves **knowledge graphs as context for AI a
 This is a **0.1 engine**: wide and tested, but not yet a hardened product. The gaps are known and tracked in
 [docs/ROADMAP-1.0.md](docs/ROADMAP-1.0.md); the short version:
 
-- **Authentication exists but is off by default, and there is no TLS.** With
+- **Authentication and TLS exist but are off by default.** With
   `phoenixgraph.security.enabled=true` every `/api` call needs a key (roles reader/writer/admin, optional
   per-graph scoping, every call audited, tokens never logged) - the default is `false` so the UI, the demo and
   the verification suite work without ceremony, which means **an instance you did not configure is open to
-  anyone who can reach the port**, and an error response includes a Java stack trace. Turn the keys on and
-  terminate TLS in front of it before exposing it.
+  anyone who can reach the port**, and an error response includes a Java stack trace. HTTPS is one configuration
+  block away (`server.ssl.*` with a keystore, password from the environment - `docs/API.md` §2). Turn both on
+  before exposing the service.
 - **Single node, no failover.** One `graph-http` holds the engines; RocksDB is a single-writer store on a
   local or shared volume; the Aerospike container runs without replicas. A restart is a short outage.
 - **No backup/restore tooling, no schema migration.** Moving a graph's schema forward is a manual edit today

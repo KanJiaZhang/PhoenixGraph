@@ -47,7 +47,7 @@
 |---|---|---|---|---|
 | M2-1 | **查询超时 + 并发闸门 + 每图配额**：服务端墙钟超时、并发信号量、`429/503` + `Retry-After`，可配置 | 新单测覆盖（超时→503、超并发→429、配额→429）；线上实测一条 `repeat` 长查询在超时后返回 503 且实例仍可服务 | M | ✅ |
 | M2-2 | **认证 / 授权 / 审计**：Bearer + 图级权限 + 审计日志（谁、何时、哪个图、什么查询） | 无 token → 401；越权图 → 403；审计行写入并可从日志/接口检索；单测 + 线上实测 | M-L | ✅ |
-| M2-3 | **TLS 与密钥管理**：HTTPS 可开启、密钥走外部注入（不落配置文件） | 用自签证书起服务，`curl --cacert` 成功、明文端口关闭或重定向；配置项文档化 | M | ⬜ |
+| M2-3 | **TLS 与密钥管理**：HTTPS 可开启、密钥走外部注入（不落配置文件） | 用自签证书起服务，`curl --cacert` 成功、明文端口关闭或重定向；配置项文档化 | M | ✅ |
 | M2-4 | **备份 / 恢复 / 优雅停机**：Aerospike 备份脚本、RocksDB checkpoint、`SIGTERM` 刷盘 | 演练：备份 → 删数据 → 还原 → 同一查询同结果；`kill -TERM` 后无未刷盘丢失（有日志与断言） | M | ⬜ |
 | M2-5 | **配置外置**：图清单与 schema 从挂载目录加载（不依赖 jar 内资源） | 挂载一个目录新增一张图，重启后 `/api/v1/graphs` 出现该图；给出示例目录 | M | ⬜ |
 | M2-6 | **k8s 清单 / Helm chart**：探针（`/api/v1/health`）、资源限制、PDB、滚动升级 | `kubectl apply --dry-run=server` 通过（或 kustomize build 输出校验）；minikube 上起停一次 | M | ⬜ |
@@ -101,3 +101,12 @@
   - 文档生成：`node tools/api-endpoints.mjs --check` 与 48 个端点一致。
 - **下一步（M2 剩余）**：M2-2 认证/授权/审计 → M2-3 TLS/密钥 → M2-4 备份恢复与优雅停机 → M2-5 配置外置 →
   M2-6 k8s 清单 → M2-9 SLO 与达标证据。M2-2 应最先做：在它之前，实例只能待在可信边界内。
+- **（第三批）M2-3 完成（TLS 与密钥管理）。** 证据：`server.ssl.*`（PKCS12 keystore，密码走
+  `PHOENIXGRAPH_TLS_PASSWORD` 环境变量，配置文件里不留明文 ✓），`application.yml` 带可复制的注释块与
+  `keytool` 生成命令 ✓；`docs/API.md` §2 给出完整流程（生成 → 启动 → `curl --cacert`）✓；
+  线上 `verification/verify-tls.mjs` **8/8**（自己用 keytool 生成 keystore，起第二个实例）：
+  HTTPS 200 且返回真 API、连接对端证书就是我们生成的那张（`CN=localhost`、issuer 是自己）、
+  **会校验证书的客户端仍然拒绝它**（说明校验没被关掉 ✓）、明文 HTTP 打 TLS 端口拿不到 API（Tomcat 400 `Bad Request` ✓）、
+  `POST /api/v1/query` 带 body 走 TLS 正常、**keystore 密码错则进程启动失败**而不是降级成明文 ✓。
+  修掉一个过严断言：明文打 TLS 端口原本断言「无响应」✗，实际是 **400**（这本身就是正确的拒绝 ✓）→
+  改为「不返回 200 且不含图列表」✓。

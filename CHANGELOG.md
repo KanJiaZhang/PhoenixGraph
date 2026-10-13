@@ -29,6 +29,11 @@ Milestone **M2** of [`docs/ROADMAP-1.0.md`](docs/ROADMAP-1.0.md) continues here.
   any work happens, and every call recorded to the `com.pengcheng.phoenixgraph.audit` logger plus a bounded
   buffer read back through `GET /api/v1/audit/recent` (admin). Off by default; tokens are never logged.
 
+- **TLS** (M2-3): `server.ssl.*` with a PKCS12 keystore and the password from the environment
+  (`PHOENIXGRAPH_TLS_PASSWORD`), documented end to end and checked by `verification/verify-tls.mjs` against a
+  keystore it generates with keytool - including that verification stays on (a self-signed certificate is
+  refused by a verifying client) and that a wrong password stops the process instead of serving something else.
+
 ### Fixed
 
 - **A key configured as its SHA-256 was never accepted**: the comparison hashed the configured digest a

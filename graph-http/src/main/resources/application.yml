@@ -147,3 +147,18 @@ phoenixgraph:
     #  - name: ops
     #    sha256: ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad   # echo -n abc | sha256sum
     #    role: admin
+
+  # --- TLS (see docs/API.md §2) ---
+  # Uncomment and point at a real keystore to serve HTTPS. The password comes from the environment
+  # (PHOENIXGRAPH_TLS_PASSWORD), never from this file: a configuration file is read by more people than a
+  # secret should be. Generate a self-signed one for a test with:
+  #   keytool -genkeypair -alias phoenixgraph -keyalg RSA -keysize 2048 -storetype PKCS12 \
+  #     -keystore phoenixgraph.p12 -storepass "$PHOENIXGRAPH_TLS_PASSWORD" \
+  #     -dname "CN=localhost" -validity 365 -ext SAN=dns:localhost,ip:127.0.0.1
+#server:
+#  ssl:
+#    enabled: true
+#    key-store: /etc/phoenixgraph/phoenixgraph.p12
+#    key-store-type: PKCS12
+#    key-alias: phoenixgraph
+#    key-store-password: ${PHOENIXGRAPH_TLS_PASSWORD}

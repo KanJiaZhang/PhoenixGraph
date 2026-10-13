@@ -73,8 +73,21 @@ an audit is for. **A token is never written to either.**
 curl -s -H "Authorization: Bearer $PG_ADMIN_KEY" localhost:8081/api/v1/audit/recent?limit=5
 ```
 
-**TLS** is not configured by default. Put the service behind a TLS terminator, or give the process a keystore
-(`server.ssl.*`); `docs/ROADMAP-1.0.md` M2-3 tracks shipping that as a documented, tested option.
+**TLS.** Off by default (plain HTTP, or terminate TLS in front of the service). To serve HTTPS from the
+process itself, give it a keystore and the password from the environment:
+
+```bash
+keytool -genkeypair -alias phoenixgraph -keyalg RSA -keysize 2048 -storetype PKCS12   -keystore phoenixgraph.p12 -storepass "$PHOENIXGRAPH_TLS_PASSWORD"   -dname "CN=localhost" -validity 365 -ext SAN=dns:localhost,ip:127.0.0.1
+
+PHOENIXGRAPH_TLS_PASSWORD=... java -jar graph-http.jar   --server.ssl.enabled=true --server.ssl.key-store=/etc/phoenixgraph/phoenixgraph.p12   --server.ssl.key-store-type=PKCS12 --server.ssl.key-alias=phoenixgraph   --server.ssl.key-store-password=${PHOENIXGRAPH_TLS_PASSWORD}
+
+curl --cacert phoenixgraph.crt https://localhost:8081/api/v1/graphs
+```
+
+A plain-HTTP request to a TLS port is refused, certificate verification stays on (a self-signed certificate
+must be trusted by the client, or replaced by a real one), and a wrong keystore password stops the process
+instead of serving something else. `verification/verify-tls.mjs` checks those four things against a generated
+keystore.
 
 ## 3. Limits and the status codes a client must handle
 
