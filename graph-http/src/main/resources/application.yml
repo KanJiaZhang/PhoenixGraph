@@ -129,3 +129,21 @@ phoenixgraph:
     per-graph-per-second: 200 # 0 switches the rate limit off
     request-timeout: 30s      # wall clock a query may run; the engine checks it between steps
     retry-after-seconds: 1    # what a 429/503 answer tells the client to wait
+
+  # --- who may call (see docs/API.md §2) ---
+  # Off by default: a local `docker compose up`, the UI and the verification suite must work without
+  # ceremony. Turn it on before the port is reachable by anyone else - the README's Limitations section says
+  # why, and docs/ROADMAP-1.0.md M2-2 is where this landed.
+  security:
+    enabled: false
+    # Each key: name (what the audit log calls it), token (or its sha256), role, and optionally the graphs it
+    # may name. Roles are a ladder: reader < writer < admin; schema authoring, ingestion, index rebuilds,
+    # metric resets and the audit view need admin. An empty graph list means every graph.
+    keys: []
+    #  - name: dashboard
+    #    token: ${PHOENIXGRAPH_DASHBOARD_TOKEN}
+    #    role: writer
+    #    graphs: [payment-graph, payment-graph-rocksdb-edge]
+    #  - name: ops
+    #    sha256: ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad   # echo -n abc | sha256sum
+    #    role: admin

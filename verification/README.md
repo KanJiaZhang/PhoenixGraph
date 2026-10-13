@@ -31,6 +31,7 @@ page settles. The retry is always visible - `FLKY` means "look at this check", n
 |---|---|---|
 | `verify-agent-cases.mjs` | service | **every figure in [`docs/AGENT-CASES.md`](../docs/AGENT-CASES.md)** - both worked cases (the 三国 `killed` audit, the TPC-H three self-checks and the defensible analysis) |
 | `verify-tpch-semantic-layer.mjs` | service | the semantic layer answering the eight questions of TPC-H-ANALYTICS.md §3 (definition, lineage, columns, dimensions, attribution, second-order attribution, join keys, reverse lineage) and the year figures the README quotes |
+| `verify-security.mjs` | service | API keys: 401 without one (with the Bearer challenge), 403 for the wrong role or the wrong graph, 200 for what the key may do, a hashed key accepted, and the audit trail naming the keys and never the tokens |
 | `verify-request-limits.mjs` | service | the M2 hardening: `X-Request-Id`, the 404/405 contract, the Prometheus exposition, and - with a second engine instance started on tight limits - `429`+`Retry-After` for the per-second budget and `503` for a query that exceeds `request-timeout` |
 | `verify-tree-layout.mjs` | browser | the drawing read as a hierarchy: four orientations, click-to-re-root, back to force layout |
 | `verify-dag-layout.mjs` | browser | the tree and the layered DAG keep **every** edge and keep them attached (no NaN paths), right-to-left modes, the layout menu in both languages |

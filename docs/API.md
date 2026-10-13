@@ -4,17 +4,10 @@ Everything this product does is reachable over HTTP: the query engine, the write
 fuzzy patterns, the vector indexes, the metrics and the agent toolkit. The UI on 8080 and the CLI tools talk
 to the same endpoints - there is no private back door.
 
-> **Auth: none yet.** Every endpoint is open to whoever can reach the port, and an error response carries a
-> Java stack trace. Run it behind a trusted boundary; `docs/ROADMAP-1.0.md` M2-2/M2-3 add authentication and
-> TLS. Do not expose it to the internet.
-
-- **Base URL** `http://localhost:8081` (`graph-web` proxies `/api` on 8080, so the UI is same-origin)
-- **Content type** `application/json` (the UI HTML/JS is served by `graph-web`; the metrics endpoints also
-  speak `text/plain` in Prometheus format)
-- **Versioning** the path carries `v1`; within `v1` endpoints are added, and shapes change only compatibly
-  (see the policy in [`CHANGELOG.md`](../CHANGELOG.md))
-- **Compression** gzip above 1 KiB (`server.compression` in `application.yml`)
-- **No caching of the UI** (`no-store`), so a running instance always serves the build it was started with
+> **Authentication is implemented but off by default** (`phoenixgraph.security.enabled=false`), so a local
+> `docker compose up`, the UI and the verification suite work without ceremony. **Turn it on before the port
+> is reachable by anyone else**, and put TLS in front of it or configure `server.ssl.*` (`M2-3`). On an open
+> instance every endpoint is reachable and an error response carries a Java stack trace.
 
 ---
 
@@ -29,7 +22,61 @@ curl -sD- -o /dev/null -H 'X-Request-Id: my-trace-42' localhost:8081/api/v1/grap
 # X-Request-Id: my-trace-42
 ```
 
-## 2. Limits and the status codes a client must handle
+## 2. Authentication, roles and the audit trail
+
+With `phoenixgraph.security.enabled=true` every `/api` request needs a key:
+
+```bash
+curl -s -H 'Authorization: Bearer $PG_KEY' localhost:8081/api/v1/graphs
+# or:  -H "X-API-Key: $PG_KEY"
+```
+
+A key is configured with a name (what the audit log calls it), the token **or its SHA-256**, a role and
+optionally the graphs it may name:
+
+```yaml
+phoenixgraph:
+  security:
+    enabled: true
+    keys:
+      - name: dashboard            # token in clear: fine for a dev instance
+        token: ${PHOENIXGRAPH_DASHBOARD_TOKEN}
+        role: writer
+        graphs: [payment-graph, payment-graph-rocksdb-edge]
+      - name: ops                  # or never store the token: give its digest
+        sha256: ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad   # printf %s abc | sha256sum
+        role: admin
+```
+
+Roles are a ladder - **reader < writer < admin**:
+
+| Role | May |
+|---|---|
+| `reader` | read and **query** (a query is a POST that only reads), preview fuzzy patterns, call the agent tools |
+| `writer` | everything a reader may, plus vertices/edges/batch writes and fuzzy links |
+| `admin` | everything a writer may, plus schema authoring, `/api/v1/agent/ingest`, index rebuilds, metric resets and the **audit view** |
+
+An empty `graphs` list means every graph; a non-empty one is enforced for reads and writes alike.
+
+| Status | When |
+|---|---|
+| `401` + `WWW-Authenticate: Bearer` | no key, or an unknown one - the caller can fix it |
+| `403` | the key is valid but the role or the graph allowlist says no; the message names the rule |
+
+**Audit.** Every call is recorded - key name, role, method, path, graph, query (clipped to 200 characters),
+status and latency - in two places: the logger `com.pengcheng.phoenixgraph.audit` (route it to your own file
+or collector) and a bounded in-memory ring buffer of the last 2,000 calls, which
+`GET /api/v1/audit/recent?limit=50` returns (admin key). Refused calls are recorded too: that is exactly what
+an audit is for. **A token is never written to either.**
+
+```bash
+curl -s -H "Authorization: Bearer $PG_ADMIN_KEY" localhost:8081/api/v1/audit/recent?limit=5
+```
+
+**TLS** is not configured by default. Put the service behind a TLS terminator, or give the process a keystore
+(`server.ssl.*`); `docs/ROADMAP-1.0.md` M2-3 tracks shipping that as a documented, tested option.
+
+## 3. Limits and the status codes a client must handle
 
 One instance has a fixed number of threads and connections. `phoenixgraph.limits` (see
 `graph-http/src/main/resources/application.yml`) decides what it will spend:
@@ -66,7 +113,7 @@ curl -s -X POST localhost:8081/api/v1/query -H 'content-type: application/json' 
 #  "stackTrace":[...],"hint":"Check the Gremlin query syntax and the request parameters"}
 ```
 
-## 3. Querying
+## 4. Querying
 
 ```bash
 curl -s -X POST localhost:8081/api/v1/query -H 'content-type: application/json' -d '{
@@ -84,7 +131,7 @@ The response is `result` (one row per traverser, with `label`, `id`, `properties
 `subgraph` (`vertices` + `edges`, the same picture the UI draws). A query that only reads values answers with
 those values; the rows panel of the UI is exactly this array.
 
-## 4. Writes
+## 5. Writes
 
 `POST /api/v1/graphs/{graph}/vertices`, `POST /api/v1/graphs/{graph}/edges`, `DELETE .../vertices/{id}`,
 `DELETE .../edges/{edgeId}`, plus `POST /api/v1/{vertices,edges,batch}` for the primary graph and
@@ -99,7 +146,7 @@ Two semantics worth knowing before you build on them:
 - **Writes go to the graph's own store.** A graph served from a read-only scheme accepts the request and
   rejects the write with a message naming the scheme, rather than silently writing somewhere else.
 
-## 5. The agent toolkit
+## 6. The agent toolkit
 
 `GET /api/v1/agent/tools` returns the catalogue (the seven tools, their parameters and the answer shape).
 The tools take one `ToolRequest`: `graph` (required), `question`, `entity`, `relation`, `from`, `to`, `k`,
@@ -120,7 +167,7 @@ curl -s -X POST localhost:8081/api/v1/agent/context -H 'content-type: applicatio
 (The `--data-binary @file` form matters for non-ASCII text: a shell that re-encodes the argument makes the
 service reject the JSON as invalid UTF-8.)
 
-## 6. Metrics
+## 7. Metrics
 
 - `GET /api/v1/metrics` - every graph in the grouped view, plus a flat counter dump
 - `GET /api/v1/metrics/{graph}` - one graph: `storage`, `quality`, `queries`, `counters`
@@ -142,10 +189,10 @@ Latency is exported as the summary the engine computes (`_count`, `_mean_millis`
 `_p95_millis`, `_p99_millis`, `_max_millis`) rather than as Prometheus buckets: the internal bucket edges are
 not a stable public contract, and a p99 you can compare across versions beats one you cannot.
 
-## 7. Endpoints
+## 8. Endpoints
 
 <!-- endpoints:start -->
-<!-- generated by tools/api-endpoints.mjs from 11 controllers - do not edit by hand -->
+<!-- generated by tools/api-endpoints.mjs from 12 controllers - do not edit by hand -->
 
 | Method | Path | Java method | Request body | Returns |
 | --- | --- | --- | --- | --- |
@@ -160,6 +207,7 @@ not a stable public contract, and a p99 you can compare across versions beats on
 | `POST` | `/api/v1/agent/similar` | `AgentController#similar` | `ToolRequest` | `Map<String, Object>` |
 | `POST` | `/api/v1/agent/similar-related` | `AgentController#similarRelated` | `ToolRequest` | `Map<String, Object>` |
 | `GET` | `/api/v1/agent/tools` | `AgentController#tools` | — | `Map<String, Object>` |
+| `GET` | `/api/v1/audit/recent` | `AuditController#recent` | — | `Map<String, Object>` |
 | `POST` | `/api/v1/batch` | `BatchController#batch` | `BatchRequest` | `List<WriteResult>` |
 | `POST` | `/api/v1/edges` | `EdgeController#upsert` | `EdgeRequest` | `ResponseEntity<WriteResult>` |
 | `DELETE` | `/api/v1/edges/{edgeId}` | `EdgeController#delete` | — | `ResponseEntity<WriteResult>` |
@@ -198,12 +246,12 @@ not a stable public contract, and a p99 you can compare across versions beats on
 | `DELETE` | `/api/v1/vertices/{id}/properties/{index}` | `VertexController#deleteProperty` | — | `ResponseEntity<WriteResult>` |
 | `PUT` | `/api/v1/vertices/{id}/properties/{index}` | `VertexController#updateProperty` | `PropertyUpdateRequest` | `ResponseEntity<WriteResult>` |
 
-48 endpoints across 11 controllers.
+49 endpoints across 12 controllers.
 <!-- endpoints:end -->
 
 ---
 
-## 8. What is deliberately *not* in this reference
+## 9. What is deliberately *not* in this reference
 
 - **A schema/OpenAPI document.** The table above is generated from the controllers by
   `tools/api-endpoints.mjs --check` (CI fails if it drifts), which covers the paths and the request bodies;
@@ -212,4 +260,5 @@ not a stable public contract, and a p99 you can compare across versions beats on
 - **Pagination.** Answers are bounded by the query (`limit`, `range`, the adaptive batch size), not by a
   cursor: the engine returns the traversers the query asked for, and there is no server-side result set to
   page through. If a client needs streaming over a huge answer, that is an M3-sized feature.
-- **Rate limits per API key**, quotas per tenant, and audit trails - M2-2.
+- **Rate limits per API key**, quotas per tenant, and an audit trail that survives a restart (today: a
+  logger plus a bounded in-memory buffer) - later M2 work.

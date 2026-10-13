@@ -20,8 +20,21 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
-Nothing yet: the next work is milestone **M2** of [`docs/ROADMAP-1.0.md`](docs/ROADMAP-1.0.md)
-(authentication, TLS, backup/restore, externalised configuration, k8s manifests, SLO).
+Milestone **M2** of [`docs/ROADMAP-1.0.md`](docs/ROADMAP-1.0.md) continues here.
+
+### Added
+
+- **API keys, roles and an audit trail** (M2-2): `phoenixgraph.security` with named keys (token or its
+  SHA-256), the role ladder reader < writer < admin, optional per-graph scoping, `401`/`403` answered before
+  any work happens, and every call recorded to the `com.pengcheng.phoenixgraph.audit` logger plus a bounded
+  buffer read back through `GET /api/v1/audit/recent` (admin). Off by default; tokens are never logged.
+
+### Fixed
+
+- **A key configured as its SHA-256 was never accepted**: the comparison hashed the configured digest a
+  second time, so the failure looked exactly like a wrong token. A query is also a read
+  (`POST /api/v1/query`, the pattern preview, the agent tools) - a reader role that could not query would
+  have been useless - and the audit view needs `admin` even though it is a `GET`.
 
 ## [0.2.0] - 2026-10-13
 

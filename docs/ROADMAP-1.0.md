@@ -46,7 +46,7 @@
 | 编号 | 事项 | 验收标准（可复跑） | 工作量 | 状态 |
 |---|---|---|---|---|
 | M2-1 | **查询超时 + 并发闸门 + 每图配额**：服务端墙钟超时、并发信号量、`429/503` + `Retry-After`，可配置 | 新单测覆盖（超时→503、超并发→429、配额→429）；线上实测一条 `repeat` 长查询在超时后返回 503 且实例仍可服务 | M | ✅ |
-| M2-2 | **认证 / 授权 / 审计**：Bearer + 图级权限 + 审计日志（谁、何时、哪个图、什么查询） | 无 token → 401；越权图 → 403；审计行写入并可从日志/接口检索；单测 + 线上实测 | M-L | ⬜ |
+| M2-2 | **认证 / 授权 / 审计**：Bearer + 图级权限 + 审计日志（谁、何时、哪个图、什么查询） | 无 token → 401；越权图 → 403；审计行写入并可从日志/接口检索；单测 + 线上实测 | M-L | ✅ |
 | M2-3 | **TLS 与密钥管理**：HTTPS 可开启、密钥走外部注入（不落配置文件） | 用自签证书起服务，`curl --cacert` 成功、明文端口关闭或重定向；配置项文档化 | M | ⬜ |
 | M2-4 | **备份 / 恢复 / 优雅停机**：Aerospike 备份脚本、RocksDB checkpoint、`SIGTERM` 刷盘 | 演练：备份 → 删数据 → 还原 → 同一查询同结果；`kill -TERM` 后无未刷盘丢失（有日志与断言） | M | ⬜ |
 | M2-5 | **配置外置**：图清单与 schema 从挂载目录加载（不依赖 jar 内资源） | 挂载一个目录新增一张图，重启后 `/api/v1/graphs` 出现该图；给出示例目录 | M | ⬜ |
@@ -78,7 +78,17 @@
 
 ## 进度日志
 
-- **2026-10-13（第一批）M1-1…M1-7 + M2-1/M2-7/M2-8 完成。** 证据：
+- **2026-10-13（第一批）M1-1…M1-7 + M2-1/M2-7/M2-8 完成。**
+- **（第二批）M2-2 完成。** 证据：`ApiKeys`/`ApiKeyFilter`/`AuditLog`/`AuditController` + `phoenixgraph.security`；
+  单测 `ApiKeysTest` 9 / `ApiKeyFilterTest` 9 / `AuditLogTest` 4（HTTP 合计 **120** 全绿）；
+  线上 `verification/verify-security.mjs` **16/16**：无 key → 401 + `WWW-Authenticate`、错 key → 401（审计记 `unknown`）、
+  reader 可查询但不可写、不可读审计（403）、scoped writer 只在自己图上可用（另一图 403）、writer 不可改 schema（403）、
+  **sha256 形式配置的 key 可用**、admin 可读审计（含被拒的调用）、**审计里不出现任何 token**、查询文本被截断；
+  服务实例默认仍开放（`enabled=false`）以便 demo 与验证套件可用 ✓。
+  修掉两个真 bug：**sha256 比较把配置的摘要又哈希了一次**（永远不匹配，表现如同「token 错」✗）、
+  **`GET /api/v1/audit/recent` 被方法捷径判成 reader**（审计必须是 admin，即使它是 GET ✓）；
+  另把「查询是 POST 但只读」显式列出（`POST /api/v1/query`、fuzzy validate/plan、agent 工具 → reader ✓），
+  否则 reader 角色连查询都做不了 ✓。 证据：
   - 验证套件：`node verification/run.mjs`（**11 个检查 / 192+ 条断言全绿**，含新增的 `verify-request-limits.mjs` 17 条与重写为真断言的 `verify-tpch-semantic-layer.mjs` 11 条）；
     `docs/AGENT-CASES.md` 的 63 条数字断言仍在套件里。
   - 单测：`./mvnw -o test -pl graph-http -am` 绿（HTTP 97，含新增 `RequestLimitsTest` 8 / `PrometheusFormatTest` 7 /

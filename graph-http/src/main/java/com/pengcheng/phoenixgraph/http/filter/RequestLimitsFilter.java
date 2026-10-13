@@ -52,7 +52,8 @@ public class RequestLimitsFilter extends OncePerRequestFilter {
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
-        String requestId = request.getHeader(REQUEST_ID_HEADER);
+        Object fromFilter = request.getAttribute("phoenixgraph.requestId");
+        String requestId = fromFilter instanceof String value ? value : request.getHeader(REQUEST_ID_HEADER);
         if (requestId == null || requestId.isBlank() || requestId.length() > 64) {
             requestId = UUID.randomUUID().toString().substring(0, 8);
         }
@@ -60,10 +61,10 @@ public class RequestLimitsFilter extends OncePerRequestFilter {
         response.setHeader(REQUEST_ID_HEADER, requestId);
 
         HttpServletRequest effective = request;
-        String graph = graphOfPath(request.getRequestURI());
-        if (graph == null && "POST".equalsIgnoreCase(request.getMethod())) {
+        String graph = RequestGraphs.ofPath(request.getRequestURI());
+        if (graph == null && !"GET".equalsIgnoreCase(request.getMethod())) {
             effective = new CachedBodyRequest(request);
-            graph = graphOfBody(effective);
+            graph = RequestGraphs.ofBody(((CachedBodyRequest) effective).bodyAsString());
         }
 
         long started = System.nanoTime();
@@ -98,45 +99,6 @@ public class RequestLimitsFilter extends OncePerRequestFilter {
             limits.release(graph);
             MDC.remove("requestId");
         }
-    }
-
-    /** The graph named in the path (`/api/v1/graphs/{graph}/...`, `/api/v1/metrics/{graph}`, ...). */
-    private static String graphOfPath(String uri) {
-        String[] parts = uri.split("/");
-        for (int i = 0; i < parts.length - 1; i++) {
-            if (parts[i].equals("graphs") || parts[i].equals("metrics")) {
-                String candidate = parts[i + 1];
-                if (!candidate.isBlank() && !candidate.equals("flush") && !candidate.equals("reset")
-                        && !candidate.equals("prometheus")) {
-                    return candidate;
-                }
-            }
-        }
-        for (int i = 0; i < parts.length - 2; i++) {
-            if (parts[i].equals("schema") || parts[i].equals("agent")) {
-                String candidate = parts[i + 1];
-                if (!candidate.isBlank() && !candidate.equals("validate") && !candidate.equals("storage-types")
-                        && !candidate.equals("tools") && !candidate.equals("ingest")) {
-                    return candidate;
-                }
-            }
-        }
-        return null;
-    }
-
-    /**
-     * The graph named in the body: {@code "graphName"} for a query, {@code "graph"} for the agent tools. A
-     * small pattern match rather than a JSON parse - the filter only needs the name, and parsing the whole
-     * document twice per request to get one string would be waste on the hot path.
-     */
-    private static String graphOfBody(HttpServletRequest request) {
-        String body = ((CachedBodyRequest) request).bodyAsString();
-        for (String key : new String[] {"graphName", "graph"}) {
-            java.util.regex.Matcher matcher = java.util.regex.Pattern
-                    .compile("\"" + key + "\"\\s*:\\s*\"([^\"]{1,120})\"").matcher(body);
-            if (matcher.find()) return matcher.group(1);
-        }
-        return null;
     }
 
     /** The query text, when the request carried one, so the log line can be grepped by statement. */
