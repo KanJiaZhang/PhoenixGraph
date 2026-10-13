@@ -26,6 +26,8 @@ import com.pengcheng.phoenixgraph.schema.GeoIndexSchemas;
 import com.pengcheng.phoenixgraph.storage.aerospike.AerospikeEdgeStore;
 import com.pengcheng.phoenixgraph.storage.aerospike.AerospikeGeoIndex;
 import com.pengcheng.phoenixgraph.storage.aerospike.AerospikeVertexStore;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -33,8 +35,14 @@ import org.springframework.context.annotation.Configuration;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.stream.Stream;
 
 /**
  * Wires the Aerospike storage stores as Spring beans and loads the configured
@@ -47,6 +55,8 @@ import java.util.List;
 @Configuration
 @EnableConfigurationProperties({StorageProperties.class, LimitsProperties.class})
 public class StorageConfig {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(StorageConfig.class);
 
     /**
      * The Gemini cluster the {@code (DIST)} algorithm steps run on.
@@ -145,57 +155,145 @@ public class StorageConfig {
      * Every graph this instance can query, each bound to the storage its schema declares:
      * Aerospike (the default) reads through the vertex/edge stores, RocksDB-Inline and
      * RocksDB-Edge open their own directory and read through their own query.
+     *
+     * <p>Graphs come from two places: the configured list (
+     * {@code phoenixgraph.storage.schema} plus {@code .graphs}) and, when
+     * {@code phoenixgraph.storage.schema-dir} is set, every {@code *.json} in that directory.
+     * The directory is how an operator adds a graph without editing a configuration file
+     * that lives inside the jar: mount a directory of schemas and restart. An explicitly
+     * configured graph wins over a file of the same name, so mounting a directory can never
+     * silently re-point a graph somebody deliberately configured.
      */
     @Bean
     public GraphRegistry graphRegistry(AerospikeClient client, StorageProperties properties,
                                        RocksDbGraphStores rocksDbStores, MetricsRegistry metrics) {
         List<GraphBinding> bindings = new ArrayList<>();
+        Map<String, String> vertexSets = new LinkedHashMap<>();
         for (GraphProperties definition : properties.graphDefinitions()) {
-            GraphSchema schema = loadSchema(definition.schema());
-            GraphMetrics graphMetrics = metrics.forGraph(schema.name());
-            if (RocksDbGraphStores.isRocksDb(schema)) {
-                GraphQuery query = rocksDbStores.open(schema, graphMetrics);
-                MetricsStore store = rocksDbStores.metricsStore(schema.name());
-                if (store != null) {
-                    metrics.bind(schema.name(), store);
-                }
-                bindings.add(GraphBinding.of(schema, query));
-                continue;
-            }
-            // an Aerospike graph declares its geo bins as geo2dsphere secondary indexes; a
-            // community server refuses (the query then scans) which is not an error here
-            if (GeoIndexSchemas.hasGeoProperties(schema)) {
-                AerospikeGeoIndex.ensureIndexes(client, properties.namespace(), definition.vertexSet(),
-                        schema, null);
-            }
-            AerospikeVertexStore vertexStore = new AerospikeVertexStore(client, properties.namespace(),
-                    definition.vertexSet(), new MetricsBusinessLog(new JulBusinessLog(), graphMetrics),
-                    new JulErrorLog()).metrics(graphMetrics);
-            AerospikeEdgeStore edgeStore = new AerospikeEdgeStore(client, properties.namespace(),
-                    definition.vertexSet(), schema,
-                    new MetricsBusinessLog(new JulBusinessLog(), graphMetrics), new JulErrorLog())
-                    .metrics(graphMetrics);
-            // every Aerospike graph persists its metrics in the same cluster, in a system set
-            metrics.bind(schema.name(), new AerospikeMetricsStore(client, properties.namespace()));
-            if (schema.storage().type() == GraphStorageType.AEROSPIKE_EDGE) {
-                // big vertices spread their edges over three tiers: online (the inline bin),
-                // near-line (TTL'd KVs, pre-partitioned by volume) and cold (the aggregated
-                // Edge_Out / Edge_In tables). A read is routed by which spans its window overlaps.
-                AerospikeEdgeChunkStore chunks = new AerospikeEdgeChunkStore(client, properties.namespace(),
-                        definition.vertexSet()).metrics(graphMetrics);
-                AerospikeNearlineStore nearline = new AerospikeNearlineStore(client, properties.namespace(),
-                        definition.vertexSet()).metrics(graphMetrics);
-                GraphQuery query = new AerospikeEdgeGraphQuery(
-                        new AerospikeGraphQuery(vertexStore, edgeStore, schema), chunks, schema,
-                        nearline, java.time.Clock.systemUTC(),
-                        com.pengcheng.phoenixgraph.storage.aerospike.EdgeTiering.DEFAULT_NEARLINE_WINDOW_MILLIS);
-                bindings.add(new GraphBinding(schema, vertexStore, edgeStore, client,
-                        properties.namespace(), query));
-                continue;
-            }
-            bindings.add(new GraphBinding(schema, vertexStore, edgeStore, client, properties.namespace()));
+            vertexSets.put(definition.schema(), definition.vertexSet());
+        }
+        Map<String, GraphSchema> discovered = discoveredSchemas(properties);
+        for (Map.Entry<String, GraphSchema> found : discovered.entrySet()) {
+            vertexSets.putIfAbsent(found.getKey(), vertexSetFor(found.getValue().name()));
+            // the rest of the service looks schemas up by name (authoring, vector indexes), so a discovered
+            // graph has to be registered, not only bound
+            GraphSchemaManagers.manager().register(found.getValue());
+        }
+        for (Map.Entry<String, GraphSchema> entry : loadOrder(properties, vertexSets.keySet(), discovered).entrySet()) {
+            bindings.add(bind(entry.getValue(), vertexSets.get(entry.getKey()), client, properties,
+                    rocksDbStores, metrics));
         }
         return new GraphRegistry(bindings);
+    }
+
+    /**
+     * The configured graphs in order, then the ones found in the schema directory.
+     *
+     * <p>A discovered schema is used as it was parsed: asking the schema manager for it by name would look in
+     * the working directory and the classpath, and a mounted schema directory is deliberately neither.
+     */
+    private Map<String, GraphSchema> loadOrder(StorageProperties properties, Set<String> names,
+                                               Map<String, GraphSchema> discovered) {
+        Map<String, GraphSchema> schemas = new LinkedHashMap<>();
+        for (String name : names) {
+            if (schemas.containsKey(name)) {
+                continue;
+            }
+            GraphSchema found = discovered.get(name);
+            schemas.put(name, found != null ? found : loadSchema(name));
+        }
+        return schemas;
+    }
+
+    /**
+     * The schemas under {@code phoenixgraph.storage.schema-dir}, as {@code name -> schema}.
+     *
+     * <p>The name is the file's own name (so {@code sales.json} is the graph {@code sales}), and
+     * the vertex set is derived from it because a schema file does not say which set holds its
+     * data - the alternative would be inventing a second configuration language inside JSON. An
+     * entry in {@code phoenixgraph.storage.graphs} is how you point a graph at a set of your
+     * choosing, and it wins.
+     */
+    private Map<String, GraphSchema> discoveredSchemas(StorageProperties properties) {
+        String dir = properties.schemaDir();
+        if (dir == null || dir.isBlank()) {
+            return Map.of();
+        }
+        Path directory = Path.of(dir);
+        if (!Files.isDirectory(directory)) {
+            LOGGER.warn("phoenixgraph.storage.schema-dir={} is not a directory: no graph was discovered there", dir);
+            return Map.of();
+        }
+        SchemaJsonCodec codec = new SchemaJsonCodec();
+        Map<String, GraphSchema> schemas = new LinkedHashMap<>();
+        try (Stream<Path> files = Files.list(directory)) {
+            for (Path file : files.filter((path) -> path.getFileName().toString().endsWith(".json"))
+                    .sorted().toList()) {
+                String fileName = file.getFileName().toString();
+                String name = fileName.substring(0, fileName.length() - ".json".length());
+                try {
+                    GraphSchema schema = codec.fromJson(Files.readString(file));
+                    schemas.put(name, schema);
+                    LOGGER.info("graph '{}' discovered in {} (vertex set {})", name, dir, vertexSetFor(name));
+                } catch (RuntimeException | IOException broken) {
+                    // a broken file must not stop the service: the other graphs are still served, and the
+                    // operator gets a line naming the file
+                    LOGGER.error("ignoring {}: {}", file, broken.getMessage());
+                }
+            }
+        } catch (IOException unreadable) {
+            LOGGER.error("cannot read phoenixgraph.storage.schema-dir={}: {}", dir, unreadable.getMessage());
+        }
+        return schemas;
+    }
+
+    /** The vertex set of a discovered graph: its name, with what an Aerospike set name cannot hold folded. */
+    static String vertexSetFor(String graphName) {
+        return graphName.replaceAll("[^A-Za-z0-9_]", "_");
+    }
+
+    /** Binds one schema to the storage its own declaration asks for. */
+    private GraphBinding bind(GraphSchema schema, String vertexSet, AerospikeClient client,
+                              StorageProperties properties, RocksDbGraphStores rocksDbStores,
+                              MetricsRegistry metrics) {
+        GraphMetrics graphMetrics = metrics.forGraph(schema.name());
+        if (RocksDbGraphStores.isRocksDb(schema)) {
+            GraphQuery query = rocksDbStores.open(schema, graphMetrics);
+            MetricsStore store = rocksDbStores.metricsStore(schema.name());
+            if (store != null) {
+                metrics.bind(schema.name(), store);
+            }
+            return GraphBinding.of(schema, query);
+        }
+        // an Aerospike graph declares its geo bins as geo2dsphere secondary indexes; a
+        // community server refuses (the query then scans) which is not an error here
+        if (GeoIndexSchemas.hasGeoProperties(schema)) {
+            AerospikeGeoIndex.ensureIndexes(client, properties.namespace(), vertexSet, schema, null);
+        }
+        AerospikeVertexStore vertexStore = new AerospikeVertexStore(client, properties.namespace(),
+                vertexSet, new MetricsBusinessLog(new JulBusinessLog(), graphMetrics),
+                new JulErrorLog()).metrics(graphMetrics);
+        AerospikeEdgeStore edgeStore = new AerospikeEdgeStore(client, properties.namespace(),
+                vertexSet, schema,
+                new MetricsBusinessLog(new JulBusinessLog(), graphMetrics), new JulErrorLog())
+                .metrics(graphMetrics);
+        // every Aerospike graph persists its metrics in the same cluster, in a system set
+        metrics.bind(schema.name(), new AerospikeMetricsStore(client, properties.namespace()));
+        if (schema.storage().type() == GraphStorageType.AEROSPIKE_EDGE) {
+            // big vertices spread their edges over three tiers: online (the inline bin),
+            // near-line (TTL'd KVs, pre-partitioned by volume) and cold (the aggregated
+            // Edge_Out / Edge_In tables). A read is routed by which spans its window overlaps.
+            AerospikeEdgeChunkStore chunks = new AerospikeEdgeChunkStore(client, properties.namespace(),
+                    vertexSet).metrics(graphMetrics);
+            AerospikeNearlineStore nearline = new AerospikeNearlineStore(client, properties.namespace(),
+                    vertexSet).metrics(graphMetrics);
+            GraphQuery query = new AerospikeEdgeGraphQuery(
+                    new AerospikeGraphQuery(vertexStore, edgeStore, schema), chunks, schema,
+                    nearline, java.time.Clock.systemUTC(),
+                    com.pengcheng.phoenixgraph.storage.aerospike.EdgeTiering.DEFAULT_NEARLINE_WINDOW_MILLIS);
+            return new GraphBinding(schema, vertexStore, edgeStore, client, properties.namespace(), query);
+        }
+        return new GraphBinding(schema, vertexStore, edgeStore, client, properties.namespace());
     }
 
     /** Loads a schema from the working directory first, then from the classpath. */

@@ -169,6 +169,11 @@ public final class RocksDbEdgeStore implements AutoCloseable {
         return schema;
     }
 
+    /** A point-in-time copy of this graph's directory (see {@link RocksDbHandle#checkpoint}). */
+    public int checkpoint(java.nio.file.Path target) {
+        return handle.checkpoint(target);
+    }
+
     public RocksDbHandle handle() {
         return handle;
     }

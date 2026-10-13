@@ -35,6 +35,9 @@ import java.util.Map;
  */
 public final class RocksDbGraphStores implements AutoCloseable {
 
+    private static final java.util.logging.Logger LOGGER =
+            java.util.logging.Logger.getLogger(RocksDbGraphStores.class.getName());
+
     private final Path root;
     private final Map<String, AutoCloseable> stores = new LinkedHashMap<>();
     private final Map<String, String> paths = new LinkedHashMap<>();
@@ -44,9 +47,25 @@ public final class RocksDbGraphStores implements AutoCloseable {
         this(null);
     }
 
-    /** Resolves relative schema paths against {@code rocksdbRoot} (may be {@code null}). */
+    /**
+     * Resolves relative schema paths against {@code rocksdbRoot} (may be {@code null}), creating the root when
+     * it is missing.
+     *
+     * <p>RocksDB creates the *last* path component of a graph's directory and refuses to create the ones
+     * above it, so a service pointed at a fresh volume fails at start-up with "Failed to create a directory" -
+     * which is a deployment detail, not a graph problem. Creating the root here is one line and turns that
+     * into "it just works on an empty disk".
+     */
     public RocksDbGraphStores(String rocksdbRoot) {
         this.root = rocksdbRoot == null || rocksdbRoot.isBlank() ? null : Path.of(rocksdbRoot);
+        if (root != null && !Files.isDirectory(root)) {
+            try {
+                Files.createDirectories(root);
+                LOGGER.info("created the RocksDB root " + root.toAbsolutePath());
+            } catch (IOException failure) {
+                LOGGER.warning("cannot create the RocksDB root " + root + ": " + failure.getMessage());
+            }
+        }
     }
 
     /** Whether a schema asks for a RocksDB scheme. */
@@ -112,6 +131,35 @@ public final class RocksDbGraphStores implements AutoCloseable {
             closeQuietly(previous);
         }
         paths.put(graphName, path);
+    }
+
+    /**
+     * Snapshots a graph's directory into {@code target}.
+     *
+     * <p>Called by the checkpoint endpoint (an operator action) rather than by a timer: whether a copy belongs
+     * on the same disk, on a mounted volume or on another host is a deployment decision, and a background job
+     * that picks one of them would be a policy nobody asked for.
+     *
+     * @return the number of files the checkpoint holds
+     * @throws IllegalArgumentException when the graph is not a RocksDB graph (an Aerospike graph is backed up
+     *                                  with the database's own tooling, which this process cannot reach)
+     */
+    public int checkpoint(String graphName, Path target) {
+        AutoCloseable store = stores.get(graphName);
+        if (store instanceof RocksDbInlineStore inline) {
+            return inline.checkpoint(target);
+        }
+        if (store instanceof RocksDbEdgeStore edge) {
+            return edge.checkpoint(target);
+        }
+        throw new IllegalArgumentException("Graph '" + graphName + "' is not served by RocksDB, so it has no "
+                + "directory to checkpoint; an Aerospike graph is backed up with asbackup (see docs/OPERATIONS.md)");
+    }
+
+    /** Whether a graph has a directory this class can snapshot. */
+    public boolean canCheckpoint(String graphName) {
+        AutoCloseable store = stores.get(graphName);
+        return store instanceof RocksDbInlineStore || store instanceof RocksDbEdgeStore;
     }
 
     /** Where a graph's metrics are persisted, or {@code null} when it is not a RocksDB graph. */

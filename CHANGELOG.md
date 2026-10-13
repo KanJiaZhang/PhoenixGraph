@@ -98,3 +98,29 @@ semantic layer, and the visualization workbench. See `README.md` for what each o
 [Unreleased]: https://github.com/KanJiaZhang/PhoenixGraph/compare/v0.2.0...HEAD
 [0.2.0]: https://github.com/KanJiaZhang/PhoenixGraph/releases/tag/v0.2.0
 [0.1.0]: https://github.com/KanJiaZhang/PhoenixGraph/releases/tag/v0.1.0
+
+### Added
+
+- **Backups, and a recovery drill** (M2-4): `POST /api/v1/graphs/{graph}/checkpoint` takes a consistent,
+  hard-linked RocksDB snapshot while the service keeps serving; `GET /api/v1/graphs/{graph}/storage` says which
+  Aerospike set or RocksDB directory holds a graph and which tool backs it up; `tools/backup-graph.sh` and
+  `tools/restore-graph.sh` do both schemes; graceful shutdown (`server.shutdown=graceful`, plus the metrics
+  flush and the RocksDB close that already ran on context close) so a restart does not drop counters or cut a
+  query in half. `verification/verify-backup-restore.mjs` proves it: a checkpoint is served by a second
+  instance and answers identically (8,000 vertices, same revenue per year), a restart loses nothing, and
+  asbackup → delete → asrestore brings a deleted vertex back.
+- **A schema directory** (M2-5): `phoenixgraph.storage.schema-dir` serves every `*.json` in a mounted
+  directory as a graph, without rebuilding the image; an explicit entry in `phoenixgraph.storage.graphs` wins
+  over a file of the same name.
+- **`docs/OPERATIONS.md`**, the runbook: what runs where, the settings an operator changes, backups for both
+  schemes, restore and the two `asrestore` flags a repair needs, upgrades and rollback, what to watch, and the
+  traps that cost somebody an afternoon.
+
+### Fixed
+
+- **A deleted vertex is now really gone from reads.** Deleting writes an expiry marker into the record's
+  `lastUpdatedTime` bin, but the predicate every read path goes through (`isMissing`) only checked for a null
+  record - so a deleted vertex stayed visible in point reads, batch reads, scans and subgraph expansion, and
+  stayed visible across a restart. Found by the backup drill (write a vertex, delete it, read it back), fixed
+  in one place, and covered by a unit test. It also explains the `asrestore` "skipped"/"fresher" behaviour the
+  restore drill hit. See `docs/DATA-QUALITY.md` §8.

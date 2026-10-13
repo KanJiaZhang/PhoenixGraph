@@ -1,6 +1,9 @@
 spring:
   application:
     name: phoenixgraph-http
+  lifecycle:
+    # how long a graceful shutdown waits for in-flight requests before it gives up
+    timeout-per-shutdown-phase: 30s
   web:
     resources:
       cache:
@@ -11,6 +14,11 @@ spring:
 
 server:
   port: 8081
+  # Graceful shutdown: the container stops accepting new requests, lets the in-flight ones finish (up to the
+  # lifecycle timeout below), and only then closes the storage beans - which is the order that lets the last
+  # metrics flush reach the store. Without this a restart can drop up to a flush interval of counters and cut
+  # a long query in half.
+  shutdown: graceful
   compression:
     enabled: true
     mime-types: application/json,application/xml,text/html,text/plain,text/xml

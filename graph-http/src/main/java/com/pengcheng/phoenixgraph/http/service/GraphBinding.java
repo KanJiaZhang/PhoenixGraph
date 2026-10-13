@@ -38,6 +38,17 @@ public record GraphBinding(GraphSchema schema, AerospikeVertexStore vertexStore,
         Objects.requireNonNull(graphQuery, "graphQuery");
     }
 
+    /**
+     * The Aerospike set this graph reads, or {@code null} for a RocksDB graph.
+     *
+     * <p>An operator needs it (`asbackup -s <set>`), and it is not in the schema: a schema describes the
+     * shape of a graph, the set is where this deployment put it. Reading it from the vertex store keeps the
+     * answer in one place instead of making every caller parse the configuration.
+     */
+    public String vertexSet() {
+        return vertexStore == null ? null : vertexStore.set();
+    }
+
     /** An Aerospike-backed graph (the default storage). */
     public GraphBinding(GraphSchema schema, AerospikeVertexStore vertexStore, AerospikeEdgeStore edgeStore) {
         this(schema, vertexStore, edgeStore, null, null, aerospikeQuery(schema, vertexStore, edgeStore));

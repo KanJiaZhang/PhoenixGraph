@@ -8,6 +8,7 @@ import org.rocksdb.DBOptions;
 import org.rocksdb.FlushOptions;
 import org.rocksdb.Options;
 import org.rocksdb.ReadOptions;
+import org.rocksdb.Checkpoint;
 import org.rocksdb.RocksDB;
 import org.rocksdb.RocksDBException;
 import org.rocksdb.RocksIterator;
@@ -18,6 +19,9 @@ import com.pengcheng.phoenixgraph.metrics.MetricsSink;
 import org.rocksdb.WriteOptions;
 
 import java.nio.charset.StandardCharsets;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -144,6 +148,38 @@ public final class RocksDbHandle implements AutoCloseable {
             return names;
         } catch (RocksDBException e) {
             return Set.of();
+        }
+    }
+
+    /**
+     * Writes a consistent, hard-linked copy of this directory into {@code target} (RocksDB's own
+     * checkpoint: a point-in-time snapshot that another process can open read-only).
+     *
+     * <p>This is what makes "back up a graph" cheap: the copy is made of hard links, so it costs a few
+     * kilobytes and a moment rather than a full rewrite, and the service keeps serving while it happens. The
+     * snapshot is a *directory*, so restoring is "start a service whose schema points at the copy" - no import
+     * step to get wrong.
+     *
+     * @return the number of files in the checkpoint
+     */
+    public int checkpoint(Path target) {
+        try {
+            // RocksDB creates the directory itself and refuses an existing one - which is the behaviour a
+            // backup wants (a checkpoint must not be written into a directory that already holds something
+            // else), so the message says how to proceed instead of hiding it behind "Directory exists"
+            if (Files.exists(target)) {
+                throw new RocksDbException("Checkpoint target " + target + " already exists; choose another "
+                        + "directory or remove it first");
+            }
+            try (Checkpoint checkpoint = Checkpoint.create(db)) {
+                checkpoint.createCheckpoint(target.toAbsolutePath().toString());
+            }
+            try (var files = Files.list(target)) {
+                return (int) files.count();
+            }
+        } catch (RocksDBException | IOException failure) {
+            throw new RocksDbException("Checkpoint of " + config.path() + " into " + target + " failed: "
+                    + failure.getMessage(), failure);
         }
     }
 

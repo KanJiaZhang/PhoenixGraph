@@ -13,6 +13,11 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import com.aerospike.client.Record;
+
+import java.util.HashMap;
+import java.util.Map;
+
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -35,6 +40,29 @@ class AerospikeVertexStoreTest {
         // the type bin is read with every projection: it says which vertex the record is
         assertArrayEquals(new String[] {"vp_1", "vpt_1", "vp_3", "vpt_3", "vp_-2", "vp_-1", "vt"},
                 AerospikeVertexStore.propertyBins(List.of(1, 3)));
+    }
+
+    /**
+     * A delete is a marker, not a removal: {@link AerospikeVertexStore#deleteVertex} writes
+     * {@link AerospikeVertexStore#EXPIRED_LAST_UPDATED_TIME} into the lastUpdatedTime bin. Every read goes
+     * through {@code isMissing}, so this one predicate decides whether a deleted vertex stays readable - and
+     * for a while it did, which a backup drill found by writing a vertex, deleting it and reading it again.
+     */
+    @Test
+    void aSoftDeletedVertexIsMissing() {
+        Map<String, Object> live = new HashMap<>();
+        live.put(AerospikeVertexStore.LAST_UPDATED_TIME_BIN, 1_700_000_000_000L);
+        assertFalse(AerospikeVertexStore.isMissing(new Record(live, 1, 0)));
+
+        Map<String, Object> deleted = new HashMap<>();
+        deleted.put(AerospikeVertexStore.LAST_UPDATED_TIME_BIN, AerospikeVertexStore.EXPIRED_LAST_UPDATED_TIME);
+        assertTrue(AerospikeVertexStore.isMissing(new Record(deleted, 2, 0)),
+                "a vertex whose lastUpdatedTime is the expiry sentinel reads as absent");
+
+        Map<String, Object> withoutMarker = new HashMap<>();
+        withoutMarker.put("vp_1", "value");
+        assertFalse(AerospikeVertexStore.isMissing(new Record(withoutMarker, 1, 0)),
+                "a record without the marker is live (older writes did not set it)");
     }
 
     @Test

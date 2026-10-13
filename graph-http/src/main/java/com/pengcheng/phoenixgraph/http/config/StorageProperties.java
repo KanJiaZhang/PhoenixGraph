@@ -15,7 +15,7 @@ import java.util.List;
  */
 @ConfigurationProperties(prefix = "phoenixgraph.storage")
 public record StorageProperties(String host, int port, String namespace, String vertexSet, String schema,
-                                String rocksdbRoot, List<GraphProperties> graphs) {
+                                String rocksdbRoot, String schemaDir, List<GraphProperties> graphs) {
 
     public StorageProperties {
         if (host == null || host.isBlank()) {

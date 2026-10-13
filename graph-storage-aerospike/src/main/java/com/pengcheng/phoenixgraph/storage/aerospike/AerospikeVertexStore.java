@@ -223,9 +223,20 @@ public class AerospikeVertexStore implements VertexStore {
      * Aerospike's batched read returns a non-null record whose {@code bins} map is
      * {@code null} when the key is absent (or has none of the requested bins), so
      * that must be treated exactly like a missing record.
+     *
+     * <p>A soft-deleted vertex is missing too. {@link #deleteVertex} does not remove the record: it writes
+     * {@link #EXPIRED_LAST_UPDATED_TIME} into the {@code lastUpdatedTime} bin, which is how a delete stays
+     * cheap and how a delete that arrives out of order cannot resurrect an older write. Reading has to honour
+     * that marker, and doing it here - in the one predicate every read path goes through - is what makes a
+     * deleted vertex disappear from point reads, batch reads, scans and subgraph expansion alike. (It did not,
+     * until a backup drill wrote a vertex, deleted it, and found it still there after a restart.)
      */
     static boolean isMissing(Record record) {
-        return record == null || record.bins == null;
+        if (record == null || record.bins == null) {
+            return true;
+        }
+        Object updated = record.bins.get(LAST_UPDATED_TIME_BIN);
+        return updated instanceof Number number && number.longValue() <= EXPIRED_LAST_UPDATED_TIME;
     }
 
     /**

@@ -44,7 +44,9 @@ This is a **0.1 engine**: wide and tested, but not yet a hardened product. The g
   before exposing the service.
 - **Single node, no failover.** One `graph-http` holds the engines; RocksDB is a single-writer store on a
   local or shared volume; the Aerospike container runs without replicas. A restart is a short outage.
-- **No backup/restore tooling, no schema migration.** Moving a graph's schema forward is a manual edit today
+- **Backups and restores exist and are drilled** (`docs/OPERATIONS.md`: a RocksDB checkpoint, `asbackup`/
+  `asrestore` for a set, `tools/backup-graph.sh`, and a check that a deleted vertex comes back), **but there is
+  no schema migration.** Moving a graph's schema forward is a manual edit today
   (the schema files carry no version field).
 - **No per-request resource limits.** A slow or malicious query can occupy the instance; `timeLimit` is a
   step the *caller* has to add.
@@ -57,7 +59,7 @@ This is a **0.1 engine**: wide and tested, but not yet a hardened product. The g
 What it *does* have is unusual for this stage: **885 unit tests**, a published **live verification suite**
 (`verification/`), and documentation whose numbers are re-checked by that suite.
 
-Start here: [QUICKSTART.md](QUICKSTART.md) (10 minutes) · [docs/API.md](docs/API.md) (49 endpoints, keys and roles,
+Start here: [QUICKSTART.md](QUICKSTART.md) (10 minutes) · [docs/OPERATIONS.md](docs/OPERATIONS.md) (backups, restores, upgrades, traps) · [docs/API.md](docs/API.md) (51 endpoints, keys and roles,
 error model, limits) · [docs/DATA-QUALITY.md](docs/DATA-QUALITY.md) (the numbers not to trust) ·
 [docs/AGENT-CASES.md](docs/AGENT-CASES.md) (two worked analyses) ·
 [docs/ROADMAP-1.0.md](docs/ROADMAP-1.0.md) (what 1.0 still needs) · [CHANGELOG.md](CHANGELOG.md).

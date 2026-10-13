@@ -68,6 +68,17 @@
 | **年份表本身是对的** | 1995 = 95,612,794 / 1996 = 98,879,433 与当前实例一致 |
 | **处理** | 重播后重算 §4/§5，或把这两张表标注为"历史构建"。**在修正前不要引用 §4/§5 的大区数字** |
 
+## 8. `payment-graph` 等 Aerospike 图：删除后仍可读到（已修复，2026-10-13）
+
+| 项 | 内容 |
+|---|---|
+| **现象** | `DELETE /api/v1/vertices/{id}` 返回 `SUCCESS`，但 `g.V('{id}','Account').count()` 仍是 **1**；重启服务后依旧 ✗ |
+| **根因** | 删除是**软删除**：写入 `lastUpdatedTime = 0` 作为过期标记（`AerospikeVertexStore.deleteVertex`）。存储层有 `isExpired` 判断，但**所有读路径共用的 `isMissing` 只看 record 是否为 null**，没有看这个标记 ✗ |
+| **影响** | 删除后的点依然出现在点读、批量读、扫描与子图展开里——「删了还在」；也解释了为什么恢复演练里 `asrestore` 会 `skipped` / `fresher` 而不生效 ✓ |
+| **修复** | `isMissing` 现在把过期标记当成缺失（一处修复覆盖所有读路径）+ 单测 `AerospikeVertexStoreTest#aSoftDeletedVertexIsMissing` ✓ |
+| **发现方式** | M2-4 的备份/恢复演练（写探针 → 备份 → 删除 → 断言已消失）——**计划里的验收标准把它逼出来了** ✓ |
+| **验证** | 修复前写入并删除的探针重启后仍是 `[1]` ✗；修复后同一探针 `[0]` ✓，新的一轮「写→删」也是 `[1]→[0]` ✓；`verification/verify-backup-restore.mjs` 断言「删除后不可读、恢复后回来」✓ |
+
 ---
 
 ## 附：当前实例的权威数字（实测）
