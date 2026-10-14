@@ -35,10 +35,17 @@ if [ -n "$(git status --porcelain)" ]; then
   exit 1
 fi
 if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
-  echo "!! ${TAG} already exists; bump the version in pom.xml instead of moving a tag" >&2
-  exit 1
+  if [ "${TAG_IT}" = true ]; then
+    echo "!! ${TAG} already exists; bump the version in pom.xml instead of moving a tag" >&2
+    exit 1
+  fi
+  # rebuilding an already-released version locally is legitimate (inspecting the artifact, refreshing the
+  # manifest after a documentation commit): warn, build, and never tag
+  echo "-- ${TAG} already exists: building the artifact only, tagging stays off"
+  echo "-- working tree clean"
+else
+  echo "-- working tree clean, ${TAG} is free"
 fi
-echo "-- working tree clean, ${TAG} is free"
 
 # Every fact that does not depend on the tag has to hold before anything is built: the poms agree with each
 # other, the changelog has the section, the image tags follow the version, the release note exists.
