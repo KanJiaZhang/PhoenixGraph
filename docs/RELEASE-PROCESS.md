@@ -57,6 +57,32 @@ release stops describing the code it claims to describe. It also probes the buil
 | Set the default branch | GitHub → Settings → Branches → default `main` | needs the web UI or the API (this repository has no `gh` CLI in its toolchain) |
 | Prune | delete `release/*` when the minor line closes | otherwise "which branch is 1.0?" has three answers |
 
+## 4b. The two steps that need GitHub itself
+
+Neither is scriptable in this repository (there is no `gh` CLI in its toolchain and no token in its
+development loop), so they are written down instead - and both are one command if you have `gh` or a token:
+
+```bash
+# 1. The release page, with the note as the body and the checksummed jar attached.
+#    (docs/RELEASE-<version>.md is written to be pasted in; it is also the source of truth for the page.)
+gh release create v1.0.1 \
+  --title "PhoenixGraph 1.0.1" \
+  --notes-file docs/RELEASE-1.0.1.md \
+  dist/phoenixgraph.jar dist/phoenixgraph.jar.sha256
+
+# 2. The default branch, so a visitor clones the released line rather than whatever was newest.
+gh api -X PATCH repos/KanJiaZhang/PhoenixGraph \
+  -f default_branch=main
+
+# without gh, the same two over the REST API (a token with repo scope):
+#   POST   /repos/KanJiaZhang/PhoenixGraph/releases          {"tag_name":"v1.0.1", ...}
+#   POST   /repos/.../releases/<id>/assets?name=phoenixgraph.jar   (binary body)
+#   PATCH  /repos/KanJiaZhang/PhoenixGraph                   {"default_branch":"main"}
+```
+
+Worth turning on in the same visit: **branch protection** on `main` and `release/1.0` (require the CI check,
+no force pushes, no deletions) - the policy in §1 is a promise only if the branches cannot be rewritten.
+
 ## 5. What `tools/check-release.mjs` asserts
 
 Run it before a release and in CI; it reads the repository, not a running service (so it costs a second).
