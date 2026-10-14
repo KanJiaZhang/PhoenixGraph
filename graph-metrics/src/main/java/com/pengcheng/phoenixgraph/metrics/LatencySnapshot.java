@@ -27,11 +27,25 @@ public record LatencySnapshot(long count, long sumNanos, long maxNanos,
         buckets = buckets == null ? List.of() : Collections.unmodifiableList(new ArrayList<>(buckets));
     }
 
-    /** Takes a snapshot of a live histogram. */
+    /**
+     * Takes a snapshot of a live histogram.
+     *
+     * <p>The percentile fields are the <b>cumulative</b> ones. A snapshot is rebuilt from its bucket grid by the
+     * stores (see RocksDbMetricsStore.load), and a windowed percentile cannot survive that: the window is
+     * in-memory, per-minute, and gone with the process. So a snapshot records "since this histogram started",
+     * while {@link LatencyStats#percentileMillis(double)} - the live histogram - answers "the last five minutes".
+     *
+     * <p><b>Known consequence (docs/DATA-QUALITY.md §12):</b> the HTTP exposition renders a snapshot, so the
+     * {@code *_p99_millis} series an alert reads is currently the cumulative one - which means a rule like
+     * {@code p99 > 60} cannot clear after one slow query. The windowed view exists, is unit-tested, and is what a
+     * fixed exposition should publish; until then, treat that alert as noisy. The on-call drill
+     * (verification/verify-alert-drill.mjs) states this as an explicit XFAIL so it cannot be forgotten.
+     */
     public static LatencySnapshot of(LatencyStats stats) {
         return new LatencySnapshot(stats.count(), stats.sumNanos(), stats.maxNanos(), stats.meanMillis(),
-                stats.percentileMillis(0.5),
-                stats.percentileMillis(0.95), stats.percentileMillis(0.99), stats.maxMillis(), stats.buckets());
+                stats.cumulativePercentileMillis(0.5),
+                stats.cumulativePercentileMillis(0.95), stats.cumulativePercentileMillis(0.99),
+                stats.maxMillis(), stats.buckets());
     }
 
     /** Rebuilds the histogram this snapshot was taken from. */

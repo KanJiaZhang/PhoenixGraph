@@ -1,0 +1,30 @@
+# Prometheus configuration for PhoenixGraph.
+#
+# Why this file is here when the alerts already were: deploy/prometheus/phoenixgraph-rules.yml references
+# `up{job="phoenixgraph"}` and the per-graph latency metrics, and both only exist if *something* scrapes them
+# with that job name. The rules file without a scrape configuration is a set of alerts that can never fire -
+# which the on-call drill (verification/verify-alert-drill.mjs) found by asking "which job does this select?".
+#
+#   docker run -d --name prometheus -p 9090:9090 \
+#     -v "$PWD/deploy/prometheus:/etc/prometheus:ro" prom/prometheus
+#   # then: http://localhost:9090/alerts  (the six rules in phoenixgraph-rules.yml)
+#
+# One scrape target per engine instance. `host.docker.internal` is how a Prometheus container reaches an
+# engine running on the host; in Kubernetes the scrape job discovers pods instead (deploy/k8s/graph-http.yaml
+# carries the annotations for that).
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - phoenixgraph-rules.yml
+
+scrape_configs:
+  - job_name: phoenixgraph
+    metrics_path: /api/v1/metrics/prometheus
+    static_configs:
+      - targets:
+          - host.docker.internal:8081
+        labels:
+          instance: phoenixgraph-local
+          env: dev

@@ -69,3 +69,11 @@ this document. Each alert carries a `runbook` annotation pointing at the section
   for speed.
 - They do **not** cover the `DIST` paths. A distributed run pays superstep synchronisation, and on a demo-sized
   graph it is *slower* than the in-process one - that is expected and documented, not an SLO miss.
+
+> **Known defect: the latency percentiles do not decay** (`docs/DATA-QUALITY.md` §12). The on-call drill
+> (`verification/verify-alert-drill.mjs`) found that `phoenixgraph_query_latency_*_p99_millis` is the *cumulative*
+> percentile, so one slow query (a cold plan, a benchmark, a loaded machine) raises it permanently and
+> `PhoenixGraphQueryLatencyHigh` never clears - the "what to do" column above is written for an alert that does
+> clear. A windowed five-minute view exists in `LatencyStats` (`percentileMillis`, unit-tested) but the exposition
+> renders a persisted snapshot, which cannot carry an in-memory window. Until that is fixed, treat the latency
+> alert as noisy rather than as a signal, and watch `*_total_daily` for the trend.

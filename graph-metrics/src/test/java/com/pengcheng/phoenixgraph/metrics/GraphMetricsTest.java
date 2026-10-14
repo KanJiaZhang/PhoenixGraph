@@ -55,7 +55,11 @@ class GraphMetricsTest {
         assertEquals(5, snapshot.value(Metrics.EDGE_WRITE));
         assertEquals(1, snapshot.value(Metrics.VERTEX_WRITE_STALE));
         assertEquals(1, snapshot.latency(Metrics.QUERY_LATENCY).count());
-        assertTrue(snapshot.latency(Metrics.QUERY_LATENCY).p95Millis() >= 3.9, "≈4 ms survived the round trip");
+        // the cumulative view is what a snapshot carries; the windowed percentile (the one alerts read) is
+        // deliberately empty for restored history - see LatencyStats.merge
+        LatencyStats restored = snapshot.latency(Metrics.QUERY_LATENCY).toStats();
+        assertTrue(restored.cumulativePercentileMillis(0.95) >= 3.9, "≈4 ms survived the round trip");
+        assertEquals(0, restored.percentileMillis(0.95), 1e-9, "and it is not reported as current latency");
         assertEquals(0, snapshot.latency("never.recorded").count(), "unknown histograms read as empty");
     }
 

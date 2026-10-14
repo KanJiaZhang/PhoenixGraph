@@ -46,6 +46,10 @@ public final class PrometheusFormat {
         StringBuilder out = new StringBuilder();
 
         out.append("# HELP phoenixgraph_uptime_info Metrics scraped from the graph's own registry.\n");
+        out.append("# HELP phoenixgraph_query_latency_language_*_p99_millis Query latency percentiles. These are "
+                + "cumulative (since the histogram started), so a threshold alert on them does not clear after "
+                + "one slow query: docs/DATA-QUALITY.md section 12 has the open defect and the windowed view "
+                + "LatencyStats already computes.\n");
         out.append("# TYPE phoenixgraph_uptime_info gauge\n");
         out.append("phoenixgraph_uptime_info{graph=\"").append(graph).append("\",updated_at=\"")
                 .append(snapshot.updatedAt()).append("\"} 1\n");

@@ -56,7 +56,11 @@ class LatencyStatsTest {
         LatencyStats restored = snapshot.toStats();
         assertEquals(stats.count(), restored.count());
         assertEquals(snapshot.meanMillis(), restored.meanMillis(), 0.5);
-        assertEquals(snapshot.p95Millis(), restored.percentileMillis(0.95), 1);
+        // a snapshot restores the cumulative view exactly (it is rebuilt from the bucket grid by the stores), and
+        // it does not restore the window: the window is in-memory and per-minute, so restored history is not
+        // current latency (see LatencyStats.merge and docs/DATA-QUALITY.md §12)
+        assertEquals(snapshot.p95Millis(), restored.cumulativePercentileMillis(0.95), 1);
+        assertEquals(0, restored.percentileMillis(0.95), 1e-9, "restored history is not current latency");
     }
 
     @Test
@@ -70,6 +74,45 @@ class LatencyStatsTest {
         assertEquals(2, first.count());
         assertEquals(2.0, first.meanMillis(), 1e-9);
         assertEquals(3.0, first.maxMillis(), 1e-9);
+    }
+
+    /**
+     * The property the on-call drill found missing: a percentile an alert reads has to be able to come back
+     * down, or "p99 > 60ms" fires forever after one slow query and the runbook is wrong.
+     */
+    @Test
+    void aWindowedPercentileForgetsAndTheCumulativeOneDoesNot() {
+        LatencyStats stats = new LatencyStats();
+        java.util.concurrent.atomic.AtomicLong clock = new java.util.concurrent.atomic.AtomicLong(0L);
+        stats.clock(clock::get);
+        stats.record(2_000_000L);           // 2 ms at the start
+        stats.record(900_000_000L);         // one 900 ms outlier in the same minute
+
+        // the histogram interpolates inside a bucket, so a p100 is the bucket bound above the sample (±2.2%)
+        assertEquals(900, stats.percentileMillis(1.0), 20, "the outlier is in the window");
+        assertEquals(900, stats.cumulativePercentileMillis(1.0), 20, "and in the cumulative view");
+
+        // six minutes later the outlier has left the five-minute window; the cumulative view still has it
+        clock.addAndGet(6 * 60_000_000_000L);
+        stats.record(2_000_000L);
+        assertEquals(2, stats.percentileMillis(1.0), 1, "the window kept only the recent samples");
+        assertEquals(900, stats.cumulativePercentileMillis(1.0), 20, "the cumulative view never forgets");
+        assertEquals(3, stats.count(), "totals are cumulative: every sample is still counted");
+    }
+
+    @Test
+    void aQuietGraphStopsReportingTheOldPercentile() {
+        LatencyStats stats = new LatencyStats();
+        java.util.concurrent.atomic.AtomicLong clock = new java.util.concurrent.atomic.AtomicLong(0L);
+        stats.clock(clock::get);
+        stats.record(10_000_000L); // 10 ms, ten minutes ago
+        clock.addAndGet(10 * 60_000_000_000L);
+
+        // nothing is recorded in between: reading has to rotate the window, or an alert stays firing on an
+        // instance that is merely idle (a scrape reads the exposition and is not a query)
+        assertEquals(0, stats.percentileMillis(0.5), 1e-9, "nothing in the window means the alert stands down");
+        assertEquals(10, stats.cumulativePercentileMillis(0.5), 1, "the cumulative p50 is still the old sample");
+        assertEquals(1, stats.count(), "and the sample is still counted in the totals");
     }
 
     @Test

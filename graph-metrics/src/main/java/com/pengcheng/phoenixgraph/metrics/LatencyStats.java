@@ -17,8 +17,21 @@ import java.util.concurrent.atomic.LongAdder;
  * memory stays bounded ({@value #BUCKETS} longs per histogram).
  *
  * <p>Percentiles interpolate linearly inside a bucket, which is enough at this resolution.
+ *
+ * <p><b>Percentiles are windowed; totals are not.</b> {@link #percentileMillis(double)} reads the last
+ * {@value #WINDOW_SLOTS} minutes ({@link #cumulativePercentileMillis(double)} reads everything since the
+ * process started), while {@link #count()}, {@link #meanMillis()} and {@link #sumNanos()} stay cumulative. The
+ * split is deliberate and it came out of the on-call drill: an alert like "p99 > 60 ms" read against a
+ * since-start percentile can never clear. One slow query - a cold plan, a store hiccup, a loaded machine during
+ * a benchmark - raises a lifetime p99 permanently, so the alert fires forever and the runbook's "it clears when
+ * the latency drops" is a lie. Prometheus's own `rate(...)` is windowed for the same reason; a histogram that
+ * is not is the part that surprises people.
  */
 public final class LatencyStats {
+    /** Minutes kept for the windowed percentiles: the 5m window the alert rules use. */
+    public static final int WINDOW_SLOTS = 5;
+    /** How long one slot covers. */
+    static final long SLOT_NANOS = 60_000_000_000L;
 
     /** Below this, buckets are 1 ns wide (a microsecond of resolution at the top). */
     static final long LINEAR_LIMIT_NANOS = 1_024L;
@@ -36,6 +49,17 @@ public final class LatencyStats {
     private final LongAdder total = new LongAdder();
     private final LongAdder sumNanos = new LongAdder();
     private final AtomicLong maxNanos = new AtomicLong();
+
+    /**
+     * The per-minute histograms the windowed percentiles are summed from, oldest first.
+     *
+     * <p>Guarded by {@code this} rather than lock-free: recording is one increment plus one slot lookup, and
+     * contention only appears at rates where a histogram lock is not the bottleneck. Each slot keeps its own
+     * bucket array, so a rotation never has to walk another thread's increments.
+     */
+    private final AtomicLongArray[] window = new AtomicLongArray[WINDOW_SLOTS];
+    private final long[] windowStart = new long[WINDOW_SLOTS];
+    private int currentSlot;
 
     /** The bucket a latency falls into; the last bucket collects everything larger. */
     public static int bucketOf(long nanos) {
@@ -71,13 +95,67 @@ public final class LatencyStats {
     }
 
     public void record(long nanos) {
+        record(nanos, clock.getAsLong());
+    }
+
+    /** The clock the window rotates on. {@link System#nanoTime()} in production; a test seam otherwise. */
+    private java.util.function.LongSupplier clock = System::nanoTime;
+
+    /** Lets a test drive the window without sleeping a minute (package-private on purpose). */
+    void clock(java.util.function.LongSupplier clock) {
+        this.clock = clock;
+    }
+
+    /** Records a sample as if it arrived at {@code nowNanos} (a {@link System#nanoTime()} reading). */
+    void record(long nanos, long nowNanos) {
         counts.incrementAndGet(bucketOf(nanos));
         total.increment();
         sumNanos.add(nanos);
         maxNanos.accumulateAndGet(nanos, Math::max);
+        synchronized (this) {
+            AtomicLongArray slot = slotFor(nowNanos);
+            slot.incrementAndGet(bucketOf(nanos));
+        }
     }
 
-    /** Merges another histogram into this one (used when loading a snapshot). */
+    /** The window slot {@code nowNanos} belongs to, rotating the ring when the minute has turned. */
+    private AtomicLongArray slotFor(long nowNanos) {
+        long minute = Math.floorDiv(nowNanos, SLOT_NANOS);
+        if (window[currentSlot] == null) {
+            // first sample: start the ring here, so the slots before now are simply empty
+            for (int i = 0; i < WINDOW_SLOTS; i++) {
+                windowStart[i] = minute - (WINDOW_SLOTS - 1 - i);
+                window[i] = new AtomicLongArray(BUCKETS);
+            }
+            currentSlot = WINDOW_SLOTS - 1;
+            return window[currentSlot];
+        }
+        long currentMinute = windowStart[currentSlot];
+        if (minute == currentMinute) {
+            return window[currentSlot];
+        }
+        long steps = Math.min(minute - currentMinute, WINDOW_SLOTS);
+        for (long step = 0; step < steps; step += 1) {
+            currentSlot = (currentSlot + 1) % WINDOW_SLOTS;
+            windowStart[currentSlot] = currentMinute + step + 1;
+            window[currentSlot].set(0, 0L); // reuse the array instead of allocating a fresh one per minute
+            for (int bucket = 1; bucket < BUCKETS; bucket++) {
+                window[currentSlot].set(bucket, 0L);
+            }
+        }
+        return window[currentSlot];
+    }
+
+    /**
+     * Merges another histogram into this one (used when loading a snapshot).
+     *
+     * <p>Restored samples do <b>not</b> enter the window. A snapshot carries no per-minute timestamps, so they
+     * cannot be placed in time - and the window means "recent", which a value read back from an earlier process
+     * is not. Treating them as just-happened (the first version of this code) made a graph nobody was querying
+     * report a 1.2 s p99 from a benchmark an hour earlier, so the latency alert fired on an idle graph and could
+     * not clear. The cumulative totals - which the day rollup reads - are restored exactly, which is what the
+     * snapshot exists for.
+     */
     public void merge(LatencyStats other) {
         for (int i = 0; i < BUCKETS; i++) {
             long value = other.counts.get(i);
@@ -114,16 +192,77 @@ public final class LatencyStats {
         return maxNanos.get();
     }
 
-    /** Percentile (0..1) in milliseconds, interpolated inside the bucket it lands in. */
+    /**
+     * Percentile (0..1) in milliseconds over the last {@value #WINDOW_SLOTS} minutes, interpolated inside the
+     * bucket it lands in.
+     *
+     * <p>This is the one the alerts read (see the class comment for why), and it is empty - {@code 0} - when
+     * nothing was recorded in the window, which is how a quiet instance tells an alert to stand down instead of
+     * reporting the latency of a query from an hour ago.
+     */
     public double percentileMillis(double percentile) {
-        long n = count();
+        return percentileMillis(percentile, histogramOf(windowSnapshot()));
+    }
+
+    /** Percentile (0..1) in milliseconds over every sample since this process started. */
+    public double cumulativePercentileMillis(double percentile) {
+        return percentileMillis(percentile, counts);
+    }
+
+    /** Number of samples in the window the percentiles are computed from. */
+    public long windowCount() {
+        return countOf(histogramOf(windowSnapshot()));
+    }
+
+    /**
+     * The window, rotated to <em>now</em> before it is read.
+     *
+     * <p>The rotation cannot only happen on {@code record}: a graph that goes quiet keeps its last minute in the
+     * window forever, so an alert reading it would stay firing on an instance that is merely idle (a Prometheus
+     * scrape reads this exposition many times a minute and is not a query). Reading rotates, which is why this
+     * is not a lock-free getter.
+     */
+    private AtomicLongArray[] windowSnapshot() {
+        synchronized (this) {
+            slotFor(clock.getAsLong());
+            return window.clone();
+        }
+    }
+
+    /** The window's buckets as one histogram (the slots with no samples contribute nothing). */
+    private static AtomicLongArray histogramOf(AtomicLongArray[] slots) {
+        AtomicLongArray merged = new AtomicLongArray(BUCKETS);
+        for (AtomicLongArray slot : slots) {
+            if (slot == null) {
+                continue;
+            }
+            for (int i = 0; i < BUCKETS; i++) {
+                long value = slot.get(i);
+                if (value != 0) {
+                    merged.addAndGet(i, value);
+                }
+            }
+        }
+        return merged;
+    }
+
+    private static long countOf(AtomicLongArray histogram) {
+        long sum = 0;
+        for (int i = 0; i < BUCKETS; i++) {
+            sum += histogram.get(i);
+        }
+        return sum;
+    }
+
+    private double percentileMillis(double percentile, AtomicLongArray histogram) {
+        long n = countOf(histogram);
         if (n == 0) {
             return 0d;
         }
         long target = Math.max(1, (long) Math.ceil(percentile * n));
         long seen = 0;
         for (int i = 0; i < BUCKETS; i++) {
-            long bucketCount = counts.get(i);
+            long bucketCount = histogram.get(i);
             if (bucketCount == 0) {
                 continue;
             }
@@ -160,6 +299,7 @@ public final class LatencyStats {
                     continue;
                 }
                 int index = (int) Math.min(BUCKETS - 1, bucket[0]);
+                // cumulative only: see merge() - a restored sample is history, not current latency
                 stats.counts.addAndGet(index, bucket[1]);
             }
         }
