@@ -218,8 +218,6 @@ semantic layer, and the visualization workbench. See `README.md` for what each o
 [Unreleased]: https://github.com/KanJiaZhang/PhoenixGraph/compare/v1.0.1...HEAD
 [1.0.1]: https://github.com/KanJiaZhang/PhoenixGraph/releases/tag/v1.0.1
 [1.0.0]: https://github.com/KanJiaZhang/PhoenixGraph/releases/tag/v1.0.0
-[0.2.0]: https://github.com/KanJiaZhang/PhoenixGraph/commits/develop?since=2026-09-25&until=2026-10-13
-[0.1.0]: https://github.com/KanJiaZhang/PhoenixGraph/commits/develop?until=2026-09-25
 
 ### Added
 

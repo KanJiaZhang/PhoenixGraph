@@ -24,6 +24,21 @@ for argument in "$@"; do
   esac
 done
 
+# JAVA_HOME may be spelled the Windows way ("C:/Program Files/...") while this script runs under a shell that
+# needs the POSIX spelling ("/c/Program Files/..."). Maven's launcher does "cd $JAVA_HOME", so the wrong spelling
+# fails with "The JAVA_HOME environment variable is not defined correctly" - which reads like a missing JDK
+# rather than a path quirk. Normalise it once, and fail early when it points nowhere.
+if [ -n "${JAVA_HOME:-}" ] && [ ! -d "${JAVA_HOME}" ] && command -v cygpath >/dev/null 2>&1; then
+  NORMALISED=$(cygpath -u "${JAVA_HOME}" 2>/dev/null || true)
+  if [ -n "${NORMALISED}" ] && [ -d "${NORMALISED}" ]; then
+    export JAVA_HOME="${NORMALISED}"
+  fi
+fi
+if [ -z "${JAVA_HOME:-}" ] || [ ! -d "${JAVA_HOME}" ]; then
+  echo "!! JAVA_HOME does not point at a JDK (${JAVA_HOME:-unset}); export it before releasing" >&2
+  exit 1
+fi
+
 VERSION=$(sed -n 's:.*<version>\(.*\)</version>.*:\1:p' pom.xml | head -1)
 TAG="v${VERSION}"
 echo "== PhoenixGraph release ${VERSION} (tag ${TAG})"
