@@ -59,8 +59,10 @@ release stops describing the code it claims to describe. It also probes the buil
 
 ## 4b. The two steps that need GitHub itself
 
-Neither is scriptable in this repository (there is no `gh` CLI in its toolchain and no token in its
-development loop), so they are written down instead - and both are one command if you have `gh` or a token:
+Both are one command with the `gh` CLI, which is not part of the build (it is not needed to compile, test or
+package anything) but is what actually published these pages. The REST forms are kept because a machine may not
+have `gh`; on this one it authenticates from the token Git Credential Manager already holds for github.com,
+which is why no token is stored in the repository or in `gh`'s config:
 
 ```bash
 # 1. The release page, with the note as the body and the checksummed jar attached.
