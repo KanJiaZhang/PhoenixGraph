@@ -100,6 +100,37 @@ what changed, not what exists.
 - **`DELETE /api/v1/vertices/{id}` answered `SUCCESS` for an id that never existed**, hiding the typo; it now
   answers `404` like the read does.
 
+## [1.0.1] - 2026-10-14
+
+A patch release with what the on-call drill found. No API change.
+
+### Added
+
+- **`deploy/prometheus/prometheus.yml`** and **`verification/verify-alert-drill.mjs`**: the drill reproduces the
+  condition behind each of the six alerts and reads the metric Prometheus would read (refusals `0 -> 3` against a
+  tight rate limit, storage failure counters `0 -> 2` against an unreachable store, rejected requests for the
+  error rate, concurrent load for the latency alerts, and for `up == 0` the scrape job, path and health endpoint
+  that have to agree for the alert to mean anything).
+- **A five-minute window for latency percentiles** (`LatencyStats.percentileMillis`): five one-minute slots,
+  rotated on record *and* on read - a quiet instance would otherwise keep reporting its last minute forever, and
+  a scrape is not a query. `cumulativePercentileMillis` keeps the since-start view. Ten unit tests, including
+  "the window forgets and the cumulative view does not" and "a quiet graph stops reporting the old percentile".
+
+### Fixed
+
+- **The alert rules referenced a scrape job that did not exist.** `PhoenixGraphDown` selects
+  `up{job="phoenixgraph"}`, and nothing in the repository defined that job - six alerts that could never fire.
+  The drill asserts the rule and the scrape configuration agree.
+
+### Known issue
+
+- **The `*_p99_millis` series is still cumulative**, so `PhoenixGraphQueryLatencyHigh` cannot clear after one
+  slow query. The exposition renders a persisted snapshot, and a snapshot is rebuilt from its bucket grid by the
+  stores, so it cannot carry an in-memory window: a graph restored from storage reported 113 ms while nobody had
+  queried it, identical across restarts, which is how the drill caught it. `docs/DATA-QUALITY.md` §12 has the
+  evidence, `docs/SLO.md` says to treat the alert as noisy until then, and the drill states it as an explicit
+  `XFAIL` - when that line starts failing, the fix has landed and it becomes an ordinary assertion.
+
 ## [Unreleased]
 
 Milestone **M2** of [`docs/ROADMAP-1.0.md`](docs/ROADMAP-1.0.md) continues here.
@@ -177,7 +208,8 @@ The first tagged state: the engine, the four storage schemes, Gremlin and openCy
 semantic layer, and the visualization workbench. See `README.md` for what each of those does and
 `HANDOVER.md` (local) for how it was built.
 
-[Unreleased]: https://github.com/KanJiaZhang/PhoenixGraph/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/KanJiaZhang/PhoenixGraph/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/KanJiaZhang/PhoenixGraph/releases/tag/v1.0.1
 [1.0.0]: https://github.com/KanJiaZhang/PhoenixGraph/releases/tag/v1.0.0
 [0.2.0]: https://github.com/KanJiaZhang/PhoenixGraph/releases/tag/v0.2.0
 [0.1.0]: https://github.com/KanJiaZhang/PhoenixGraph/releases/tag/v0.1.0
