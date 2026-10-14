@@ -81,12 +81,34 @@ It also has the things a 1.0 needs rather than a demo: API keys with per-graph r
 `429`/`503` answers, an audit trail, backup and restore that are drilled, a Kubernetes manifest set, and service
 level objectives - see [docs/ROADMAP-1.0.md](docs/ROADMAP-1.0.md) for what is done and what is not.
 
-Start here: [QUICKSTART.md](QUICKSTART.md) (10 minutes) · [docs/OPERATIONS.md](docs/OPERATIONS.md) (backups, restores, HA, upgrades, traps) · [docs/API.md](docs/API.md) (51 endpoints, keys and roles,
+Start here: [QUICKSTART.md](QUICKSTART.md) (10 minutes) · [docs/OPERATIONS.md](docs/OPERATIONS.md) (backups, restores, HA, upgrades, traps) · [docs/API.md](docs/API.md) (52 endpoints, keys and roles,
 error model, limits) · [docs/DATA-QUALITY.md](docs/DATA-QUALITY.md) (the numbers not to trust) ·
 [docs/AGENT-CASES.md](docs/AGENT-CASES.md) (two worked analyses) ·
-[docs/ROADMAP-1.0.md](docs/ROADMAP-1.0.md) (what 1.0 still needs) · [docs/RELEASE-1.0.0.md](docs/RELEASE-1.0.0.md) (what is in 1.0 and what is not) · [CHANGELOG.md](CHANGELOG.md).
+[docs/ROADMAP-1.0.md](docs/ROADMAP-1.0.md) (what 1.0 still needs) · **releases: [docs/RELEASE-1.0.1.md](docs/RELEASE-1.0.1.md)** (what is in 1.0, what is not, what is open) · [docs/RELEASE-PROCESS.md](docs/RELEASE-PROCESS.md) (which branch and tag mean what) · [CHANGELOG.md](CHANGELOG.md).
 And when you need numbers to size or tune it: [docs/SLO.md](docs/SLO.md) (the objectives) and
 [docs/CAPACITY.md](docs/CAPACITY.md) (measured latency, one engine vs two, failover timing, the knobs).
+
+## Releases
+
+| | |
+|---|---|
+| **Currently released** | [`v1.0.1`](https://github.com/KanJiaZhang/PhoenixGraph/releases/tag/v1.0.1) — notes in [docs/RELEASE-1.0.1.md](docs/RELEASE-1.0.1.md) |
+| **Released line** | `main` — the code of the last release, and what the tags point at |
+| **Maintenance line** | `release/1.0` — 1.0.x patches are cut from here |
+| **Integration** | `develop` — everything lands here first |
+| **Artifacts** | `tools/release-1.0.sh` builds `dist/phoenixgraph.jar` (+ `.sha256`, `RELEASE.txt`) and the images `phoenixgraph-http:<version>`, `phoenixgraph-web:<version>` |
+| **Check a checkout** | `node tools/check-release.mjs` — every pom, the tag, the changelog section, the image tags and the release note have to agree, or it says which one does not |
+
+```bash
+git clone --branch main https://github.com/KanJiaZhang/PhoenixGraph.git      # the released line
+git checkout v1.0.1                                                          # or an exact release
+node tools/check-release.mjs                                                 # does this checkout describe itself?
+tools/start-phoenixgraph.sh && node verification/run.mjs                     # build, serve, and check the claims
+```
+
+The versioning promise, the error contract and what a rollback means are in the changelog's
+[version policy](CHANGELOG.md#version-policy-from-10); the branch and tag rules are in
+[docs/RELEASE-PROCESS.md](docs/RELEASE-PROCESS.md).
 
 ### One query over vector, geo and the graph
 

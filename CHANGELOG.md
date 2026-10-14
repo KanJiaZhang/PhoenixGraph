@@ -154,7 +154,11 @@ Milestone **M2** of [`docs/ROADMAP-1.0.md`](docs/ROADMAP-1.0.md) continues here.
   (`POST /api/v1/query`, the pattern preview, the agent tools) - a reader role that could not query would
   have been useless - and the audit view needs `admin` even though it is a `GET`.
 
-## [0.2.0] - 2026-10-13
+## 0.2.0 (2026-10-13) — milestone M1, never tagged
+
+> Not a tagged release: `0.2.0` was the *milestone* name in `docs/ROADMAP-1.0.md` while the pom still said
+> `0.1.0-SNAPSHOT`, so the two disagreed. It is kept here for the record; from 1.0 on the changelog version, the
+> pom version, the git tag and the image tag are the same string (`docs/RELEASE-PROCESS.md` §2).
 
 Milestone **M1** of the 1.0 plan: *a stranger can install it, see evidence, and file an issue*.
 
@@ -201,7 +205,10 @@ Milestone **M1** of the 1.0 plan: *a stranger can install it, see evidence, and 
   form matches **771** of 8,000 sales (9.64%) and **351** returned (4.39%). The question was wrong, not the
   data - see `docs/DATA-QUALITY.md` §3.
 
-## [0.1.0] - 2026-09-25
+## 0.1.0 (2026-09-25) — first milestone, never tagged
+
+> Not a tagged release: the pom said `0.1.0-SNAPSHOT` and the number was a milestone in the plan (see the note
+> above `0.2.0`). Kept for the record.
 
 The first tagged state: the engine, the four storage schemes, Gremlin and openCypher, the graph algorithms
 (in-process and on the Gemini cluster), fuzzy linking, HNSW vectors, geo search, the agent toolkit, the
@@ -211,8 +218,8 @@ semantic layer, and the visualization workbench. See `README.md` for what each o
 [Unreleased]: https://github.com/KanJiaZhang/PhoenixGraph/compare/v1.0.1...HEAD
 [1.0.1]: https://github.com/KanJiaZhang/PhoenixGraph/releases/tag/v1.0.1
 [1.0.0]: https://github.com/KanJiaZhang/PhoenixGraph/releases/tag/v1.0.0
-[0.2.0]: https://github.com/KanJiaZhang/PhoenixGraph/releases/tag/v0.2.0
-[0.1.0]: https://github.com/KanJiaZhang/PhoenixGraph/releases/tag/v0.1.0
+[0.2.0]: https://github.com/KanJiaZhang/PhoenixGraph/commits/develop?since=2026-09-25&until=2026-10-13
+[0.1.0]: https://github.com/KanJiaZhang/PhoenixGraph/commits/develop?until=2026-09-25
 
 ### Added
 

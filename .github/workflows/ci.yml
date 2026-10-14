@@ -52,6 +52,11 @@ jobs:
       - name: the verification suite is intact
         run: node verification/run.mjs --list
 
+      # --expect-untagged because CI runs on every push, including the commit that bumps the version before the
+      # tag exists: every fact that does not depend on the tag is still enforced here
+      - name: the release state agrees with itself
+        run: node tools/check-release.mjs --expect-untagged
+
       - name: the CI workflow itself is coherent
         run: node tools/check-ci.mjs
 

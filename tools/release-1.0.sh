@@ -40,6 +40,10 @@ if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
 fi
 echo "-- working tree clean, ${TAG} is free"
 
+# Every fact that does not depend on the tag has to hold before anything is built: the poms agree with each
+# other, the changelog has the section, the image tags follow the version, the release note exists.
+node tools/check-release.mjs --expect-untagged
+
 # --- the artifact -------------------------------------------------------------------------------------
 echo "-- packaging (skipping tests: CI runs them, and a release build must not be the first time they run)"
 ./mvnw -o -q -DskipTests package
