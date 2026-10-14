@@ -45,10 +45,16 @@ public class ApiKeyFilter extends OncePerRequestFilter {
 
     private final ApiKeys keys;
     private final AuditLog audit;
+    private final int maxBodyBytes;
 
     public ApiKeyFilter(ApiKeys keys, AuditLog audit) {
+        this(keys, audit, 1 << 20);
+    }
+
+    public ApiKeyFilter(ApiKeys keys, AuditLog audit, int maxBodyBytes) {
         this.keys = keys;
         this.audit = audit;
+        this.maxBodyBytes = maxBodyBytes;
     }
 
     @Override
@@ -71,7 +77,12 @@ public class ApiKeyFilter extends OncePerRequestFilter {
         HttpServletRequest effective = request;
         boolean bodyNeeded = graph == null && !"GET".equalsIgnoreCase(request.getMethod());
         if (bodyNeeded) {
-            effective = new CachedBodyRequest(request);
+            try {
+                effective = new CachedBodyRequest(request, maxBodyBytes);
+            } catch (BodyTooLargeException tooLarge) {
+                BodyLimits.refuse(response, requestId, tooLarge);
+                return;
+            }
             body = ((CachedBodyRequest) effective).bodyAsString();
             graph = RequestGraphs.ofBody(body);
         }

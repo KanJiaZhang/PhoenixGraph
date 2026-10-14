@@ -1,6 +1,7 @@
 package com.pengcheng.phoenixgraph.http.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.pengcheng.phoenixgraph.http.ElementNotFoundException;
 import com.pengcheng.phoenixgraph.http.dto.BatchRequest;
 import com.pengcheng.phoenixgraph.http.dto.EdgePropertyRequest;
 import com.pengcheng.phoenixgraph.http.dto.EdgeRequest;
@@ -33,9 +34,11 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * Maps HTTP DTOs to the Aerospike storage stores and executes writes.
@@ -49,20 +52,37 @@ public class GraphService {
     private final ObjectMapper objectMapper;
     private final VectorIndexManager vectorIndexes;
     private final DataQualityValidator dataQuality = new DataQualityValidator();
+    private final WriteValidation validation;
+
+    /** Every schema in this project numbers the id property 0 (see {@code payment-graph.json}, {@code idSchema}). */
+    private static final int ID_PROPERTY_INDEX = 0;
 
     public GraphService(AerospikeVertexStore vertexStore, AerospikeEdgeStore edgeStore, GraphSchema schema,
                         ObjectMapper objectMapper) {
-        this(vertexStore, edgeStore, schema, objectMapper, null);
+        this(vertexStore, edgeStore, schema, objectMapper, null, WriteValidation.defaults());
     }
 
-    @Autowired
     public GraphService(AerospikeVertexStore vertexStore, AerospikeEdgeStore edgeStore, GraphSchema schema,
                         ObjectMapper objectMapper, @Nullable VectorIndexManager vectorIndexes) {
+        this(vertexStore, edgeStore, schema, objectMapper, vectorIndexes, WriteValidation.defaults());
+    }
+
+    /**
+     * The same service with an explicit write policy (see {@link WriteValidation}).
+     *
+     * <p>The policy is a bean when the application context defines one, so a deployment can allow dangling
+     * edges for a bulk import; without it the strict defaults apply, which is what tests and tooling get.
+     */
+    @Autowired
+    public GraphService(AerospikeVertexStore vertexStore, AerospikeEdgeStore edgeStore, GraphSchema schema,
+                        ObjectMapper objectMapper, @Nullable VectorIndexManager vectorIndexes,
+                        @Nullable WriteValidation validation) {
         this.vertexStore = Objects.requireNonNull(vertexStore, "vertexStore");
         this.edgeStore = Objects.requireNonNull(edgeStore, "edgeStore");
         this.schema = Objects.requireNonNull(schema, "schema");
         this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper");
         this.vectorIndexes = vectorIndexes;
+        this.validation = validation == null ? WriteValidation.defaults() : validation;
     }
 
     /**
@@ -80,7 +100,7 @@ public class GraphService {
                     + binding.storageType().configName() + "; writes go through the primary graph or a loader");
         }
         return new GraphService(binding.vertexStore(), binding.edgeStore(), binding.schema(), objectMapper,
-                vectorIndexes);
+                vectorIndexes, validation);
     }
 
     // --- vertex ---
@@ -101,6 +121,13 @@ public class GraphService {
     }
 
     public WriteOutcome updateVertexProperty(Object vertexId, int index, PropertyUpdateRequest request) {
+        Objects.requireNonNull(request, "request");
+        StoredVertex existing = requireVertexExists(vertexId, "update a property of");
+        VertexSchema vertexSchema = existing.vertexType() == null ? null : schema.vertexSchema(existing.vertexType());
+        // a stub vertex written before this rule existed has no type, so its property indexes cannot be
+        // checked against a schema - the value/type check below still applies
+        checkPropertyIndex(vertexSchema, vertexId, index, "vertex");
+        checkPropertyValue(vertexSchema == null ? null : vertexSchema.property(index), vertexId, request.value());
         long lastModifiedTime = orNow(request.lastModifiedTime());
         Map<Integer, VertexPropertyValue> properties =
                 Map.of(index, new VertexPropertyValue(request.value(), lastModifiedTime));
@@ -108,10 +135,20 @@ public class GraphService {
     }
 
     public WriteOutcome deleteVertexProperty(Object vertexId, int index) {
+        requireVertexExists(vertexId, "delete a property of");
         return vertexStore.deleteVertexProperty(vertexId, index);
     }
 
+    /**
+     * Deletes a vertex (a soft delete: the record keeps a marker, reads hide the vertex from then on).
+     *
+     * <p>An id that is not there is a {@link ElementNotFoundException} rather than a silent success: the
+     * caller asked to remove something specific, and "SUCCESS" for a vertex that never existed hides the
+     * typo that caused it. {@code GET} says the same thing with a 404, so both verbs agree.
+     */
     public WriteOutcome deleteVertex(Object vertexId) {
+        requireNonNullId(vertexId, "id");
+        requireVertexExists(vertexId, "delete");
         return vertexStore.deleteVertex(vertexId);
     }
 
@@ -122,10 +159,13 @@ public class GraphService {
     // --- edge ---
 
     public WriteOutcome upsertEdge(EdgeRequest request) {
-        return edgeStore.upsertEdge(toEdgeUpsert(request));
+        return edgeStore.upsertEdge(toEdgeUpsert(request, Set.of()));
     }
 
     public WriteOutcome deleteEdge(Object edgeId, String edgeSchemaName, Object source, Object destination) {
+        requireNonNullId(edgeId, "edgeId");
+        requireNonNullId(source, "source");
+        requireNonNullId(destination, "destination");
         return edgeStore.deleteEdge(edgeId, resolveEdgeSchema(edgeSchemaName), source, destination);
     }
 
@@ -153,7 +193,18 @@ public class GraphService {
             }
         }
         if (resolved.edges() != null && !resolved.edges().isEmpty()) {
-            List<EdgeUpsert> upserts = resolved.edges().stream().map(this::toEdgeUpsert).toList();
+            // an edge may point at a vertex the same batch creates: those ids count as present, so a loader
+            // can send one file's vertices and edges together and still be checked against the graph
+            Set<Object> inThisBatch = new LinkedHashSet<>();
+            if (resolved.vertices() != null) {
+                for (VertexRequest vertex : resolved.vertices()) {
+                    if (vertex != null && vertex.id() != null) {
+                        inThisBatch.add(key(vertex.id()));
+                    }
+                }
+            }
+            List<EdgeUpsert> upserts = resolved.edges().stream()
+                    .map(edge -> toEdgeUpsert(edge, inThisBatch)).toList();
             List<WriteOutcome> outcomes = edgeStore.upsertEdges(upserts);
             for (int i = 0; i < upserts.size(); i++) {
                 results.add(new WriteResult(upserts.get(i).edgeId(), outcomes.get(i).name()));
@@ -166,11 +217,15 @@ public class GraphService {
 
     VertexUpsert toVertexUpsert(VertexRequest request) {
         Objects.requireNonNull(request, "request");
-        Objects.requireNonNull(request.id(), "id");
+        requireNonNullId(request.id(), "id");
         VertexSchema vertexSchema = resolveVertexSchema(request.vertexSchemaName());
         Map<Integer, VertexPropertyValue> properties = new LinkedHashMap<>();
         if (request.properties() != null) {
             for (VertexPropertyRequest property : request.properties()) {
+                if (property == null) {
+                    throw new IllegalArgumentException("properties must not contain null entries");
+                }
+                checkPropertyIndex(vertexSchema, request.id(), property.index(), "vertex");
                 checkPropertyValue(vertexSchema.property(property.index()), request.id(), property.value());
                 properties.put(property.index(),
                         new VertexPropertyValue(property.value(), orNow(property.lastModifiedTime())));
@@ -181,26 +236,103 @@ public class GraphService {
     }
 
     EdgeUpsert toEdgeUpsert(EdgeRequest request) {
+        return toEdgeUpsert(request, Set.of());
+    }
+
+    /**
+     * Maps an edge request, checking it against the schema and - when
+     * {@link WriteValidation#requireExistingEndpoints()} is on - against the vertices that
+     * already exist.
+     *
+     * @param alsoPresent ids written by the same batch, which count as present
+     */
+    EdgeUpsert toEdgeUpsert(EdgeRequest request, Set<Object> alsoPresent) {
         Objects.requireNonNull(request, "request");
-        Objects.requireNonNull(request.edgeId(), "edgeId");
-        Objects.requireNonNull(request.source(), "source");
-        Objects.requireNonNull(request.destination(), "destination");
+        requireNonNullId(request.edgeId(), "edgeId");
+        requireNonNullId(request.source(), "source");
+        requireNonNullId(request.destination(), "destination");
         EdgeSchema edgeSchema = resolveEdgeSchema(request.edgeSchemaName());
         Map<Integer, EdgePropertyValue> properties = new LinkedHashMap<>();
         if (request.properties() != null) {
             for (EdgePropertyRequest property : request.properties()) {
+                if (property == null) {
+                    throw new IllegalArgumentException("properties must not contain null entries");
+                }
+                checkPropertyIndex(edgeSchema, request.edgeId(), property.index(), "edge");
                 checkPropertyValue(edgeSchema.property(property.index()), request.edgeId(), property.value());
                 properties.put(property.index(), new EdgePropertyValue(property.value(),
                         orNow(property.createdTime()), orNow(property.lastModifiedTime())));
             }
+        }
+        if (validation.requireExistingEndpoints()) {
+            requireEndpoint(request.edgeId(), "source", request.source(), alsoPresent);
+            requireEndpoint(request.edgeId(), "destination", request.destination(), alsoPresent);
         }
         return new EdgeUpsert(request.edgeId(), edgeSchema,
                 request.source(), request.destination(), properties,
                 orNow(request.createdTime()), orNow(request.lastUpdatedTime()));
     }
 
+    private void requireEndpoint(Object edgeId, String role, Object vertexId, Set<Object> alsoPresent) {
+        if (alsoPresent.contains(key(vertexId))) {
+            return;
+        }
+        if (vertexStore.readVertex(vertexId) == null) {
+            throw new ElementNotFoundException("Edge '" + edgeId + "' " + role + " vertex '" + vertexId
+                    + "' does not exist; write the vertex first, or set "
+                    + "phoenixgraph.write.require-existing-endpoints=false for a loader that imports edges first");
+        }
+    }
+
+    /** Ids are compared as the store keys them: {@code 135} and {@code "135"} are the same vertex. */
+    private static Object key(Object id) {
+        return String.valueOf(id);
+    }
+
+    /** A property index the schema does not declare would be stored as a bin nothing can read back. */
+    private void checkPropertyIndex(VertexSchema vertexSchema, Object elementId, int index, String kind) {
+        if (vertexSchema == null) {
+            return;
+        }
+        if (vertexSchema.property(index) == null) {
+            throw new IllegalArgumentException("Unknown property index " + index + " on " + kind
+                    + " schema '" + vertexSchema.name() + "' for element '" + elementId + "'; declared: "
+                    + declaredIndexes(vertexSchema));
+        }
+    }
+
+    private void checkPropertyIndex(EdgeSchema edgeSchema, Object elementId, int index, String kind) {
+        if (edgeSchema.property(index) == null) {
+            throw new IllegalArgumentException("Unknown property index " + index + " on " + kind
+                    + " schema '" + edgeSchema.name() + "' for element '" + elementId + "'; declared: "
+                    + declaredIndexes(edgeSchema));
+        }
+    }
+
+    private static String declaredIndexes(VertexSchema vertexSchema) {
+        List<String> declared = new ArrayList<>();
+        vertexSchema.properties().forEach(property -> declared.add(property.id() + " (" + property.name() + ")"));
+        return declared.toString();
+    }
+
+    private static String declaredIndexes(EdgeSchema edgeSchema) {
+        List<String> declared = new ArrayList<>();
+        edgeSchema.properties().forEach(property -> declared.add(property.id() + " (" + property.name() + ")"));
+        return declared.toString();
+    }
+
     private void checkPropertyValue(PropertySchema propertySchema, Object elementId, Object value) {
-        if (propertySchema == null) {
+        if (value instanceof CharSequence text
+                && text.toString().getBytes(StandardCharsets.UTF_8).length > validation.maxPropertyValueBytes()) {
+            throw new IllegalArgumentException("Element '" + elementId + "' property '"
+                    + (propertySchema == null ? "?" : propertySchema.name()) + "' is "
+                    + text.toString().getBytes(StandardCharsets.UTF_8).length + " bytes, over the limit of "
+                    + validation.maxPropertyValueBytes() + " (phoenixgraph.write.max-property-value-bytes)");
+        }
+        if (propertySchema == null || propertySchema.id() == ID_PROPERTY_INDEX) {
+            // the id property is the record key spelled out, and the API takes an id as either JSON shape (the
+            // demo data writes "135" for an account whose id schema is LONG, and the store keys it as a string),
+            // so the declared id type describes the data rather than constraining the request
             return;
         }
         List<String> errors = dataQuality.validate(propertySchema, value);
@@ -208,6 +340,27 @@ public class GraphService {
             throw new IllegalArgumentException("Element '" + elementId + "' property '"
                     + propertySchema.name() + "' invalid: " + errors);
         }
+    }
+
+    /** An id that is missing (or blank) is a client error, not a NullPointerException. */
+    private static void requireNonNullId(Object id, String field) {
+        if (id == null) {
+            throw new IllegalArgumentException(field + " must not be null");
+        }
+        if (id instanceof CharSequence text && text.toString().isBlank()) {
+            throw new IllegalArgumentException(field + " must not be blank");
+        }
+    }
+
+    /** The vertex, or a 404: an operation that names a vertex it expects to be there. */
+    private StoredVertex requireVertexExists(Object vertexId, String operation) {
+        requireNonNullId(vertexId, "id");
+        StoredVertex vertex = vertexStore.readVertex(vertexId);
+        if (vertex == null) {
+            throw new ElementNotFoundException("No vertex '" + vertexId + "' to " + operation
+                    + "; GET /api/v1/vertices/" + vertexId + " says the same");
+        }
+        return vertex;
     }
 
     private BatchRequest resolve(BatchRequest request) {

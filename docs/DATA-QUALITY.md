@@ -95,3 +95,36 @@
 | `sanguo-kg-text` | 边来源 | EXTRA 24,147 · DOCUMENT 20,788 |
 
 > 复跑：`node verification/run.mjs --only agent-cases`（断言上表与本文 1–6 条的全部数字）。
+
+## 9. 写路径接受「无法读回」的值（已修复，2026-10-14）
+
+| 项 | 内容 |
+|---|---|
+| **现象** | （1）`properties: [{"index": 99, "value": "x"}]` 返回 `SUCCESS`，之后 `GET /api/v1/vertices/{id}` 里出现 `"properties": {"99": {...}}`——schema 里没有 99 号属性 ✗；（2）`{"index": 2, "value": {}}`（把一个对象写进 `STRING` 属性）也返回 `SUCCESS`，读回 `"value": {}` ✗ |
+| **根因** | 写路径只用 `DataQualityValidator` 检查**枚举取值与约束**，从不检查**声明类型**；`GraphService.checkPropertyValue(schema.property(index), ...)` 在索引不存在时拿到 `null` 就 `return`（静默通过）✗ |
+| **影响** | 存储里出现 schema 未声明的 bin 与类型不符的值：`elementMap()` / `values()` 会把它读给任何查询者，schema 的可信度被写路径自己破坏 |
+| **修复** | （1）`DataQualityValidator` 增加**声明类型检查**（BOOLEAN/INT/LONG/FLOAT/DOUBLE/STRING/OBJECT/enum/list/map，错误信息点明「值是什么、应该是什么」）；（2）`GraphService` 在写入前校验索引是否为 schema 声明（不在则 400 并列出已声明索引）；（3）id 属性（索引 0）豁免类型检查（id 在 API 里是 `Object`，演示数据就是给 `LONG` 的 idSchema 写字符串 id） |
+| **发现方式** | 1.0 前的「边缘与失败场景」测试（`verification/verify-input-contract.mjs` 的前身探针）——**把「没人会这么写」的请求都发一遍** |
+| **验证** | `verify-input-contract.mjs`：索引 99 → `400 Unknown property index 99 ... declared: [1 (accountStatus), ...]`；对象写入 STRING → `400 ... is not a STRING`；合法写入与 id 属性写入仍 `200` ✓ |
+
+## 10. 悬空边静默创建「无类型顶点」（已修复，2026-10-14）
+
+| 项 | 内容 |
+|---|---|
+| **现象** | 给两个不存在的 id 写一条边 → `200 SUCCESS`；随后 `GET /api/v1/vertices/ghost` 返回 `200 {"vertexId":"ghost","properties":{},"vertexType":null}` ✗ |
+| **根因** | 边的存储方式：边写在**两端顶点的记录里**，记录不存在时 `AerospikeEdgeStore.upsertInto` 会按设计建一个最小顶点 stub 再把边挂上去 ✓（这是有意的，但对 API 调用者是不可见且静默的 ✗） |
+| **影响** | 一个 id 打错字就会**凭空造出一个顶点**：它没有类型、没有属性，出现在扫描与 `elementMap()` 里，把「图里有什么」变得不可信 |
+| **修复** | 写边前检查两端顶点是否存在（`phoenixgraph.write.require-existing-endpoints`，默认 `true`）→ 缺失时 `404` 并点名缺失的那一端与开关；批量写把**同一批次里写入的顶点**视为存在（一个文件里的点+边仍然一次写完）；需要「先边后点」的导入显式关掉该开关 |
+| **发现方式** | 同上一轮边缘测试（探针写了一条指向 `ghost` 的边，再点读 `ghost`） |
+| **验证** | `verify-input-contract.mjs`：悬空边 → `404` 且之后 `GET /api/v1/vertices/zz-ghost-*` 仍是 `404`（没有 stub）✓；同批次点+边 → `200` ✓；`verify-multi-instance.mjs` 25/25 ✓ |
+
+## 11. 客户端错误被当成服务器错误（已修复，2026-10-14）
+
+| 项 | 内容 |
+|---|---|
+| **现象** | 一批「请求本身不合法」的输入返回 **500**：缺少 `query` 字段、缺少 `graphName`、缺 `id`、`properties: [null]`、`DELETE /api/v1/edges/{id}` 缺参数、`PUT .../properties/abc`、请求体不是 JSON、数组代替对象、请求体为空 ✗ |
+| **根因** | 这些异常（Spring 的 `HttpMessageNotReadableException` / `MissingServletRequestParameterException` / `MethodArgumentTypeMismatchException`，以及 `toVertexUpsert` 里的 `Objects.requireNonNull`）都不在 `ApiExceptionHandler` 的映射里，落进 `Exception` 兜底 → 500（且响应体里还带着 Java 堆栈 ✗） |
+| **影响** | 调用方按 500 处理（重试、报警「服务坏了」），而真正的问题是请求；错误信息指向 `java.lang.NullPointerException` 这种对使用者无意义的细节 |
+| **修复** | 见 `docs/API.md` §3 的状态码表：400/404/405/409/413/415 各有明确映射；`Objects.requireNonNull` 换成带字段名的校验；`ApiExceptionHandler` 的 500 改为**不回显内部信息**，堆栈默认**不返回**（`phoenixgraph.errors.include-stack-trace` 打开才返回） |
+| **发现方式** | 同上（探针把 40+ 种畸形输入发了一遍，逐条记录状态码与响应体） |
+| **验证** | `verify-input-contract.mjs` 78 条断言，其中三条是**跨全部用例的规则**：客户端错误从不为 500、响应体不含堆栈、错误体形状一致 ✓ |

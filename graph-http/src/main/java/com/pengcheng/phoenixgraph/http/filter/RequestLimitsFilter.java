@@ -5,6 +5,7 @@ import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import jakarta.servlet.http.HttpServletResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
@@ -63,7 +64,17 @@ public class RequestLimitsFilter extends OncePerRequestFilter {
         HttpServletRequest effective = request;
         String graph = RequestGraphs.ofPath(request.getRequestURI());
         if (graph == null && !"GET".equalsIgnoreCase(request.getMethod())) {
-            effective = new CachedBodyRequest(request);
+            try {
+                effective = new CachedBodyRequest(request, limits.properties().maxBodyBytes());
+            } catch (BodyTooLargeException tooLarge) {
+                // refused before parsing, before the graph lookup and before a slot is taken: an oversized body
+                // is a client error (413) and must not cost the instance anything
+                BodyLimits.refuse(response, requestId, tooLarge);
+                LOGGER.warn("refused {} {} body={} bytes over the {}-byte limit", request.getMethod(),
+                        request.getRequestURI(), tooLarge.actualBytes(), tooLarge.limitBytes());
+                MDC.remove("requestId");
+                return;
+            }
             graph = RequestGraphs.ofBody(((CachedBodyRequest) effective).bodyAsString());
         }
 

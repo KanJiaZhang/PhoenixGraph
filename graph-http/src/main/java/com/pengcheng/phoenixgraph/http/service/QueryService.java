@@ -79,6 +79,9 @@ public class QueryService {
     /** The most elements one answer may carry (see {@link #cap}); {@code 0} disables the cap. */
     private int maxResponseItems = DEFAULT_MAX_RESPONSE_ITEMS;
 
+    /** The longest query text accepted, in characters ({@code phoenixgraph.limits.max-query-length}). */
+    private int maxQueryLength = 65536;
+
     /**
      * Whether scripts may use the admin-level features: whitelisted statics ({@code Math.max}), a
      * first-class closure stored in a variable and called, and regular expressions ({@code =~},
@@ -112,6 +115,12 @@ public class QueryService {
     @Value("${phoenixgraph.query.max-response-items:" + DEFAULT_MAX_RESPONSE_ITEMS + "}")
     public void maxResponseItems(int maxResponseItems) {
         this.maxResponseItems = maxResponseItems;
+    }
+
+    /** Wires the longest query text accepted ({@code phoenixgraph.limits.max-query-length}). */
+    @Value("${phoenixgraph.limits.max-query-length:65536}")
+    public void maxQueryLength(int maxQueryLength) {
+        this.maxQueryLength = maxQueryLength;
     }
 
     private final Map<String, CypherGraphQuery> cypherEngines = new ConcurrentHashMap<>();
@@ -280,6 +289,19 @@ public class QueryService {
      */
     public Answer queryCapped(String graphName, String query, Map<String, String> params, String language,
                               boolean returnSubgraph, boolean includeResult, String source, Boolean script) {
+        if (query == null) {
+            throw new IllegalArgumentException("query must not be null");
+        }
+        if (query.isBlank()) {
+            throw new QueryException("query must not be blank");
+        }
+        // a query is a traversal, not a document: the limit is here so a pasted megabyte of text cannot occupy a
+        // parser and a slot; the message names the setting rather than only the length
+        if (query.length() > maxQueryLength) {
+            throw new IllegalArgumentException("The query is " + query.length() + " characters, over the limit of "
+                    + maxQueryLength + " (phoenixgraph.limits.max-query-length)");
+        }
+        requireName(graphName);
         String selected = language == null || language.isBlank() ? GREMLIN : language.trim().toLowerCase();
         String caller = source == null || source.isBlank() ? Metrics.SOURCE_HTTP : source.trim().toLowerCase();
         Object body = measured(graphName, selected, caller, () -> execute(graphName, query, params, selected,
@@ -442,8 +464,18 @@ public class QueryService {
         return Map.copyOf(byType);
     }
 
+    /**
+     * The graph name a request names, or a 400.
+     *
+     * <p>{@code null} and blank are separate messages on purpose: a client that left the field out needs to
+     * hear that, and one that sent {@code ""} needs to hear that an empty name is not a graph either. Left
+     * alone, a missing name reached a map lookup and came back as a 500 NullPointerException.
+     */
     private static String requireName(String graphName) {
-        if (graphName == null || graphName.isBlank()) {
+        if (graphName == null) {
+            throw new IllegalArgumentException("graphName must not be null");
+        }
+        if (graphName.isBlank()) {
             throw new IllegalArgumentException("graphName must not be blank");
         }
         return graphName;

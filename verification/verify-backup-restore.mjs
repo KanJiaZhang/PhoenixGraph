@@ -134,8 +134,11 @@ const details = checkpoint.status === 200 ? JSON.parse(checkpoint.text) : {};
 check('the API takes a checkpoint of a loaded RocksDB graph',
   checkpoint.status === 200 && details.files > 0 && details.bytes > 0,
   `${checkpoint.status} ${JSON.stringify(details).slice(0, 150)}`);
-check('a checkpoint onto an existing directory is refused with an explanation',
-  (await post(SERVED, `/api/v1/graphs/tpc-h-data/checkpoint?dir=${checkpointDir}`)).text.includes('already exists'));
+// a second checkpoint onto the same directory is a conflict, not a server error: the target is already there
+const existingTarget = await post(SERVED, `/api/v1/graphs/tpc-h-data/checkpoint?dir=${checkpointDir}`);
+check('a checkpoint onto an existing directory is refused with a 409 and an explanation',
+  existingTarget.status === 409 && existingTarget.text.includes('already exists'),
+  `${existingTarget.status} ${existingTarget.text.slice(0, 120)}`);
 
 // the copy must be *served*, so it has to sit at the path the schema declares (<root>/tpc-h-data): this is the
 // restore procedure the endpoint's own answer documents
@@ -186,9 +189,10 @@ if (!container) {
   const stamp = 'pg-drill-' + Date.now();
   const probe = 'zz-restore-probe-' + stamp;
 
-  // a probe vertex the schema accepts: index 0 is accountStatus, and the enum has to be one of its values
+  // a probe vertex the schema accepts: accountStatus is property 1 (0 is the id property - the first version
+  // of this drill wrote 'ACTIVE' into index 0, which the write path now refuses by name)
   const written = await post(SERVED, '/api/v1/vertices', {
-    id: probe, vertexSchemaName: 'Account', properties: [{ index: 0, value: 'ACTIVE' }],
+    id: probe, vertexSchemaName: 'Account', properties: [{ index: 1, value: 'ACTIVE' }],
   });
   const probeCount = "g.V('" + probe + "','Account').count()";
   check('the write path creates a probe vertex the backup can capture',

@@ -138,6 +138,22 @@ phoenixgraph:
     request-timeout: 30s      # wall clock a query may run; the engine checks it between steps
     retry-after-seconds: 1    # what a 429/503 answer tells the client to wait
 
+  # --- the write path and the error body (see docs/API.md §5, §10) ---
+  write:
+    # An edge whose source or destination vertex is not in the graph is refused with a 400. The store can
+    # always write it (an edge lives in its endpoints' records, so a missing endpoint becomes an untyped
+    # stub), and that is the trap: a typo in an id silently materialises a vertex with no type, which shows
+    # up in scans and in elementMap() with no properties, and nothing said so. A loader that deliberately
+    # imports edges before vertices sets this to false.
+    require-existing-endpoints: true
+    max-property-value-bytes: 524288   # 512 KiB; a single value larger than this is a 400, not a store error
+
+  errors:
+    # Only for a debugging instance. A stack trace in a response body names absolute paths, library versions
+    # and the shape of the code, and a client cannot act on the frames; the 500 body points at the request id
+    # and the log instead, which is what makes it reportable.
+    include-stack-trace: false
+
   # --- who may call (see docs/API.md §2) ---
   # Off by default: a local `docker compose up`, the UI and the verification suite must work without
   # ceremony. Turn it on before the port is reachable by anyone else - the README's Limitations section says

@@ -23,7 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class RequestLimitsTest {
 
     private static LimitsProperties properties(int maxConcurrent, int perGraph, int perSecond, Duration queueWait) {
-        return new LimitsProperties(true, maxConcurrent, queueWait, perGraph, perSecond, Duration.ofMillis(200), 1);
+        return new LimitsProperties(true, maxConcurrent, queueWait, perGraph, perSecond, Duration.ofMillis(200), 1, 1 << 20, 65536);
     }
 
     @Test
@@ -75,7 +75,7 @@ class RequestLimitsTest {
     @Test
     void aDisabledGateAdmitsEverything() {
         RequestLimits limits = new RequestLimits(new LimitsProperties(false, 1, Duration.ZERO, 1, 1,
-                Duration.ofMillis(50), 1));
+                Duration.ofMillis(50), 1, 1 << 20, 65536));
         for (int i = 0; i < 10; i += 1) {
             assertEquals(RequestLimits.Admission.ADMITTED, limits.admit("g"));
         }

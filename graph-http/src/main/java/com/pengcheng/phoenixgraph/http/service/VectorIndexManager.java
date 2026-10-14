@@ -1,6 +1,9 @@
 package com.pengcheng.phoenixgraph.http.service;
 
 import com.aerospike.client.AerospikeClient;
+import com.aerospike.client.AerospikeException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import com.pengcheng.phoenixgraph.hnsw.CachedHnswMetadataStore;
 import com.pengcheng.phoenixgraph.hnsw.CachingHnswStore;
 import com.pengcheng.phoenixgraph.hnsw.HeapHnswVectorSource;
@@ -62,6 +65,8 @@ import java.util.concurrent.ConcurrentHashMap;
 @Service
 public class VectorIndexManager {
 
+    private static final Logger LOGGER = LoggerFactory.getLogger(VectorIndexManager.class);
+
     /** How long a metadata record (entry points, size, layer count) may be reused. */
     public static final Duration METADATA_TTL = CachedHnswMetadataStore.DEFAULT_TTL;
 
@@ -114,20 +119,36 @@ public class VectorIndexManager {
         }
     }
 
-    /** Highest layer to provide for a vector property: the declared ones or the built index'. */
+    /**
+     * Highest layer to provide for a vector property: the declared ones or the built index'.
+     *
+     * <p>A store that cannot be read at startup is not a reason to refuse to boot: what this decides is which
+     * layer <em>classes</em> to declare, and the fallback is the schema's own count. The consequence is narrow
+     * and is logged rather than hidden - a query on an index built with more layers than the schema declares
+     * answers from the declared ones until this node is restarted with the store reachable. Refusing to start
+     * instead would take the graphs that <em>can</em> be read (the RocksDB ones) down with the one that cannot,
+     * which is the availability mistake this project keeps having to unlearn.
+     */
     private int topLevelOf(GraphSchema schema, VectorIndexSchemas.VectorProperty property) {
         int declared = property.topLevel();
-        RocksDbEdgeStore rocksDbStore = rocksDbStore(schema.name());
-        if (rocksDbStore != null) {
-            HnswMetadata metadata = new RocksDbHnswMetadataStore(rocksDbStore.handle(),
-                    RocksDbHnswIndexFactory.metadataRecordKey(schema, property.vertexName(),
-                            property.propertyName())).read();
+        try {
+            RocksDbEdgeStore rocksDbStore = rocksDbStore(schema.name());
+            if (rocksDbStore != null) {
+                HnswMetadata metadata = new RocksDbHnswMetadataStore(rocksDbStore.handle(),
+                        RocksDbHnswIndexFactory.metadataRecordKey(schema, property.vertexName(),
+                                property.propertyName())).read();
+                return metadata == null ? declared : Math.max(declared, metadata.topLevel());
+            }
+            HnswMetadata metadata = new AerospikeHnswMetadataStore(client, namespace, metadataSet,
+                    AerospikeHnswIndexFactory.metadataRecordKey(schema, property.vertexName(), property.propertyName()))
+                    .read();
             return metadata == null ? declared : Math.max(declared, metadata.topLevel());
+        } catch (AerospikeException e) {
+            LOGGER.warn("The vector index metadata of {}.{} could not be read ({}); declaring the {} layer(s) the "
+                            + "schema asks for - a restart with the store reachable restores the full depth",
+                    property.vertexName(), property.propertyName(), e.getMessage(), declared);
+            return declared;
         }
-        HnswMetadata metadata = new AerospikeHnswMetadataStore(client, namespace, metadataSet,
-                AerospikeHnswIndexFactory.metadataRecordKey(schema, property.vertexName(), property.propertyName()))
-                .read();
-        return metadata == null ? declared : Math.max(declared, metadata.topLevel());
     }
 
     /**

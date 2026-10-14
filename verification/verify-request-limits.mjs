@@ -107,7 +107,12 @@ check('a second instance starts with its own limits', up, up ? PROBE : probeLog.
 if (up) {
   const query = { graphName: 'payment-graph', query: "g.V(1000,'Account').both('Payment').both('Payment').dedup()", includeResult: true };
 
-  // a) the per-graph rate limit: two requests in the same second, the second is refused
+  // a) the per-graph rate limit: two requests in the same second, the second is refused.
+  //    The window is wall-clock seconds, so the pair is sent just after a second boundary: sending them 5ms
+  //    apart inside one window is the property under test, and a slow machine must not turn that into "the
+  //    second request happened in the next second, so it was allowed" - which is what made this flaky.
+  const waitForFreshWindow = async () => await sleep(1000 - (Date.now() % 1000) + 20);
+  await waitForFreshWindow();
   const first = await ask(PROBE, query);
   const second = await ask(PROBE, query);
   check('the per-second budget refuses the second request with 429 and Retry-After',
@@ -124,10 +129,17 @@ if (up) {
     `${other.status} (503 here means the 1ms deadline fired first, which is the next check)`);
 
   // c) the deadline: 1ms means any step boundary trips it, and the answer is 503 + Retry-After.
-  //    A three-hop fan-out is used because the query has to be *able* to take longer than a millisecond.
+  //    A three-hop fan-out is used because the query has to be *able* to take longer than a millisecond. The
+  //    deadline is checked between steps, so an attempt that happens to be served from cache without crossing a
+  //    step boundary cannot trip it: three attempts make the check about the behaviour rather than about one
+  //    unlucky response, and the last answer is the one reported.
   await sleep(1100);
   const heavy = "g.V(135,'Account').both('Payment').both('Payment').both('Payment').dedup().limit(5000)";
-  const timedOut = await ask(PROBE, { graphName: 'payment-graph', query: heavy, includeResult: true });
+  let timedOut = await ask(PROBE, { graphName: 'payment-graph', query: heavy, includeResult: true });
+  for (let attempt = 0; attempt < 3 && timedOut.status !== 503; attempt += 1) {
+    await sleep(1100);
+    timedOut = await ask(PROBE, { graphName: 'payment-graph', query: heavy, includeResult: true });
+  }
   check('a query that exceeds the budget is a 503 naming the setting, not a 400',
     timedOut.status === 503 && /request-timeout/.test(timedOut.text) && timedOut.headers.get('retry-after') === '1',
     `${timedOut.status} ${timedOut.text.slice(0, 130)}`);

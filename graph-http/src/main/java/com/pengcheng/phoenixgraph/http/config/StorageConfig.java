@@ -2,6 +2,7 @@ package com.pengcheng.phoenixgraph.http.config;
 
 import org.springframework.beans.factory.annotation.Value;
 import com.aerospike.client.AerospikeClient;
+import com.aerospike.client.policy.ClientPolicy;
 import com.pengcheng.phoenixgraph.http.service.GraphBinding;
 import com.pengcheng.phoenixgraph.metrics.GraphMetrics;
 import com.pengcheng.phoenixgraph.metrics.InMemoryMetricsStore;
@@ -80,7 +81,16 @@ public class StorageConfig {
 
     @Bean(destroyMethod = "close")
     public AerospikeClient aerospikeClient(StorageProperties properties) {
-        return new AerospikeClient(properties.host(), properties.port());
+        // failIfNotConnected=false is the difference between "a node that lost the store refuses to boot" and
+        // "a node that lost the store starts, serves the graphs it can read (the RocksDB ones), answers 503 for
+        // the Aerospike ones, and connects by itself when the store comes back". The first is a crash loop in a
+        // cluster whose store is briefly unreachable; the second is a degraded node, which is what an operator
+        // (and a readiness probe) can act on. Operations still fail per request - see the 503 mapping in
+        // ApiExceptionHandler - and this is also what makes the failure mode testable
+        // (verification/verify-failure-modes.mjs).
+        ClientPolicy policy = new ClientPolicy();
+        policy.failIfNotConnected = false;
+        return new AerospikeClient(policy, properties.host(), properties.port());
     }
 
     /**

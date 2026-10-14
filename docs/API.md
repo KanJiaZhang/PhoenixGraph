@@ -103,27 +103,58 @@ One instance has a fixed number of threads and connections. `phoenixgraph.limits
 | `per-graph-per-second` | `200` | per-second budget per graph (`0` disables it) |
 | `request-timeout` | `30s` | wall clock a query may run; the engine checks it between steps |
 | `retry-after-seconds` | `1` | what a `429`/`503` answer tells the client to wait |
+| `max-body-bytes` | `1048576` | largest request body; a bigger one is a `413` before anything is parsed |
+| `max-query-length` | `65536` | largest query text in characters; a bigger one is a `400` |
 
 | Status | When | What a client should do |
 |---|---|---|
 | `200` | normal | — |
-| `400` | malformed query, unknown graph, bad parameter | fix the request; the message says what is wrong |
-| `404` | unknown path, unknown graph on a metrics route | fix the path (see the table below) |
+| `400` | malformed query, unknown graph, bad parameter, body that is not JSON, a query over `max-query-length`, a value that is not the declared type, an index the schema does not declare | fix the request; the message names the field and what it should be |
+| `404` | unknown path; an operation naming a vertex, edge or element that is not in the graph | fix the path or the id (see the table below) |
 | `405` + `Allow` | known path, wrong method | use the method in `Allow` |
+| `409` | the request is fine but clashes with the state - a checkpoint target that already exists | choose another name, or delete the existing one |
+| `413` | the body is over `max-body-bytes` (`{"error":"The request body is N bytes, over the limit of M"}`) | send less, or raise the limit |
+| `415` | a body in a media type the endpoint does not take | send `application/json` |
 | `429` + `Retry-After` | the per-second budget of that graph is spent | back off for `Retry-After`; this is *not* a bug |
-| `500` | an unexpected server-side failure | report it with the `X-Request-Id` |
-| `503` + `Retry-After` | the instance (or that graph) is at its concurrency limit, **or** the query exceeded `request-timeout` | retry with a narrower query, or raise the limit |
+| `500` | an unexpected server-side failure (a bug); also a write the store refused after its own retries (`{"status":"FAILED"}`) | report it with the `X-Request-Id` |
+| `503` + `Retry-After` | the instance (or that graph) is at its concurrency limit; **or** the query exceeded `request-timeout`; **or** the storage of that graph did not answer (unreachable, too slow, no partition map) | retry after `Retry-After`; for the storage case `GET /api/v1/health` still says `200` because the *instance* is alive (see below) |
+
+**Errors have one shape**, and a stack trace is not part of it:
+
+```json
+{ "error": "what is wrong, in a sentence",
+  "exception": "com.pengcheng.phoenixgraph...",
+  "hint": "what to change or where to look" }
+```
+
+`phoenixgraph.errors.include-stack-trace=true` adds a `stackTrace` array for a debugging instance. It is off by
+default because a stack trace hands absolute paths, library versions and the shape of the code to anyone
+probing the service, and a client cannot act on the frames; the `500` body names the exception class and the
+`X-Request-Id` instead, which is what makes it reportable. The one place the container answers instead of the
+application is a request Tomcat refuses before it reaches the API (an encoded slash in a path, an illegal
+header): the status is still right, the body is the container's HTML page, and there is nothing the
+application can do about it.
+
+**A degraded node keeps serving.** If a graph's storage cannot be reached, the instance still starts, still
+answers `/api/v1/health` (`200`: the process is alive), still lists its graphs and still serves the graphs
+whose storage works - the RocksDB ones. Requests against the unreachable graph come back as `503` with
+`Retry-After`, and the client is reconnected automatically when the store returns. This is deliberate: a node
+that refuses to boot because one store is down turns a degraded deployment into an outage, and in a cluster it
+is a crash loop. A write against the unreachable store is the exception to the tidy story: the write path
+retries internally and then answers `500` with `{"status":"FAILED"}`, so a client retry usually will not
+help - the store needs to come back first (`docs/OPERATIONS.md`).
 
 The timeout is cooperative and its boundary is deliberate: the engine checks the budget **between steps**, so
 a single very expensive step (one hop over a huge fan-out, or a whole `pagerank()`) finishes before the check
-fires. The outer bound for a single storage call is the storage client's own timeout.
+fires. The outer bound for a single storage call is the storage client's own timeout (1 s).
 
 ```bash
 # a refusal is an error body with a hint, never an empty response
 curl -s -X POST localhost:8081/api/v1/query -H 'content-type: application/json' \
   -d '{"graphName":"nope","query":"g.V()"}'
-# {"error":"Unknown graph 'nope'; available graphs: agent-demo, ...","exception":"...QueryException",
-#  "stackTrace":[...],"hint":"Check the Gremlin query syntax and the request parameters"}
+# {"error":"Unknown graph 'nope'; available graphs: agent-demo, ...",
+#  "exception":"com.pengcheng.phoenixgraph.query.QueryException",
+#  "hint":"Check the Gremlin query syntax and the request parameters"}
 ```
 
 ## 4. Querying
@@ -173,6 +204,22 @@ An enum property is validated on write, and the error lists the allowed values
 (`accountStatus value 'CHECKING' is not one of the allowed enum values [FROZEN, ACTIVE, CLOSED]`) - worth
 knowing before writing a fixture of your own.
 
+**What a write refuses** (each of these used to be accepted, or to arrive as a 500 from somewhere deeper -
+they are the M3-wide input contract, checked by `verification/verify-input-contract.mjs`):
+
+| The request | The answer | Why |
+|---|---|---|
+| no `id` / no `edgeId` / no `source` / no `destination` | `400` naming the field | it was a `NullPointerException` -> `500` |
+| a property `index` the schema does not declare | `400` listing the declared ones | it was stored as an extra bin that `elementMap()` then showed |
+| a value that is not the declared type (`{}` for a `STRING`) | `400` naming the type | the store writes whatever it is given |
+| a value over `phoenixgraph.write.max-property-value-bytes` (512 KiB) | `400` naming the limit, without echoing the value | the store would fail on its own record limit |
+| an edge whose `source` or `destination` vertex does not exist | `404` naming the missing endpoint | the store created an **untyped stub vertex**, which then appeared in scans; set `phoenixgraph.write.require-existing-endpoints=false` for a loader that imports edges first |
+| a property update or delete, or a vertex delete, on an id that is not there | `404` | `200 {"status":"SUCCESS"}` for a vertex that never existed hides the typo |
+
+A property of an id the schema types differently is still accepted (the id property is the record key spelled
+out, and the demo data writes `"135"` for an id schema that says `LONG`); the id itself is `Object` in the API
+and is stored as the key.
+
 Three semantics worth knowing before you build on them:
 
 - **A delete is a marker, not a removal**, and reads hide the vertex from then on: point reads, batch reads,
@@ -184,10 +231,10 @@ Three semantics worth knowing before you build on them:
 - **Writes need a keyed store.** `POST /api/v1/graphs/{graph}/vertices` answers with a message when the graph
   is a RocksDB scheme ("writes go through the primary graph or a loader"): a RocksDB graph is loaded, not
   written over REST.
-- **Deletes are idempotent**: `DELETE /api/v1/vertices/{id}` on an id that does not exist answers
-  `200 {"status":"SUCCESS"}` - the post-condition ("this id is gone") holds either way. A typo therefore
-  looks like a success; check with a read when that matters. (A `found` field is a candidate for a later
-  release; changing the response shape within `v1` would break clients.)
+- **`SUCCESS_STALE` means "nothing newer to write"**, not "your write failed": every property you sent was
+  older than the stored copy (or you sent none), so the record already holds the newest state. It is a `200`.
+  A vertex written twice with the same empty property list is therefore `SUCCESS_STALE` the second time, which
+  is what the multi-instance check asserts.
 - **Writes go to the graph's own store.** A graph served from a read-only scheme accepts the request and
   rejects the write with a message naming the scheme, rather than silently writing somewhere else.
 

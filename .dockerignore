@@ -1,3 +1,16 @@
+# What no image needs. This is a deny-list on purpose.
+#
+# Two Dockerfiles build from this context:
+#   * graph-http/Dockerfile and graph-web/Dockerfile (used by docker-compose.yml) do `COPY . .` and run Maven
+#     inside the builder stage, so they need the source tree;
+#   * the root Dockerfile (used by tools/release-1.0.sh) copies the staged jar from dist/, which is why dist/
+#     must stay in the context.
+#
+# The first version of this file was an allow-list (`*` then `!Dockerfile !dist/`), which broke both compose
+# builds: an ignore file that describes one build's needs while three builds share it is a build that works
+# until someone else runs the other command. An earlier version excluded `**/target` *and* the root Dockerfile
+# copied from `graph-http/target/`, which failed with "no such file or directory" - the artifact a build needs
+# must not be ignored, and the release build stages its jar outside target/ for exactly that reason.
 .git
 .gitattributes
 .idea

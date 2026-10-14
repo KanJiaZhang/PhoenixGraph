@@ -16,24 +16,34 @@ import java.nio.charset.StandardCharsets;
  * about) and once by the controller (which parses it for real).
  *
  * <p>A servlet input stream is consumed once, so a filter that wants a look at the body has to keep a copy.
- * The copy is bounded - only bodies up to a megabyte are buffered, and anything larger is passed through
- * unread - because the alternative (buffer everything) turns a large upload into heap pressure on the very
- * path that is supposed to be protecting the instance.
+ * The copy is bounded by {@code phoenixgraph.limits.max-body-bytes}, and a body over the limit is refused with a
+ * 413 instead of being buffered: "we copied it anyway" is how the one filter that is supposed to protect the
+ * instance becomes the reason it runs out of heap. (The earlier version of this class claimed to be bounded and
+ * then buffered everything - the bound is real now, and the verification suite sends a 2 MiB body to prove it.)
  */
 class CachedBodyRequest extends HttpServletRequestWrapper {
-
-    private static final int MAX_BYTES = 1 << 20;
 
     private final byte[] body;
     private final boolean buffered;
 
-    CachedBodyRequest(HttpServletRequest request) throws IOException {
+    /**
+     * Reads the body, or refuses it.
+     *
+     * @param request the request whose body to copy
+     * @param maxBytes the largest body to accept
+     * @throws BodyTooLargeException when the body is larger than {@code maxBytes} (the caller answers 413)
+     */
+    CachedBodyRequest(HttpServletRequest request, int maxBytes) throws IOException {
         super(request);
+        // the declared length is checked first, so an oversized upload is refused without reading it; a chunked
+        // body (no Content-Length) still gets read, and its size is checked below
+        long declared = request.getContentLengthLong();
+        if (declared > maxBytes) {
+            throw new BodyTooLargeException(declared, maxBytes);
+        }
         byte[] raw = request.getInputStream().readAllBytes();
-        if (raw.length > MAX_BYTES) {
-            this.body = raw; // already read; the controller still gets a working stream over it
-            this.buffered = true;
-            return;
+        if (raw.length > maxBytes) {
+            throw new BodyTooLargeException(raw.length, maxBytes);
         }
         this.body = raw;
         this.buffered = true;

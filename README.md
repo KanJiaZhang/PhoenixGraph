@@ -32,33 +32,51 @@ geo search** behind one query, and serves **knowledge graphs as context for AI a
 
 ### Limitations — what this is *not* (read this before deploying)
 
-This is a **0.1 engine**: wide and tested, but not yet a hardened product. The gaps are known and tracked in
-[docs/ROADMAP-1.0.md](docs/ROADMAP-1.0.md); the short version:
+This is **1.0 in the sense that a stranger can run it and re-derive every number in this document**, not in the
+sense of feature-complete or proven at scale. The gaps are known and tracked in
+[docs/ROADMAP-1.0.md](docs/ROADMAP-1.0.md); [docs/RELEASE-1.0.0.md](docs/RELEASE-1.0.0.md) has the full list.
+The short version:
 
-- **Authentication and TLS exist but are off by default.** With
-  `phoenixgraph.security.enabled=true` every `/api` call needs a key (roles reader/writer/admin, optional
-  per-graph scoping, every call audited, tokens never logged) - the default is `false` so the UI, the demo and
-  the verification suite work without ceremony, which means **an instance you did not configure is open to
-  anyone who can reach the port**, and an error response includes a Java stack trace. HTTPS is one configuration
-  block away (`server.ssl.*` with a keystore, password from the environment - `docs/API.md` §2). Turn both on
-  before exposing the service.
-- **Single node, no failover.** One `graph-http` holds the engines; RocksDB is a single-writer store on a
-  local or shared volume; the Aerospike container runs without replicas. A restart is a short outage.
+- **Authentication and TLS exist but are off by default.** With `phoenixgraph.security.enabled=true` every
+  `/api` call needs a key (roles reader/writer/admin, optional per-graph scoping, every call audited, tokens
+  never logged) - the default is `false` so the UI, the demo and the verification suite work without ceremony,
+  which means **an instance you did not configure is open to anyone who can reach the port**. HTTPS is one
+  configuration block away (`server.ssl.*` with a keystore, password from the environment - `docs/API.md` §2).
+  Turn both on before exposing the service. Error bodies no longer carry stack traces (that is the
+  `phoenixgraph.errors.include-stack-trace` default), and the audit trail is a bounded in-memory ring plus the
+  log, so it does not survive a restart.
+- **Replication exists, failover is manual.** `deploy/aerospike-cluster/` runs a two-node cluster with
+  replication factor 2, and `verification/verify-aerospike-ha.mjs` shows what it buys: killing a node costs
+  **1 s** of failover and no correctness, writes continue while it is down, and it rejoins in 2 s. But the
+  engine takes **one storage seed**, so a *restart* while that seed is down does not connect (a running node
+  reconnects by itself) - point `phoenixgraph.storage.host` at a load-balanced address for that. RocksDB is a
+  single-writer store on a local or shared volume, and there is no leader election anywhere.
 - **Backups and restores exist and are drilled** (`docs/OPERATIONS.md`: a RocksDB checkpoint, `asbackup`/
-  `asrestore` for a set, `tools/backup-graph.sh`, and a check that a deleted vertex comes back), **but there is
-  no schema migration.** Moving a graph's schema forward is a manual edit today
-  (the schema files carry no version field).
-- **No per-request resource limits.** A slow or malicious query can occupy the instance; `timeLimit` is a
-  step the *caller* has to add.
+  `asrestore` for a set, `tools/backup-graph.sh`, and a check that a deleted vertex comes back), and **schema
+  files are versioned** - a file from a newer build is refused by name rather than parsed as far as possible
+  (`tools/schema-version.mjs` checks, stamps and dry-runs). There is still no *automatic* migration: moving a
+  graph's schema forward is a reviewed edit plus a `--dry-run`.
+- **Resource limits exist and are enforced per request** (`phoenixgraph.limits`: concurrency, per-graph rate,
+  deadline, body size, query length), answering `429`/`413`/`503` with `Retry-After`; the deadline is checked
+  between steps, so one very expensive step finishes before it fires. What is *not* bounded is the total work
+  of the node: there is no admission control across graphs beyond the instance-wide slot count.
 - **Demo-scale data.** The served examples are 10²-10⁴ vertices (the largest is 6,594 vertices / 45,081 edges).
   The performance numbers above are measured on that scale; there is no published benchmark at 10⁷ vertices -
   [docs/CAPACITY.md](docs/CAPACITY.md) states the sizes it covers and what it deliberately does not.
+- **A store that is gone degrades the node, and the write path says so bluntly.** Reads against an unreachable
+  store answer `503` with `Retry-After`, the node keeps serving its other graphs, and it reconnects by itself;
+  a *write* retries internally and then answers `500 {"status":"FAILED"}`, where a client retry will not help
+  (tested by `verification/verify-failure-modes.mjs`).
 - **Not every Gremlin/Cypher construct.** `as/select/match/project/sack/...` need the traverser model that is
   designed but not built (`TRAVERSER-DESIGN.md`, local); unsupported syntax is *rejected*, never silently
   ignored.
+- **Writes need a keyed store.** A RocksDB graph is loaded, not written over REST (`docs/API.md` §5).
 
-What it *does* have is unusual for this stage: **938 unit tests**, a published **live verification suite**
-(`verification/`, 18 checks / 280+ assertions), and documentation whose numbers are re-checked by that suite.
+What it *does* have is unusual for this stage: **948 unit tests**, a published **live verification suite**
+(`verification/`, 20 checks / ~370 assertions that drive the real API and the real UI), documentation whose
+numbers are re-checked by that suite, and the operational pieces a 1.0 needs rather than a demo: API keys with
+per-graph roles, TLS, request limits, an audit trail, drilled backups, Kubernetes manifests, service level
+objectives and a measured capacity guide.
 It also has the things a 1.0 needs rather than a demo: API keys with per-graph roles, TLS, request limits with
 `429`/`503` answers, an audit trail, backup and restore that are drilled, a Kubernetes manifest set, and service
 level objectives - see [docs/ROADMAP-1.0.md](docs/ROADMAP-1.0.md) for what is done and what is not.
@@ -66,7 +84,7 @@ level objectives - see [docs/ROADMAP-1.0.md](docs/ROADMAP-1.0.md) for what is do
 Start here: [QUICKSTART.md](QUICKSTART.md) (10 minutes) · [docs/OPERATIONS.md](docs/OPERATIONS.md) (backups, restores, HA, upgrades, traps) · [docs/API.md](docs/API.md) (51 endpoints, keys and roles,
 error model, limits) · [docs/DATA-QUALITY.md](docs/DATA-QUALITY.md) (the numbers not to trust) ·
 [docs/AGENT-CASES.md](docs/AGENT-CASES.md) (two worked analyses) ·
-[docs/ROADMAP-1.0.md](docs/ROADMAP-1.0.md) (what 1.0 still needs) · [CHANGELOG.md](CHANGELOG.md).
+[docs/ROADMAP-1.0.md](docs/ROADMAP-1.0.md) (what 1.0 still needs) · [docs/RELEASE-1.0.0.md](docs/RELEASE-1.0.0.md) (what is in 1.0 and what is not) · [CHANGELOG.md](CHANGELOG.md).
 And when you need numbers to size or tune it: [docs/SLO.md](docs/SLO.md) (the objectives) and
 [docs/CAPACITY.md](docs/CAPACITY.md) (measured latency, one engine vs two, failover timing, the knobs).
 

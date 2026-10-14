@@ -1,5 +1,6 @@
 package com.pengcheng.phoenixgraph.http.controller;
 
+import com.pengcheng.phoenixgraph.http.ConflictException;
 import com.pengcheng.phoenixgraph.http.config.RocksDbGraphStores;
 import com.pengcheng.phoenixgraph.http.config.StorageProperties;
 import com.pengcheng.phoenixgraph.http.service.GraphBinding;
@@ -71,7 +72,24 @@ public class BackupController {
         Path target = dir == null || dir.isBlank()
                 ? defaultTarget(schema.name())
                 : Path.of(dir);
-        int files = rocksDbStores.checkpoint(schema.name(), target);
+        if (Files.exists(target)) {
+            // checked here rather than left to RocksDB: its own refusal arrives as a 500 whose message happens to
+            // say "already exists", and a caller repeating a request, or naming a directory that is already
+            // there, has made a conflict (409), not a server failure
+            throw new ConflictException("Checkpoint target " + target.toAbsolutePath()
+                    + " already exists; choose another directory, or delete it first");
+        }
+        int files;
+        try {
+            files = rocksDbStores.checkpoint(schema.name(), target);
+        } catch (RuntimeException e) {
+            // the directory can appear between that check and the snapshot; RocksDB says so in its message
+            if (e.getMessage() != null && e.getMessage().contains("already exists")) {
+                throw new ConflictException("Checkpoint target " + target.toAbsolutePath()
+                        + " already exists; choose another directory, or delete it first");
+            }
+            throw e;
+        }
         long bytes = sizeOf(target);
         LOGGER.info("checkpoint of graph '{}' written to {} ({} files, {} bytes)", schema.name(), target, files, bytes);
 

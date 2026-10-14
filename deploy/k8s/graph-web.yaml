@@ -31,7 +31,7 @@ spec:
         fsGroup: 999
       containers:
         - name: graph-web
-          image: phoenixgraph-web:0.2.0            # pin a tag (or a digest); never `latest`
+          image: phoenixgraph-web:1.0.0            # pin a tag (or a digest); never `latest`
           imagePullPolicy: IfNotPresent
           ports:
             - name: http

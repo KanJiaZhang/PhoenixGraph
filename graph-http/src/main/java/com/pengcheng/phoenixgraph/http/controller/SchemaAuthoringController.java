@@ -53,11 +53,27 @@ public class SchemaAuthoringController {
             produces = MediaType.APPLICATION_JSON_VALUE)
     public Map<String, Object> version(@RequestBody String json) {
         SchemaJsonCodec codec = new SchemaJsonCodec();
-        int declared = codec.versionOf(json);
         Map<String, Object> answer = new LinkedHashMap<>();
+        // Reading the version means parsing the document, so a body that is not a schema at all fails here. The
+        // endpoint's job is to judge a file somebody has on disk, so it judges this one too - "not readable
+        // JSON, and here is why" is a verdict, and the 200 says the judgement was made. Only a body the HTTP
+        // layer could not hand over at all is a 400.
+        int declared;
+        String problem = null;
+        try {
+            declared = codec.versionOf(json);
+        } catch (RuntimeException unreadable) {
+            declared = 0;
+            problem = unreadable.getMessage();
+        }
         answer.put("declaredVersion", declared);
         answer.put("supportedThrough", SchemaJsonCodec.SCHEMA_VERSION);
-        answer.put("compatible", declared <= SchemaJsonCodec.SCHEMA_VERSION);
+        answer.put("compatible", problem == null && declared <= SchemaJsonCodec.SCHEMA_VERSION);
+        if (problem != null) {
+            answer.put("graph", null);
+            answer.put("problem", problem);
+            return answer;
+        }
         try {
             answer.put("graph", codec.fromJson(json).name());
         } catch (RuntimeException refused) {

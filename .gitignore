@@ -57,3 +57,6 @@ target/
 
 # the agent toolkit's index artifact: regenerable from the documents (POST /api/v1/agent/ingest)
 *.agent.json
+
+# release artifacts: built by tools/release-1.0.sh, never committed (a tag names the source, the build makes the bytes)
+dist/

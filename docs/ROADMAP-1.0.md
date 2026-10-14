@@ -166,3 +166,39 @@
   边写入需要 `edgeId` 且端点是 `destination`（不是 `target` ✓）；删边还要 `edgeSchemaName` 查询参数 ✓ —— 三条都是被演练逼出来的 ✓。
 
 **M3 之后**：M3-3（跨机 Gemini）按要求暂不做；1.0 的剩余工作是 把 M2/M3 的结论固化成发布（版本号、镜像、发布说明）与日常运行（值班手册、告警演练）。
+
+## 发布 1.0.0（2026-10-14）
+
+计划的 M1/M2/M3 之外，1.0 发布这一步本身做了两件事：**把「所有功能都测一遍」变成仓库里的可复跑证据**，以及
+**把版本、镜像、tag、发布说明固化成一次可重复的操作**。
+
+### 全面测试：边缘场景与失败场景（新增两个检查，共 98 条断言）
+
+| 检查 | 断言 | 覆盖 |
+|---|---|---|
+| `verification/verify-input-contract.mjs` | 78 | 畸形 JSON、缺字段、字段类型错、不存在的 id/属性索引、与声明类型不符的值、超过大小限制的值、CJK id；并跨全部用例断言三条规则：**客户端错误从不为 500**、**响应体不含堆栈**、**错误体形状一致** |
+| `verification/verify-failure-modes.mjs` | 20 | 存储**完全不可达**、存储**接受连接但永不回应**两种故障下：实例仍能启动、对该图 `503`+`Retry-After`、**同实例的 RocksDB 图照常作答**、`/health` 与 Prometheus 照常作答；2 MiB 请求体 → `413`、108k 字符查询 → `400`；8 个客户端并发创建同一顶点 → 全部 200、最终只存一个值 |
+
+这两轮测试**逼出了 12 个真缺陷**（记录在 `docs/DATA-QUALITY.md` §9–§11 与 `CHANGELOG.md` 的 1.0.0 条目），
+其中 3 个会造成数据不可信（写进 schema 未声明的 bin、类型不符的值、悬空边静默造出无类型顶点），
+9 个会让调用方把「请求写错了」当成「服务坏了」（一律 500 + 堆栈）。
+
+### 发布工程
+
+- `Dockerfile`：多阶段、非 root、`/dev/tcp` 健康检查、`MaxRAMPercentage` 感知容器内存、exec 形式 ENTRYPOINT（能收到 SIGTERM，
+  优雅停机才存在）；`.dockerignore` 改为白名单（只放行 `Dockerfile` 与 `dist/`，此前 `**/target` 把要拷的 jar 一起排除了）。
+- `tools/release-1.0.sh`：从 pom 读版本 → **拒绝脏工作树与已存在的 tag** → 打包 → `dist/phoenixgraph.jar` + sha256 →
+  构建镜像 → 在容器里跑一次健康检查 → 写 `dist/RELEASE.txt` 清单 → `--tag` 时打 tag 并推送。
+- `docs/RELEASE-1.0.0.md`：1.0 是什么、有哪些数字支撑、**明确不是什么**、从 0.2.0 升上来的三处行为变化。
+- `CHANGELOG.md`：`[1.0.0] - 2026-10-14` 条目（Added / Changed / Fixed 各按「为什么」写）。
+- 所有模块版本 `0.1.0-SNAPSHOT` → **`1.0.0`**（此前 CHANGELOG 里的 `0.2.0` 是里程碑名，不是 pom 版本，现已一致）。
+- `README.md` 的 Limitations 重写为 1.0 的事实：复制与故障切换（1 秒）、schema 版本、请求限额、降级节点行为、
+  仍缺的部分（自动迁移、单一 seed、10⁷ 规模、跨机 Gemini）。
+
+### 值得记住的三个坑
+
+1. **`CachedBodyRequest` 的注释声称有上限，代码却全量缓冲**——1.0 把它改真（超过 `max-body-bytes` 直接 413），
+   否则「保护实例的过滤器」正是把实例撑爆的原因。
+2. **`.dockerignore` 排除了构建需要的产物** → 镜像构建报 `no such file or directory`；白名单写法顺手把这个类别消灭。
+3. **错误体里回显异常消息**让一个检查「假通过」了很久：`verify-backup-restore.mjs` 断言的是
+   `already exists` 这串**内部错误信息**，改为 409 后它才暴露出真正的契约问题。

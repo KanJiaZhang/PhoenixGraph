@@ -41,8 +41,12 @@ public class SecurityConfig {
     }
 
     @Bean
-    public FilterRegistrationBean<ApiKeyFilter> apiKeyFilter(ApiKeys keys, AuditLog audit) {
-        FilterRegistrationBean<ApiKeyFilter> registration = new FilterRegistrationBean<>(new ApiKeyFilter(keys, audit));
+    public FilterRegistrationBean<ApiKeyFilter> apiKeyFilter(ApiKeys keys, AuditLog audit,
+                                                            LimitsProperties limits) {
+        // the body limit is passed in because this filter runs first: it is the one that reads a POST body to
+        // learn which graph the request names, so it is the one that can answer 413 for an oversized one
+        FilterRegistrationBean<ApiKeyFilter> registration =
+                new FilterRegistrationBean<>(new ApiKeyFilter(keys, audit, limits.maxBodyBytes()));
         registration.addUrlPatterns("/api/*");
         registration.setOrder(0);
         registration.setName("apiKeyFilter");

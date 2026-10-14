@@ -204,9 +204,9 @@ class QueryControllerTest {
                 .andExpect(jsonPath("$.exception")
                         .value("com.pengcheng.phoenixgraph.query.QueryException"))
                 .andExpect(jsonPath("$.hint").isNotEmpty())
-                .andExpect(jsonPath("$.stackTrace[0]").value(
-                        "com.pengcheng.phoenixgraph.query.QueryException: Unknown Gremlin step: nope"))
-                .andExpect(jsonPath("$.stackTrace.length()").value(org.hamcrest.Matchers.greaterThan(3)));
+                // the stack trace is opt-in: it names absolute paths and library versions, and a client
+                // cannot act on the frames (the 500 body points at the request id and the log instead)
+                .andExpect(jsonPath("$.stackTrace").doesNotExist());
     }
 
     @Test

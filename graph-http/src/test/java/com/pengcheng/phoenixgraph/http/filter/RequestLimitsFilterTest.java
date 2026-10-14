@@ -26,7 +26,7 @@ class RequestLimitsFilterTest {
 
     private static LimitsProperties properties(int maxConcurrent, int perGraph, int perSecond) {
         return new LimitsProperties(true, maxConcurrent, Duration.ofMillis(20), perGraph, perSecond,
-                Duration.ofSeconds(5), 1);
+                Duration.ofSeconds(5), 1, 1 << 20, 65536);
     }
 
     /** A chain that records the body it saw, so the test can prove nothing was consumed by the filter. */
