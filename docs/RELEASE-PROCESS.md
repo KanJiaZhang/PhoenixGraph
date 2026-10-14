@@ -80,6 +80,12 @@ gh api -X PATCH repos/KanJiaZhang/PhoenixGraph \
 #   PATCH  /repos/KanJiaZhang/PhoenixGraph                   {"default_branch":"main"}
 ```
 
+**Publish in order, or fix the `latest` flag afterwards.** GitHub marks "Latest" by *publish order*, not by
+version: after publishing `v1.0.1` and then `v1.0.0` (which is what happened here - the older release had to be
+built from its tag in a worktree), the front page advertised 1.0.0 as the current release. `gh release edit
+v1.0.1 --latest` is the fix, and it is worth a glance at `gh release list` after any multi-release day:
+`gh api repos/KanJiaZhang/PhoenixGraph/releases/latest --jq .tag_name` is the one-line answer.
+
 Worth turning on in the same visit: **branch protection** on `main` and `release/1.0` (require the CI check,
 no force pushes, no deletions) - the policy in §1 is a promise only if the branches cannot be rewritten.
 
