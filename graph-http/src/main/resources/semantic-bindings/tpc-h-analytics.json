@@ -1,0 +1,31 @@
+{
+  "graph": "tpc-h-analytics",
+  "dataGraph": "tpc-h-data",
+  "vertexType": "Sale",
+  "comment": "The fact-graph binding of the semantic layer: which property carries each dimension on the fact vertices, and which property (or count) carries each metric. It is data in the repository on purpose. The semantic column names and the fact property names are different vocabularies (region.r_name vs Sale.region), and a string-matching rule resolves nine of the eleven dimensions while silently returning plausible wrong numbers for the rest - l_returnflag would have to become 'returned'. A null means 'this dimension exists in the model but this deployment cannot group by it', which the API reports as a refusal with the SQL instead of guessing. The migration is to write the same binding into the tpc-h-analytics graph on its next re-seed (docs/DATA-AGENT.md s.3).",
+  "dimensions": {
+    "dim/region": "region",
+    "dim/nation": "nation",
+    "dim/mktsegment": "segment",
+    "dim/order_priority": "priority",
+    "dim/ship_mode": "shipmode",
+    "dim/part_type": "partType",
+    "dim/brand": "brand",
+    "dim/supplier": "supplierName",
+    "dim/order_date": "year=orderYear,month=orderMonth",
+    "dim/return_flag": null,
+    "dim/line_status": null
+  },
+  "metrics": {
+    "metric/revenue": "revenue",
+    "metric/gross_revenue": "gross",
+    "metric/discount_amount": "discountAmount",
+    "metric/tax_amount": "taxAmount",
+    "metric/quantity_sold": "quantity",
+    "metric/order_count": "count",
+    "metric/late_delivery_count": "lateDelivery",
+    "metric/return_rate": null,
+    "metric/market_share": null,
+    "metric/profit": null
+  }
+}

@@ -325,6 +325,8 @@ cannot disagree about the format.
 | `POST` | `/api/v1/agent/similar` | `AgentController#similar` | `ToolRequest` | `Map<String, Object>` |
 | `POST` | `/api/v1/agent/similar-related` | `AgentController#similarRelated` | `ToolRequest` | `Map<String, Object>` |
 | `GET` | `/api/v1/agent/tools` | `AgentController#tools` | — | `Map<String, Object>` |
+| `POST` | `/api/v1/analysis/{graph}/analyze` | `SemanticController#analyze` | `AskRequest` | `Map<String, Object>` |
+| `POST` | `/api/v1/analysis/{graph}/attribute` | `SemanticController#attribute` | `AskRequest` | `Map<String, Object>` |
 | `GET` | `/api/v1/audit/recent` | `AuditController#recent` | — | `Map<String, Object>` |
 | `POST` | `/api/v1/batch` | `BatchController#batch` | `BatchRequest` | `List<WriteResult>` |
 | `POST` | `/api/v1/edges` | `EdgeController#upsert` | `EdgeRequest` | `ResponseEntity<WriteResult>` |
@@ -359,6 +361,7 @@ cannot disagree about the format.
 | `POST` | `/api/v1/schema/version` | `SchemaAuthoringController#version` | `String` | `Map<String, Object>` |
 | `GET` | `/api/v1/schema/{graph}` | `SchemaAuthoringController#json` | — | `ResponseEntity<String>` |
 | `GET` | `/api/v1/schema/{graph}/draft` | `SchemaAuthoringController#draft` | — | `ResponseEntity<SchemaDraft>` |
+| `POST` | `/api/v1/semantic/{graph}/ask` | `SemanticController#ask` | `AskRequest` | `Map<String, Object>` |
 | `GET` | `/api/v1/semantic/{graph}/model` | `SemanticController#model` | — | `Map<String, Object>` |
 | `POST` | `/api/v1/semantic/{graph}/translate` | `SemanticController#translate` | `SemanticRequest` | `Map<String, Object>` |
 | `POST` | `/api/v1/semantic/{graph}/validate` | `SemanticController#validate` | `SemanticRequest` | `Map<String, Object>` |
@@ -370,7 +373,7 @@ cannot disagree about the format.
 | `DELETE` | `/api/v1/vertices/{id}/properties/{index}` | `VertexController#deleteProperty` | — | `ResponseEntity<WriteResult>` |
 | `PUT` | `/api/v1/vertices/{id}/properties/{index}` | `VertexController#updateProperty` | `PropertyUpdateRequest` | `ResponseEntity<WriteResult>` |
 
-55 endpoints across 15 controllers.
+58 endpoints across 15 controllers.
 <!-- endpoints:end -->
 
 ---

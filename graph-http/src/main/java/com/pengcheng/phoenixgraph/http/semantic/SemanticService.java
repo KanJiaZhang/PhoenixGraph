@@ -30,9 +30,87 @@ public class SemanticService {
 
     private final QueryService queries;
     private final Map<String, SemanticModel> models = new ConcurrentHashMap<>();
+    private final Map<String, Binding> bindings = new ConcurrentHashMap<>();
 
     public SemanticService(QueryService queries) {
         this.queries = queries;
+    }
+
+    /**
+     * The fact-graph binding of a semantic model: which fact property carries each dimension and each metric.
+     *
+     * <p>It is data on purpose. Semantic column names and fact property names are different vocabularies
+     * ({@code region.r_name} vs {@code Sale.region}), and a string-matching rule resolves nine of the eleven
+     * TPC-H dimensions while silently returning plausible wrong numbers for the rest. A null value in the map
+     * means "the model has this dimension, this deployment cannot group by it", which the API reports as a
+     * refusal carrying the SQL rather than guessing. {@code graphProperty} on the model's own nodes is the
+     * intended home; until the semantic graph is re-seeded the same binding is read from
+     * {@code semantic-bindings/<graph>.json} (docs/DATA-AGENT.md §3).
+     *
+     * @param dimensions dimension id -&gt; fact property, or a {@code grain=property} list for a date dimension
+     * @param metrics    metric id -&gt; fact property, or {@code count} for "how many vertices"
+     */
+    public record Binding(String graph, String dataGraph, String vertexType, Map<String, String> dimensions,
+                          Map<String, String> metrics) {
+
+        public String metricProperty(String metricId) {
+            return metricId == null ? null : metrics.get(metricId);
+        }
+
+        /** The fact property for a dimension at a grain, or null when the binding cannot express it. */
+        public String dimensionProperty(String dimensionId, String grain) {
+            String declared = dimensions.get(dimensionId);
+            if (declared == null) {
+                return null;
+            }
+            if (!declared.contains("=")) {
+                return declared;
+            }
+            Map<String, String> byGrain = new LinkedHashMap<>();
+            for (String part : declared.split(",")) {
+                int equals = part.indexOf('=');
+                if (equals > 0) {
+                    byGrain.put(part.substring(0, equals).trim().toLowerCase(), part.substring(equals + 1).trim());
+                }
+            }
+            String wanted = byGrain.get(grain == null ? "raw" : grain.toLowerCase());
+            return wanted != null ? wanted : byGrain.get("raw");
+        }
+    }
+
+    /** The binding of one graph, loaded once from the repository's data file. */
+    public Binding binding(String graphName) {
+        return bindings.computeIfAbsent(graphName, this::loadBinding);
+    }
+
+    private Binding loadBinding(String graphName) {
+        String resource = "semantic-bindings/" + graphName + ".json";
+        try (java.io.InputStream in = SemanticService.class.getClassLoader().getResourceAsStream(resource)) {
+            if (in == null) {
+                throw new IllegalArgumentException("No fact-graph binding for '" + graphName
+                        + "': translation and validation work without one, execution does not (" + resource + ")");
+            }
+            Map<String, Object> raw = new com.fasterxml.jackson.databind.ObjectMapper()
+                    .readValue(in, new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() { });
+            Map<String, String> dimensions = new LinkedHashMap<>();
+            Map<String, String> metrics = new LinkedHashMap<>();
+            for (Map.Entry<String, Object> entry : stringKeyed(raw.get("dimensions")).entrySet()) {
+                if (entry.getValue() != null) {
+                    dimensions.put(entry.getKey(), String.valueOf(entry.getValue()));
+                } else {
+                    dimensions.put(entry.getKey(), null);
+                }
+            }
+            for (Map.Entry<String, Object> entry : stringKeyed(raw.get("metrics")).entrySet()) {
+                if (entry.getValue() != null) {
+                    metrics.put(entry.getKey(), String.valueOf(entry.getValue()));
+                }
+            }
+            return new Binding(graphName, String.valueOf(raw.get("dataGraph")),
+                    String.valueOf(raw.get("vertexType")), dimensions, metrics);
+        } catch (java.io.IOException broken) {
+            throw new IllegalStateException("Cannot read " + resource, broken);
+        }
     }
 
     /** The model of one graph, loaded once and kept until {@link #forget(String)}. */
