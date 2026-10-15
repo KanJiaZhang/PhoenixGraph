@@ -30,8 +30,23 @@ HTTP_PORT=8081
 WEB_PORT=8080
 HNSW_PORT=8083
 HNSW_GEMINI_FIRST_PORT=19110
-HTTP_JAR="graph-http/target/graph-http-0.1.0-SNAPSHOT.jar"
-WEB_JAR="graph-web/target/graph-web-0.1.0-SNAPSHOT.jar"
+# The jar name carries the project version, so it is found rather than written down: the release that bumped the
+# version to 1.0.0 renamed every artifact, and a hardcoded 0.1.0-SNAPSHOT path then started a *stale* jar while the
+# build reported success - the endpoint being tested simply 404ed. (`grep -v original` skips the pre-repackage jar
+# that spring-boot-maven-plugin leaves behind.)
+find_jar() {
+  local pattern="$1"
+  local found
+  # `ls -t` newest-first: a jar from a previous version is still on disk after a version bump and sorts first
+  found=$(ls -t $pattern 2>/dev/null | grep -v '\.original$' | head -1)
+  if [ -z "$found" ]; then
+    echo "!! no jar matching $pattern; run tools/start-phoenixgraph.sh without --no-build first" >&2
+    exit 1
+  fi
+  echo "$found"
+}
+HTTP_JAR="$(find_jar 'graph-http/target/graph-http-*.jar')"
+WEB_JAR="$(find_jar 'graph-web/target/graph-web-*.jar')"
 
 BUILD=1
 WITH_HNSW=0

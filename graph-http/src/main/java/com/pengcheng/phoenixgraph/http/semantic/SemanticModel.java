@@ -25,10 +25,11 @@ import java.util.Set;
  */
 public final class SemanticModel {
 
-    /** A metric: what is measured, how, in what unit, and which dimensions may slice it. */
+    /** A metric: what is measured, how, in what unit, which columns and tables it reads, and its synonyms. */
     public record Metric(String id, String description, String expression, String aggFunction, String unit,
                          String metricKind, List<String> synonyms, Set<String> dimensions,
-                         Set<String> derivedFrom, Set<String> derives) {
+                         List<String> columns, List<String> tables, Set<String> derivedFrom,
+                         List<String> definedBy) {
 
         /** The name the SQL aliases this metric to ({@code metric/revenue} -&gt; {@code revenue}). */
         public String shortName() {
@@ -226,8 +227,10 @@ public final class SemanticModel {
             row.put("aggFunction", metric.aggFunction());
             row.put("synonyms", metric.synonyms());
             row.put("dimensions", metric.dimensions());
+            row.put("columns", metric.columns());
+            row.put("tables", metric.tables());
             row.put("derivedFrom", List.copyOf(metric.derivedFrom()));
-            row.put("definedBy", derivedBy(metric.id()));
+            row.put("definedBy", metric.definedBy());
             metricRows.add(row);
         });
         List<Map<String, Object>> dimensionRows = new ArrayList<>();
@@ -257,12 +260,6 @@ public final class SemanticModel {
     }
 
     private List<String> derivedBy(String metricId) {
-        List<String> defined = new ArrayList<>();
-        for (ReferenceQuery query : queries) {
-            if (query.tables().contains(metricId)) {
-                defined.add(query.id());
-            }
-        }
-        return defined;
+        return metrics.containsKey(metricId) ? metrics.get(metricId).definedBy() : List.of();
     }
 }

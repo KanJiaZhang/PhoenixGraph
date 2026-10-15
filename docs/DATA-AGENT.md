@@ -6,7 +6,7 @@
 
 | 资产 | 事实 |
 |---|---|
-| 语义层**本身就是一张图** | `tpc-h-analytics` 图里是 `Node` 顶点（`entityType` 区分 metric/dim/column/table/query）+ `Relation` 边。实测含 **18 个指标**、**11 个维度**、22 条参考查询（`query/q1..q22`，带原始 `sqlText`） |
+| 语义层**本身就是一张图** | `tpc-h-analytics` 图里是 `Node` 顶点（`entityType` 区分 metric/dim/column/table/query）+ `Relation` 边。**服务里实测**：**17 个指标**、**11 个维度**、**12 条参考查询**（带原始 `sqlText`；数据集里另有若干条已定义的查询未随图发布） |
 | 语义边的语义 | `groupedBy`（指标可由哪些维度切片）、`usesColumn`/`computedFrom`（血缘）、`dimensionColumn`（维度→列）、`references`（外键，用于 join 路径）、`definedBy`（指标→参考查询）、`contributesTo`（归因：派生指标由哪个基础指标驱动） |
 | 顶点属性 | `name, entityType, description, alias, dataType, columnRole, tableName, aggFunction, expression, metricKind, unit, sqlText, queryNumber` —— 注意 **`alias` 已经存在**，中文同义词就在模型里（例如 `dimensionColumn` → 「维度字段/维度」）|
 | 事实图 | `tpc-h-data`（RocksDB-Edge）：`Sale` 把维度**反范式化**到同一个顶点上 —— `Sale: revenue, discount, tax, quantity, gross, discountAmount, taxAmount, lateDelivery, returned, region, nation, segment, priority, shipmode, partType, brand, supplierName, orderYear, orderMonth`；边缘是 `ofPart/ofSupplier/ofOrder/placedBy/customerNation/supplierNation/nationRegion` |

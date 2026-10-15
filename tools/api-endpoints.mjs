@@ -13,7 +13,11 @@
 import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-const CONTROLLERS = 'graph-http/src/main/java/com/pengcheng/phoenixgraph/http/controller';
+// every @RestController under the http package, not only the controller/ directory: the semantic layer keeps
+// its own package (semantic/) next to the model it serves, and an endpoint that the reference does not list is an
+// endpoint nobody finds.
+const HTTP_ROOT = 'graph-http/src/main/java/com/pengcheng/phoenixgraph/http';
+const CONTROLLERS = HTTP_ROOT;
 const TARGET = 'docs/API.md';
 const START = '<!-- endpoints:start -->';
 const END = '<!-- endpoints:end -->';
@@ -78,7 +82,7 @@ function firstSignatureAfter(text, offset) {
  * greps for when something goes wrong, and the request body type because that is what they have to build.
  */
 function readController(file) {
-  const text = readFileSync(join(CONTROLLERS, file), 'utf8');
+  const text = readFileSync(file, 'utf8');
   const classMatch = /@RequestMapping\s*(\([^)]*\))?/.exec(text);
   const base = classMatch && classMatch[1] ? pathOf(classMatch[1]) : '';
   const classEnd = classMatch ? classMatch.index + classMatch[0].length : 0;
@@ -99,13 +103,23 @@ function readController(file) {
       method: signature.method,
       body: body ? body[1].replace(/\s+/g, ' ').trim() : '',
       returns: signature.returns,
-      controller: file.replace('.java', ''),
+      controller: file.split('/').pop().replace('.java', ''),
     });
   }
   return { base, endpoints };
 }
 
-const files = readdirSync(CONTROLLERS).filter((name) => name.endsWith('Controller.java') && !name.includes('ApiException'));
+const files = [];
+const collect = (dir) => {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isDirectory()) {
+      collect(dir + '/' + entry.name);
+    } else if (entry.name.endsWith('Controller.java') && !entry.name.includes('ApiException')) {
+      files.push(dir + '/' + entry.name);
+    }
+  }
+};
+collect(CONTROLLERS);
 const all = [];
 for (const file of files) all.push(...readController(file).endpoints);
 all.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : a.verb.localeCompare(b.verb)));
