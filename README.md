@@ -84,7 +84,7 @@ level objectives - see [docs/ROADMAP-1.0.md](docs/ROADMAP-1.0.md) for what is do
 Start here: [QUICKSTART.md](QUICKSTART.md) (10 minutes) · [docs/OPERATIONS.md](docs/OPERATIONS.md) (backups, restores, HA, upgrades, traps) · [docs/API.md](docs/API.md) (52 endpoints, keys and roles,
 error model, limits) · [docs/DATA-QUALITY.md](docs/DATA-QUALITY.md) (the numbers not to trust) ·
 [docs/AGENT-CASES.md](docs/AGENT-CASES.md) (two worked analyses) ·
-[docs/ROADMAP-1.0.md](docs/ROADMAP-1.0.md) (what 1.0 still needs) · **releases: [docs/RELEASE-1.0.1.md](docs/RELEASE-1.0.1.md)** (what is in 1.0, what is not, what is open) · [docs/RELEASE-PROCESS.md](docs/RELEASE-PROCESS.md) (which branch and tag mean what) · [CHANGELOG.md](CHANGELOG.md).
+[docs/ROADMAP-1.0.md](docs/ROADMAP-1.0.md) (what 1.0 still needs) · [docs/DATA-AGENT.md](docs/DATA-AGENT.md) (the data-agent design: 问数 / 分析 / 归因 + 确认模式) · **releases: [docs/RELEASE-1.0.1.md](docs/RELEASE-1.0.1.md)** (what is in 1.0, what is not, what is open) · [docs/RELEASE-PROCESS.md](docs/RELEASE-PROCESS.md) (which branch and tag mean what) · [CHANGELOG.md](CHANGELOG.md).
 And when you need numbers to size or tune it: [docs/SLO.md](docs/SLO.md) (the objectives) and
 [docs/CAPACITY.md](docs/CAPACITY.md) (measured latency, one engine vs two, failover timing, the knobs).
 
