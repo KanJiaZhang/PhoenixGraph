@@ -130,3 +130,27 @@
 - 不做自由生成 SQL（一切经语义模型；生成物只作导出/对照）；
 - 不追 Spider/BIRD 榜单（基准自身标注错误率高，见调研）；
 - 不在图上"猜"属性绑定或跨类型 join（宁可拒绝 + 给 SQL）。
+
+## 10. 交付状态（每片完成即更新）
+
+| 片 | 状态 | 证据 |
+|---|---|---|
+| S2 语义层 API | ✅ 完成 | `verify-semantic-api.mjs`：32 条语句与 CLI 逐字节相同；`SqlRendererTest` 7/7 |
+| S4 MCP 插件（第一步） | ✅ 完成 | `node tools/mcp-server.mjs --selftest` 7/7；stdio 往返（initialize / tools/list / tools/call）实测 |
+| S1 绑定进模型 | ⬜ 待做 | 需要改 dataset + 重播小图 `tpc-h-analytics` |
+| S3 智能问数 / 分析 / 归因 | ⬜ 待做 | 解释器 + 确认门 + 图上执行 + 分析与归因引擎 |
+| S4 其余（评估台账） | ⬜ 待做 | `verification/eval-data-agent.mjs`：五类 golden set + 趋势文件 |
+
+### 已交付的两处实现细节
+
+- **工具目录是单一来源**：`GET /api/v1/agent/tools` 现在同时返回 `bindings`（每个工具怎么用 HTTP 调）。
+  插件不含任何工具知识——在 `AgentToolCatalog` 里加一个工具，所有客户端立刻能调；反之不可能出现"插件里有、服务里没有"。
+- **无状态**：与 MCP 2026-07-28 修订一致（会话/握手/服务端推送都被删除）。用户确认因此是**令牌**（计划哈希 + 过期时间 + 签名），
+  而不是服务端会话——插件重启、多副本都不影响确认流程。
+
+### 已知尖锐边缘（记下来，不藏）
+
+- 粒度会被施加到**任何**维度上：`dim/region` + `grain=year` 会渲染 `EXTRACT(YEAR FROM region.r_name)`。
+  这与 CLI 逐字节一致（可移植性优先），但语义上是错的；模型里的 `dataType` 足以判断维度是不是日期，
+  应当补一条 warning（S3 一并做）。
+- 一次语义查询只支持一个维度（与 CLI 一致）；第二个维度会被**按名字拒绝**，不静默丢弃。

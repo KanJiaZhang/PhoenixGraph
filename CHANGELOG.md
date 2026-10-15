@@ -133,6 +133,16 @@ A patch release with what the on-call drill found. No API change.
 
 ## [Unreleased]
 
+### Added
+
+- **The semantic layer over HTTP** (`graph-http/.../http/semantic`): `GET /api/v1/semantic/{graph}/model` is the vocabulary an agent plans against (metrics, dimensions, the fact-graph binding behind each dimension, the reference queries with their original SQL, and the lineage), `POST .../translate` renders warehouse SQL without running it, and `POST .../validate` answers whether a request is answerable, returning the vocabulary when it is not. The renderer is a port of `tools/semantic-sql.mjs` and `verification/verify-semantic-api.mjs` compares the two byte-for-byte (32 statements over a matrix of metrics, dimensions, grains and dialects), with seven unit tests pinning the strings offline: the base-table rule, the missing-join warning, the per-dialect grain functions, and a grain-to-fact-property binding that is read from the model rather than guessed.
+- **An MCP server** (`tools/mcp-server.mjs`): the graph tools and the semantic layer as an agent plugin, stateless in the 2026-07-28 revision of the protocol. Its tool list comes from `GET /api/v1/agent/tools`, which now also carries `bindings` - how to call each tool - so the plugin holds no tool knowledge and a tool cannot exist in one and not the other. User confirmation is a signed token rather than a session. `--selftest` checks the catalog, the schemas and three calls; a stdio round trip works end to end.
+
+### Fixed
+
+- **`tools/start-phoenixgraph.sh` started a stale jar.** It hardcoded `graph-http-0.1.0-SNAPSHOT.jar`, and the 1.0.0 release renamed every artifact: the script kept starting an old build while the build reported success, so new endpoints simply 404ed. It finds the jar now (newest first, `.original` skipped) and refuses to start when there is none.
+- **`tools/api-endpoints.mjs` missed whole packages.** It only scanned `controller/`, so a controller in its own package never reached `docs/API.md` - an endpoint the reference does not list is an endpoint nobody finds. It walks the `http` package tree now: 55 endpoints across 15 controllers.
+
 Milestone **M2** of [`docs/ROADMAP-1.0.md`](docs/ROADMAP-1.0.md) continues here.
 
 ### Added

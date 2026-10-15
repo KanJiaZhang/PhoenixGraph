@@ -59,13 +59,69 @@ public final class AgentToolCatalog {
                 params(required("question", "string", "the user's question"),
                         optional("k", "integer", "how many seed entities (default 5)"),
                         optional("hops", "integer", "how far to expand each seed (default 1, at most 2)"))));
+        tools.add(tool("semantic_model",
+                "What can be asked of this graph? The metrics, the dimensions each metric may be sliced by, the "
+                        + "fact-graph property behind every dimension, and the reference queries. Read this before "
+                        + "asking a data question: it is the vocabulary, and the answer to 'is this answerable'.",
+                params(required("graph", "string", "the semantic graph, e.g. tpc-h-analytics"))));
+        tools.add(tool("semantic_translate",
+                "Turn a metric plus an optional dimension into warehouse SQL, without running it. Use it to show a "
+                        + "human the plan (mode=confirm) or to export the query to a warehouse. The SQL is rendered "
+                        + "from the semantic model, never generated freehand.",
+                params(required("graph", "string", "the semantic graph, e.g. tpc-h-analytics"),
+                        required("metric", "string", "metric/revenue or revenue"),
+                        optional("dimension", "string", "dim/region or region; omit for the grand total"),
+                        optional("grain", "string", "raw (default), year, quarter or month"),
+                        optional("dialect", "string", "postgres (default), duckdb or mysql"))));
+        tools.add(tool("semantic_validate",
+                "Is this request answerable? Answers with a verdict and the reason, including the vocabulary the "
+                        + "model holds, so a caller can correct itself instead of guessing. Call it before "
+                        + "translating when the request came from a person or a model.",
+                params(required("graph", "string", "the semantic graph, e.g. tpc-h-analytics"),
+                        required("metric", "string", "metric/revenue or revenue"),
+                        optional("dimension", "string", "dim/region or region"),
+                        optional("grain", "string", "raw (default), year, quarter or month"),
+                        optional("dialect", "string", "postgres (default), duckdb or mysql"))));
         return tools;
+    }
+
+    /**
+     * How to reach each tool over HTTP: the binding an MCP server (or any generic client) needs.
+     *
+     * <p>It lives here rather than in the plugin on purpose. A tool catalog that describes a tool but not how to
+     * call it makes every consumer invent its own mapping, and then two consumers disagree about the same tool - so
+     * {@code tools/mcp-server.mjs} reads this and exposes whatever the catalog lists. Adding a tool here makes it
+     * callable by every client at once.
+     */
+    public static Map<String, Map<String, Object>> bindings() {
+        Map<String, Map<String, Object>> bindings = new LinkedHashMap<>();
+        bindings.put("find_entities", post("/api/v1/agent/find-entities"));
+        bindings.put("related", post("/api/v1/agent/related"));
+        bindings.put("similar", post("/api/v1/agent/similar"));
+        bindings.put("related_similar", post("/api/v1/agent/related-similar"));
+        bindings.put("similar_related", post("/api/v1/agent/similar-related"));
+        bindings.put("path_between", post("/api/v1/agent/path"));
+        bindings.put("context", post("/api/v1/agent/context"));
+        bindings.put("semantic_model", get("/api/v1/semantic/{graph}/model"));
+        bindings.put("semantic_translate", post("/api/v1/semantic/{graph}/translate"));
+        bindings.put("semantic_validate", post("/api/v1/semantic/{graph}/validate"));
+        return bindings;
+    }
+
+    private static Map<String, Object> post(String path) {
+        return Map.of("method", "POST", "path", path);
+    }
+
+    private static Map<String, Object> get(String path) {
+        return Map.of("method", "GET", "path", path);
     }
 
     /** The catalog as one JSON-ready document, with the answer shape described once. */
     public static Map<String, Object> describe() {
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("tools", tools());
+        // how to call each tool, so a plugin does not have to invent a mapping (see bindings())
+        out.put("bindings", bindings());
         out.put("answerShape", Map.of(
                 "tool", "which tool answered",
                 "entities", "id, type, name, score, via (name|vector|related|...), cites",
