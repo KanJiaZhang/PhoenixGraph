@@ -27,5 +27,104 @@
     "metric/return_rate": null,
     "metric/market_share": null,
     "metric/profit": null
+  },
+  "synonymsComment": "The words a question may use, until the semantic graph carries them itself (its alias property is populated for dimensions and empty for metrics on the served build). Same interim rule as the property bindings: data in the repository, reviewed, with a migration path (docs/DATA-AGENT.md s.3).",
+  "synonyms": {
+    "metric/revenue": [
+      "营收",
+      "收入",
+      "净收入",
+      "revenue",
+      "销售收入"
+    ],
+    "metric/gross_revenue": [
+      "毛收入",
+      "毛营收",
+      "gross"
+    ],
+    "metric/discount_amount": [
+      "折扣额",
+      "折扣金额",
+      "折扣",
+      "discount"
+    ],
+    "metric/tax_amount": [
+      "税额",
+      "税金",
+      "tax"
+    ],
+    "metric/quantity_sold": [
+      "销量",
+      "数量",
+      "quantity"
+    ],
+    "metric/order_count": [
+      "订单数",
+      "订单量",
+      "单量",
+      "orders"
+    ],
+    "metric/late_delivery_count": [
+      "延迟交付",
+      "晚交付",
+      "迟交",
+      "late"
+    ],
+    "dim/region": [
+      "地区",
+      "大区",
+      "区域",
+      "region"
+    ],
+    "dim/nation": [
+      "国家",
+      "nation"
+    ],
+    "dim/mktsegment": [
+      "细分",
+      "行业",
+      "市场细分",
+      "segment"
+    ],
+    "dim/order_priority": [
+      "优先级",
+      "优先",
+      "priority"
+    ],
+    "dim/ship_mode": [
+      "运输方式",
+      "发货方式",
+      "shipmode"
+    ],
+    "dim/part_type": [
+      "零件类型",
+      "部件类型",
+      "parttype"
+    ],
+    "dim/brand": [
+      "品牌",
+      "brand"
+    ],
+    "dim/supplier": [
+      "供应商",
+      "supplier"
+    ],
+    "dim/order_date": [
+      "日期",
+      "下单日期",
+      "时间",
+      "年度",
+      "年份",
+      "date"
+    ],
+    "dim/return_flag": [
+      "退货标志",
+      "退货",
+      "return"
+    ],
+    "dim/line_status": [
+      "行状态",
+      "linestatus"
+    ]
   }
 }
