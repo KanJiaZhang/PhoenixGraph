@@ -71,13 +71,14 @@ public final class QuestionInterpreter {
                     + "dimension, e.g. 1996 年各地区营收");
         }
         String lowered = text.toLowerCase(Locale.ROOT);
+        Map<String, List<String>> synonyms = synonymsFromBinding(model.graph());
 
         // ---- the metric: the longest synonym wins, so 净收入 beats 收入 ----
         List<String> matched = new ArrayList<>();
         String metricId = null;
         int bestLength = 0;
         for (SemanticModel.Metric metric : model.metrics().values()) {
-            for (String term : termsOf(metric.id(), metric.synonyms())) {
+            for (String term : termsOf(metric.id(), merged(metric.synonyms(), synonyms.get(metric.id())))) {
                 if (term.length() > bestLength && lowered.contains(term.toLowerCase(Locale.ROOT))) {
                     bestLength = term.length();
                     metricId = metric.id();
@@ -100,7 +101,7 @@ public final class QuestionInterpreter {
             if (dimension == null) {
                 continue;
             }
-            for (String term : termsOf(candidate, dimension.synonyms())) {
+            for (String term : termsOf(candidate, merged(dimension.synonyms(), synonyms.get(candidate)))) {
                 if (term.length() > bestDimension && lowered.contains(term.toLowerCase(Locale.ROOT))) {
                     bestDimension = term.length();
                     dimensionId = candidate;
@@ -113,7 +114,7 @@ public final class QuestionInterpreter {
             // question the model cannot answer *that way*, not one it cannot answer at all
             String mentioned = null;
             for (SemanticModel.Dimension dimension : model.dimensions().values()) {
-                for (String term : termsOf(dimension.id(), dimension.synonyms())) {
+                for (String term : termsOf(dimension.id(), merged(dimension.synonyms(), synonyms.get(dimension.id())))) {
                     if (lowered.contains(term.toLowerCase(Locale.ROOT))) {
                         mentioned = dimension.id();
                         break;
@@ -143,6 +144,15 @@ public final class QuestionInterpreter {
         if (grain.equals("raw") && dateDimension) {
             grain = "year"; // a date dimension without a grain is a year here: the fact graph has no raw date
             warnings.add("no grain was asked for, so the date dimension is grouped by year");
+        }
+        // "1996 年" is a year, not a request to group by year. A bare 年/月/季 sitting next to a four-digit year
+        // is the *filter* the caller wrote, while 年度/月度/季度 is an explicit grain request; treating the former
+        // as a grain refused questions the model can answer perfectly well (that is how this was found). Only a
+        // non-date dimension is affected: on a date dimension the year is both the grain and the filter.
+        boolean explicitGrainWord = lowered.contains("年度") || lowered.contains("月度") || lowered.contains("季度")
+                || lowered.contains("yearly") || lowered.contains("monthly") || lowered.contains("quarterly");
+        if (!explicitGrainWord && !dateDimension && lowered.matches(".*\\d{4}\\s*[年月季].*")) {
+            grain = "raw";
         }
         if (!"raw".equals(grain) && !dateDimension) {
             return refusal(model, question, kindOf(lowered),
@@ -249,6 +259,53 @@ public final class QuestionInterpreter {
         terms.add(SemanticModel.shortId(id));
         terms.addAll(synonyms);
         return terms;
+    }
+
+    /**
+     * The words a question may use, from the binding file, merged with the model's own aliases.
+     *
+     * <p>The served semantic graph populates {@code alias} for dimensions and leaves it empty for metrics, so a
+     * Chinese question the model could answer was refused with "no metric matches" - the interpreter had no
+     * Chinese word to look for. Until the graph carries them (docs/DATA-AGENT.md §3), the binding file does: data
+     * in the repository, reviewed, one line per term.
+     */
+    static Map<String, List<String>> synonymsFromBinding(String graph) {
+        Map<String, List<String>> out = new LinkedHashMap<>();
+        String resource = "semantic-bindings/" + graph + ".json";
+        try (java.io.InputStream in = QuestionInterpreter.class.getClassLoader().getResourceAsStream(resource)) {
+            if (in == null) {
+                return out;
+            }
+            Map<String, Object> raw = new com.fasterxml.jackson.databind.ObjectMapper()
+                    .readValue(in, new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() { });
+            if (raw.get("synonyms") instanceof Map<?, ?> map) {
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    List<String> words = new ArrayList<>();
+                    if (entry.getValue() instanceof List<?> list) {
+                        for (Object word : list) {
+                            words.add(String.valueOf(word).toLowerCase(Locale.ROOT));
+                        }
+                    }
+                    out.put(String.valueOf(entry.getKey()), List.copyOf(words));
+                }
+            }
+        } catch (java.io.IOException | RuntimeException ignored) {
+            // a smaller vocabulary is not a failure: the model's own terms still work
+        }
+        return out;
+    }
+
+    /** The model's aliases plus the binding's, without duplicates. */
+    static List<String> merged(List<String> fromModel, List<String> fromBinding) {
+        List<String> all = new ArrayList<>(fromModel == null ? List.of() : fromModel);
+        if (fromBinding != null) {
+            for (String word : fromBinding) {
+                if (!all.contains(word)) {
+                    all.add(word);
+                }
+            }
+        }
+        return all;
     }
 
     /** The term that actually matched, for the answer's "why this plan" record. */
