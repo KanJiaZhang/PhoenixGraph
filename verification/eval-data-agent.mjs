@@ -101,13 +101,11 @@ check('and a question that asks for one number is still answered',
 // ---- 5. stale / absent data ---------------------------------------------------------------------------
 console.log('--- 5. a year the data does not cover');
 const absent = await ask({ question: '2026 年各地区营收' });
-if (close(total(absent), 0)) {
-  gap('a year outside the data answers 0 without saying the data does not cover it: a reader cannot tell '
-    + '"no revenue in 2026" from "no data for 2026"',
-    `total=${total(absent)} rows=${absent.json?.answer?.rows?.length}`);
-} else {
-  check('a year outside the data is not answered as zero', true, String(total(absent)));
-}
+check('a year the data does not cover says so, so a zero cannot be read as "no revenue"',
+  (absent.json?.provenance?.warnings || []).some((line) => /does not cover/.test(line)),
+  JSON.stringify(absent.json?.provenance?.warnings || []).slice(0, 130));
+check('and that answer is still a zero rather than an error',
+  close(total(absent), 0) && absent.status === 200, `total=${total(absent)} http ${absent.status}`);
 
 // ---- the ledger ---------------------------------------------------------------------------------------
 console.log('');

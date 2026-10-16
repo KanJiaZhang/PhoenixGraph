@@ -112,6 +112,14 @@ public final class SemanticRunner {
                     ((Number) left.get("measure")).doubleValue()));
         }
         List<String> warnings = new ArrayList<>();
+        if (year != null && rows.isEmpty()) {
+            // A zero has two meanings and the caller cannot tell them apart: "no revenue in that year" and "no
+            // data for that year". The ledger recorded that as a gap; saying which one it is costs one line, and
+            // a business reading 0 as a collapse is exactly the kind of wrong answer this layer exists to stop.
+            String dateProperty = binding.dimensionProperty("dim/order_date", "year");
+            warnings.add("no rows for " + year + " on graph '" + binding.dataGraph() + "': the data does not cover "
+                    + "that year (the traversal filtered " + (dateProperty == null ? "the year" : dateProperty) + ")");
+        }
         if (dimensionId != null && !"raw".equals(grain) && !"order_date".equals(SemanticModel.shortId(dimensionId))) {
             // the grain was applied to a dimension that is not a date: the traversal groups by the property the
             // binding names, so this is the *value*, not a year - and a caller who asked for a year should know
