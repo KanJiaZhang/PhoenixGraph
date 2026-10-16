@@ -235,8 +235,10 @@ public class SemanticController {
                     throw new IllegalArgumentException("an analysis needs two years, e.g. "
                             + "\"1995 到 1996 年各地区营收\"");
                 }
-                from = narrow(interpretation, execute(graph, interpretation), interpretation.fromYear());
-                to = narrow(interpretation, execute(graph, interpretation), interpretation.toYear());
+                from = narrow(interpretation, execute(graph, interpretation, interpretation.fromYear()),
+                        interpretation.fromYear());
+                to = narrow(interpretation, execute(graph, interpretation, interpretation.toYear()),
+                        interpretation.toYear());
                 answer.put("executedOn", from.dataGraph());
                 answer.put("provenance", provenance(from, to));
                 if (kind == QuestionInterpreter.Kind.ATTRIBUTE) {
@@ -247,8 +249,9 @@ public class SemanticController {
                             String.valueOf(interpretation.toYear())));
                 }
             } else {
-                from = narrow(interpretation, execute(graph, interpretation), interpretation.toYear() != null
-                        ? interpretation.toYear() : interpretation.fromYear());
+                from = narrow(interpretation, execute(graph, interpretation, interpretation.toYear() != null
+                                ? interpretation.toYear() : interpretation.fromYear()),
+                        interpretation.toYear() != null ? interpretation.toYear() : interpretation.fromYear());
                 answer.put("answer", Map.of("rows", from.rows(), "total", SemanticRunner.round(from.total()),
                         "groupedBy", from.dimensionId() == null ? "grand total" : from.dimensionId()));
             }
@@ -259,9 +262,10 @@ public class SemanticController {
         return answer;
     }
 
-    private SemanticRunner.Executed execute(String graph, QuestionInterpreter.Interpretation interpretation) {
+    private SemanticRunner.Executed execute(String graph, QuestionInterpreter.Interpretation interpretation,
+                                            Integer year) {
         return SemanticRunner.execute(queries, semantics, graph, interpretation.metricId(),
-                interpretation.dimensionId(), interpretation.grain());
+                interpretation.dimensionId(), interpretation.grain(), year);
     }
 
     /**

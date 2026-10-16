@@ -49,7 +49,7 @@ public final class SemanticRunner {
      * the traversal runs, because "the engine answered something else" is the failure mode that looks like data.
      */
     public static Executed execute(QueryService queries, SemanticService service, String modelGraph,
-                                   String metricId, String dimensionId, String grain) {
+                                   String metricId, String dimensionId, String grain, Integer year) {
         SemanticService.Binding binding = service.binding(modelGraph);
         String metric = binding.metricProperty(metricId);
         if (metric == null) {
@@ -72,6 +72,21 @@ public final class SemanticRunner {
                 ? "count()"
                 : "values('" + metric + "').sum()";
         StringBuilder traversal = new StringBuilder("g.V('").append(binding.vertexType()).append("')");
+        // A year is a filter *on the fact vertices*, not a post-filter on the grouped rows: grouping first and
+        // dropping rows afterwards sums every year and returns a number that looks entirely plausible and is
+        // simply wrong. This is not hypothetical - region totals came back at about 194M for a question about
+        // 1996 (the verified figure is 98,879,432.89), because the traversal grouped both years and the row
+        // filter had nothing left to remove. The date property is the binding's own (year=orderYear), so the
+        // filter and the grain can never disagree about which column carries the year.
+        if (year != null) {
+            String dateProperty = binding.dimensionProperty("dim/order_date", "year");
+            if (dateProperty == null) {
+                dateProperty = binding.dimensionProperty("dim/order_date", "raw");
+            }
+            if (dateProperty != null) {
+                traversal.append(".has('").append(dateProperty).append("', ").append(year).append(")");
+            }
+        }
         if (property == null) {
             traversal.append(".").append(measure);
         } else {

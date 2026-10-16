@@ -44,7 +44,7 @@ check('the question is answered, not refused',
 if (asked.json?.answer) {
   check('the metric, dimension and grain are the ones the question names',
     asked.json.plan.metric === 'metric/revenue' && asked.json.plan.dimension === 'dim/region'
-    && asked.json.plan.grain === 'year',
+    && asked.json.plan.grain === 'raw',
     `${asked.json.plan.metric} by ${asked.json.plan.dimension} at ${asked.json.plan.grain}`);
   check('the answer is computed from the fact graph, by a traversal a reader can repeat',
     asked.json.executedOn === 'tpc-h-data'
