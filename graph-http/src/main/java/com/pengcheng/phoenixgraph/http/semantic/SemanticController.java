@@ -252,6 +252,12 @@ public class SemanticController {
                 from = narrow(interpretation, execute(graph, interpretation, interpretation.toYear() != null
                                 ? interpretation.toYear() : interpretation.fromYear()),
                         interpretation.toYear() != null ? interpretation.toYear() : interpretation.fromYear());
+                // the answer is only worth reading next to where it came from: the traversal it ran, the rows it
+                // was computed from, and the binding behind them. An edit of this very branch dropped these two
+                // lines, and the response kept the numbers while losing their provenance - which the verification
+                // script caught by stopping on the missing field, exactly as it should.
+                answer.put("executedOn", from.dataGraph());
+                answer.put("provenance", provenance(from, null));
                 answer.put("answer", Map.of("rows", from.rows(), "total", SemanticRunner.round(from.total()),
                         "groupedBy", from.dimensionId() == null ? "grand total" : from.dimensionId()));
             }

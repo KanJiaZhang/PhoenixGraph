@@ -125,8 +125,12 @@ public final class QuestionInterpreter {
                 }
             }
             if (mentioned != null) {
-                warnings.add(mentioned + " exists but may not slice " + metricId + "; the model allows "
-                        + names(metric.dimensions(), 8));
+                // The model says this dimension exists but may not slice this metric. Answering the grand total
+                // anyway would silently answer a different question - the caller asked for a breakdown by that
+                // dimension and would receive one number - so it is refused with the dimensions that do work
+                // (docs/DATA-AGENT.md §6, rule 2). The warning is kept in the answer for the model endpoint.
+                return refusal(model, question, kindOf(lowered), mentioned + " may not slice " + metricId
+                        + "; the model allows " + names(metric.dimensions(), 8));
             }
         } else {
             matched.add(shortestTerm(dimensionId, model.dimension(dimensionId).synonyms(), lowered));

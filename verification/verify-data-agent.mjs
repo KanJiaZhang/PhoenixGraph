@@ -133,12 +133,12 @@ check('a grain is refused on a dimension that is not a date, rather than applied
   (grainOnName.json?.refusal || '').includes('not a date'),
   String(grainOnName.json?.refusal || JSON.stringify(grainOnName.json)).slice(0, 120));
 const unbound = await post(`/api/v1/semantic/${GRAPH}/ask`, { question: '1996 年各退货标志营收' });
-check('an unbound dimension is refused with the reason and keeps the SQL',
-  !!unbound.json?.executionRefused && !!unbound.json.sql,
+check('a dimension the model does not allow for this metric is refused, not answered as a grand total',
+  !!unbound.json?.refusal && unbound.json.refusal.includes('may not slice'),
   String(unbound.json?.executionRefused || JSON.stringify(unbound.json)).slice(0, 140));
 const noMetric = await post(`/api/v1/semantic/${GRAPH}/ask`, { question: '今年的天气怎么样' });
 check('a question with no metric in it is refused with the vocabulary',
-  !!noMetric.json?.refusal && noMetric.json.refusal.includes('gross_revenue'),
+  !!noMetric.json?.refusal && /the model holds .*(revenue|count|profit)/.test(noMetric.json.refusal),
   String(noMetric.json?.refusal || '').slice(0, 120));
 const empty = await post(`/api/v1/semantic/${GRAPH}/ask`, {});
 check('a request without a question is 400 and says so',
