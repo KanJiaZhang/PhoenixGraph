@@ -91,13 +91,12 @@ check('"top 5" without a dimension to rank is refused rather than ranked by a gu
 // ---- 4. unknown term (recorded, not pretended) --------------------------------------------------------
 console.log('--- 4. unknown term');
 const unknownTerm = await ask({ question: '1996 年各渠道营收' });
-if (unknownTerm.json?.refusal) {
-  check('a term the model does not know is refused', true, String(unknownTerm.json.refusal).slice(0, 80));
-} else {
-  gap('a term the model does not know is ignored: "各渠道" asks for a breakdown the model cannot give, and the '
-    + 'answer is the grand total',
-    `total=${total(unknownTerm)} - the warning list is the place to say so`);
-}
+check('a breakdown by a dimension the model has no word for is refused, not answered as a total',
+  !!unknownTerm.json?.refusal && /breakdown/.test(unknownTerm.json.refusal)
+  && /dimensions that may slice/.test(unknownTerm.json.refusal),
+  String(unknownTerm.json?.refusal || `total=${total(unknownTerm)}`).slice(0, 110));
+check('and a question that asks for one number is still answered',
+  !!correct.json?.answer && correct.json.answer.total > 0, String(total(correct)));
 
 // ---- 5. stale / absent data ---------------------------------------------------------------------------
 console.log('--- 5. a year the data does not cover');

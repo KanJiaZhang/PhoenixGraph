@@ -132,6 +132,14 @@ public final class QuestionInterpreter {
                 return refusal(model, question, kindOf(lowered), mentioned + " may not slice " + metricId
                         + "; the model allows " + names(metric.dimensions(), 8));
             }
+            if (mentionsBreakdown(lowered)) {
+                // The same failure with a word the model has never heard: "1996 年各渠道营收" asks for a breakdown
+                // by a dimension nobody defined, and answering the grand total returns a right number to a
+                // question nobody asked. The ledger recorded that behaviour as a gap; it is a refusal now.
+                return refusal(model, question, kindOf(lowered), "the question asks for a breakdown but names no "
+                        + "dimension this graph holds; the dimensions that may slice " + metricId + " are "
+                        + names(metric.dimensions(), 8));
+            }
         } else {
             matched.add(shortestTerm(dimensionId, model.dimension(dimensionId).synonyms(), lowered));
         }
@@ -310,6 +318,19 @@ public final class QuestionInterpreter {
             }
         }
         return all;
+    }
+
+    /**
+     * True when the question asks for a breakdown rather than a single number.
+     *
+     * <p>"各/按/每个/分别/by/breakdown/前 N" are the words that say "split this by something". A bare 分 is not
+     * one of them: it is inside 分析, and refusing every question that contains 分析 for lack of a dimension would
+     * turn a refinement into a wall.
+     */
+    static boolean mentionsBreakdown(String lowered) {
+        return lowered.contains("各") || lowered.contains("按") || lowered.contains("每个")
+                || lowered.contains("分别") || lowered.contains("breakdown") || lowered.contains(" by ")
+                || lowered.contains("前 ") || lowered.contains("排名");
     }
 
     /** The term that actually matched, for the answer's "why this plan" record. */
