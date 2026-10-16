@@ -107,6 +107,22 @@ check('a year the data does not cover says so, so a zero cannot be read as "no r
 check('and that answer is still a zero rather than an error',
   close(total(absent), 0) && absent.status === 200, `total=${total(absent)} http ${absent.status}`);
 
+// ---- 6. the volume follow-up, for an event metric ------------------------------------------------------
+// The first question an operator asks after "late deliveries went up" is "did volume grow, or did the rate get
+// worse?" - which needs the same dimension on a count metric. That path is broken today, and a ledger that only
+// listed what works would be a worse ledger, so the failure is asserted as a gap until the parse is fixed.
+console.log('--- 6. the volume follow-up (a count metric)');
+const volume = await ask({ question: '1995 年各运输方式订单数' });
+const volumeRows = volume.json?.answer?.rows || [];
+if (volumeRows.length > 0 && volumeRows.every((row) => typeof row.measure === 'number')) {
+  check('a count metric answers with numbers, so volume can be compared with the event count',
+    volumeRows.length >= 6, `${volumeRows.length} rows`);
+} else {
+  gap('a count-metric question returns rows without a measure: metric/order_count is bound to "count", and the '
+    + 'shape group().by(count()) returns is not parsed - so "volume or rate?" cannot be answered yet',
+    `http ${volume.status} rows=${JSON.stringify(volumeRows).slice(0, 90)}`);
+}
+
 // ---- the ledger ---------------------------------------------------------------------------------------
 console.log('');
 console.log(`${failures} failure(s), ${gaps} recorded gap(s)`);
