@@ -82,6 +82,30 @@ public final class AgentToolCatalog {
                         optional("dimension", "string", "dim/region or region"),
                         optional("grain", "string", "raw (default), year, quarter or month"),
                         optional("dialect", "string", "postgres (default), duckdb or mysql"))));
+        tools.add(tool("ask_data",
+                "Answer a data question in words, from the graph, with the plan and the provenance - or refuse it "
+                        + "with the reason. mode=auto runs the plan; mode=confirm returns the plan and a signed "
+                        + "token and runs nothing (send the same call back with the token to execute it). Use "
+                        + "semantic_model first to see what this graph can be asked.",
+                params(required("graph", "string", "the semantic graph, e.g. tpc-h-analytics"),
+                        required("question", "string", "the question, e.g. 1996 年各地区营收"),
+                        optional("mode", "string", "auto (default) or confirm"),
+                        optional("confirmToken", "string", "the token a previous confirm call returned"))));
+        tools.add(tool("analyze_business",
+                "What moved between two periods: the change, the direction, every slice's share before and after, "
+                        + "which slice moved most and how unusual it is.",
+                params(required("graph", "string", "the semantic graph, e.g. tpc-h-analytics"),
+                        required("question", "string", "the question, e.g. 1995 到 1996 年各地区营收变化"),
+                        optional("mode", "string", "auto (default) or confirm"),
+                        optional("confirmToken", "string", "the token a previous confirm call returned"))));
+        tools.add(tool("attribute_change",
+                "How much of a change each slice accounts for, by decomposition over one dimension. The answer "
+                        + "states whether the contributions sum to the change, and says it is descriptive rather "
+                        + "than causal.",
+                params(required("graph", "string", "the semantic graph, e.g. tpc-h-analytics"),
+                        required("question", "string", "the question, e.g. 1995 到 1996 年各地区营收为什么变化"),
+                        optional("mode", "string", "auto (default) or confirm"),
+                        optional("confirmToken", "string", "the token a previous confirm call returned"))));
         return tools;
     }
 
@@ -105,6 +129,9 @@ public final class AgentToolCatalog {
         bindings.put("semantic_model", get("/api/v1/semantic/{graph}/model"));
         bindings.put("semantic_translate", post("/api/v1/semantic/{graph}/translate"));
         bindings.put("semantic_validate", post("/api/v1/semantic/{graph}/validate"));
+        bindings.put("ask_data", post("/api/v1/semantic/{graph}/ask"));
+        bindings.put("analyze_business", post("/api/v1/analysis/{graph}/analyze"));
+        bindings.put("attribute_change", post("/api/v1/analysis/{graph}/attribute"));
         return bindings;
     }
 
