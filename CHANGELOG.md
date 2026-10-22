@@ -18,6 +18,151 @@ All notable changes to this project are recorded here. The format follows
 - **A release is a git tag and an image tag with the same name**; `docs/ROADMAP-1.0.md` says what is not in
   yet. Rollback is "deploy the previous tag" and is exercised in the M2 milestone.
 
+## [Unreleased]
+
+### Added
+
+- **Faster CSV edge loads**: `AEROSPIKE_BATCH_SIZE` now controls the merge window, and
+  `AerospikeEdgeStore.upsertEdges` writes different vertices in parallel while keeping one vertex's bins
+  sequential (no generation self-race); a vertex's bins are read and written once. 100k-edge runs now
+  complete in 5m20s–5m29s, but earlier runs ranged 4m10s–7m10s, so no precise speedup is claimed; 1M/5M
+  still did not finish inside their windows, and 10^7 remains open.
+- **A Python client** (`clients/python`, `phoenixgraph-client`): zero runtime dependencies, wraps the query,
+  ingestion, agent and semantic endpoints, sends an API key as `Authorization: Bearer`, and raises
+  `PhoenixGraphError` with the status, body and `X-Request-Id`. Ten unit tests use a local HTTP server, so
+  they need no service.
+- **A TypeScript client** (`clients/typescript`, `@phoenixgraph/client`): zero runtime
+  dependencies, typed methods for query/ingestion/agent/semantic endpoints, a `request` escape hatch, and
+  `PhoenixGraphError` with status/body/request id. Its tests use a local mock HTTP server; CI builds it
+  with `npm ci && npm run build && npm test`.
+- **A generated OpenAPI 3 spec** (`docs/openapi.json`): exact paths, methods, operation ids and
+  path parameters from the same controller scan as `docs/API.md`; request/response fields stay generic
+  until DTOs carry annotations. `node tools/openapi.mjs --check` runs in CI.
+- **Automatic entity dedup**: names that differ only by case, width, whitespace or punctuation are
+  merged; a dictionary entry wins as canonical, the other spellings become aliases, and provenance accepts
+  an alias in the relation's sentence. Gold triples are canonicalised through the same aliases before the
+  precision/recall comparison. `dedupe=false` / `--no-dedupe` keeps variants separate, and the quality
+  report carries `duplicatesRemoved`, a `mergedEntities` review list (canonical, aliases, mentions), and
+  `mergeCandidates` for near-duplicates that were deliberately left separate (prefix, one edit, shared tokens).
+- **Opt-in PDF OCR** (`tools/ingest-docs.mjs --ocr`): when `pdftotext` has no text, the CLI
+  renders pages with `pdftoppm` and reads them with `tesseract -l <lang>`. The command runner is
+  injectable, so the fallback is tested without either binary; missing binaries are reported, not guessed.
+- **An S3 connector** (`tools/ingest-s3.mjs`): SigV4-signed ListObjectsV2/GetObject without an
+  AWS SDK, reading Markdown/text/HTML objects; PDF objects are reported as skipped. It reuses the
+  same CLI/ingestion contract as the Confluence and Notion connectors.
+- **PyPI publishing**: `.github/workflows/publish-python.yml` builds the sdist/wheel and publishes on a
+  `v*` tag (or manual dispatch); the CI Python job builds the wheel on every push.
+- **Document ingestion in the UI**: the toolbar's document icon opens a form for Markdown/text/HTML files,
+  a graph name, a rule pack and optional dictionary/alias JSON; `graph-web` proxies the request to
+  `POST /api/v1/agent/ingest` with the API key. PDF remains a CLI path.
+- **A three-minute demo** (`examples/three-minute-demo`, `tools/demo-3min.sh`): ingests two documents,
+  prints the extraction quality, answers a question with citations and coverage, shows what the graph knows
+  about a question it cannot answer, and demonstrates a data-agent refusal.
+- **Extraction rule packs are data** (`RulePack`, `agent-rules/incident.json`): the default 三国 vocabulary
+  is unchanged, and a business pack reads `caused`, `fixed`, `depends_on`, `owns`, `assigned_to` and the
+  other relations of an incident corpus. `POST /api/v1/agent/ingest` takes `rulePack`.
+- **A document ingestion CLI** (`tools/ingest-docs.mjs`) for Markdown, text and HTML, with PDF through
+  `pdftotext` when installed. It defaults to a dry run, supports a dictionary, aliases and a gold set, and
+  sends an API key. `examples/business-demo` is a two-document incident corpus that uses the new pack.
+- **An external rule directory** (`phoenixgraph.agent.rules-dir` / `RulePackRegistry`): a `<name>.json`
+  pack in that directory wins over the classpath and needs no rebuild. Names are restricted to
+  `[a-z0-9_-]+`.
+- **Confluence and Notion connectors** (`tools/ingest-confluence.mjs`, `tools/ingest-notion.mjs`) over the
+  same ingestion API, with pagination, Basic/Bearer auth for Confluence and block-text extraction for
+  Notion. Their tests use local mock servers.
+- **A reranker hook** (`Reranker`, default `NoopReranker`): a cross-encoder or hosted rerank API can replace
+  the bean without changing the tools.
+- **Alias mapping** in the local CLI and both connectors (`--aliases`), so a variant name is canonicalised
+  before extraction.
+- **Hybrid retrieval** (`POST /api/v1/agent/search`): name, description-term and vector scores in one
+  ranking, exposed as the 14th tool in the catalog, the MCP server and the Python client.
+- **A retrieval evaluation** (`verification/verify-retrieval-eval.mjs`): a hand-checked gold set for entity
+  recall, relation recall and citation coverage; it fails when the answers get worse.
+- **An OpenAI-compatible embedding provider** (`HttpEmbedding`, `EmbeddingFactory`): set
+  `phoenixgraph.agent.embedding.provider=http` and the ingestion uses `POST <base-url>/embeddings`.
+  The artifact records `http:<model>:<dimensions>`, so query time rebuilds the same vector space; a provider
+  failure is an error, not a silent hashing fallback. The default remains the offline hashing baseline.
+- **A reranker provider** (`HttpReranker`, `RerankerFactory`): set
+  `phoenixgraph.agent.reranker.provider=http` for a Cohere/Jina-compatible `POST <base-url>/rerank`; the
+  default keeps the hybrid order and a provider failure falls back to it.
+- **A fail-closed secure profile** (`application-secure.yml`, `docker-compose.secure.yml`): authentication is
+  required, `graph-web` forwards the API key, and the default demo profile stays open (with a loud startup
+  warning).
+- **A durable audit trail**: `phoenixgraph.audit.file` appends JSONL, reloads it on restart, rotates at
+  `max-bytes` and keeps `keep-files` files; `/api/v1/audit/recent` reports `durable`, the file and each
+  entry's tenant.
+- **Tenant-scoped keys and quotas**: a key may set `tenant`; `phoenixgraph.limits.per-tenant-concurrent` and
+  `per-tenant-per-second` bound a tenant's share, and the tenant is in the audit entry.
+- **Multi-seed Aerospike discovery**: `phoenixgraph.storage.seeds` accepts a list of `host:port` entries; a
+  restart can bootstrap through another node, while a single `host`/`port` remains the fallback.
+- **A TLS overlay**: `docker-compose.tls.yml` and `deploy/tls/Caddyfile` front the secure stack with Caddy,
+  forwarding the API key to `graph-http` and proxying the UI.
+- **A benchmark harness and 10⁷ plan**: `tools/bench-queries.mjs` measures point/1-hop/2-hop or TPC-H
+  aggregates end to end; `tools/generate-scale-csv.mjs` streams a payment dataset; `tools/bench-load.sh`
+  loads it. `docs/BENCHMARK.md` states the method, the measured demo numbers and the unmeasured 10⁷ plan.
+- **A Helm chart** (`deploy/helm/phoenixgraph`): secure profile, PVC, audit path, probes and a UI key from a
+  Secret; `helm lint` and `helm template` pass.
+- **A Terraform module** (`deploy/terraform`): installs the chart into an existing namespace, with pinned
+  provider versions and `terraform fmt`/`validate` passing.
+- **Scheduled backups with retention** (`tools/backup-all.sh`): backs up every served graph and keeps the
+  newest N snapshots per graph. This is snapshot + retention, not point-in-time recovery; PITR remains open.
+- **MCP over HTTP** (`tools/mcp-server.mjs --http`): a stateless Streamable HTTP endpoint at `/mcp`
+  with JSON responses (or SSE framing when the client sends `Accept: text/event-stream`). It binds loopback
+  by default, refuses a non-loopback bind without auth, and supports global `PHOENIXGRAPH_MCP_TOOLS` /
+  `PHOENIXGRAPH_MCP_DENY` plus per-token scopes in `PHOENIXGRAPH_MCP_CLIENTS`. `PHOENIXGRAPH_MCP_AUDIT`
+  writes one JSONL line per `tools/call`, and `PHOENIXGRAPH_MCP_RATE_LIMIT` is a per-client minute limit.
+  A tool whose binding has no `{graph}` path placeholder now receives `graph` in the request body; before,
+  `find_entities` and the other non-templated tools lost it. Mock-API HTTP tests are wired into CI.
+- **MCP API-key passthrough**: `tools/mcp-server.mjs` reads `PHOENIXGRAPH_API_KEY` and sends it as a Bearer
+  token, so the plugin works against a secured instance. `verify-security.mjs` now asserts it.
+- **GHCR publishing**: `.github/workflows/publish-images.yml` builds and pushes `phoenixgraph-http` and
+  `phoenixgraph-web` to GHCR on a `v*` tag.
+- **Positioning and product plan**: `docs/POSITIONING.md` states the auditable-context-layer wedge and the
+  production checklist; `docs/PRODUCT-PLAN.md` splits the work into four batches with acceptance criteria.
+- **A second semantic graph, the marketing demo** (`demo-semantics` + `demo-data`): spend, impressions, clicks,
+  revenue, GMV, new customers and orders answer from the fact graph; the ratio metrics (CAC, ROI, CTR) bind
+  nowhere and are refused with the warehouse SQL, never guessed. `verification/verify-demo-semantics.mjs` pins
+  the deterministic baselines and proves the runner/interpreter/renderer are not hardcoded to TPC-H.
+
+### Fixed
+
+- **The "volume or rate?" follow-up could not be answered.** The answer-level ledger's sixth category asked
+  whether a count metric sliced by the same dimension as an event metric returns numbers, and it came back
+  refused: `metric/order_count` is distinct orders (`COUNT(DISTINCT o_orderkey)` from `orders`), so a line-item
+  dimension like `ship_mode` may not slice it - a correct refusal, not the parse failure the ledger first
+  recorded. `metric/line_count` (订单行数) is that volume: `COUNT(*)` from `lineitem`, bound to `count`, sliceable
+  by `ship_mode`, so the fact-graph answer and the warehouse SQL agree and the rate's denominator exists.
+  `verification/eval-data-agent.mjs` category 6 now asserts the rows and their sum instead of recording a gap.
+- **Agent ingestion used the wrong edge property indices.** It wrote relations at schema indices 3..6 and
+  mentions at 3, while the schema it creates declares 1..4 and 1. A newly ingested graph could be extracted
+  and created but not written. The three-minute demo caught it; `AgentIngestServiceTest` now checks every
+  edge property index against the schema draft.
+- **Two Aerospike graphs shared one HNSW metadata record.** The metadata key was `hnsw:<vertex>` (and
+  `hnsw:<vertex>:<property>`), so two graphs with an `Entity`/`embedding` index read each other's entry
+  points; a new graph whose vertex set did not contain those ids failed with a `NullPointerException` on
+  the first vector write. The key now includes the graph name. **Existing Aerospike vector indexes must be
+  rebuilt once after upgrading** (`POST /api/v1/vector-index/rebuild`), because the old metadata record is
+  ignored.
+- **The latency alert could not clear**: `LatencySnapshot` persisted cumulative percentiles, so the
+  Prometheus p99 was a lifetime value. It now stores the windowed percentile; restored history still
+  restores the cumulative buckets and reports a windowed p99 of 0 until new samples arrive. The alert drill's
+  XFAIL is now an ordinary assertion.
+- **`verify-security.mjs` picked the oldest jar** in `graph-http/target` (e.g. 1.0.0 after building 1.0.1),
+  so the check could validate a different build from the one just made. It now picks the newest.
+- **`check-k8s.mjs` did not find Service selectors on Windows** because it matched LF only; it now normalizes
+  CRLF before parsing.
+
+### Changed
+
+- **README** now leads with the auditable context layer, puts the three-minute demo and the Python client on
+  the first path, and links the detailed material moved into `docs/`.
+- **The fact-graph binding now lives in the semantic graph** (S1's final form): each metric/dimension's
+  `graphProperty` and its synonyms (`alias`) are written onto the `tpc-h-analytics` nodes by the same dataset
+  that writes the fact graph, so the two can no longer drift. `semantic-bindings/*.json` keeps only
+  `dataGraph`/`vertexType`; `SemanticRunner` reads the model first and falls back to the file, and the year
+  filter/date-dimension check find the date dimension by its year grain instead of hardcoding `dim/order_date`.
+- **Release notes** state that their counts describe the tag, not `develop`.
+
 ## [1.0.0] - 2026-10-14
 
 The release the plan in [docs/ROADMAP-1.0.md](docs/ROADMAP-1.0.md) was written for: M1 (seven items) and M2

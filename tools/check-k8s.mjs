@@ -24,7 +24,7 @@ const check = (name, ok, detail) => {
 const files = readdirSync(DIR).filter((name) => name.endsWith('.yaml') || name.endsWith('.yml'));
 const documents = new Map(); // file -> text
 for (const file of files) {
-  documents.set(file, readFileSync(`${DIR}/${file}`, 'utf8'));
+  documents.set(file, readFileSync(`${DIR}/${file}`, 'utf8').replace(/\r\n/g, '\n'));
 }
 const all = [...documents.values()].join('\n');
 

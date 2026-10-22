@@ -8,6 +8,9 @@ status codes and the endpoints are the same as 1.0.0.
 
 ## What the drill is, and why it earned a release
 
+> These counts describe the tag, not `develop`; the current counts are printed by CI
+> (`node tools/check-release.mjs` and the unit job).
+
 The 1.0.0 milestone list said "the alerts exist". The drill asked the next question: *does the number each alert
 reads move when the condition it watches is true?* `verification/verify-alert-drill.mjs` reproduces every
 condition and reads the metric through the same exposition Prometheus would scrape:

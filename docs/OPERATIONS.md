@@ -60,9 +60,9 @@ node verification/verify-aerospike-ha.mjs                                       
 
 What the drill measures: killing one node costs **1 s** of failover and no correctness, writes continue while it
 is down, the node rejoins in 2 s and replication catches up in 1 s, and a *running* engine keeps answering even
-if the node it was configured with is the one that dies. **The engine takes one storage seed**, so a restart
-*while that seed is down* cannot connect - point `phoenixgraph.storage.host` at a load-balanced address
-(`docs/CAPACITY.md` §6 lists this as the known gap).
+if the node it was configured with is the one that dies. `phoenixgraph.storage.seeds` accepts a list, so a
+restart can bootstrap through another node; a single `host`/`port` can instead point at a load-balanced
+address. There is still no leader election or automatic promotion (`docs/CAPACITY.md` §6).
 
 ## 3. Backups
 
@@ -97,6 +97,24 @@ tools/backup-graph.sh payment-graph              # docker exec asbackup + docker
 docker exec $(docker ps -qf name=aerospike) asbackup -h 127.0.0.1 -n test -s http_demo_v3 -d /tmp/backup
 docker cp $(docker ps -qf name=aerospike):/tmp/backup ./backups/payment-graph-$(date -u +%Y%m%d)
 ```
+
+### Scheduled backups and retention
+
+`tools/backup-all.sh` reads `/api/v1/graphs`, backs up every graph with `backup-graph.sh` and keeps the newest
+`--keep` snapshots per graph:
+
+```bash
+tools/backup-all.sh --dir /mnt/backups --keep 7
+# cron: every day at 02:15
+# 15 2 * * * cd /opt/phoenixgraph && tools/backup-all.sh --dir /mnt/backups --keep 7 >> /var/log/phoenixgraph-backup.log 2>&1
+```
+
+The target must be on another disk or object store: a checkpoint next to the RocksDB directory is not a
+backup. The script exits non-zero if any graph fails, so a scheduler can alert on it.
+
+This is **snapshot + retention, not point-in-time recovery**. The engine keeps no write log, so there is no
+"restore to 14:03:22"; the recoverable points are the snapshots. Continuous PITR remains open (see
+[ROADMAP-1.0.md](ROADMAP-1.0.md)).
 
 ## 4. Restoring (and proving it)
 
@@ -142,6 +160,38 @@ again, assert the same answer again.
 Graceful shutdown matters more than it looks: the metrics timer fires every 30 s, so a `kill -9` loses up to
 half a minute of counters, and RocksDB must be closed cleanly.
 
+> **Upgrading across the graph-scoped HNSW metadata change:** the metadata key now includes the graph name
+> (`hnsw:<graph>:<vertex>`), so two Aerospike graphs no longer share entry points. After deploying, rebuild
+> each Aerospike vector index once (`POST /api/v1/vector-index/rebuild`) or `nearest(k)` sees an empty
+> index until the rebuild. RocksDB indexes live in their graph directory and are unaffected.
+
+## 5b. Running with authentication and a durable audit
+
+The default local stack is open (the startup log says so) so the demo and the verification suite work
+without keys. For anything reachable by another person, use the secure overlay:
+
+```bash
+cp deploy/secure/security.example.yml deploy/secure/security.yml
+export PHOENIXGRAPH_DASHBOARD_TOKEN="$(openssl rand -hex 24)"
+docker compose -f docker-compose.yml -f docker-compose.secure.yml up --build
+```
+
+- `application-secure.yml` sets `phoenixgraph.security.enabled=true`. With no keys configured the service
+  fails closed (every `/api` call is a 401); with the example key it starts with one admin key read from the
+  environment.
+- `graph-web` forwards `PHOENIXGRAPH_API_KEY` to `graph-http`, so the UI keeps working with the key from the
+  environment. The UI itself is not authenticated: expose it only on a trusted network or put your own SSO
+  proxy in front of it.
+- The audit trail is appended to `/data/audit/audit.jsonl` (a named volume), survives a restart, rotates at
+  `phoenixgraph.audit.max-bytes`, and keeps `keep-files` old files. It is also still written to the
+  `com.pengcheng.phoenixgraph.audit` logger. `GET /api/v1/audit/recent` reads the file-backed view and says
+  `durable: true` and which file it is using.
+- Keep at least one admin key outside the UI for the audit view and schema work. A key may carry a
+  `tenant`; keys with the same tenant share `phoenixgraph.limits.per-tenant-concurrent` and
+  `per-tenant-per-second` (0 means off). The tenant is in the audit entry.
+- TLS is not enabled by this profile: terminate it in front of the service, or set `server.ssl.*` with a
+  keystore (see [API.md §2](API.md#2-authentication-roles-and-the-audit-trail)).
+
 ## 6. What to watch
 
 | Signal | Where | Threshold to start looking |
@@ -177,4 +227,4 @@ half a minute of counters, and RocksDB must be closed cleanly.
   sees it, so `asbackup -d /tmp/x` writes nowhere. Set `MSYS2_ARG_CONV_EXCL='*'` (the scripts here do).
 - **The jar cannot be rebuilt while the service runs** (Windows holds it): stop the service first.
 - **`g.V('Entity')` on a keyed store** is an error, not an empty answer: a whole-type scan needs the RocksDB
-  scheme (`docs/DATA-QUALITY.md` §1 and the README's storage guide).
+  scheme (`docs/DATA-QUALITY.md` §1 and [DESIGN.md](DESIGN.md#one-engine-four-storage-schemes)).

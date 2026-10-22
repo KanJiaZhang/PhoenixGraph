@@ -5,6 +5,8 @@
 > source is named: treat them as orders of magnitude, and measure on your own data before committing.
 > The two things that are *not* second-hand are what this repository already does (measured on the served
 > graphs) and the layout work in `graph-web` (see the verification scripts in `.logs/`).
+>
+> For what the current UI does and how to use it, see [WEB-UI.md](WEB-UI.md).
 
 ## 1. What the UI does today
 

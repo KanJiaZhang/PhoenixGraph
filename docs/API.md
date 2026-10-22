@@ -42,6 +42,7 @@ phoenixgraph:
       - name: dashboard            # token in clear: fine for a dev instance
         token: ${PHOENIXGRAPH_DASHBOARD_TOKEN}
         role: writer
+        tenant: acme
         graphs: [payment-graph, payment-graph-rocksdb-edge]
       - name: ops                  # or never store the token: give its digest
         sha256: ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad   # printf %s abc | sha256sum
@@ -56,18 +57,23 @@ Roles are a ladder - **reader < writer < admin**:
 | `writer` | everything a reader may, plus vertices/edges/batch writes and fuzzy links |
 | `admin` | everything a writer may, plus schema authoring, `/api/v1/agent/ingest`, index rebuilds, metric resets and the **audit view** |
 
-An empty `graphs` list means every graph; a non-empty one is enforced for reads and writes alike.
+An empty `graphs` list means every graph; a non-empty one is enforced for reads and writes alike. A key may
+also set `tenant`; keys with the same tenant share `phoenixgraph.limits.per-tenant-concurrent` and
+`per-tenant-per-second` (0 means off), and the tenant is recorded in the audit entry. The default
+configuration is open for the demo; `SPRING_PROFILES_ACTIVE=secure` loads `application-secure.yml`, which
+requires a key and fails closed when none is configured.
 
 | Status | When |
 |---|---|
 | `401` + `WWW-Authenticate: Bearer` | no key, or an unknown one - the caller can fix it |
 | `403` | the key is valid but the role or the graph allowlist says no; the message names the rule |
 
-**Audit.** Every call is recorded - key name, role, method, path, graph, query (clipped to 200 characters),
-status and latency - in two places: the logger `com.pengcheng.phoenixgraph.audit` (route it to your own file
-or collector) and a bounded in-memory ring buffer of the last 2,000 calls, which
-`GET /api/v1/audit/recent?limit=50` returns (admin key). Refused calls are recorded too: that is exactly what
-an audit is for. **A token is never written to either.**
+**Audit.** Every call is recorded - key name, tenant, role, method, path, graph, query (clipped to 200
+characters), status and latency - in three places: the logger `com.pengcheng.phoenixgraph.audit` (route it to
+your own collector), an optional append-only JSONL file (`phoenixgraph.audit.file`, rotated and reloaded on
+start) and a bounded in-memory ring of the last 2,000 calls, which `GET /api/v1/audit/recent?limit=50`
+returns (admin key). The view says `durable`, the `file`, and each entry's `tenant`. Refused calls are
+recorded too: that is exactly what an audit is for. **A token is never written to any of them.**
 
 ```bash
 curl -s -H "Authorization: Bearer $PG_ADMIN_KEY" localhost:8081/api/v1/audit/recent?limit=5
@@ -101,6 +107,8 @@ One instance has a fixed number of threads and connections. `phoenixgraph.limits
 | `queue-wait` | `2s` | how long a request waits for a slot before it is refused |
 | `per-graph-concurrent` | `8` | one hot graph cannot take the whole instance |
 | `per-graph-per-second` | `200` | per-second budget per graph (`0` disables it) |
+| `per-tenant-concurrent` | `0` | in-flight requests per authenticated tenant (`0` disables it) |
+| `per-tenant-per-second` | `0` | per-second budget per tenant (`0` disables it) |
 | `request-timeout` | `30s` | wall clock a query may run; the engine checks it between steps |
 | `retry-after-seconds` | `1` | what a `429`/`503` answer tells the client to wait |
 | `max-body-bytes` | `1048576` | largest request body; a bigger one is a `413` before anything is parsed |
@@ -240,16 +248,22 @@ Three semantics worth knowing before you build on them:
 
 ## 6. The agent toolkit
 
-`GET /api/v1/agent/tools` returns the catalogue (the seven tools, their parameters and the answer shape).
-The tools take one `ToolRequest`: `graph` (required), `question`, `entity`, `relation`, `from`, `to`, `k`,
-`hops`, `maxHops`.
+`GET /api/v1/agent/tools` returns the catalogue: eight retrieval tools, six data tools, their parameters
+and the endpoint each one binds to. The retrieval tools take one `ToolRequest`: `graph` (required),
+`question`, `entity`, `relation`, `from`, `to`, `k`, `hops`, `maxHops`.
 
 | Tool | Call it when |
 |---|---|
 | `find_entities` | you have a question but no entity id |
+| `search` | the question is a phrase; hybrid name + lexical + vector recall |
 | `related`, `similar`, `related_similar`, `similar_related` | you have an entity (or a mention) and want what is around it |
 | `path_between` | you have two entities and want the connections |
 | `context` | you want one answer an LLM can use: entities, relations, paths and **citations** |
+| `semantic_model`, `semantic_translate`, `semantic_validate` | you have a data question and need the vocabulary, the SQL or a verdict on whether it is answerable |
+| `ask_data`, `analyze_business`, `attribute_change` | you want the answer, the analysis or the attribution - or a refusal with the reason |
+
+The answer shape of the retrieval tools and a worked example are in [AI-TOOLKIT.md](AI-TOOLKIT.md); the
+data tools, including the `mode=confirm` token, are specified in [DATA-AGENT.md](DATA-AGENT.md).
 
 ```bash
 printf '{"graph":"agent-demo","question":"诸葛亮和司马懿是什么关系"}' > /tmp/q.json
@@ -322,6 +336,7 @@ cannot disagree about the format.
 | `GET` | `/api/v1/agent/quality/{graph}` | `AgentController#quality` | — | `Object` |
 | `POST` | `/api/v1/agent/related` | `AgentController#related` | `ToolRequest` | `Map<String, Object>` |
 | `POST` | `/api/v1/agent/related-similar` | `AgentController#relatedSimilar` | `ToolRequest` | `Map<String, Object>` |
+| `POST` | `/api/v1/agent/search` | `AgentController#search` | `ToolRequest` | `Map<String, Object>` |
 | `POST` | `/api/v1/agent/similar` | `AgentController#similar` | `ToolRequest` | `Map<String, Object>` |
 | `POST` | `/api/v1/agent/similar-related` | `AgentController#similarRelated` | `ToolRequest` | `Map<String, Object>` |
 | `GET` | `/api/v1/agent/tools` | `AgentController#tools` | — | `Map<String, Object>` |
@@ -373,19 +388,20 @@ cannot disagree about the format.
 | `DELETE` | `/api/v1/vertices/{id}/properties/{index}` | `VertexController#deleteProperty` | — | `ResponseEntity<WriteResult>` |
 | `PUT` | `/api/v1/vertices/{id}/properties/{index}` | `VertexController#updateProperty` | `PropertyUpdateRequest` | `ResponseEntity<WriteResult>` |
 
-58 endpoints across 15 controllers.
+59 endpoints across 15 controllers.
 <!-- endpoints:end -->
 
 ---
 
 ## 11. What is deliberately *not* in this reference
 
-- **A schema/OpenAPI document.** The table above is generated from the controllers by
-  `tools/api-endpoints.mjs --check` (CI fails if it drifts), which covers the paths and the request bodies;
-  generating a full OpenAPI document is on the M2 list, and until then a machine-readable contract is
-  whatever this page and `verification/verify-api-errors.mjs` assert.
+- **Field-level OpenAPI schemas.** [openapi.json](openapi.json) is generated from the same controller
+  scan as the table above (`node tools/openapi.mjs --check` in CI): paths, methods and operation ids are
+  exact, request/response fields are generic until the DTOs carry annotations. This page remains the
+  field-level reference.
 - **Pagination.** Answers are bounded by the query (`limit`, `range`, the adaptive batch size), not by a
   cursor: the engine returns the traversers the query asked for, and there is no server-side result set to
   page through. If a client needs streaming over a huge answer, that is an M3-sized feature.
-- **Rate limits per API key**, quotas per tenant, and an audit trail that survives a restart (today: a
-  logger plus a bounded in-memory buffer) - later M2 work.
+- **Per-key rate limits** (the gate is per graph and per tenant today) and streaming over a huge answer -
+  later work. The durable audit file and tenant quotas are configuration, documented above; they are not
+  part of the endpoint table.

@@ -1,7 +1,7 @@
 // needs: service
 // what: the TPC-H semantic layer answers the eight questions of TPC-H-ANALYTICS.md §3 (definition, lineage,
 //       columns, dimensions, attribution, second-order attribution, join keys, reverse lineage) and the data
-//       instance matches the year figures the README quotes
+//       instance matches the year figures in docs/USE-CASES.md
 //
 // This replaces an older script that only *printed* those answers: a report that cannot fail is not a check,
 // and a stale one is worse than none (it still asked for the `promotionRevenue` property that this build does
@@ -53,11 +53,11 @@ const reverse = await list(S, "g.V('column/lineitem.l_extendedprice','Node').inE
 check('⑧ reverse lineage: ten metrics depend on the extended price', reverse.length === 10 && reverse.includes('metric/revenue'),
   `${reverse.length} metrics`);
 
-// ---- the data instance: the year figures the README quotes -------------------------------------------
+// ---- the data instance: the year figures docs/USE-CASES.md quotes ----------------------------------
 const revenue = await scalar(D, "g.V('Sale').group().by('orderYear').by(values('revenue').sum())");
 const gross = await scalar(D, "g.V('Sale').group().by('orderYear').by(values('gross').sum())");
 const discount = await scalar(D, "g.V('Sale').group().by('orderYear').by(values('discountAmount').sum())");
-check('the data instance answers the year figures the README prints',
+check('the data instance answers the year figures docs/USE-CASES.md prints',
   Math.round(revenue['1995']) === 95612794 && Math.round(revenue['1996']) === 98879433
   && gross['1995'] === 100509809 && gross['1996'] === 104059747
   && Math.round(discount['1995']) === 4897015 && Math.round(discount['1996']) === 5180314,

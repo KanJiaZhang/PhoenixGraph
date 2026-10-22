@@ -57,6 +57,10 @@ release stops describing the code it claims to describe. It also probes the buil
 | Set the default branch | GitHub → Settings → Branches → default `main` | needs the web UI or the API (this repository has no `gh` CLI in its toolchain) |
 | Prune | delete `release/*` when the minor line closes | otherwise "which branch is 1.0?" has three answers |
 
+> The `v*` tag also triggers `.github/workflows/publish-images.yml`, which publishes both images to
+> `ghcr.io/<owner>/phoenixgraph-http` and `ghcr.io/<owner>/phoenixgraph-web`. The `docker push` row above is
+> for a registry you control (Docker Hub, a private registry); it is not required for GHCR.
+
 ## 4b. The two steps that need GitHub itself
 
 Both are one command with the `gh` CLI, which is not part of the build (it is not needed to compile, test or

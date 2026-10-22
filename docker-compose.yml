@@ -10,7 +10,7 @@
 #   ./mvnw -pl graph-integration-test -am test -Dtest=QueryApiIntegrationTest \
 #          -Dsurefire.failIfNoSpecifiedTests=false
 # For the analytical (RocksDB) graphs, build .rocksdb locally with RocksDbLiveLoadTest and mount it
-# at /data/rocksdb (see the README).
+# at /data/rocksdb (see docs/QUERY.md).
 services:
 
   aerospike:

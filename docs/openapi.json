@@ -1,0 +1,2786 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "PhoenixGraph API",
+    "version": "1.0.1",
+    "description": "Auditable context layer: query, write, agent tools and semantic layer. Paths and operation ids are generated from the controllers; field-level request/response documentation is in docs/API.md."
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8081",
+      "description": "local service"
+    }
+  ],
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ],
+  "tags": [
+    {
+      "name": "agent"
+    },
+    {
+      "name": "analysis"
+    },
+    {
+      "name": "audit"
+    },
+    {
+      "name": "batch"
+    },
+    {
+      "name": "edges"
+    },
+    {
+      "name": "fuzzy"
+    },
+    {
+      "name": "graphs"
+    },
+    {
+      "name": "health"
+    },
+    {
+      "name": "metrics"
+    },
+    {
+      "name": "query"
+    },
+    {
+      "name": "schema"
+    },
+    {
+      "name": "semantic"
+    },
+    {
+      "name": "vector-index"
+    },
+    {
+      "name": "vertices"
+    }
+  ],
+  "paths": {
+    "/api/v1/agent/context": {
+      "post": {
+        "operationId": "Agent_context",
+        "tags": [
+          "agent"
+        ],
+        "summary": "POST /api/v1/agent/context",
+        "description": "Java: AgentController#context",
+        "responses": {
+          "200": {
+            "description": "Map<String, Object>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Map_String__Object_"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "AgentController",
+        "x-phoenixgraph-method": "context",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ToolRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agent/find-entities": {
+      "post": {
+        "operationId": "Agent_findEntities",
+        "tags": [
+          "agent"
+        ],
+        "summary": "POST /api/v1/agent/find-entities",
+        "description": "Java: AgentController#findEntities",
+        "responses": {
+          "200": {
+            "description": "Map<String, Object>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Map_String__Object_"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "AgentController",
+        "x-phoenixgraph-method": "findEntities",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ToolRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agent/index/{graph}": {
+      "get": {
+        "operationId": "Agent_index",
+        "tags": [
+          "agent"
+        ],
+        "summary": "GET /api/v1/agent/index/{graph}",
+        "description": "Java: AgentController#index",
+        "responses": {
+          "200": {
+            "description": "Object",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "AgentController",
+        "x-phoenixgraph-method": "index",
+        "parameters": [
+          {
+            "name": "graph",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/agent/ingest": {
+      "post": {
+        "operationId": "Agent_ingest",
+        "tags": [
+          "agent"
+        ],
+        "summary": "POST /api/v1/agent/ingest",
+        "description": "Java: AgentController#ingest",
+        "responses": {
+          "200": {
+            "description": "IngestResult",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IngestResult"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "AgentController",
+        "x-phoenixgraph-method": "ingest",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IngestRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agent/path": {
+      "post": {
+        "operationId": "Agent_path",
+        "tags": [
+          "agent"
+        ],
+        "summary": "POST /api/v1/agent/path",
+        "description": "Java: AgentController#path",
+        "responses": {
+          "200": {
+            "description": "Map<String, Object>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Map_String__Object_"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "AgentController",
+        "x-phoenixgraph-method": "path",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ToolRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agent/quality/{graph}": {
+      "get": {
+        "operationId": "Agent_quality",
+        "tags": [
+          "agent"
+        ],
+        "summary": "GET /api/v1/agent/quality/{graph}",
+        "description": "Java: AgentController#quality",
+        "responses": {
+          "200": {
+            "description": "Object",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "AgentController",
+        "x-phoenixgraph-method": "quality",
+        "parameters": [
+          {
+            "name": "graph",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/agent/related": {
+      "post": {
+        "operationId": "Agent_related",
+        "tags": [
+          "agent"
+        ],
+        "summary": "POST /api/v1/agent/related",
+        "description": "Java: AgentController#related",
+        "responses": {
+          "200": {
+            "description": "Map<String, Object>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Map_String__Object_"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "AgentController",
+        "x-phoenixgraph-method": "related",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ToolRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agent/related-similar": {
+      "post": {
+        "operationId": "Agent_relatedSimilar",
+        "tags": [
+          "agent"
+        ],
+        "summary": "POST /api/v1/agent/related-similar",
+        "description": "Java: AgentController#relatedSimilar",
+        "responses": {
+          "200": {
+            "description": "Map<String, Object>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Map_String__Object_"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "AgentController",
+        "x-phoenixgraph-method": "relatedSimilar",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ToolRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agent/search": {
+      "post": {
+        "operationId": "Agent_search",
+        "tags": [
+          "agent"
+        ],
+        "summary": "POST /api/v1/agent/search",
+        "description": "Java: AgentController#search",
+        "responses": {
+          "200": {
+            "description": "Map<String, Object>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Map_String__Object_"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "AgentController",
+        "x-phoenixgraph-method": "search",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ToolRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agent/similar": {
+      "post": {
+        "operationId": "Agent_similar",
+        "tags": [
+          "agent"
+        ],
+        "summary": "POST /api/v1/agent/similar",
+        "description": "Java: AgentController#similar",
+        "responses": {
+          "200": {
+            "description": "Map<String, Object>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Map_String__Object_"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "AgentController",
+        "x-phoenixgraph-method": "similar",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ToolRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agent/similar-related": {
+      "post": {
+        "operationId": "Agent_similarRelated",
+        "tags": [
+          "agent"
+        ],
+        "summary": "POST /api/v1/agent/similar-related",
+        "description": "Java: AgentController#similarRelated",
+        "responses": {
+          "200": {
+            "description": "Map<String, Object>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Map_String__Object_"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "AgentController",
+        "x-phoenixgraph-method": "similarRelated",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ToolRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agent/tools": {
+      "get": {
+        "operationId": "Agent_tools",
+        "tags": [
+          "agent"
+        ],
+        "summary": "GET /api/v1/agent/tools",
+        "description": "Java: AgentController#tools",
+        "responses": {
+          "200": {
+            "description": "Map<String, Object>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Map_String__Object_"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "AgentController",
+        "x-phoenixgraph-method": "tools"
+      }
+    },
+    "/api/v1/analysis/{graph}/analyze": {
+      "post": {
+        "operationId": "Semantic_analyze",
+        "tags": [
+          "analysis"
+        ],
+        "summary": "POST /api/v1/analysis/{graph}/analyze",
+        "description": "Java: SemanticController#analyze",
+        "responses": {
+          "200": {
+            "description": "Map<String, Object>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Map_String__Object_"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "SemanticController",
+        "x-phoenixgraph-method": "analyze",
+        "parameters": [
+          {
+            "name": "graph",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AskRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/analysis/{graph}/attribute": {
+      "post": {
+        "operationId": "Semantic_attribute",
+        "tags": [
+          "analysis"
+        ],
+        "summary": "POST /api/v1/analysis/{graph}/attribute",
+        "description": "Java: SemanticController#attribute",
+        "responses": {
+          "200": {
+            "description": "Map<String, Object>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Map_String__Object_"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "SemanticController",
+        "x-phoenixgraph-method": "attribute",
+        "parameters": [
+          {
+            "name": "graph",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AskRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/audit/recent": {
+      "get": {
+        "operationId": "Audit_recent",
+        "tags": [
+          "audit"
+        ],
+        "summary": "GET /api/v1/audit/recent",
+        "description": "Java: AuditController#recent",
+        "responses": {
+          "200": {
+            "description": "Map<String, Object>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Map_String__Object_"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "AuditController",
+        "x-phoenixgraph-method": "recent"
+      }
+    },
+    "/api/v1/batch": {
+      "post": {
+        "operationId": "Batch_batch",
+        "tags": [
+          "batch"
+        ],
+        "summary": "POST /api/v1/batch",
+        "description": "Java: BatchController#batch",
+        "responses": {
+          "200": {
+            "description": "List<WriteResult>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/List_WriteResult_"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "BatchController",
+        "x-phoenixgraph-method": "batch",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BatchRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/edges": {
+      "post": {
+        "operationId": "Edge_upsert",
+        "tags": [
+          "edges"
+        ],
+        "summary": "POST /api/v1/edges",
+        "description": "Java: EdgeController#upsert",
+        "responses": {
+          "200": {
+            "description": "ResponseEntity<WriteResult>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseEntity_WriteResult_"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "EdgeController",
+        "x-phoenixgraph-method": "upsert",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EdgeRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/edges/{edgeId}": {
+      "delete": {
+        "operationId": "Edge_delete",
+        "tags": [
+          "edges"
+        ],
+        "summary": "DELETE /api/v1/edges/{edgeId}",
+        "description": "Java: EdgeController#delete",
+        "responses": {
+          "200": {
+            "description": "ResponseEntity<WriteResult>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseEntity_WriteResult_"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "EdgeController",
+        "x-phoenixgraph-method": "delete",
+        "parameters": [
+          {
+            "name": "edgeId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/fuzzy/demo": {
+      "get": {
+        "operationId": "Fuzzy_demo",
+        "tags": [
+          "fuzzy"
+        ],
+        "summary": "GET /api/v1/fuzzy/demo",
+        "description": "Java: FuzzyController#demo",
+        "responses": {
+          "200": {
+            "description": "Map<String, Object>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Map_String__Object_"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "FuzzyController",
+        "x-phoenixgraph-method": "demo"
+      }
+    },
+    "/api/v1/fuzzy/functions": {
+      "get": {
+        "operationId": "Fuzzy_functions",
+        "tags": [
+          "fuzzy"
+        ],
+        "summary": "GET /api/v1/fuzzy/functions",
+        "description": "Java: FuzzyController#functions",
+        "responses": {
+          "200": {
+            "description": "List<Map<String, Object>>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/List_Map_String__Object__"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "FuzzyController",
+        "x-phoenixgraph-method": "functions"
+      }
+    },
+    "/api/v1/fuzzy/graphs/{graph}/links": {
+      "post": {
+        "operationId": "Fuzzy_link",
+        "tags": [
+          "fuzzy"
+        ],
+        "summary": "POST /api/v1/fuzzy/graphs/{graph}/links",
+        "description": "Java: FuzzyController#link",
+        "responses": {
+          "200": {
+            "description": "Map<String, Object>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Map_String__Object_"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "FuzzyController",
+        "x-phoenixgraph-method": "link",
+        "parameters": [
+          {
+            "name": "graph",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FuzzyPreviewRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/fuzzy/graphs/{graph}/plan": {
+      "post": {
+        "operationId": "Fuzzy_plan",
+        "tags": [
+          "fuzzy"
+        ],
+        "summary": "POST /api/v1/fuzzy/graphs/{graph}/plan",
+        "description": "Java: FuzzyController#plan",
+        "responses": {
+          "200": {
+            "description": "Map<String, Object>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Map_String__Object_"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "FuzzyController",
+        "x-phoenixgraph-method": "plan",
+        "parameters": [
+          {
+            "name": "graph",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FuzzyPreviewRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/fuzzy/patterns": {
+      "get": {
+        "operationId": "Fuzzy_patterns",
+        "tags": [
+          "fuzzy"
+        ],
+        "summary": "GET /api/v1/fuzzy/patterns",
+        "description": "Java: FuzzyController#patterns",
+        "responses": {
+          "200": {
+            "description": "Map<String, Object>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Map_String__Object_"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "FuzzyController",
+        "x-phoenixgraph-method": "patterns"
+      },
+      "post": {
+        "operationId": "Fuzzy_save",
+        "tags": [
+          "fuzzy"
+        ],
+        "summary": "POST /api/v1/fuzzy/patterns",
+        "description": "Java: FuzzyController#save",
+        "responses": {
+          "200": {
+            "description": "Map<String, Object>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Map_String__Object_"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "FuzzyController",
+        "x-phoenixgraph-method": "save",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FuzzyPatternRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/fuzzy/patterns/{graph}/{id}": {
+      "delete": {
+        "operationId": "Fuzzy_remove",
+        "tags": [
+          "fuzzy"
+        ],
+        "summary": "DELETE /api/v1/fuzzy/patterns/{graph}/{id}",
+        "description": "Java: FuzzyController#remove",
+        "responses": {
+          "200": {
+            "description": "ResponseEntity<Map<String, Object>>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseEntity_Map_String__Object__"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "FuzzyController",
+        "x-phoenixgraph-method": "remove",
+        "parameters": [
+          {
+            "name": "graph",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/fuzzy/validate": {
+      "post": {
+        "operationId": "Fuzzy_validate",
+        "tags": [
+          "fuzzy"
+        ],
+        "summary": "POST /api/v1/fuzzy/validate",
+        "description": "Java: FuzzyController#validate",
+        "responses": {
+          "200": {
+            "description": "Map<String, Object>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Map_String__Object_"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "FuzzyController",
+        "x-phoenixgraph-method": "validate",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FuzzyPreviewRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/graphs": {
+      "get": {
+        "operationId": "Schema_graphs",
+        "tags": [
+          "graphs"
+        ],
+        "summary": "GET /api/v1/graphs",
+        "description": "Java: SchemaController#graphs",
+        "responses": {
+          "200": {
+            "description": "List<GraphInfo>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/List_GraphInfo_"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "SchemaController",
+        "x-phoenixgraph-method": "graphs"
+      }
+    },
+    "/api/v1/graphs/{graph}/batch": {
+      "post": {
+        "operationId": "GraphWrite_batch",
+        "tags": [
+          "graphs"
+        ],
+        "summary": "POST /api/v1/graphs/{graph}/batch",
+        "description": "Java: GraphWriteController#batch",
+        "responses": {
+          "200": {
+            "description": "List<WriteResult>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/List_WriteResult_"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "GraphWriteController",
+        "x-phoenixgraph-method": "batch",
+        "parameters": [
+          {
+            "name": "graph",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BatchRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/graphs/{graph}/checkpoint": {
+      "post": {
+        "operationId": "Backup_checkpoint",
+        "tags": [
+          "graphs"
+        ],
+        "summary": "POST /api/v1/graphs/{graph}/checkpoint",
+        "description": "Java: BackupController#checkpoint",
+        "responses": {
+          "200": {
+            "description": "Map<String, Object>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Map_String__Object_"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "BackupController",
+        "x-phoenixgraph-method": "checkpoint",
+        "parameters": [
+          {
+            "name": "graph",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/graphs/{graph}/edges": {
+      "post": {
+        "operationId": "GraphWrite_upsertEdge",
+        "tags": [
+          "graphs"
+        ],
+        "summary": "POST /api/v1/graphs/{graph}/edges",
+        "description": "Java: GraphWriteController#upsertEdge",
+        "responses": {
+          "200": {
+            "description": "ResponseEntity<WriteResult>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseEntity_WriteResult_"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "GraphWriteController",
+        "x-phoenixgraph-method": "upsertEdge",
+        "parameters": [
+          {
+            "name": "graph",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EdgeRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/graphs/{graph}/edges/{edgeId}": {
+      "delete": {
+        "operationId": "GraphWrite_deleteEdge",
+        "tags": [
+          "graphs"
+        ],
+        "summary": "DELETE /api/v1/graphs/{graph}/edges/{edgeId}",
+        "description": "Java: GraphWriteController#deleteEdge",
+        "responses": {
+          "200": {
+            "description": "ResponseEntity<WriteResult>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseEntity_WriteResult_"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "GraphWriteController",
+        "x-phoenixgraph-method": "deleteEdge",
+        "parameters": [
+          {
+            "name": "graph",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "edgeId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/graphs/{graph}/storage": {
+      "get": {
+        "operationId": "Backup_storage",
+        "tags": [
+          "graphs"
+        ],
+        "summary": "GET /api/v1/graphs/{graph}/storage",
+        "description": "Java: BackupController#storage",
+        "responses": {
+          "200": {
+            "description": "Map<String, Object>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Map_String__Object_"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "BackupController",
+        "x-phoenixgraph-method": "storage",
+        "parameters": [
+          {
+            "name": "graph",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/graphs/{graph}/vertices": {
+      "post": {
+        "operationId": "GraphWrite_upsertVertex",
+        "tags": [
+          "graphs"
+        ],
+        "summary": "POST /api/v1/graphs/{graph}/vertices",
+        "description": "Java: GraphWriteController#upsertVertex",
+        "responses": {
+          "200": {
+            "description": "ResponseEntity<WriteResult>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseEntity_WriteResult_"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "GraphWriteController",
+        "x-phoenixgraph-method": "upsertVertex",
+        "parameters": [
+          {
+            "name": "graph",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VertexRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/graphs/{graph}/vertices/{id}": {
+      "delete": {
+        "operationId": "GraphWrite_deleteVertex",
+        "tags": [
+          "graphs"
+        ],
+        "summary": "DELETE /api/v1/graphs/{graph}/vertices/{id}",
+        "description": "Java: GraphWriteController#deleteVertex",
+        "responses": {
+          "200": {
+            "description": "ResponseEntity<WriteResult>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseEntity_WriteResult_"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "GraphWriteController",
+        "x-phoenixgraph-method": "deleteVertex",
+        "parameters": [
+          {
+            "name": "graph",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/health": {
+      "get": {
+        "operationId": "Batch_health",
+        "tags": [
+          "health"
+        ],
+        "summary": "GET /api/v1/health",
+        "description": "Java: BatchController#health",
+        "responses": {
+          "200": {
+            "description": "String",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "BatchController",
+        "x-phoenixgraph-method": "health"
+      }
+    },
+    "/api/v1/metrics": {
+      "get": {
+        "operationId": "Metrics_all",
+        "tags": [
+          "metrics"
+        ],
+        "summary": "GET /api/v1/metrics",
+        "description": "Java: MetricsController#all",
+        "responses": {
+          "200": {
+            "description": "Map<String, Object>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Map_String__Object_"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "MetricsController",
+        "x-phoenixgraph-method": "all"
+      }
+    },
+    "/api/v1/metrics/prometheus": {
+      "get": {
+        "operationId": "Metrics_prometheus",
+        "tags": [
+          "metrics"
+        ],
+        "summary": "GET /api/v1/metrics/prometheus",
+        "description": "Java: MetricsController#prometheus",
+        "responses": {
+          "200": {
+            "description": "String",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "MetricsController",
+        "x-phoenixgraph-method": "prometheus"
+      }
+    },
+    "/api/v1/metrics/{graph}": {
+      "get": {
+        "operationId": "Metrics_one",
+        "tags": [
+          "metrics"
+        ],
+        "summary": "GET /api/v1/metrics/{graph}",
+        "description": "Java: MetricsController#one",
+        "responses": {
+          "200": {
+            "description": "ResponseEntity<Map<String, Object>>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseEntity_Map_String__Object__"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "MetricsController",
+        "x-phoenixgraph-method": "one",
+        "parameters": [
+          {
+            "name": "graph",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/metrics/{graph}/flush": {
+      "post": {
+        "operationId": "Metrics_flush",
+        "tags": [
+          "metrics"
+        ],
+        "summary": "POST /api/v1/metrics/{graph}/flush",
+        "description": "Java: MetricsController#flush",
+        "responses": {
+          "200": {
+            "description": "Map<String, Object>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Map_String__Object_"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "MetricsController",
+        "x-phoenixgraph-method": "flush",
+        "parameters": [
+          {
+            "name": "graph",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/metrics/{graph}/prometheus": {
+      "get": {
+        "operationId": "Metrics_prometheusOne",
+        "tags": [
+          "metrics"
+        ],
+        "summary": "GET /api/v1/metrics/{graph}/prometheus",
+        "description": "Java: MetricsController#prometheusOne",
+        "responses": {
+          "200": {
+            "description": "ResponseEntity<String>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseEntity_String_"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "MetricsController",
+        "x-phoenixgraph-method": "prometheusOne",
+        "parameters": [
+          {
+            "name": "graph",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/metrics/{graph}/reset": {
+      "post": {
+        "operationId": "Metrics_reset",
+        "tags": [
+          "metrics"
+        ],
+        "summary": "POST /api/v1/metrics/{graph}/reset",
+        "description": "Java: MetricsController#reset",
+        "responses": {
+          "200": {
+            "description": "Map<String, Object>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Map_String__Object_"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "MetricsController",
+        "x-phoenixgraph-method": "reset",
+        "parameters": [
+          {
+            "name": "graph",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/query": {
+      "post": {
+        "operationId": "Query_query",
+        "tags": [
+          "query"
+        ],
+        "summary": "POST /api/v1/query",
+        "description": "Java: QueryController#query",
+        "responses": {
+          "200": {
+            "description": "Object",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "QueryController",
+        "x-phoenixgraph-method": "query",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QueryRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/schema": {
+      "post": {
+        "operationId": "SchemaAuthoring_save",
+        "tags": [
+          "schema"
+        ],
+        "summary": "POST /api/v1/schema",
+        "description": "Java: SchemaAuthoringController#save",
+        "responses": {
+          "200": {
+            "description": "ResponseEntity<Map<String, Object>>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseEntity_Map_String__Object__"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "SchemaAuthoringController",
+        "x-phoenixgraph-method": "save",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SchemaDraft"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/schema/storage-types": {
+      "get": {
+        "operationId": "SchemaAuthoring_storageTypes",
+        "tags": [
+          "schema"
+        ],
+        "summary": "GET /api/v1/schema/storage-types",
+        "description": "Java: SchemaAuthoringController#storageTypes",
+        "responses": {
+          "200": {
+            "description": "List<Map<String, Object>>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/List_Map_String__Object__"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "SchemaAuthoringController",
+        "x-phoenixgraph-method": "storageTypes"
+      }
+    },
+    "/api/v1/schema/validate": {
+      "post": {
+        "operationId": "SchemaAuthoring_validate",
+        "tags": [
+          "schema"
+        ],
+        "summary": "POST /api/v1/schema/validate",
+        "description": "Java: SchemaAuthoringController#validate",
+        "responses": {
+          "200": {
+            "description": "Map<String, Object>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Map_String__Object_"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "SchemaAuthoringController",
+        "x-phoenixgraph-method": "validate",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SchemaDraft"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/schema/version": {
+      "post": {
+        "operationId": "SchemaAuthoring_version",
+        "tags": [
+          "schema"
+        ],
+        "summary": "POST /api/v1/schema/version",
+        "description": "Java: SchemaAuthoringController#version",
+        "responses": {
+          "200": {
+            "description": "Map<String, Object>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Map_String__Object_"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "SchemaAuthoringController",
+        "x-phoenixgraph-method": "version",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/schema/{graph}": {
+      "get": {
+        "operationId": "SchemaAuthoring_json",
+        "tags": [
+          "schema"
+        ],
+        "summary": "GET /api/v1/schema/{graph}",
+        "description": "Java: SchemaAuthoringController#json",
+        "responses": {
+          "200": {
+            "description": "ResponseEntity<String>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseEntity_String_"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "SchemaAuthoringController",
+        "x-phoenixgraph-method": "json",
+        "parameters": [
+          {
+            "name": "graph",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/schema/{graph}/draft": {
+      "get": {
+        "operationId": "SchemaAuthoring_draft",
+        "tags": [
+          "schema"
+        ],
+        "summary": "GET /api/v1/schema/{graph}/draft",
+        "description": "Java: SchemaAuthoringController#draft",
+        "responses": {
+          "200": {
+            "description": "ResponseEntity<SchemaDraft>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseEntity_SchemaDraft_"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "SchemaAuthoringController",
+        "x-phoenixgraph-method": "draft",
+        "parameters": [
+          {
+            "name": "graph",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/semantic/{graph}/ask": {
+      "post": {
+        "operationId": "Semantic_ask",
+        "tags": [
+          "semantic"
+        ],
+        "summary": "POST /api/v1/semantic/{graph}/ask",
+        "description": "Java: SemanticController#ask",
+        "responses": {
+          "200": {
+            "description": "Map<String, Object>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Map_String__Object_"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "SemanticController",
+        "x-phoenixgraph-method": "ask",
+        "parameters": [
+          {
+            "name": "graph",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AskRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/semantic/{graph}/model": {
+      "get": {
+        "operationId": "Semantic_model",
+        "tags": [
+          "semantic"
+        ],
+        "summary": "GET /api/v1/semantic/{graph}/model",
+        "description": "Java: SemanticController#model",
+        "responses": {
+          "200": {
+            "description": "Map<String, Object>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Map_String__Object_"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "SemanticController",
+        "x-phoenixgraph-method": "model",
+        "parameters": [
+          {
+            "name": "graph",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/semantic/{graph}/translate": {
+      "post": {
+        "operationId": "Semantic_translate",
+        "tags": [
+          "semantic"
+        ],
+        "summary": "POST /api/v1/semantic/{graph}/translate",
+        "description": "Java: SemanticController#translate",
+        "responses": {
+          "200": {
+            "description": "Map<String, Object>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Map_String__Object_"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "SemanticController",
+        "x-phoenixgraph-method": "translate",
+        "parameters": [
+          {
+            "name": "graph",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SemanticRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/semantic/{graph}/validate": {
+      "post": {
+        "operationId": "Semantic_validate",
+        "tags": [
+          "semantic"
+        ],
+        "summary": "POST /api/v1/semantic/{graph}/validate",
+        "description": "Java: SemanticController#validate",
+        "responses": {
+          "200": {
+            "description": "Map<String, Object>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Map_String__Object_"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "SemanticController",
+        "x-phoenixgraph-method": "validate",
+        "parameters": [
+          {
+            "name": "graph",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SemanticRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/vector-index": {
+      "get": {
+        "operationId": "VectorIndex_list",
+        "tags": [
+          "vector-index"
+        ],
+        "summary": "GET /api/v1/vector-index",
+        "description": "Java: VectorIndexController#list",
+        "responses": {
+          "200": {
+            "description": "List<VectorIndexInfo>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/List_VectorIndexInfo_"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "VectorIndexController",
+        "x-phoenixgraph-method": "list"
+      }
+    },
+    "/api/v1/vector-index/rebuild": {
+      "post": {
+        "operationId": "VectorIndex_rebuild",
+        "tags": [
+          "vector-index"
+        ],
+        "summary": "POST /api/v1/vector-index/rebuild",
+        "description": "Java: VectorIndexController#rebuild",
+        "responses": {
+          "200": {
+            "description": "ResponseEntity<List<VectorIndexRebuildResult>>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseEntity_List_VectorIndexRebuildResult__"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "VectorIndexController",
+        "x-phoenixgraph-method": "rebuild"
+      }
+    },
+    "/api/v1/vertices": {
+      "post": {
+        "operationId": "Vertex_upsert",
+        "tags": [
+          "vertices"
+        ],
+        "summary": "POST /api/v1/vertices",
+        "description": "Java: VertexController#upsert",
+        "responses": {
+          "200": {
+            "description": "ResponseEntity<WriteResult>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseEntity_WriteResult_"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "VertexController",
+        "x-phoenixgraph-method": "upsert",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VertexRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/vertices/{id}": {
+      "delete": {
+        "operationId": "Vertex_delete",
+        "tags": [
+          "vertices"
+        ],
+        "summary": "DELETE /api/v1/vertices/{id}",
+        "description": "Java: VertexController#delete",
+        "responses": {
+          "200": {
+            "description": "ResponseEntity<WriteResult>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseEntity_WriteResult_"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "VertexController",
+        "x-phoenixgraph-method": "delete",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "get": {
+        "operationId": "Vertex_get",
+        "tags": [
+          "vertices"
+        ],
+        "summary": "GET /api/v1/vertices/{id}",
+        "description": "Java: VertexController#get",
+        "responses": {
+          "200": {
+            "description": "ResponseEntity<StoredVertex>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseEntity_StoredVertex_"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "VertexController",
+        "x-phoenixgraph-method": "get",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/vertices/{id}/properties/{index}": {
+      "delete": {
+        "operationId": "Vertex_deleteProperty",
+        "tags": [
+          "vertices"
+        ],
+        "summary": "DELETE /api/v1/vertices/{id}/properties/{index}",
+        "description": "Java: VertexController#deleteProperty",
+        "responses": {
+          "200": {
+            "description": "ResponseEntity<WriteResult>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseEntity_WriteResult_"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "VertexController",
+        "x-phoenixgraph-method": "deleteProperty",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "index",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "put": {
+        "operationId": "Vertex_updateProperty",
+        "tags": [
+          "vertices"
+        ],
+        "summary": "PUT /api/v1/vertices/{id}/properties/{index}",
+        "description": "Java: VertexController#updateProperty",
+        "responses": {
+          "200": {
+            "description": "ResponseEntity<WriteResult>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseEntity_WriteResult_"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "VertexController",
+        "x-phoenixgraph-method": "updateProperty",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "index",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PropertyUpdateRequest"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "API key from phoenixgraph.security.keys. Send Authorization: Bearer <key> or X-API-Key."
+      }
+    },
+    "schemas": {
+      "Map_String__Object_": {
+        "type": "object",
+        "description": "Request/response type Map<String, Object>; see docs/API.md for its fields."
+      },
+      "ToolRequest": {
+        "type": "object",
+        "description": "Request/response type ToolRequest; see docs/API.md for its fields."
+      },
+      "IngestResult": {
+        "type": "object",
+        "description": "Request/response type IngestResult; see docs/API.md for its fields."
+      },
+      "IngestRequest": {
+        "type": "object",
+        "description": "Request/response type IngestRequest; see docs/API.md for its fields."
+      },
+      "AskRequest": {
+        "type": "object",
+        "description": "Request/response type AskRequest; see docs/API.md for its fields."
+      },
+      "List_WriteResult_": {
+        "type": "object",
+        "description": "Request/response type List<WriteResult>; see docs/API.md for its fields."
+      },
+      "BatchRequest": {
+        "type": "object",
+        "description": "Request/response type BatchRequest; see docs/API.md for its fields."
+      },
+      "ResponseEntity_WriteResult_": {
+        "type": "object",
+        "description": "Request/response type ResponseEntity<WriteResult>; see docs/API.md for its fields."
+      },
+      "EdgeRequest": {
+        "type": "object",
+        "description": "Request/response type EdgeRequest; see docs/API.md for its fields."
+      },
+      "List_Map_String__Object__": {
+        "type": "object",
+        "description": "Request/response type List<Map<String, Object>>; see docs/API.md for its fields."
+      },
+      "FuzzyPreviewRequest": {
+        "type": "object",
+        "description": "Request/response type FuzzyPreviewRequest; see docs/API.md for its fields."
+      },
+      "FuzzyPatternRequest": {
+        "type": "object",
+        "description": "Request/response type FuzzyPatternRequest; see docs/API.md for its fields."
+      },
+      "ResponseEntity_Map_String__Object__": {
+        "type": "object",
+        "description": "Request/response type ResponseEntity<Map<String, Object>>; see docs/API.md for its fields."
+      },
+      "List_GraphInfo_": {
+        "type": "object",
+        "description": "Request/response type List<GraphInfo>; see docs/API.md for its fields."
+      },
+      "VertexRequest": {
+        "type": "object",
+        "description": "Request/response type VertexRequest; see docs/API.md for its fields."
+      },
+      "ResponseEntity_String_": {
+        "type": "object",
+        "description": "Request/response type ResponseEntity<String>; see docs/API.md for its fields."
+      },
+      "QueryRequest": {
+        "type": "object",
+        "description": "Request/response type QueryRequest; see docs/API.md for its fields."
+      },
+      "SchemaDraft": {
+        "type": "object",
+        "description": "Request/response type SchemaDraft; see docs/API.md for its fields."
+      },
+      "ResponseEntity_SchemaDraft_": {
+        "type": "object",
+        "description": "Request/response type ResponseEntity<SchemaDraft>; see docs/API.md for its fields."
+      },
+      "SemanticRequest": {
+        "type": "object",
+        "description": "Request/response type SemanticRequest; see docs/API.md for its fields."
+      },
+      "List_VectorIndexInfo_": {
+        "type": "object",
+        "description": "Request/response type List<VectorIndexInfo>; see docs/API.md for its fields."
+      },
+      "ResponseEntity_List_VectorIndexRebuildResult__": {
+        "type": "object",
+        "description": "Request/response type ResponseEntity<List<VectorIndexRebuildResult>>; see docs/API.md for its fields."
+      },
+      "ResponseEntity_StoredVertex_": {
+        "type": "object",
+        "description": "Request/response type ResponseEntity<StoredVertex>; see docs/API.md for its fields."
+      },
+      "PropertyUpdateRequest": {
+        "type": "object",
+        "description": "Request/response type PropertyUpdateRequest; see docs/API.md for its fields."
+      }
+    }
+  }
+}

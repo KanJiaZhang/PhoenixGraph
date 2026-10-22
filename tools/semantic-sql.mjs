@@ -25,7 +25,7 @@
  * The graph is the one the service serves (default http://localhost:8081, graph tpc-h-analytics); the SQL
  * it prints is meant for a real warehouse (PostgreSQL / DuckDB / MySQL), because this repository has no
  * SQL database - the equivalent graph query, which this repository *can* run, is the other half of the
- * story (see README, "semantic layer / execution layer / analysis layer").
+ * story (see docs/USE-CASES.md, "semantic / execution / analysis layers").
  */
 import process from 'node:process';
 

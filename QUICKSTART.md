@@ -46,7 +46,7 @@ curl -s -X POST localhost:8081/api/v1/query -H 'content-type: application/json' 
 ```
 
 You get the traversed vertices with their properties, plus a `subgraph` block (`vertices` + `edges`) — the
-same picture the UI draws. One request walks graph, vector and geo steps; there is no client-side join:
+same picture the UI draws. One request walks graph and vector steps; there is no client-side join:
 
 ```bash
 # a vector search and a graph walk in one traversal (RocksDB-Edge instance)
@@ -71,7 +71,7 @@ curl -s -X POST localhost:8081/api/v1/query -H 'content-type: application/json' 
 
 `{"1000":0.0200058, "1001":0.0200186, ...}` — one score per reached vertex. The same step runs on the
 distributed engine by writing `pagerank(DIST)`; with no cluster configured that is an error rather than a
-silent fall back (see the README's "Distributed, high-concurrency deployment").
+silent fall back (see [docs/DESIGN.md](docs/DESIGN.md#distributed-execution-gemini)).
 
 Available: `pagerank`, `louvain`, `cc`, `sssp`, `bfs`, and the four centralities (`degree`, `closeness`,
 `betweenness`, `eigenvector`), each also in a `DIST` form.
@@ -144,7 +144,7 @@ node verification/run.mjs            # run them all (services must be up)
 ```
 
 The suite asserts what the documentation claims — including every number in
-[`docs/AGENT-CASES.md`](AGENT-CASES.md) — by re-running the queries against the live service and reading the
+[`docs/AGENT-CASES.md`](docs/AGENT-CASES.md) — by re-running the queries against the live service and reading the
 values back from the DOM, the canvas pixels and the API.
 
 ---
@@ -153,10 +153,13 @@ values back from the DOM, the canvas pixels and the API.
 
 | I want to… | Read |
 |---|---|
-| understand what this is | [README](../README.md) — and its **Limitations** section for what it is *not* |
-| use the HTTP API | [docs/API.md](API.md) (46 endpoints, generated from the controllers) |
-| see two complete analyses | [docs/AGENT-CASES.md](AGENT-CASES.md) — a knowledge-graph audit and a refused dimension |
-| know which numbers to distrust | [docs/DATA-QUALITY.md](DATA-QUALITY.md) |
-| run it in production | [docs/ROADMAP-1.0.md](ROADMAP-1.0.md) — M2 is the operator milestone, still ⬜ |
-| pick a storage scheme | README's *Storage guide* (Aerospike for keyed OLTP, RocksDB for scans/analytics) |
-| work on the engine | [CONTEXT.md](../CONTEXT.md) is the local design notebook (gitignored), `verification/README.md` explains how to add a check |
+| see the value in three minutes | [examples/three-minute-demo](examples/three-minute-demo/README.md) — ingest, cited answer, refusal |
+| call it from Python | [clients/python](clients/python/README.md) — zero-dependency client |
+| ingest your own documents | [examples/business-demo](examples/business-demo/README.md) and `tools/ingest-docs.mjs` |
+| understand what this is | [README](README.md) — and its **Status** section for what it is *not* |
+| use the HTTP API | [docs/API.md](docs/API.md) (59 endpoints, generated from the controllers) |
+| see two complete analyses | [docs/AGENT-CASES.md](docs/AGENT-CASES.md) — a knowledge-graph audit and a refused dimension |
+| know which numbers to distrust | [docs/DATA-QUALITY.md](docs/DATA-QUALITY.md) |
+| run it in production | [docs/ROADMAP-1.0.md](docs/ROADMAP-1.0.md) — M2 is the operator milestone, still ⬜ |
+| pick a storage scheme | [docs/DESIGN.md](docs/DESIGN.md#one-engine-four-storage-schemes) (Aerospike for keyed OLTP, RocksDB for scans/analytics) |
+| work on the engine | [CONTEXT.md](CONTEXT.md) is the local design notebook (gitignored), `verification/README.md` explains how to add a check |

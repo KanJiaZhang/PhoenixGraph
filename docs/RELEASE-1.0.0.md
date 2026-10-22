@@ -18,6 +18,9 @@ sentences below are the whole release in one line each:
 
 ## The numbers this release is measured by
 
+> These counts describe the tag, not `develop`; the current counts are printed by CI
+> (`node tools/check-release.mjs` and the unit job).
+
 | | |
 |---|---|
 | unit tests | **948**, 0 failures (20 modules) |
@@ -69,7 +72,7 @@ dimensionally-invalid analytic question and then answering it correctly) are in
 |---|---|---|
 | Scale | nothing is measured above 10⁴ vertices; no published benchmark at 10⁷ | [`docs/CAPACITY.md`](CAPACITY.md) §6 |
 | Cross-machine compute | Gemini has not been measured across hosts (one machine, 4 workers) | [`docs/ROADMAP-1.0.md`](ROADMAP-1.0.md) M3-3 |
-| Query language | `as/select/match/project/sack` and the traverser model are designed, not built (`TRAVERSER-DESIGN.md`, local). Unsupported syntax is *rejected*, never ignored | README § Limitations |
+| Query language | `as/select/match/project/sack` and the traverser model are designed, not built (`TRAVERSER-DESIGN.md`, local). Unsupported syntax is *rejected*, never ignored | README § Status |
 | Writes on RocksDB | a RocksDB graph is loaded, not written over REST | [`docs/API.md`](API.md) §5 |
 | Storage seed | the engine takes **one** storage seed, so a restart while that seed is down cannot connect (a running node reconnects by itself) | [`docs/CAPACITY.md`](CAPACITY.md) §6 |
 | Write failure under a dead store | the write path retries and then answers `500 {"status":"FAILED"}`; a client retry will not help | [`docs/API.md`](API.md) §3 |
