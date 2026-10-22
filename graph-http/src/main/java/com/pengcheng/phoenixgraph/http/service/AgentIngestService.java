@@ -170,6 +170,7 @@ public class AgentIngestService {
         List<String> notes = new ArrayList<>();
         notes.add("rule pack: " + pack.name());
         ensureSchema(request.graph(), request.description(), notes);
+        index = mergeExistingChunks(request.graph(), index, notes);
         BatchRequest batch = toBatch(index);
         GraphService target = writes.forGraph(graphs, request.graph());
         List<WriteResult> results = target.processBatch(batch);
@@ -423,6 +424,52 @@ public class AgentIngestService {
      */
     public Path indexFile(String graph) {
         return Path.of(graph + ".agent.json");
+    }
+
+    /**
+     * Merges an entity's chunks from an earlier ingestion into this one, so the same entity read in two
+     * documents keeps both provenance lists instead of the second overwriting the first. The description and
+     * vector stay the current reading (a context card is a snapshot, not a sum); what accumulates is the
+     * {@code chunkIds} list, which is what a citation and a coverage count read.
+     */
+    private AgentIndex mergeExistingChunks(String graph, AgentIndex current, List<String> notes) {
+        Path file = indexFile(graph);
+        if (!Files.exists(file)) {
+            return current;
+        }
+        Map<String, Integer> currentSizes = new LinkedHashMap<>();
+        for (AgentIndex.Entity entity : current.entities()) {
+            currentSizes.put(entity.id(), entity.chunkIds().size());
+        }
+        AgentIndex merged = mergeChunks(AgentIndex.read(file), current);
+        long extended = merged.entities().stream()
+                .filter(entity -> entity.chunkIds().size() > currentSizes.getOrDefault(entity.id(), 0))
+                .count();
+        if (extended > 0) {
+            notes.add(extended + " entities carried chunks over from an earlier ingestion of '" + graph + "'");
+        }
+        return merged;
+    }
+
+    /** The pure merge: an entity keeps its old chunks plus the new ones, keyed by id. */
+    static AgentIndex mergeChunks(AgentIndex previous, AgentIndex current) {
+        Map<String, Set<String>> prior = new LinkedHashMap<>();
+        for (AgentIndex.Entity entity : previous.entities()) {
+            prior.put(entity.id(), new LinkedHashSet<>(entity.chunkIds()));
+        }
+        List<AgentIndex.Entity> merged = new ArrayList<>();
+        for (AgentIndex.Entity entity : current.entities()) {
+            Set<String> ids = new LinkedHashSet<>(prior.getOrDefault(entity.id(), Set.of()));
+            ids.addAll(entity.chunkIds());
+            if (ids.size() == entity.chunkIds().size()) {
+                merged.add(entity);
+            } else {
+                merged.add(new AgentIndex.Entity(entity.id(), entity.vertexType(), entity.type(), entity.name(),
+                        entity.description(), entity.vector(), List.copyOf(ids), entity.cites(), entity.aliases()));
+            }
+        }
+        return new AgentIndex(current.graph(), current.embedding(), current.dimensions(), current.createdAt(),
+                merged, current.relations(), current.chunks(), current.quality());
     }
 
     /** Reads a text file for a caller that gives paths instead of text (the CLI-ish entry point). */

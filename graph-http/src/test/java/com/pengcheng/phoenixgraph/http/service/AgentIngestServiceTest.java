@@ -58,6 +58,22 @@ class AgentIngestServiceTest {
                 .orElseThrow(() -> new AssertionError("no edge schema " + name));
     }
 
+    @Test
+    void anEntityReadInTwoDocumentsKeepsBothProvenanceLists() {
+        AgentIndex previous = new AgentIndex("g", "hashing-64", 64, "before",
+                List.of(new AgentIndex.Entity("关羽", "Entity", "Person", "关羽", "card",
+                        new float[]{1f}, List.of("doc-a-1"), List.of("doc A §1"))),
+                List.of(), List.of(), Map.of());
+        AgentIndex current = new AgentIndex("g", "hashing-64", 64, "after",
+                List.of(new AgentIndex.Entity("关羽", "Entity", "Person", "关羽", "card",
+                        new float[]{2f}, List.of("doc-b-1"), List.of("doc B §1"))),
+                List.of(), List.of(), Map.of());
+
+        AgentIndex merged = AgentIngestService.mergeChunks(previous, current);
+        assertEquals(List.of("doc-a-1", "doc-b-1"), merged.entities().get(0).chunkIds(),
+                "the same entity keeps both documents' chunks instead of the second overwriting the first");
+    }
+
     private static AgentIndex sampleIndex() {
         return new AgentIndex(
                 "test-graph", "hashing-64", 64, "now",
