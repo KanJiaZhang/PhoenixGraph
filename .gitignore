@@ -74,6 +74,8 @@ __pycache__/
 /incident-demo*.json
 /http-embed-demo*.json
 /incident-*.json
+# the case-study graphs (docs/END-TO-END.md / docs/AGENT-INGESTION-CASE.md) write on ingestion
+/case-*.json
 
 # the secure overlay mounts this file; copy it from security.example.yml and never commit it
 /deploy/secure/security.yml

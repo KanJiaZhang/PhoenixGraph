@@ -38,6 +38,9 @@ curl -s localhost:8081/api/v1/health          # {"status":"UP",...}
 
 ## 1. 文档 → 可审计知识图谱（摄取，dry-run）
 
+> 这一步的**逐步交互详解**（每个端点的请求、内部处理、响应与字段含义，含 `apply=true` 真实写入与
+> `POST /agent/merge` 的合并过程）见 [`docs/AGENT-INGESTION-CASE.md`](AGENT-INGESTION-CASE.md)。
+
 输入一份事故复盘（刻意写进了同一实体的**三种拼写**和一个**近重复**）：
 
 ```
