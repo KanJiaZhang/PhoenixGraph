@@ -1,0 +1,33 @@
+{
+  "id": 55,
+  "name": "demo-data",
+  "schemaVersion": 1,
+  "description": "The marketing fact instance behind demo-semantics: daily campaign rows (spend, impressions, clicks, revenue, gmv, new customers) with the channel, campaign and region dimensions denormalised, so a group().by(property) is a scan and the metrics of the semantic layer answer with real numbers.",
+  "constraints": { "idSchemaIndex": 0, "createdTimeIndex": -2, "lastUpdatedTimeIndex": -1 },
+  "storage": { "type": "RocksDB-Edge", "path": "demo-data", "regionCount": 64, "maxVersions": 1, "cacheEdges": true },
+  "vertexSchemas": [
+    {
+      "id": 1,
+      "name": "MarketingDay",
+      "description": "One marketing fact row: a (year, month, channel, campaign, region) cell with its measured outcomes",
+      "idSchema": { "id": 0, "name": "id", "description": "MarketingDay id", "type": "STRING" },
+      "createdTime": { "id": -2, "name": "createdTime", "description": "Creation timestamp", "type": "LONG" },
+      "lastUpdatedTime": { "id": -1, "name": "lastUpdatedTime", "description": "Last update timestamp", "type": "LONG" },
+      "properties": [
+        { "id": 1, "name": "name", "description": "MarketingDay id (display)", "type": "STRING", "display": true },
+        { "id": 2, "name": "spend", "description": "广告花费（元）", "type": "DOUBLE" },
+        { "id": 3, "name": "impressions", "description": "曝光量（次）", "type": "DOUBLE" },
+        { "id": 4, "name": "clicks", "description": "点击量（次）", "type": "DOUBLE" },
+        { "id": 5, "name": "revenue", "description": "归因收入（元）", "type": "DOUBLE" },
+        { "id": 6, "name": "gmv", "description": "成交总额（元）", "type": "DOUBLE" },
+        { "id": 7, "name": "newCustomers", "description": "新客数（个）", "type": "DOUBLE" },
+        { "id": 8, "name": "channel", "description": "渠道（搜索/社交/邮件/联盟）", "type": "STRING" },
+        { "id": 9, "name": "campaign", "description": "活动（品牌/促销/拉新）", "type": "STRING" },
+        { "id": 10, "name": "region", "description": "地区（华东/华南/华北/西部）", "type": "STRING" },
+        { "id": 11, "name": "year", "description": "年", "type": "LONG" },
+        { "id": 12, "name": "month", "description": "月 1..12", "type": "LONG" }
+      ]
+    }
+  ],
+  "edgeSchemas": []
+}

@@ -1,0 +1,243 @@
+{
+  "id": 54,
+  "name": "demo-semantics",
+  "description": "PhoenixAgent semantic layer (marketing demo): tables, columns, metrics, dimensions and the relations between them, with per-node graphProperty and alias bindings",
+  "constraints": {
+    "idSchemaIndex": 0,
+    "createdTimeIndex": -2,
+    "lastUpdatedTimeIndex": -1
+  },
+  "storage": {
+    "type": "RocksDB-Edge",
+    "path": "demo-semantics",
+    "regionCount": 64,
+    "maxVersions": 1,
+    "cacheEdges": true
+  },
+  "vertexSchemas": [
+    {
+      "id": 1,
+      "name": "Node",
+      "description": "A semantic-layer node: Table / Column / Metric / Dimension / Query",
+      "idSchema": {
+        "id": 0,
+        "name": "id",
+        "description": "Vertex id",
+        "type": "STRING"
+      },
+      "createdTime": {
+        "id": -2,
+        "name": "createdTime",
+        "description": "Property creation time (epoch milliseconds)",
+        "type": "LONG"
+      },
+      "lastUpdatedTime": {
+        "id": -1,
+        "name": "lastUpdatedTime",
+        "description": "Property last-update time (epoch milliseconds)",
+        "type": "LONG"
+      },
+      "properties": [
+        {
+          "id": 1,
+          "name": "name",
+          "description": "Node id (table/column/metric/dimension/query), the value edges point at",
+          "type": "STRING",
+          "display": true
+        },
+        {
+          "id": 2,
+          "name": "entityType",
+          "description": "Table / Column / Metric / Dimension / Query",
+          "type": "STRING"
+        },
+        {
+          "id": 3,
+          "name": "description",
+          "description": "Business meaning (来自 DDL 注释、文档或人工)",
+          "type": "STRING"
+        },
+        {
+          "id": 4,
+          "name": "alias",
+          "description": "Alternative names (多值)",
+          "type": {
+            "list": "STRING"
+          }
+        },
+        {
+          "id": 5,
+          "name": "dataType",
+          "description": "Column SQL type",
+          "type": "STRING"
+        },
+        {
+          "id": 6,
+          "name": "columnRole",
+          "description": "PK / FK / measure / attribute",
+          "type": "STRING"
+        },
+        {
+          "id": 7,
+          "name": "tableName",
+          "description": "The table a column belongs to",
+          "type": "STRING"
+        },
+        {
+          "id": 8,
+          "name": "aggFunction",
+          "description": "SUM / COUNT / COUNT_DISTINCT / AVG / RATIO",
+          "type": "STRING"
+        },
+        {
+          "id": 9,
+          "name": "expression",
+          "description": "The SQL aggregation expression (the metric definition)",
+          "type": "STRING"
+        },
+        {
+          "id": 10,
+          "name": "metricKind",
+          "description": "base / ratio / derived",
+          "type": "STRING"
+        },
+        {
+          "id": 11,
+          "name": "unit",
+          "description": "Unit (元 / 个 / %)",
+          "type": "STRING"
+        },
+        {
+          "id": 12,
+          "name": "sqlText",
+          "description": "The SQL of a reference query",
+          "type": "STRING"
+        },
+        {
+          "id": 13,
+          "name": "graphProperty",
+          "description": "The fact-graph property that carries this column",
+          "type": "STRING"
+        },
+        {
+          "id": 14,
+          "name": "status",
+          "description": "candidate / accepted / needs_review / rejected",
+          "type": "STRING"
+        },
+        {
+          "id": 15,
+          "name": "confidence",
+          "description": "Extraction confidence (0..1)",
+          "type": "DOUBLE"
+        },
+        {
+          "id": 16,
+          "name": "proposedBy",
+          "description": "parser / llm / human",
+          "type": "STRING"
+        },
+        {
+          "id": 17,
+          "name": "evidence",
+          "description": "JSON: the sources this node rests on, with character spans",
+          "type": "STRING"
+        },
+        {
+          "id": 18,
+          "name": "revision",
+          "description": "The model revision this node was published in",
+          "type": "LONG"
+        }
+      ]
+    }
+  ],
+  "edgeSchemas": [
+    {
+      "id": 22,
+      "name": "Relation",
+      "description": "A semantic-layer relation: structural, lineage, join, metric or attribution",
+      "idSchema": {
+        "id": 0,
+        "name": "id",
+        "description": "Edge id",
+        "type": "LONG"
+      },
+      "source": {
+        "id": 20,
+        "name": "source",
+        "description": "Endpoint (source) in Node",
+        "type": "STRING",
+        "vertex": "Node"
+      },
+      "target": {
+        "id": 21,
+        "name": "target",
+        "description": "Endpoint (target) in Node",
+        "type": "STRING",
+        "vertex": "Node"
+      },
+      "createdTime": {
+        "id": -2,
+        "name": "createdTime",
+        "description": "Property creation time (epoch milliseconds)",
+        "type": "LONG"
+      },
+      "lastUpdatedTime": {
+        "id": -1,
+        "name": "lastUpdatedTime",
+        "description": "Property last-update time (epoch milliseconds)",
+        "type": "LONG"
+      },
+      "direction": "DIRECTED",
+      "properties": [
+        {
+          "id": 1,
+          "name": "relation",
+          "description": "Relation name (contains / references / groupedBy / ...)",
+          "type": "STRING"
+        },
+        {
+          "id": 2,
+          "name": "xrelation",
+          "description": "Reverse relation name",
+          "type": "STRING"
+        },
+        {
+          "id": 3,
+          "name": "relationLabel",
+          "description": "中文关系名",
+          "type": "STRING"
+        },
+        {
+          "id": 4,
+          "name": "relationFamily",
+          "description": "关系家族 (结构 / 血缘 / 关联 / 指标 / 归因)",
+          "type": "STRING"
+        },
+        {
+          "id": 5,
+          "name": "confidence",
+          "description": "Confidence of this edge",
+          "type": "DOUBLE"
+        },
+        {
+          "id": 6,
+          "name": "evidence",
+          "description": "JSON: where the edge came from",
+          "type": "STRING"
+        },
+        {
+          "id": 7,
+          "name": "status",
+          "description": "candidate / accepted / needs_review",
+          "type": "STRING"
+        }
+      ],
+      "maxOutgoingEdges": 0,
+      "maxIncomingEdges": 0,
+      "maxDegree": 0
+    }
+  ],
+  "schemaVersion": 1
+}

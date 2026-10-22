@@ -1,0 +1,6 @@
+{
+  "graph": "demo-semantics",
+  "dataGraph": "demo-data",
+  "vertexType": "MarketingDay",
+  "comment": "The deployment half of the fact-graph binding for the marketing demo: which fact graph and vertex type serve this semantic graph. The per-metric / per-dimension property binding and the synonyms live on the graph's own nodes (graphProperty and alias), written by DemoMarketingGraph - the same writer that loads the fact rows."
+}

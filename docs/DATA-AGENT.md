@@ -136,7 +136,7 @@
 | 片 | 状态 | 证据 |
 |---|---|---|
 | S2 语义层 API | ✅ 完成 | `verify-semantic-api.mjs`：32 条语句与 CLI 逐字节相同；`SqlRendererTest` 7/7 |
-| S1 事实图绑定 | ✅ 完成（数据形态） | `semantic-bindings/tpc-h-analytics.json`：属性绑定 + 中文同义词；`null` = 明确拒绝而非猜。最终形态（写进图节点）待下次重播 |
+| S1 事实图绑定 | ✅ 完成（最终形态） | 每个指标/维度的 `graphProperty` 与同义词 `alias` 直接写在 `tpc-h-analytics` 图节点上，由同一个 `TpchDataAgentDataset` 与事实图一起写（两者不再漂移）；`SemanticRunner` 先读模型、再回退文件；`semantic-bindings/*.json` 只剩 `dataGraph`/`vertexType`。第二个语义图 `demo-semantics`（营销 demo，10 指标/4 维度/1152 行事实）用同一套 runner/interpreter/renderer 跑通，证明不硬编码 TPC-H（`verify-demo-semantics.mjs`） |
 | S3 智能问数 | ✅ 完成 | `verify-data-agent.mjs` 22/22：1996 营收 = **98,879,432.89**，答案带 plan + 遍历 + 行 + SQL；`confirm` 只回计划与签名令牌、不执行，令牌不可跨计划复用 |
 | S3 业务分析 / 归因 | ✅ 完成 | 95,612,794.05 → 98,879,432.89，变化 **+3,266,638.84**，**贡献之和 = 变化量**（答案自陈），按大小排序，并写明「描述性，非因果」 |
 | S4 MCP 插件 | ✅ 完成 | `node tools/mcp-server.mjs --selftest` 13 工具全通；stdio 往返实测；`ask_data` / `analyze_business` / `attribute_change` 均从插件跑通 |

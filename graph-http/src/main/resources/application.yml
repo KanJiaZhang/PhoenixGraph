@@ -28,6 +28,8 @@ phoenixgraph:
   storage:
     host: localhost
     port: 3000
+    # optional seed list (host:port); overrides host/port for cluster discovery
+    # seeds: [aerospike-1:3000, aerospike-2:3000]
     namespace: test
     # primary graph: used by the write endpoints; the demo links (IP/Phone -> Account) are
     # single-direction in http_demo_v3, so a UI draws one directed edge per link
@@ -72,7 +74,7 @@ phoenixgraph:
         vertex-set: kg_sanguo_v1
       # the agent toolkit's example graph: built from docs/agent-demo/*.md by
       #   POST /api/v1/agent/ingest {"graph":"agent-demo", ...}
-      # (see the README's "AI agent toolkit" section); it holds the extracted entities, the
+      # (see docs/AI-TOOLKIT.md); it holds the extracted entities, the
       # relations with their provenance sentences, the chunks, and one embedding per entity,
       # so find_entities/similar answer with the vector index the write path maintains
       - schema: agent-demo
@@ -101,6 +103,16 @@ phoenixgraph:
       #   g.V('sale_0','Sale').out('ofOrder').out('placedBy').out('customerNation').out('nationRegion').values('name')
       - schema: tpc-h-data
         vertex-set: tpc_h_data_v1
+      # 营销 demo 的语义层（demo-semantics）：表 / 字段 / 指标 / 维度 都是节点，关系承载血缘与维度。
+      # 每个指标的 graphProperty 与同义词 alias 直接写在节点上（S1 最终形态）。
+      # 由 DemoMarketingGraphTest / DemoMarketingGraph 装载（.rocksdb/demo-semantics）：
+      #   g.V('metric/spend','Node').values('graphProperty','aggFunction','unit')
+      #   g.V('metric/cac','Node').values('expression')   # 比率指标：无 graphProperty，拒答并给 SQL
+      - schema: demo-semantics
+      # 营销 demo 的事实数据（demo-data）：MarketingDay 顶点（反规范化的渠道/活动/地区维度与
+      # 花费/曝光/点击/收入/GMV/新客指标）。由 DemoMarketingGraphTest / DemoMarketingGraph 装载（.rocksdb/demo-data）：
+      #   g.V('MarketingDay').group().by('channel').by(values('spend').sum())
+      - schema: demo-data
       # the smart payment graph: accounts and merchants carry a profile vector (embedding) and a
       # home location (location), so a vector search, a geo search and a graph walk compose in one
       # traversal. Loaded by SmartPaymentGraphLiveLoadTest into RocksDB-Inline:
@@ -125,6 +137,34 @@ phoenixgraph:
     # - schema: payment-graph-smart-rocksdb
     #   vertex-set: payment_smart_v1
 
+  audit:
+    # append-only JSONL; blank keeps the trail in the audit logger and the bounded in-memory view only
+    file: ${PHOENIXGRAPH_AUDIT_FILE:}
+    max-bytes: 10485760
+    keep-files: 5
+
+  agent:
+    # --- the agent toolkit's embedder -------------------------------------------
+    # hashing (default) is deterministic and offline. `http` calls an OpenAI-compatible
+    # POST <base-url>/embeddings; the artifact records the model, so queries use the same vector space.
+    # optional directory of <name>.json rule packs; a file there wins over the classpath
+    rules-dir: ${PHOENIXGRAPH_AGENT_RULES_DIR:}
+    embedding:
+      provider: hashing
+      base-url: https://api.openai.com/v1
+      api-key: ${OPENAI_API_KEY:}
+      model: text-embedding-3-small
+      dimensions: 768
+      timeout-seconds: 30
+
+    # the final ordering step; `http` calls POST <base-url>/rerank (Cohere/Jina compatible)
+    reranker:
+      provider: none
+      base-url: https://api.cohere.com/v1
+      api-key: ${COHERE_API_KEY:}
+      model: rerank-v3.5
+      timeout-seconds: 10
+
     # --- request limits (see docs/API.md and docs/ROADMAP-1.0.md M2) ---
     # One instance has a fixed number of threads and connections; these are the numbers that keep one
     # expensive or hostile request from spending them for everybody else. The defaults are conservative
@@ -135,6 +175,8 @@ phoenixgraph:
     queue-wait: 2s            # how long a request waits for a slot before it is refused
     per-graph-concurrent: 8   # one hot graph cannot take the whole instance
     per-graph-per-second: 200 # 0 switches the rate limit off
+    per-tenant-concurrent: 0  # requests in flight per tenant; 0 switches the tenant limit off
+    per-tenant-per-second: 0  # requests per second per tenant; 0 switches the tenant limit off
     request-timeout: 30s      # wall clock a query may run; the engine checks it between steps
     retry-after-seconds: 1    # what a 429/503 answer tells the client to wait
 
