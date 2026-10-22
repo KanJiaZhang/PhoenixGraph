@@ -1,0 +1,14 @@
+PhoenixGraph is installed.
+
+The API is at http://{{ .Release.Name }}-http:8081 (cluster-internal).
+The UI is at http://{{ .Release.Name }}-web:8080 (cluster-internal).
+
+{{- if .Values.security.enabled }}
+
+Security is ON. The Secret {{ .Values.security.existingSecret }} must carry
+{{ .Values.security.configKey }} (the Spring YAML with phoenixgraph.security.keys) and
+{{ .Values.security.tokenKey }} (the dashboard token the UI forwards to the API).
+{{- else }}
+
+Security is OFF. Do not expose this release outside a trusted network.
+{{- end }}

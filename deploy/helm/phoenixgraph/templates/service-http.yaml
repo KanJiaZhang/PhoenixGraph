@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-http
+  labels:
+    {{- include "phoenixgraph.labels" . | nindent 4 }}
+    app.kubernetes.io/component: engine
+spec:
+  selector:
+    app.kubernetes.io/name: {{ include "phoenixgraph.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: engine
+  ports:
+    - name: http
+      port: 8081
+      targetPort: http

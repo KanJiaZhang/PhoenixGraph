@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-config
+  labels:
+    {{- include "phoenixgraph.labels" . | nindent 4 }}
+data:
+  SPRING_PROFILES_ACTIVE: {{ .Values.springProfiles | quote }}
+  PHOENIXGRAPH_STORAGE_HOST: {{ .Values.storage.host | quote }}
+  {{- if .Values.storage.seeds }}
+  PHOENIXGRAPH_STORAGE_SEEDS: {{ join "," .Values.storage.seeds | quote }}
+  {{- end }}
+  PHOENIXGRAPH_STORAGE_PORT: {{ .Values.storage.port | quote }}
+  PHOENIXGRAPH_STORAGE_NAMESPACE: {{ .Values.storage.namespace | quote }}
+  PHOENIXGRAPH_STORAGE_VERTEX_SET: {{ .Values.storage.vertexSet | quote }}
+  PHOENIXGRAPH_STORAGE_SCHEMA: {{ .Values.storage.schema | quote }}
+  PHOENIXGRAPH_STORAGE_ROCKSDB_ROOT: {{ .Values.storage.rocksdbRoot | quote }}
+  PHOENIXGRAPH_AUDIT_FILE: {{ .Values.audit.file | quote }}
+  PHOENIXGRAPH_AUDIT_MAX_BYTES: {{ .Values.audit.maxBytes | quote }}
+  PHOENIXGRAPH_AUDIT_KEEP_FILES: {{ .Values.audit.keepFiles | quote }}
+  PHOENIXGRAPH_LIMITS_PER_TENANT_CONCURRENT: {{ .Values.limits.perTenantConcurrent | quote }}
+  PHOENIXGRAPH_LIMITS_PER_TENANT_PER_SECOND: {{ .Values.limits.perTenantPerSecond | quote }}
+  PHOENIXGRAPH_HTTP_URL: "http://{{ .Release.Name }}-http:8081"

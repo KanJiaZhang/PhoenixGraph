@@ -1,0 +1,58 @@
+# Production-shaped defaults: authentication on, audit on disk, one engine replica because RocksDB is
+# single-writer. Set springProfiles to "docker" and security.enabled to false for a local trial.
+springProfiles: secure
+
+image:
+  http: phoenixgraph-http:1.0.1
+  web: phoenixgraph-web:1.0.1
+  pullPolicy: IfNotPresent
+
+http:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+
+web:
+  replicas: 2
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+storage:
+  host: aerospike
+  seeds: []
+  port: 3000
+  namespace: test
+  vertexSet: http_demo_v3
+  schema: payment-graph
+  rocksdbRoot: /data/rocksdb
+
+audit:
+  file: /data/audit/audit.jsonl
+  maxBytes: "10485760"
+  keepFiles: 5
+
+limits:
+  perTenantConcurrent: 0
+  perTenantPerSecond: 0
+
+security:
+  enabled: true
+  # Create this Secret with key PHOENIXGRAPH_SECURITY_KEYS (the YAML list of keys) before installing.
+  existingSecret: phoenixgraph-secrets
+  configKey: security.yml
+  tokenKey: dashboard-token
+
+persistence:
+  enabled: true
+  size: 20Gi
+  storageClass: ""

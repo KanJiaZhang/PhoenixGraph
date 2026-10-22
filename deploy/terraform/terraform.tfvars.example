@@ -1,0 +1,7 @@
+# Copy to terraform.tfvars and adjust.
+kubeconfig_path = "~/.kube/config"
+namespace       = "phoenixgraph"
+image_http      = "ghcr.io/<owner>/phoenixgraph-http:1.0.1"
+image_web       = "ghcr.io/<owner>/phoenixgraph-web:1.0.1"
+storage_host    = "aerospike"
+persistence_size = "20Gi"

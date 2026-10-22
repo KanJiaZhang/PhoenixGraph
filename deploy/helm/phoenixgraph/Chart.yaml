@@ -1,0 +1,6 @@
+apiVersion: v2
+name: phoenixgraph
+description: PhoenixGraph graph database - API, UI and a persistent RocksDB volume
+type: application
+version: 1.0.1
+appVersion: "1.0.1"
