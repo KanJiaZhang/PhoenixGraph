@@ -26,7 +26,7 @@ class MetricsControllerTest {
 
     /** A gate with generous limits: it is here because the controller exports its counters, not to limit the test. */
     private static RequestLimits gate() {
-        return new RequestLimits(new LimitsProperties(true, 64, Duration.ofMillis(10), 8, 0, Duration.ofSeconds(5), 1, 1 << 20, 65536));
+        return new RequestLimits(new LimitsProperties(true, 64, Duration.ofMillis(10), 8, 0, 0, 0, Duration.ofSeconds(5), 1, 1 << 20, 65536));
     }
 
     private static MetricsRegistry registry() {

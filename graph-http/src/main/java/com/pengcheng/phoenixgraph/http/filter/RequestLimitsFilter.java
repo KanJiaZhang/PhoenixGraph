@@ -79,7 +79,8 @@ public class RequestLimitsFilter extends OncePerRequestFilter {
         }
 
         long started = System.nanoTime();
-        RequestLimits.Admission admission = limits.admit(graph);
+        String tenant = request.getAttribute("phoenixgraph.tenant") instanceof String value ? value : null;
+        RequestLimits.Admission admission = limits.admit(graph, tenant);
         if (admission != RequestLimits.Admission.ADMITTED) {
             int status = admission == RequestLimits.Admission.RATE_LIMITED ? 429 : 503;
             long retryAfter = limits.retryAfter().toSeconds();
@@ -107,7 +108,7 @@ public class RequestLimitsFilter extends OncePerRequestFilter {
                         response.getHeader(HttpHeaders.CONTENT_LENGTH) == null ? "-" : response.getHeader(HttpHeaders.CONTENT_LENGTH),
                         selectedQuery(request, effective));
             }
-            limits.release(graph);
+            limits.release(graph, tenant);
             MDC.remove("requestId");
         }
     }

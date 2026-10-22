@@ -2,6 +2,7 @@ package com.pengcheng.phoenixgraph.http.config;
 
 import org.springframework.beans.factory.annotation.Value;
 import com.aerospike.client.AerospikeClient;
+import com.aerospike.client.Host;
 import com.aerospike.client.policy.ClientPolicy;
 import com.pengcheng.phoenixgraph.http.service.GraphBinding;
 import com.pengcheng.phoenixgraph.metrics.GraphMetrics;
@@ -90,7 +91,22 @@ public class StorageConfig {
         // (verification/verify-failure-modes.mjs).
         ClientPolicy policy = new ClientPolicy();
         policy.failIfNotConnected = false;
-        return new AerospikeClient(policy, properties.host(), properties.port());
+        Host[] hosts = properties.seedHosts().stream()
+                .map(seed -> toHost(seed, properties.port()))
+                .toArray(Host[]::new);
+        return new AerospikeClient(policy, hosts);
+    }
+
+    private static Host toHost(String seed, int defaultPort) {
+        int colon = seed.lastIndexOf(':');
+        if (colon > 0 && seed.indexOf(':') == colon) {
+            try {
+                return new Host(seed.substring(0, colon), Integer.parseInt(seed.substring(colon + 1)));
+            } catch (NumberFormatException ignored) {
+                // a hostname that contains a colon but no numeric port: use the configured default
+            }
+        }
+        return new Host(seed, defaultPort);
     }
 
     /**

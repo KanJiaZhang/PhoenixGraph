@@ -1,0 +1,26 @@
+# A production-shaped profile: fail closed.
+#
+#   SPRING_PROFILES_ACTIVE=secure
+#   PHOENIXGRAPH_AUDIT_FILE=/data/audit/audit.jsonl
+#   --spring.config.additional-location=file:/etc/phoenixgraph/security.yml
+#
+# The security.yml (or environment variables) supplies the keys:
+#
+#   phoenixgraph:
+#     security:
+#       enabled: true
+#       keys:
+#         - name: dashboard
+#           token: ${PHOENIXGRAPH_DASHBOARD_TOKEN}
+#           role: writer
+#           graphs: [payment-graph]
+#
+# With enabled true and no keys, every /api call is a 401: that is deliberate, not a broken start.
+# TLS is separate: terminate it in front of the service, or set server.ssl.* with a keystore (docs/API.md §2).
+phoenixgraph:
+  security:
+    enabled: true
+  audit:
+    file: ${PHOENIXGRAPH_AUDIT_FILE:/data/audit/audit.jsonl}
+    max-bytes: 10485760
+    keep-files: 5

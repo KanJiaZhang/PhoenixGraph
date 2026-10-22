@@ -61,4 +61,12 @@ class AuditLogTest {
         assertTrue(String.valueOf(view.get("note")).contains(AuditLog.AUDIT_LOGGER), String.valueOf(view.get("note")));
         assertTrue(String.valueOf(view.get("entries")).contains("key=k"), String.valueOf(view.get("entries")));
     }
+
+    @Test
+    void entriesCarryTheTenant() {
+        AuditLog audit = new AuditLog();
+        audit.record("acme", "k", "reader", "GET", "/api/v1/graphs", null, null, 200, 1);
+        assertEquals("acme", audit.recent(1).get(0).tenant());
+        assertTrue(audit.view(1).get("entries").toString().contains("tenant=acme"));
+    }
 }

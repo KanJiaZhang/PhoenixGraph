@@ -25,7 +25,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class RequestLimitsFilterTest {
 
     private static LimitsProperties properties(int maxConcurrent, int perGraph, int perSecond) {
-        return new LimitsProperties(true, maxConcurrent, Duration.ofMillis(20), perGraph, perSecond,
+        return new LimitsProperties(true, maxConcurrent, Duration.ofMillis(20), perGraph, perSecond, 0, 0,
                 Duration.ofSeconds(5), 1, 1 << 20, 65536);
     }
 

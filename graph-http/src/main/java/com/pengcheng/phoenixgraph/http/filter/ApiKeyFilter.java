@@ -87,44 +87,49 @@ public class ApiKeyFilter extends OncePerRequestFilter {
             graph = RequestGraphs.ofBody(body);
         }
 
-        ApiKeys.Principal principal;
+        ApiKeys.Principal principal = null;
         try {
             principal = keys.authenticate(tokenOf(request));
             keys.require(principal, ApiKeys.permissionFor(request.getMethod(), request.getRequestURI()), graph);
         } catch (ApiKeys.UnauthorizedException unauthorized) {
-            refuse(request, response, 401, unauthorized.getMessage(), principalName(request, keys), graph, body,
-                    started);
+            refuse(request, response, 401, unauthorized.getMessage(), "unknown", principalName(request, keys),
+                    graph, body, started);
             response.setHeader(HttpHeaders.WWW_AUTHENTICATE, "Bearer realm=\"phoenixgraph\"");
             MDC.remove("requestId");
             return;
         } catch (ApiKeys.ForbiddenException forbidden) {
-            refuse(request, response, 403, forbidden.getMessage(), principalName(request, keys), graph, body,
-                    started);
+            refuse(request, response, 403, forbidden.getMessage(),
+                    principal == null ? "default" : principal.tenant(), principalName(request, keys), graph,
+                    body, started);
             MDC.remove("requestId");
             return;
         }
 
         MDC.put("key", principal.name());
+        MDC.put("tenant", principal.tenant());
+        request.setAttribute("phoenixgraph.tenant", principal.tenant());
         try {
             chain.doFilter(effective, response);
         } finally {
-            audit.record(principal.name(), principal.role(), request.getMethod(), request.getRequestURI(), graph,
-                    body == null ? null : queryOf(body), response.getStatus(),
+            audit.record(principal.tenant(), principal.name(), principal.role(), request.getMethod(),
+                    request.getRequestURI(), graph, body == null ? null : queryOf(body), response.getStatus(),
                     (System.nanoTime() - started) / 1_000_000);
             MDC.remove("key");
+            MDC.remove("tenant");
             MDC.remove("requestId");
         }
     }
 
     private void refuse(HttpServletRequest request, HttpServletResponse response, int status, String message,
-                        String keyName, String graph, String body, long started) throws IOException {
+                        String tenant, String keyName, String graph, String body, long started)
+            throws IOException {
         response.setStatus(status);
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
         response.getWriter().write("{\"error\":\"" + escape(message)
                 + "\",\"exception\":\"com.pengcheng.phoenixgraph.http.service.ApiKeys\","
                 + "\"hint\":\"Send 'Authorization: Bearer <key>'; see docs/API.md section 2\","
                 + "\"requestId\":\"" + MDC.get("requestId") + "\"}");
-        audit.record(keyName, "-", request.getMethod(), request.getRequestURI(), graph,
+        audit.record(tenant, keyName, "-", request.getMethod(), request.getRequestURI(), graph,
                 body == null ? null : queryOf(body), status, (System.nanoTime() - started) / 1_000_000);
         LOGGER.warn("refused {} {} graph={} status={} reason={}", request.getMethod(), request.getRequestURI(),
                 graph == null ? "-" : graph, status, message);

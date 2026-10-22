@@ -25,7 +25,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class ApiKeyFilterTest {
 
     private static SecurityProperties.Key key(String name, String role, String... graphs) {
-        return new SecurityProperties.Key(name, name + "-token", null, role, List.of(graphs));
+        return new SecurityProperties.Key(name, name + "-token", null, role, List.of(graphs), "default");
     }
 
     private static ApiKeys keys(SecurityProperties.Key... entries) {

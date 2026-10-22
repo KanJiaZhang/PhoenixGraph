@@ -1,0 +1,19 @@
+# Copy to security.yml and set PHOENIXGRAPH_DASHBOARD_TOKEN in the environment.
+#
+#   cp deploy/secure/security.example.yml deploy/secure/security.yml
+#   export PHOENIXGRAPH_DASHBOARD_TOKEN="$(openssl rand -hex 24)"
+#
+# The token is read from the environment, so this file can be committed. For a real deployment use a
+# secret manager and the sha256 form (never store the clear token in a file more people can read):
+#
+#   - name: dashboard
+#     sha256: <sha256 of the token>
+#     role: admin
+phoenixgraph:
+  security:
+    enabled: true
+    keys:
+      - name: dashboard
+        token: ${PHOENIXGRAPH_DASHBOARD_TOKEN}
+        role: admin
+        # graphs: [payment-graph]   # optional per-graph allowlist

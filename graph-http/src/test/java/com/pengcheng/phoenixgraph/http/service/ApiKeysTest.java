@@ -21,7 +21,7 @@ class ApiKeysTest {
     }
 
     private static SecurityProperties.Key key(String name, String role, String... graphs) {
-        return new SecurityProperties.Key(name, name + "-token", null, role, List.of(graphs));
+        return new SecurityProperties.Key(name, name + "-token", null, role, List.of(graphs), "default");
     }
 
     @Test
@@ -54,11 +54,11 @@ class ApiKeysTest {
     @Test
     void aTokenCanBeConfiguredAsItsSha256InsteadOfInClear() {
         String token = "s3cret-token";
-        SecurityProperties.Key hashed = new SecurityProperties.Key("ops", null, ApiKeys.sha256(token), "admin", List.of());
+        SecurityProperties.Key hashed = new SecurityProperties.Key("ops", null, ApiKeys.sha256(token), "admin", List.of(), "default");
         ApiKeys keys = new ApiKeys(properties(hashed));
         // the digest is lower-case hex of the UTF-8 bytes; a config may give it in any case
         assertEquals("ops", keys.authenticate(token).name());
-        SecurityProperties.Key upper = new SecurityProperties.Key("ops2", null, ApiKeys.sha256(token).toUpperCase(), "admin", List.of());
+        SecurityProperties.Key upper = new SecurityProperties.Key("ops2", null, ApiKeys.sha256(token).toUpperCase(), "admin", List.of(), "default");
         assertEquals("ops2", new ApiKeys(properties(upper)).authenticate(token).name());
         assertThrows(ApiKeys.UnauthorizedException.class, () -> keys.authenticate("s3cret-toke"));
     }
@@ -66,10 +66,10 @@ class ApiKeysTest {
     @Test
     void aKeyWithoutATokenOrDigestIsAConfigurationError() {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
-                () -> new SecurityProperties.Key("broken", " ", null, "reader", List.of()));
+                () -> new SecurityProperties.Key("broken", " ", null, "reader", List.of(), "default"));
         assertTrue(failure.getMessage().contains("token or a sha256"), failure.getMessage());
         assertThrows(IllegalArgumentException.class,
-                () -> new SecurityProperties.Key("broken", "t", null, "root", List.of()));
+                () -> new SecurityProperties.Key("broken", "t", null, "root", List.of(), "default"));
     }
 
     @Test
@@ -131,5 +131,12 @@ class ApiKeysTest {
         // the well-known vector for "abc", so a deployment can compute the value with sha256sum and compare
         // (echo -n abc | sha256sum)
         assertEquals("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", ApiKeys.sha256("abc"));
+    }
+
+    @Test
+    void aKeyCarriesItsTenant() {
+        SecurityProperties keys = properties(new SecurityProperties.Key("ops", "ops-token", null, "admin",
+                List.of(), "acme"));
+        assertEquals("acme", new ApiKeys(keys).authenticate("ops-token").tenant());
     }
 }

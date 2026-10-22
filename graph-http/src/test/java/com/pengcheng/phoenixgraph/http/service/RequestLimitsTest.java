@@ -23,7 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class RequestLimitsTest {
 
     private static LimitsProperties properties(int maxConcurrent, int perGraph, int perSecond, Duration queueWait) {
-        return new LimitsProperties(true, maxConcurrent, queueWait, perGraph, perSecond, Duration.ofMillis(200), 1, 1 << 20, 65536);
+        return new LimitsProperties(true, maxConcurrent, queueWait, perGraph, perSecond, 0, 0, Duration.ofMillis(200), 1, 1 << 20, 65536);
     }
 
     @Test
@@ -74,7 +74,7 @@ class RequestLimitsTest {
 
     @Test
     void aDisabledGateAdmitsEverything() {
-        RequestLimits limits = new RequestLimits(new LimitsProperties(false, 1, Duration.ZERO, 1, 1,
+        RequestLimits limits = new RequestLimits(new LimitsProperties(false, 1, Duration.ZERO, 1, 1, 0, 0,
                 Duration.ofMillis(50), 1, 1 << 20, 65536));
         for (int i = 0; i < 10; i += 1) {
             assertEquals(RequestLimits.Admission.ADMITTED, limits.admit("g"));
@@ -163,5 +163,30 @@ class RequestLimitsTest {
         assertEquals(1L, limits.counters().get("requests.admitted"));
         assertEquals(1L, limits.counters().get("requests.refused"));
         limits.release("g");
+    }
+
+    private static LimitsProperties tenantProperties(int perTenantConcurrent, int perTenantPerSecond) {
+        return new LimitsProperties(true, 64, Duration.ZERO, 8, 0, perTenantConcurrent, perTenantPerSecond,
+                Duration.ofMillis(200), 1, 1 << 20, 65536);
+    }
+
+    @Test
+    void aTenantHasItsOwnRateAndConcurrencyBudget() {
+        RequestLimits limits = new RequestLimits(tenantProperties(1, 1));
+        assertEquals(RequestLimits.Admission.ADMITTED, limits.admit(null, "acme"));
+        limits.release(null, "acme");
+        assertEquals(RequestLimits.Admission.RATE_LIMITED, limits.admit(null, "acme"));
+        assertEquals(RequestLimits.Admission.ADMITTED, limits.admit(null, "other"));
+        limits.release(null, "other");
+    }
+
+    @Test
+    void aTenantConcurrencySlotIsReleased() {
+        RequestLimits limits = new RequestLimits(tenantProperties(1, 0));
+        assertEquals(RequestLimits.Admission.ADMITTED, limits.admit(null, "acme"));
+        assertEquals(RequestLimits.Admission.BUSY, limits.admit(null, "acme"));
+        limits.release(null, "acme");
+        assertEquals(RequestLimits.Admission.ADMITTED, limits.admit(null, "acme"));
+        limits.release(null, "acme");
     }
 }

@@ -1,0 +1,14 @@
+# Reverse proxy for PhoenixGraph. The API gets the dashboard key; the UI is proxied as-is.
+{$PHOENIXGRAPH_DOMAIN:localhost} {
+	tls internal
+
+	handle /api/* {
+		reverse_proxy graph-http:8081 {
+			header_up Authorization "Bearer {$PHOENIXGRAPH_DASHBOARD_TOKEN}"
+		}
+	}
+
+	handle {
+		reverse_proxy graph-web:8080
+	}
+}

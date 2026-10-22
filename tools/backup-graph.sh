@@ -44,7 +44,8 @@ mkdir -p "$DIR"
 
 # Which storage does this graph use? The API answers that, so the script does not have to parse a schema.
 STORAGE="$(curl -fsS "$API/api/v1/graphs" | tr ',' '\n' | awk -v g="\"$GRAPH\"" '
-  $0 ~ "\"name\":"g { found=1 } found && /"storage":/ { gsub(/.*"storage":"|".*/, ""); print; exit }')"
+  index($0, "\"name\":" g) > 0 { found=1 }
+  found && index($0, "\"storage\":") > 0 { value=$0; sub(/.*"storage":"/, "", value); sub(/".*/, "", value); print value; exit }')"
 
 if [ -z "$STORAGE" ]; then
   echo "!! '$GRAPH' is not served by $API (see $API/api/v1/graphs)" >&2

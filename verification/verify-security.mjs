@@ -6,8 +6,8 @@
 // because the served instance runs open on purpose: proving that a key is required must not require breaking
 // the demo. The keys live in a temporary configuration file, which is also how the documentation says to
 // configure them (`--spring.config.additional-location`).
-import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -53,6 +53,7 @@ writeFileSync(config, [
   '      - name: scoped-writer',
   '        token: scope-token',
   '        role: writer',
+  '        tenant: acme',
   '        graphs: [payment-graph]',
   '      - name: reader',
   '        token: read-token',
@@ -64,8 +65,13 @@ writeFileSync(config, [
   '        role: admin',
   '',
 ].join('\n'));
+const auditFile = join(dir, 'audit.jsonl');
 
-const jar = readdirSync('graph-http/target').find((name) => /^graph-http-.*\.jar$/.test(name) && !name.endsWith('.original'));
+const jar = readdirSync('graph-http/target')
+  .filter((name) => /^graph-http-.*\.jar$/.test(name) && !name.endsWith('.original'))
+  .map((name) => ({ name, mtime: statSync(join('graph-http/target', name)).mtimeMs }))
+  .sort((a, b) => b.mtime - a.mtime)
+  .map((entry) => entry.name)[0];
 if (!jar) {
   check('the engine jar exists (run ./mvnw -DskipTests package first)', false, 'graph-http/target is empty');
   process.exit(1);
@@ -74,6 +80,7 @@ const engine = spawn('java', ['-jar', `graph-http/target/${jar}`,
   `--server.port=${PORT}`,
   `--spring.config.additional-location=file:${config.replace(/\\/g, '/')}`,
   `--phoenixgraph.storage.rocksdb-root=${mkdtempSync(join(tmpdir(), 'pg-secure-rocksdb-'))}`,
+  `--phoenixgraph.audit.file=${auditFile.replace(/\\/g, '/')}`,
   '--phoenixgraph.gemini.first-port=19300',
 ], { stdio: ['ignore', 'pipe', 'pipe'] });
 let log = '';
@@ -133,6 +140,10 @@ if (up) {
   const keys = new Set(entries.map((entry) => entry.key));
   check('an admin key reads the audit trail', audit.status === 200 && entries.length >= 5,
     `${audit.status} ${entries.length} entries`);
+  check('the audit view is durable and names the tenant',
+    JSON.parse(audit.text).durable === true
+    && entries.some((entry) => entry.key === 'scoped-writer' && entry.tenant === 'acme'),
+    `durable=${JSON.parse(audit.text).durable}`);
   check('the trail names the keys that called, including the refused ones',
     keys.has('reader') && keys.has('scoped-writer') && (keys.has('unknown') || keys.has('anonymous')),
     [...keys].join(', '));
@@ -150,6 +161,16 @@ if (up) {
 const openInstance = await call(OPEN, '/api/v1/graphs');
 check('the served instance still answers without a key (security off by default)',
   openInstance.status === 200, `${openInstance.status}`);
+
+// ---- the MCP plugin can use a key too -------------------------------------------------------------
+const mcp = spawnSync('node', ['tools/mcp-server.mjs', '--list'], {
+  env: { ...process.env, PHOENIXGRAPH_API: SECURE, PHOENIXGRAPH_API_KEY: 'ops-token' },
+  encoding: 'utf8',
+  timeout: 120000,
+});
+check('the MCP server reaches a secured instance with PHOENIXGRAPH_API_KEY',
+  mcp.status === 0 && /find_entities/.test(mcp.stdout || ''),
+  `${mcp.status}: ${(mcp.stderr || mcp.stdout || '').trim().split('\n').slice(0, 4).join(' | ')}`);
 
 stop();
 await sleep(500);

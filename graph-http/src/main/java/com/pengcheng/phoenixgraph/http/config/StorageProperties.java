@@ -15,7 +15,8 @@ import java.util.List;
  */
 @ConfigurationProperties(prefix = "phoenixgraph.storage")
 public record StorageProperties(String host, int port, String namespace, String vertexSet, String schema,
-                                String rocksdbRoot, String schemaDir, List<GraphProperties> graphs) {
+                                String rocksdbRoot, String schemaDir, List<GraphProperties> graphs,
+                                List<String> seeds) {
 
     public StorageProperties {
         if (host == null || host.isBlank()) {
@@ -31,6 +32,21 @@ public record StorageProperties(String host, int port, String namespace, String 
             vertexSet = "vertices";
         }
         graphs = graphs == null ? List.of() : List.copyOf(graphs);
+        seeds = seeds == null ? List.of() : List.copyOf(seeds);
+    }
+
+    /**
+     * The Aerospike seeds to start from: the configured list, or {@code host:port} when none is given.
+     * A seed only bootstraps cluster discovery; once connected the client learns every node.
+     */
+    public List<String> seedHosts() {
+        List<String> configured = new ArrayList<>();
+        for (String seed : seeds) {
+            if (seed != null && !seed.isBlank()) {
+                configured.add(seed.trim());
+            }
+        }
+        return configured.isEmpty() ? List.of(host + ":" + port) : List.copyOf(configured);
     }
 
     /**

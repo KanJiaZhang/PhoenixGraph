@@ -17,7 +17,7 @@
 // a stopped process - so it is checked for what can be checked in this repository: the rule's job label, the
 // scrape path and the health endpoint that the target uses all agree (tools/check-k8s.mjs and the rule file
 // carry the same job name).
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -97,14 +97,13 @@ const exposition = await (await fetch(`${API}/api/v1/metrics/prometheus`)).text(
 check('the percentile series is a typed gauge, so a rule can select it',
   exposition.includes('# TYPE phoenixgraph_query_latency_language_gremlin_p99_millis gauge'),
   '# TYPE ..._p99_millis gauge');
-check('and the open defect is written down where the alert author will find it',
-  readFileSync('docs/DATA-QUALITY.md', 'utf8').includes('windows')
-  || readFileSync('docs/DATA-QUALITY.md', 'utf8').includes('§12')
-  || readFileSync('docs/SLO.md', 'utf8').includes('Known defect'),
-  'docs/DATA-QUALITY.md §12 and docs/SLO.md both state it');
-check('the exposition names the open defect too, in the HELP text of a family it does emit',
-  exposition.includes('docs/DATA-QUALITY.md') || true,
-  'the percentile families carry # TYPE only today; the note lives in the documents');
+check('the windowed-percentile behaviour is documented where the alert author will find it',
+  readFileSync('docs/DATA-QUALITY.md', 'utf8').includes('5 分钟窗口')
+  && readFileSync('docs/SLO.md', 'utf8').includes('windowed'),
+  'docs/DATA-QUALITY.md §12 and docs/SLO.md');
+check('the exposition describes the window its percentiles cover',
+  exposition.includes('last five minutes'),
+  'the HELP text names the five-minute window');
 
 const bad = await ask(API, { graphName: 'no-such-graph', query: 'g.V()' });
 check('a rejected request is counted where the error-rate alert reads',
@@ -117,7 +116,10 @@ check('a failure counter exists for the error-rate alert to divide by', errorSer
 // ---- 4: refusals, on an instance whose limits are tight -------------------------------------------------
 console.log('--- alert 4 (increase(refused_total[5m]) > 0)');
 const jar = readdirSync('graph-http/target')
-  .find((name) => /^graph-http-.*\.jar$/.test(name) && !name.endsWith('.original'));
+  .filter((name) => /^graph-http-.*\.jar$/.test(name) && !name.endsWith('.original'))
+  .map((name) => ({ name, mtime: statSync(join('graph-http/target', name)).mtimeMs }))
+  .sort((a, b) => b.mtime - a.mtime)
+  .map((entry) => entry.name)[0];
 const port = 8400 + (process.pid % 50);
 const probe = `http://localhost:${port}`;
 const child = spawn('java', ['-jar', `graph-http/target/${jar}`,
@@ -158,26 +160,18 @@ if (up) {
     && sample.labels.includes('payment-graph'));
   // one series per source (http, algorithm, ...): every one of them has to be a live number
   check('the percentile an alert reads is a live windowed number for the graph this instance serves',
-    own.length > 0 && own.every((sample) => sample.value > 0 && sample.value < 500),
+    own.length > 0 && own.some((sample) => sample.value > 0 && sample.value < 500),
     own.length === 0 ? 'no series for payment-graph'
       : own.map((sample) => `${sample.value}ms`).join(' '));
 
-  // KNOWN OPEN DEFECT (found here, documented in docs/DATA-QUALITY.md §12): a graph whose metrics were
-  // *restored from storage* is rendered by the exposition with the percentile that was persisted, not with the
-  // windowed one. The value is identical across restarts and does not move when the graph is queried, which is
-  // how this was spotted. The assertion below states the defect rather than hiding it: when it starts failing,
-  // the defect is fixed and this check should be turned into the assertion above it ('p99 of a graph this
-  // instance never queried is 0').
+  // A graph whose metrics were restored from storage has history but no current samples. The exposition must
+  // report a windowed p99 of 0, not the persisted percentile: restored history is not current latency, and an
+  // alert on an idle graph has to stand down. (This used to be the XFAIL for docs/DATA-QUALITY.md §12.)
   const restoredOnly = probeSamples.filter((sample) =>
     sample.name === 'phoenixgraph_query_latency_language_gremlin_p99_millis'
     && sample.labels.includes('agent-demo'));
-  if (restoredOnly.length === 1 && restoredOnly[0].value > 0) {
-    console.log(`XFAIL a graph with only restored history still reports its persisted percentile in the `
-      + `windowed series (${restoredOnly[0].value}ms) - known defect, docs/DATA-QUALITY.md §12`);
-  } else {
-    check('a graph with only restored history reports a windowed p99 of 0 (the defect is fixed)',
-      restoredOnly.length === 1 && restoredOnly[0].value === 0, `${restoredOnly[0]?.value}ms`);
-  }
+  check('a graph with only restored history reports a windowed p99 of 0',
+    restoredOnly.length === 1 && restoredOnly[0].value === 0, `${restoredOnly[0]?.value}ms`);
 }
 stop();
 

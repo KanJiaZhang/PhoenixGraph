@@ -1,0 +1,26 @@
+# TLS overlay: Caddy on https://localhost:8443 (or a real domain with PHOENIXGRAPH_DOMAIN set).
+#
+#   export PHOENIXGRAPH_DASHBOARD_TOKEN=...
+#   docker compose -f docker-compose.yml -f docker-compose.secure.yml -f docker-compose.tls.yml up --build
+services:
+  caddy:
+    image: caddy:2.8-alpine
+    environment:
+      PHOENIXGRAPH_DOMAIN: ${PHOENIXGRAPH_DOMAIN:-localhost}
+      PHOENIXGRAPH_DASHBOARD_TOKEN: ${PHOENIXGRAPH_DASHBOARD_TOKEN}
+    ports:
+      - "8443:443"
+      - "8082:80"
+    volumes:
+      - ./deploy/tls/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      graph-http:
+        condition: service_healthy
+      graph-web:
+        condition: service_healthy
+
+volumes:
+  caddy_data:
+  caddy_config:

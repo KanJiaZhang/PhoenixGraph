@@ -14,7 +14,7 @@
 // checks use. The acceptance criterion is the one in docs/ROADMAP-1.0.md M3-1: kill a storage node, and the
 // query still answers the same thing.
 import { execFileSync } from 'node:child_process';
-import { readdirSync } from 'node:fs';
+import { readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 const NL = String.fromCharCode(10);
@@ -62,7 +62,11 @@ check('the namespace replicates every record twice',
 
 // ---- 1. an engine container on the cluster's network ---------------------------------------------------
 quiet(['rm', '-f', ENGINE]);
-const jar = readdirSync('graph-http/target').find((name) => /^graph-http-.*\.jar$/.test(name) && !name.endsWith('.original'));
+const jar = readdirSync('graph-http/target')
+  .filter((name) => /^graph-http-.*\.jar$/.test(name) && !name.endsWith('.original'))
+  .map((name) => ({ name, mtime: statSync(join('graph-http/target', name)).mtimeMs }))
+  .sort((a, b) => b.mtime - a.mtime)
+  .map((entry) => entry.name)[0];
 if (!jar) {
   check('the engine jar exists (run ./mvnw -DskipTests package first)', false, 'graph-http/target is empty');
   process.exit(1);
@@ -72,8 +76,7 @@ const started = docker(['run', '-d', '--name', ENGINE, '--network', NETWORK,
   '-v', `${join(process.cwd(), 'graph-http', 'target').replace(/\\/g, '/')}:/jars:ro`,
   JRE,
   'java', '-jar', `/jars/${jar}`,
-  '--phoenixgraph.storage.host=aerospike-1',
-  '--phoenixgraph.storage.port=3000',
+  '--phoenixgraph.storage.seeds=aerospike-1:3000,aerospike-2:3000',
   `--phoenixgraph.storage.vertex-set=${SET}`,
   '--phoenixgraph.storage.schema=payment-graph',
   '--phoenixgraph.gemini.first-port=19700',

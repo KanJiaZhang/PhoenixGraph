@@ -33,12 +33,15 @@ public record SecurityProperties(@DefaultValue("false") boolean enabled, List<Ke
      * @param role   {@code reader} (reads and queries), {@code writer} (also writes), {@code admin} (also
      *               schema authoring, ingestion, index rebuilds and the audit view)
      * @param graphs the graphs this key may name; empty means every graph
+     * @param tenant the tenant this key belongs to (the audit trail and the optional per-tenant quotas)
      */
     public record Key(String name, String token, String sha256,
-                      @DefaultValue("reader") String role, List<String> graphs) {
+                      @DefaultValue("reader") String role, List<String> graphs,
+                      @DefaultValue("default") String tenant) {
 
         public Key {
             graphs = graphs == null ? List.of() : List.copyOf(graphs);
+            tenant = tenant == null || tenant.isBlank() ? "default" : tenant;
             if (name == null || name.isBlank()) {
                 throw new IllegalArgumentException("a phoenixgraph.security.keys entry needs a name");
             }

@@ -19,6 +19,8 @@ import java.time.Duration;
  * @param queueWait             how long a request may wait for a slot before it is refused
  * @param perGraphConcurrent    requests in flight for one graph (a single hot graph cannot eat the instance)
  * @param perGraphPerSecond     requests per second accepted per graph (0 switches the rate limit off)
+ * @param perTenantConcurrent   requests in flight for one tenant (0 switches the tenant limit off)
+ * @param perTenantPerSecond    requests per second accepted per tenant (0 switches the tenant limit off)
  * @param requestTimeout        wall clock a request may run before the query engine is told to stop
  * @param retryAfterSeconds     what the 429/503 answer tells the client to wait
  * @param maxBodyBytes          largest request body accepted; a bigger one is a 413 before any work happens
@@ -31,6 +33,8 @@ public record LimitsProperties(
         @DefaultValue("2s") Duration queueWait,
         @DefaultValue("8") int perGraphConcurrent,
         @DefaultValue("200") int perGraphPerSecond,
+        @DefaultValue("0") int perTenantConcurrent,
+        @DefaultValue("0") int perTenantPerSecond,
         @DefaultValue("30s") Duration requestTimeout,
         @DefaultValue("1") int retryAfterSeconds,
         @DefaultValue("1048576") int maxBodyBytes,
@@ -40,6 +44,8 @@ public record LimitsProperties(
         if (maxConcurrent < 1) throw new IllegalArgumentException("phoenixgraph.limits.max-concurrent must be >= 1");
         if (perGraphConcurrent < 1) throw new IllegalArgumentException("phoenixgraph.limits.per-graph-concurrent must be >= 1");
         if (perGraphPerSecond < 0) throw new IllegalArgumentException("phoenixgraph.limits.per-graph-per-second must be >= 0");
+        if (perTenantConcurrent < 0) throw new IllegalArgumentException("phoenixgraph.limits.per-tenant-concurrent must be >= 0");
+        if (perTenantPerSecond < 0) throw new IllegalArgumentException("phoenixgraph.limits.per-tenant-per-second must be >= 0");
         if (maxBodyBytes < 1024) throw new IllegalArgumentException("phoenixgraph.limits.max-body-bytes must be >= 1024");
         if (maxQueryLength < 256) throw new IllegalArgumentException("phoenixgraph.limits.max-query-length must be >= 256");
     }

@@ -35,7 +35,12 @@ import java.util.Locale;
 public class ApiKeys {
 
     /** The authenticated caller, or the anonymous one when security is off. */
-    public record Principal(String name, String role, List<String> graphs) {
+    public record Principal(String name, String role, List<String> graphs, String tenant) {
+
+        /** The three-argument form keeps the old call sites source-compatible. */
+        public Principal(String name, String role, List<String> graphs) {
+            this(name, role, graphs, "default");
+        }
 
         public boolean isAnonymous() {
             return "anonymous".equals(name);
@@ -69,7 +74,7 @@ public class ApiKeys {
         }
     }
 
-    private static final Principal ANONYMOUS = new Principal("anonymous", "admin", List.of());
+    private static final Principal ANONYMOUS = new Principal("anonymous", "admin", List.of(), "default");
 
     private final SecurityProperties properties;
 
@@ -96,7 +101,7 @@ public class ApiKeys {
         }
         for (SecurityProperties.Key key : properties.keys()) {
             if (matches(key, token)) {
-                return new Principal(key.name(), key.role(), key.graphs());
+                return new Principal(key.name(), key.role(), key.graphs(), key.tenant());
             }
         }
         throw new UnauthorizedException("Unknown API key");

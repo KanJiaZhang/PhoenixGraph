@@ -1,0 +1,28 @@
+# Overlay for a production-shaped local stack: authentication on, audit on disk, UI key forwarded.
+#
+#   cp deploy/secure/security.example.yml deploy/secure/security.yml
+#   export PHOENIXGRAPH_DASHBOARD_TOKEN="$(openssl rand -hex 24)"
+#   docker compose -f docker-compose.yml -f docker-compose.secure.yml up --build
+#
+# TLS is still separate: put a reverse proxy in front, or configure server.ssl.* with a keystore
+# (docs/API.md §2). The UI itself is not authenticated here; expose it only on a trusted network or put
+# your own SSO proxy in front of it.
+services:
+  graph-http:
+    environment:
+      SPRING_PROFILES_ACTIVE: docker,secure
+      PHOENIXGRAPH_AUDIT_FILE: /data/audit/audit.jsonl
+      PHOENIXGRAPH_DASHBOARD_TOKEN: ${PHOENIXGRAPH_DASHBOARD_TOKEN}
+      SPRING_CONFIG_ADDITIONAL_LOCATION: file:/etc/phoenixgraph/security.yml
+    volumes:
+      - rocksdb:/data/rocksdb
+      - audit:/data/audit
+      - ./deploy/secure:/etc/phoenixgraph:ro
+  graph-web:
+    environment:
+      PHOENIXGRAPH_HTTP_URL: http://graph-http:8081
+      PHOENIXGRAPH_API_KEY: ${PHOENIXGRAPH_DASHBOARD_TOKEN}
+
+volumes:
+  audit:
+  rocksdb:
