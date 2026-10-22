@@ -60,3 +60,34 @@ target/
 
 # release artifacts: built by tools/release-1.0.sh, never committed (a tag names the source, the build makes the bytes)
 dist/
+
+# the three-minute demo writes its schema into the working directory
+/demo-three-minute*.json
+
+# Python (the client and its tests)
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# demo graphs created by tools/ingest-docs.mjs
+/incident-demo*.json
+/http-embed-demo*.json
+/incident-*.json
+
+# the secure overlay mounts this file; copy it from security.example.yml and never commit it
+/deploy/secure/security.yml
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+
+# local demo schemas written by earlier demo scripts
+/demo-semantics.json
+/demo-analytics.json
+
+# JavaScript/TypeScript dependencies
+node_modules/

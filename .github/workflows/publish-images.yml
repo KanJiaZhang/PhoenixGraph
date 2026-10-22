@@ -1,0 +1,83 @@
+# Publish the two container images to GHCR on a release tag.
+#
+#   git tag -a v1.0.2 -m "..." && git push origin v1.0.2
+#
+# The tag produces ghcr.io/<owner>/phoenixgraph-http:<version> and :latest (and the same for -web).
+# No secret is needed: the workflow uses the repository's GITHUB_TOKEN with packages: write.
+name: publish-images
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: publish-images-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: build and push phoenixgraph-http / phoenixgraph-web
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lowercase the image owner (GHCR requires it)
+        id: owner
+        run: echo "name=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Metadata for graph-http
+        id: meta-http
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ steps.owner.outputs.name }}/phoenixgraph-http
+          tags: |
+            type=ref,event=tag
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+
+      - name: Build and push graph-http
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: graph-http/Dockerfile
+          push: true
+          tags: ${{ steps.meta-http.outputs.tags }}
+          labels: ${{ steps.meta-http.outputs.labels }}
+          cache-from: type=gha,scope=graph-http
+          cache-to: type=gha,mode=max,scope=graph-http
+
+      - name: Metadata for graph-web
+        id: meta-web
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ steps.owner.outputs.name }}/phoenixgraph-web
+          tags: |
+            type=ref,event=tag
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+
+      - name: Build and push graph-web
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: graph-web/Dockerfile
+          push: true
+          tags: ${{ steps.meta-web.outputs.tags }}
+          labels: ${{ steps.meta-web.outputs.labels }}
+          cache-from: type=gha,scope=graph-web
+          cache-to: type=gha,mode=max,scope=graph-web
