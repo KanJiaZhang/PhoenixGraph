@@ -50,39 +50,48 @@ public final class SemanticRunner {
      */
     public static Executed execute(QueryService queries, SemanticService service, String modelGraph,
                                    String metricId, String dimensionId, String grain, Integer year) {
+        SemanticModel model = service.model(modelGraph);
         SemanticService.Binding binding = service.binding(modelGraph);
-        String metric = binding.metricProperty(metricId);
+        String dataGraph = binding.dataGraph();
+        String vertexType = binding.vertexType();
+
+        // The binding is the model's own graphProperty, with the file binding as a fallback for a graph that
+        // has not been re-seeded yet. A metric bound nowhere is a refusal, not a guess.
+        String metric = model.metric(metricId).graphProperty();
+        if (metric == null) {
+            metric = binding.metricProperty(metricId);
+        }
         if (metric == null) {
             throw new IllegalArgumentException("Metric '" + metricId + "' cannot be executed on graph '"
-                    + binding.dataGraph() + "': the binding does not say which property carries it "
-                    + "(semantic-bindings/" + modelGraph + ".json). The SQL is still available from /translate.");
+                    + dataGraph + "': neither the model nor the binding says which property carries it. "
+                    + "The SQL is still available from /translate.");
         }
         String property = null;
         if (dimensionId != null) {
-            property = binding.dimensionProperty(dimensionId, grain);
+            property = model.dimension(dimensionId).graphProperty(grain);
+            if (property == null) {
+                property = binding.dimensionProperty(dimensionId, grain);
+            }
             if (property == null) {
                 String why = binding.dimensions().containsKey(dimensionId)
                         ? "the binding declares no property for it at grain '" + grain + "'"
                         : "the binding does not mention it";
                 throw new IllegalArgumentException("Cannot group by '" + dimensionId + "' on graph '"
-                        + binding.dataGraph() + "': " + why + ". The SQL is still available from /translate.");
+                        + dataGraph + "': " + why + ". The SQL is still available from /translate.");
             }
         }
         String measure = "count".equals(metric)
                 ? "count()"
                 : "values('" + metric + "').sum()";
-        StringBuilder traversal = new StringBuilder("g.V('").append(binding.vertexType()).append("')");
+        StringBuilder traversal = new StringBuilder("g.V('").append(vertexType).append("')");
         // A year is a filter *on the fact vertices*, not a post-filter on the grouped rows: grouping first and
         // dropping rows afterwards sums every year and returns a number that looks entirely plausible and is
         // simply wrong. This is not hypothetical - region totals came back at about 194M for a question about
         // 1996 (the verified figure is 98,879,432.89), because the traversal grouped both years and the row
-        // filter had nothing left to remove. The date property is the binding's own (year=orderYear), so the
+        // filter had nothing left to remove. The date property is the model's own (year=orderYear), so the
         // filter and the grain can never disagree about which column carries the year.
         if (year != null) {
-            String dateProperty = binding.dimensionProperty("dim/order_date", "year");
-            if (dateProperty == null) {
-                dateProperty = binding.dimensionProperty("dim/order_date", "raw");
-            }
+            String dateProperty = yearProperty(model, binding);
             if (dateProperty != null) {
                 traversal.append(".has('").append(dateProperty).append("', ").append(year).append(")");
             }
@@ -92,7 +101,7 @@ public final class SemanticRunner {
         } else {
             traversal.append(".group().by('").append(property).append("').by(").append(measure).append(")");
         }
-        List<Object> answer = queries.query(binding.dataGraph(), traversal.toString(), Map.of());
+        List<Object> answer = queries.query(dataGraph, traversal.toString(), Map.of());
 
         List<Map<String, Object>> rows = new ArrayList<>();
         double total = 0;
@@ -116,18 +125,46 @@ public final class SemanticRunner {
             // A zero has two meanings and the caller cannot tell them apart: "no revenue in that year" and "no
             // data for that year". The ledger recorded that as a gap; saying which one it is costs one line, and
             // a business reading 0 as a collapse is exactly the kind of wrong answer this layer exists to stop.
-            String dateProperty = binding.dimensionProperty("dim/order_date", "year");
-            warnings.add("no rows for " + year + " on graph '" + binding.dataGraph() + "': the data does not cover "
+            String dateProperty = yearProperty(model, binding);
+            warnings.add("no rows for " + year + " on graph '" + dataGraph + "': the data does not cover "
                     + "that year (the traversal filtered " + (dateProperty == null ? "the year" : dateProperty) + ")");
         }
-        if (dimensionId != null && !"raw".equals(grain) && !"order_date".equals(SemanticModel.shortId(dimensionId))) {
+        if (dimensionId != null && !"raw".equals(grain) && !isDateDimension(model, dimensionId)) {
             // the grain was applied to a dimension that is not a date: the traversal groups by the property the
             // binding names, so this is the *value*, not a year - and a caller who asked for a year should know
             warnings.add("grain '" + grain + "' does not apply to " + dimensionId
                     + ": it is not a date dimension, so the values are grouped unchanged");
         }
-        return new Executed(binding.dataGraph(), binding.vertexType(), metric, dimensionId, property, grain,
+        return new Executed(dataGraph, vertexType, metric, dimensionId, property, grain,
                 List.copyOf(rows), total, traversal.toString(), List.copyOf(warnings));
+    }
+
+    /** The fact property that carries the year, from the model's date dimension (the one with a year grain). */
+    private static String yearProperty(SemanticModel model, SemanticService.Binding binding) {
+        for (SemanticModel.Dimension dimension : model.dimensions().values()) {
+            if (dimension.graphPropertyByGrain().containsKey("year")) {
+                return dimension.graphPropertyByGrain().get("year");
+            }
+        }
+        for (Map.Entry<String, String> entry : binding.dimensions().entrySet()) {
+            String declared = entry.getValue();
+            if (declared == null || !declared.contains("=")) {
+                continue;
+            }
+            for (String part : declared.split(",")) {
+                int equals = part.indexOf('=');
+                if (equals > 0 && part.substring(0, equals).trim().equalsIgnoreCase("year")) {
+                    return part.substring(equals + 1).trim();
+                }
+            }
+        }
+        return null;
+    }
+
+    /** Whether a dimension is the model's date dimension: its binding carries an explicit year grain. */
+    private static boolean isDateDimension(SemanticModel model, String dimensionId) {
+        SemanticModel.Dimension dimension = model.dimension(dimensionId);
+        return dimension != null && dimension.graphPropertyByGrain().containsKey("year");
     }
 
     private static Map<String, Object> row(String value, double measure) {

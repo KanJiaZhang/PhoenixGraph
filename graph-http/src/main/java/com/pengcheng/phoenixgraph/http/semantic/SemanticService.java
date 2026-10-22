@@ -37,15 +37,17 @@ public class SemanticService {
     }
 
     /**
-     * The fact-graph binding of a semantic model: which fact property carries each dimension and each metric.
+     * The fact-graph binding of a semantic model: which fact graph and vertex type carry its facts, and - as a
+     * fallback for a graph that has not been re-seeded - which fact property carries each dimension and metric.
      *
      * <p>It is data on purpose. Semantic column names and fact property names are different vocabularies
      * ({@code region.r_name} vs {@code Sale.region}), and a string-matching rule resolves nine of the eleven
-     * TPC-H dimensions while silently returning plausible wrong numbers for the rest. A null value in the map
-     * means "the model has this dimension, this deployment cannot group by it", which the API reports as a
-     * refusal carrying the SQL rather than guessing. {@code graphProperty} on the model's own nodes is the
-     * intended home; until the semantic graph is re-seeded the same binding is read from
-     * {@code semantic-bindings/<graph>.json} (docs/DATA-AGENT.md §3).
+     * TPC-H dimensions while silently returning plausible wrong numbers for the rest. A null value means
+     * "the model has this dimension, this deployment cannot group by it", which the API reports as a
+     * refusal carrying the SQL rather than guessing. The per-node property binding and the synonyms live on the
+     * model's own nodes ({@code graphProperty} and {@code alias}); the file keeps only {@code dataGraph} and
+     * {@code vertexType}, which the model cannot know itself. {@link SemanticRunner} reads the model first and
+     * falls back to these two maps for a graph written before the migration.
      *
      * @param dimensions dimension id -&gt; fact property, or a {@code grain=property} list for a date dimension
      * @param metrics    metric id -&gt; fact property, or {@code count} for "how many vertices"
@@ -224,7 +226,8 @@ public class SemanticService {
             metrics.put(id, new SemanticModel.Metric(id, string(node.get("description")),
                     string(node.get("expression")), string(node.get("aggFunction")), string(node.get("unit")),
                     string(node.get("metricKind")), strings(node.get("alias")), slices,
-                    List.copyOf(lineageColumns), List.copyOf(tables), derivedFrom, definedBy));
+                    List.copyOf(lineageColumns), List.copyOf(tables), derivedFrom, definedBy,
+                    string(node.get("graphProperty"))));
         });
 
         List<SemanticModel.ReferenceQuery> referenceQueries = new ArrayList<>();

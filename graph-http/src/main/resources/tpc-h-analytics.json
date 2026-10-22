@@ -25,7 +25,8 @@
         { "id": 10, "name": "metricKind", "description": "base / derived / ratio", "type": "STRING" },
         { "id": 11, "name": "unit", "description": "Unit (元 / 个 / % / 天)", "type": "STRING" },
         { "id": 12, "name": "sqlText", "description": "The SQL of a standard query (TPC-H)", "type": "STRING" },
-        { "id": 13, "name": "queryNumber", "description": "The TPC-H query number (1..22)", "type": "LONG" }
+        { "id": 13, "name": "queryNumber", "description": "The TPC-H query number (1..22)", "type": "LONG" },
+        { "id": 14, "name": "graphProperty", "description": "The fact-graph property this node binds to (dimension/metric), or grain=property", "type": "STRING" }
       ]
     }
   ],

@@ -48,7 +48,7 @@ class SqlRendererTest {
                 "SUM(l_extendedprice * (1 - l_discount))", "SUM", "CNY", "additive",
                 List.of("营收", "收入"), new LinkedHashSet<>(List.of("dim/order_date")),
                 List.of("column/lineitem.l_extendedprice", "column/lineitem.l_discount"),
-                List.of("lineitem"), new LinkedHashSet<>(), List.of("query/q1")));
+                List.of("lineitem"), new LinkedHashSet<>(), List.of("query/q1"), "revenue"));
 
         Map<String, SemanticModel.Dimension> dimensions = new LinkedHashMap<>();
         dimensions.put("dim/order_date", new SemanticModel.Dimension("dim/order_date", "下单日期",

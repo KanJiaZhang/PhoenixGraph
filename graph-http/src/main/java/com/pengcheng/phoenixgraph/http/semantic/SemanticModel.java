@@ -29,7 +29,7 @@ public final class SemanticModel {
     public record Metric(String id, String description, String expression, String aggFunction, String unit,
                          String metricKind, List<String> synonyms, Set<String> dimensions,
                          List<String> columns, List<String> tables, Set<String> derivedFrom,
-                         List<String> definedBy) {
+                         List<String> definedBy, String graphProperty) {
 
         /** The name the SQL aliases this metric to ({@code metric/revenue} -&gt; {@code revenue}). */
         public String shortName() {
@@ -231,6 +231,7 @@ public final class SemanticModel {
             row.put("tables", metric.tables());
             row.put("derivedFrom", List.copyOf(metric.derivedFrom()));
             row.put("definedBy", metric.definedBy());
+            row.put("graphProperty", metric.graphProperty());
             metricRows.add(row);
         });
         List<Map<String, Object>> dimensionRows = new ArrayList<>();

@@ -276,10 +276,9 @@ public final class QuestionInterpreter {
     /**
      * The words a question may use, from the binding file, merged with the model's own aliases.
      *
-     * <p>The served semantic graph populates {@code alias} for dimensions and leaves it empty for metrics, so a
-     * Chinese question the model could answer was refused with "no metric matches" - the interpreter had no
-     * Chinese word to look for. Until the graph carries them (docs/DATA-AGENT.md §3), the binding file does: data
-     * in the repository, reviewed, one line per term.
+     * <p>The synonyms now live on the graph's own nodes ({@code alias}, written by the dataset), and this
+     * returns empty for a re-seeded graph. The file path is kept as a fallback for a graph written before the
+     * migration (docs/DATA-AGENT.md §3).
      */
     static Map<String, List<String>> synonymsFromBinding(String graph) {
         Map<String, List<String>> out = new LinkedHashMap<>();

@@ -127,6 +127,7 @@ public final class TpchDataAgentGraph {
             put(props, nodeSchema, "name", node.name(), time);
             put(props, nodeSchema, "entityType", node.entityType(), time);
             put(props, nodeSchema, "description", node.description(), time);
+            put(props, nodeSchema, "alias", node.aliases(), time);
             put(props, nodeSchema, "dataType", node.dataType(), time);
             put(props, nodeSchema, "columnRole", node.columnRole(), time);
             put(props, nodeSchema, "tableName", node.tableName(), time);
@@ -135,6 +136,7 @@ public final class TpchDataAgentGraph {
             put(props, nodeSchema, "metricKind", node.metricKind(), time);
             put(props, nodeSchema, "unit", node.unit(), time);
             put(props, nodeSchema, "sqlText", node.sqlText(), time);
+            put(props, nodeSchema, "graphProperty", node.graphProperty(), time);
             if (node.queryNumber() != null) {
                 put(props, nodeSchema, "queryNumber", node.queryNumber(), time);
             }

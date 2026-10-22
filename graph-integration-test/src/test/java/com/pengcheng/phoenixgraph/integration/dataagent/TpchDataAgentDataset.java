@@ -29,35 +29,96 @@ public final class TpchDataAgentDataset {
     public record Node(String name, String entityType, String description, List<String> aliases,
                        String dataType, String columnRole, String tableName,
                        String aggFunction, String expression, String metricKind, String unit,
-                       String sqlText, Long queryNumber) {
+                       String sqlText, Long queryNumber, String graphProperty) {
 
         public static Node table(String name, String description) {
-            return new Node(name, "Table", description, null, null, null, null, null, null, null, null, null, null);
+            return new Node(name, "Table", description, null, null, null, null, null, null, null, null, null, null, null);
         }
 
         public static Node column(String name, String table, String dataType, String role, String description) {
-            return new Node(name, "Column", description, null, dataType, role, table, null, null, null, null, null, null);
+            return new Node(name, "Column", description, null, dataType, role, table, null, null, null, null, null, null, null);
         }
 
         public static Node metric(String name, String description, String kind, String agg, String expression, String unit) {
-            return new Node(name, "Metric", description, null, null, null, null, agg, expression, kind, unit, null, null);
+            return new Node(name, "Metric", description, synonyms().get(name), null, null, null,
+                    agg, expression, kind, unit, null, null, metricGraphProperty().get(name));
         }
 
         public static Node dimension(String name, String description) {
-            return new Node(name, "Dimension", description, null, null, null, null, null, null, null, null, null, null);
+            return new Node(name, "Dimension", description, synonyms().get(name), null, null, null,
+                    null, null, null, null, null, null, dimensionGraphProperty().get(name));
         }
 
         public static Node domain(String name, String description) {
-            return new Node(name, "Domain", description, null, null, null, null, null, null, null, null, null, null);
+            return new Node(name, "Domain", description, null, null, null, null, null, null, null, null, null, null, null);
         }
 
         public static Node query(String name, long number, String description, String sql) {
-            return new Node(name, "Query", description, null, null, null, null, null, null, null, null, sql, number);
+            return new Node(name, "Query", description, null, null, null, null, null, null, null, null, sql, number, null);
         }
 
         public boolean is(String type) {
             return entityType.equals(type);
         }
+    }
+
+    /** The fact-graph property that carries each metric, or {@code count}, or null when unbound. */
+    static Map<String, String> metricGraphProperty() {
+        Map<String, String> m = new LinkedHashMap<>();
+        m.put("metric/revenue", "revenue");
+        m.put("metric/gross_revenue", "gross");
+        m.put("metric/discount_amount", "discountAmount");
+        m.put("metric/tax_amount", "taxAmount");
+        m.put("metric/quantity_sold", "quantity");
+        m.put("metric/order_count", "count");
+        m.put("metric/line_count", "count");
+        m.put("metric/late_delivery_count", "lateDelivery");
+        m.put("metric/return_rate", null);
+        m.put("metric/market_share", null);
+        m.put("metric/profit", null);
+        return m;
+    }
+
+    /** The fact-graph property (or {@code grain=property} list) that carries each dimension, or null. */
+    static Map<String, String> dimensionGraphProperty() {
+        Map<String, String> m = new LinkedHashMap<>();
+        m.put("dim/region", "region");
+        m.put("dim/nation", "nation");
+        m.put("dim/mktsegment", "segment");
+        m.put("dim/order_priority", "priority");
+        m.put("dim/ship_mode", "shipmode");
+        m.put("dim/part_type", "partType");
+        m.put("dim/brand", "brand");
+        m.put("dim/supplier", "supplierName");
+        m.put("dim/order_date", "year=orderYear,month=orderMonth");
+        m.put("dim/return_flag", null);
+        m.put("dim/line_status", null);
+        return m;
+    }
+
+    /** The words a question may use for a metric or dimension (the model's {@code alias}). */
+    static Map<String, List<String>> synonyms() {
+        Map<String, List<String>> m = new LinkedHashMap<>();
+        m.put("metric/revenue", List.of("营收", "收入", "净收入", "revenue", "销售收入"));
+        m.put("metric/gross_revenue", List.of("毛收入", "毛营收", "gross"));
+        m.put("metric/discount_amount", List.of("折扣额", "折扣金额", "折扣", "discount"));
+        m.put("metric/tax_amount", List.of("税额", "税金", "tax"));
+        m.put("metric/quantity_sold", List.of("销量", "数量", "quantity"));
+        m.put("metric/order_count", List.of("订单数", "订单量", "单量", "orders"));
+        m.put("metric/line_count", List.of("行数", "订单行数", "明细行数", "line count", "line items", "shipments"));
+        m.put("metric/late_delivery_count", List.of("延迟交付", "晚交付", "迟交", "late"));
+        m.put("dim/region", List.of("地区", "大区", "区域", "region"));
+        m.put("dim/nation", List.of("国家", "nation"));
+        m.put("dim/mktsegment", List.of("细分", "行业", "市场细分", "segment"));
+        m.put("dim/order_priority", List.of("优先级", "优先", "priority"));
+        m.put("dim/ship_mode", List.of("运输方式", "发货方式", "shipmode"));
+        m.put("dim/part_type", List.of("零件类型", "部件类型", "parttype"));
+        m.put("dim/brand", List.of("品牌", "brand"));
+        m.put("dim/supplier", List.of("供应商", "supplier"));
+        m.put("dim/order_date", List.of("日期", "下单日期", "时间", "年度", "年份", "date"));
+        m.put("dim/return_flag", List.of("退货标志", "退货", "return"));
+        m.put("dim/line_status", List.of("行状态", "linestatus"));
+        return m;
     }
 
     /** A directed semantic-layer edge; its Chinese label and family come from {@link #relationMeta}. */
