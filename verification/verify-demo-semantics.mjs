@@ -93,7 +93,18 @@ check('a count metric groups into numbers (row count per channel)',
   && orders.json.answer.rows.every((r) => typeof r.measure === 'number' && r.measure > 0),
   JSON.stringify(orders.json.answer?.rows || []).slice(0, 120));
 
-// ---- 5. 业务归因 over the marketing metric -----------------------------------------------------------
+// ---- 5. the date dimension is detected, not hardcoded ------------------------------------------------
+console.log('--- the date dimension');
+const byDate = await post(`/api/v1/semantic/${GRAPH}/ask`, { question: '2025 年各月份花费' });
+check('a date dimension is detected by its dataType (dim/date), so the question is not refused',
+  !byDate.json.refusal && !byDate.json.executionRefused
+  && byDate.json.plan.dimension === 'dim/date' && byDate.json.plan.grain === 'year',
+  `${byDate.json.plan?.dimension}@${byDate.json.plan?.grain} ${byDate.json.refusal || byDate.json.executionRefused || ''}`);
+check('and it answers the year total the base metric answered',
+  close(byDate.json.answer?.total ?? 0, SPEND_2025, 1),
+  String(byDate.json.answer?.total));
+
+// ---- 6. 业务归因 over the marketing metric -----------------------------------------------------------
 console.log('--- 业务归因');
 const attributed = await post(`/api/v1/analysis/${GRAPH}/attribute`,
   { question: '2024 到 2025 年各渠道花费为什么变化' });

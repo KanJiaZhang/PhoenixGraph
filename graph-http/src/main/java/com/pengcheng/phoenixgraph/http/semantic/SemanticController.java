@@ -300,12 +300,13 @@ public class SemanticController {
     /** Keeps the rows the question actually asked for (a year, a pinned value, a top N). */
     private static SemanticRunner.Executed narrow(QuestionInterpreter.Interpretation interpretation,
                                                   SemanticRunner.Executed executed, Integer year) {
-        boolean dateDimension = interpretation.dimensionId() != null
-                && "order_date".equals(SemanticModel.shortId(interpretation.dimensionId()));
+        // The year filter only applies when the rows are keyed by year. A date dimension at a finer grain
+        // (month) is keyed by the month, so dropping every row that is not the year would return nothing.
+        boolean yearGrain = "year".equals(interpretation.grain());
         List<Map<String, Object>> rows = new ArrayList<>();
         for (Map<String, Object> row : executed.rows()) {
             String value = String.valueOf(row.get("value"));
-            if (dateDimension && year != null && !value.equals(String.valueOf(year))) {
+            if (yearGrain && year != null && !value.equals(String.valueOf(year))) {
                 continue;
             }
             if (interpretation.filterProperty() != null && interpretation.filterValue() != null

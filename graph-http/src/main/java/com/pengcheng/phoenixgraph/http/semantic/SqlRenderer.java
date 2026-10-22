@@ -152,6 +152,14 @@ public final class SqlRenderer {
         wanted.remove(baseTable);
         List<SemanticModel.ForeignKey> joins = new ArrayList<>();
         List<String> warnings = new ArrayList<>();
+        if (dimension != null && grain != Grain.RAW && !dimension.isDate()) {
+            // the renderer stays byte-identical to the CLI (portability first), but a grain on a non-date
+            // column is semantically wrong, so the document says so instead of silently shipping the SQL
+            warnings.add("grain '" + grain.configName() + "' was asked for on " + dimension.id()
+                    + " whose dataType is " + (dimension.dataType() == null || dimension.dataType().isBlank()
+                    ? "not a date" : dimension.dataType()) + ": the rendered SQL applies "
+                    + grainSql(dimension.column(), grain, dialect) + " to a non-date column");
+        }
         for (String target : wanted) {
             List<SemanticModel.ForeignKey> path = model.joinPath(baseTable, target);
             if (path == null) {

@@ -152,7 +152,8 @@ public final class QuestionInterpreter {
                 break;
             }
         }
-        boolean dateDimension = dimensionId != null && "order_date".equals(SemanticModel.shortId(dimensionId));
+        boolean dateDimension = dimensionId != null && model.dimension(dimensionId) != null
+                && model.dimension(dimensionId).isDate();
         if (grain.equals("raw") && dateDimension) {
             grain = "year"; // a date dimension without a grain is a year here: the fact graph has no raw date
             warnings.add("no grain was asked for, so the date dimension is grouped by year");

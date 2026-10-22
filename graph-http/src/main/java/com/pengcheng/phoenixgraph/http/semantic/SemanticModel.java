@@ -45,6 +45,11 @@ public final class SemanticModel {
             return SemanticModel.shortId(id);
         }
 
+        /** Whether this dimension is a date, by the warehouse type of the column it slices by. */
+        public boolean isDate() {
+            return dataType != null && dataType.toUpperCase(java.util.Locale.ROOT).contains("DATE");
+        }
+
         /**
          * The fact-graph property this dimension reads at the given grain, or null when the model does not bind
          * one.
