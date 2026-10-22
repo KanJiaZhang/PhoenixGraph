@@ -61,6 +61,18 @@ public class AgentController {
         return agent.ingest(request);
     }
 
+    /**
+     * Accepts a merge suggestion: folds the {@code drop} entity into {@code keep}, rewrites its edges, and
+     * records the name as an alias. This is the reviewer's answer to a {@code mergeCandidates} entry.
+     */
+    @PostMapping("/merge")
+    public AgentIngestService.MergeResult merge(@RequestBody MergeRequest request) {
+        return agent.merge(request.graph(), request.keep(), request.drop());
+    }
+
+    public record MergeRequest(String graph, String keep, String drop) {
+    }
+
     /** The artifact of a graph: entities with their vectors, relations with their provenance. */
     @GetMapping("/index/{graph}")
     public Object index(@PathVariable("graph") String graph,

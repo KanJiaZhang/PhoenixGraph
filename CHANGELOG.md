@@ -44,6 +44,9 @@ All notable changes to this project are recorded here. The format follows
   precision/recall comparison. `dedupe=false` / `--no-dedupe` keeps variants separate, and the quality
   report carries `duplicatesRemoved`, a `mergedEntities` review list (canonical, aliases, mentions), and
   `mergeCandidates` for near-duplicates that were deliberately left separate (prefix, one edit, shared tokens).
+  `POST /api/v1/agent/merge` is the reviewer's answer to one of those candidates: it folds a `drop` entity
+  into a `keep` entity, rewrites its edges, merges its chunks and records its name as an alias, in the graph
+  and in the artifact.
 - **Opt-in PDF OCR** (`tools/ingest-docs.mjs --ocr`): when `pdftotext` has no text, the CLI
   renders pages with `pdftoppm` and reads them with `tesseract -l <lang>`. The command runner is
   injectable, so the fallback is tested without either binary; missing binaries are reported, not guessed.

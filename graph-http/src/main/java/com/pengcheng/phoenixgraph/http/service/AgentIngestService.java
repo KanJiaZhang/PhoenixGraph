@@ -14,6 +14,8 @@ import com.pengcheng.phoenixgraph.http.dto.SchemaDraft;
 import com.pengcheng.phoenixgraph.http.dto.VertexPropertyRequest;
 import com.pengcheng.phoenixgraph.http.dto.VertexRequest;
 import com.pengcheng.phoenixgraph.http.dto.WriteResult;
+import com.pengcheng.phoenixgraph.query.gremlin.GremlinEdge;
+import com.pengcheng.phoenixgraph.query.storage.EdgeSide;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
@@ -470,6 +472,183 @@ public class AgentIngestService {
         }
         return new AgentIndex(current.graph(), current.embedding(), current.dimensions(), current.createdAt(),
                 merged, current.relations(), current.chunks(), current.quality());
+    }
+
+    // ------------------------------------------------------------------ the review workflow: merging two entities
+
+    /** A read edge: the endpoints and properties a merge has to rewrite. */
+    public record EdgeView(String label, Object id, Object source, Object target, Map<String, Object> properties) {
+    }
+
+    /** What a merge will do: the edges to write, the edges to delete, and the merged chunk ids. */
+    public record MergePlan(List<EdgeView> writes, List<Object[]> deletes, List<String> chunkIds) {
+    }
+
+    /** What the merge did. */
+    public record MergeResult(String graph, String keep, String drop, int edgesRewritten, int chunkCount,
+                              String indexFile) {
+    }
+
+    /**
+     * Merges one entity into another: the {@code drop} vertex is folded into {@code keep}, its edges are
+     * rewritten to point at {@code keep}, its name becomes an alias, and the artifact and the graph agree.
+     *
+     * <p>This is the human-in-the-loop answer to a {@code mergeCandidates} suggestion: the deduper never
+     * merges a near-duplicate on its own, but a reviewer can accept one here.
+     */
+    public MergeResult merge(String graph, String keep, String drop) {
+        if (keep == null || drop == null || keep.isBlank() || drop.isBlank()) {
+            throw new IllegalArgumentException("merge needs keep and drop, two entity ids");
+        }
+        if (keep.equals(drop)) {
+            throw new IllegalArgumentException("keep and drop are the same entity: " + keep);
+        }
+        GraphService target = writes.forGraph(graphs, graph);
+        if (target.getVertex(keep) == null) {
+            throw new IllegalArgumentException("no entity '" + keep + "' in graph '" + graph + "'");
+        }
+        if (target.getVertex(drop) == null) {
+            throw new IllegalArgumentException("no entity '" + drop + "' in graph '" + graph + "'");
+        }
+        List<EdgeView> edges = new ArrayList<>();
+        edges.addAll(readEdges(graph, drop, "Relates"));
+        edges.addAll(readEdges(graph, drop, "Mentions"));
+        List<String> keepChunks = chunkIds(graph, keep);
+        List<String> dropChunks = chunkIds(graph, drop);
+        MergePlan plan = mergePlan(keep, drop, edges, keepChunks, dropChunks);
+
+        long now = System.currentTimeMillis();
+        for (Object[] deletion : plan.deletes()) {
+            target.deleteEdge(deletion[0], String.valueOf(deletion[1]), deletion[2], deletion[3]);
+        }
+        for (EdgeView edge : plan.writes()) {
+            target.upsertEdge(toEdgeRequest(edge, now));
+        }
+        if (!plan.chunkIds().equals(keepChunks)) {
+            target.updateVertexProperty(keep, ENTITY_CHUNKS,
+                    new com.pengcheng.phoenixgraph.http.dto.PropertyUpdateRequest(plan.chunkIds(), now));
+        }
+        target.deleteVertex(drop);
+
+        AgentIndex index = index(graph);
+        index = mergeIndex(index, keep, drop);
+        Path file = indexFile(graph);
+        index.write(file);
+        return new MergeResult(graph, keep, drop, plan.writes().size(), plan.chunkIds().size(),
+                file.toString());
+    }
+
+    /** The pure rewrite: every edge touching {@code drop} becomes an edge touching {@code keep}. */
+    static MergePlan mergePlan(String keep, String drop, List<EdgeView> edges,
+                               List<String> keepChunks, List<String> dropChunks) {
+        List<EdgeView> writes = new ArrayList<>();
+        List<Object[]> deletes = new ArrayList<>();
+        for (EdgeView edge : edges) {
+            Object source = drop.equals(edge.source()) ? keep : edge.source();
+            Object target = drop.equals(edge.target()) ? keep : edge.target();
+            writes.add(new EdgeView(edge.label(), edge.id(), source, target, edge.properties()));
+            deletes.add(new Object[] {edge.id(), edge.label(), edge.source(), edge.target()});
+        }
+        Set<String> chunks = new LinkedHashSet<>(keepChunks);
+        chunks.addAll(dropChunks);
+        return new MergePlan(writes, deletes, List.copyOf(chunks));
+    }
+
+    /** The pure index merge: {@code drop} becomes an alias of {@code keep} and its relations move over. */
+    static AgentIndex mergeIndex(AgentIndex index, String keep, String drop) {
+        AgentIndex.Entity keepEntity = null;
+        AgentIndex.Entity dropEntity = null;
+        List<AgentIndex.Entity> others = new ArrayList<>();
+        for (AgentIndex.Entity entity : index.entities()) {
+            if (entity.id().equals(keep)) {
+                keepEntity = entity;
+            } else if (entity.id().equals(drop)) {
+                dropEntity = entity;
+            } else {
+                others.add(entity);
+            }
+        }
+        if (keepEntity == null) {
+            throw new IllegalArgumentException("no entity '" + keep + "' in the index of '" + index.graph() + "'");
+        }
+        if (dropEntity == null) {
+            throw new IllegalArgumentException("no entity '" + drop + "' in the index of '" + index.graph() + "'");
+        }
+        Set<String> chunks = new LinkedHashSet<>(keepEntity.chunkIds());
+        chunks.addAll(dropEntity.chunkIds());
+        List<String> aliases = new ArrayList<>(keepEntity.aliases());
+        aliases.add(dropEntity.name());
+        aliases.addAll(dropEntity.aliases());
+        List<AgentIndex.Entity> entities = new ArrayList<>(others);
+        entities.add(new AgentIndex.Entity(keepEntity.id(), keepEntity.vertexType(), keepEntity.type(),
+                keepEntity.name(), keepEntity.description(), keepEntity.vector(), List.copyOf(chunks),
+                keepEntity.cites(), List.copyOf(aliases)));
+        List<AgentIndex.Relation> relations = new ArrayList<>();
+        for (AgentIndex.Relation relation : index.relations()) {
+            String head = drop.equals(relation.head()) ? keep : relation.head();
+            String tail = drop.equals(relation.tail()) ? keep : relation.tail();
+            relations.add(new AgentIndex.Relation(head, relation.relation(), tail, relation.rule(),
+                    relation.chunkId(), relation.cite(), relation.sentence()));
+        }
+        return new AgentIndex(index.graph(), index.embedding(), index.dimensions(), index.createdAt(),
+                entities, relations, index.chunks(), index.quality());
+    }
+
+    private List<EdgeView> readEdges(String graph, String vertex, String label) {
+        List<Object> rows = queries.query(graph, "g.V('" + vertex + "','Entity').bothE('" + label + "')", Map.of());
+        List<EdgeView> edges = new ArrayList<>();
+        for (Object row : rows) {
+            if (row instanceof GremlinEdge edge) {
+                Object source = edge.side() == EdgeSide.IN ? edge.otherVertexId() : vertex;
+                Object target = edge.side() == EdgeSide.IN ? vertex : edge.otherVertexId();
+                edges.add(new EdgeView(edge.label(), edge.id(), source, target, edge.properties()));
+            }
+        }
+        return edges;
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<String> chunkIds(String graph, String vertex) {
+        List<Object> rows = queries.query(graph, "g.V('" + vertex + "','Entity').values('chunkIds')", Map.of());
+        List<String> chunks = new ArrayList<>();
+        for (Object row : rows) {
+            if (row instanceof List<?> list) {
+                for (Object item : list) {
+                    chunks.add(String.valueOf(item));
+                }
+            } else if (row != null) {
+                chunks.add(String.valueOf(row));
+            }
+        }
+        return chunks;
+    }
+
+    private static EdgeRequest toEdgeRequest(EdgeView edge, long now) {
+        List<EdgePropertyRequest> properties = new ArrayList<>();
+        for (Map.Entry<String, Object> property : edge.properties().entrySet()) {
+            int index = edgeIndex(edge.label(), property.getKey());
+            if (index >= 0) {
+                properties.add(new EdgePropertyRequest(index, property.getValue(), now, now));
+            }
+        }
+        return new EdgeRequest(edge.id(), edge.label(), edge.source(), edge.target(), properties, now, now);
+    }
+
+    /** The property index of a named property on an agent edge, or -1 when the edge does not declare it. */
+    private static int edgeIndex(String label, String name) {
+        if ("Relates".equals(label)) {
+            return switch (name) {
+                case "relation" -> RELATION_NAME;
+                case "rule" -> RELATION_RULE;
+                case "sentence" -> RELATION_SENTENCE;
+                case "chunk" -> RELATION_CHUNK;
+                default -> -1;
+            };
+        }
+        if ("Mentions".equals(label)) {
+            return "sentence".equals(name) ? MENTION_SENTENCE : -1;
+        }
+        return -1;
     }
 
     /** Reads a text file for a caller that gives paths instead of text (the CLI-ish entry point). */

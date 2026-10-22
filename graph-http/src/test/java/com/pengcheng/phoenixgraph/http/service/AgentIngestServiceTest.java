@@ -14,6 +14,7 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * The ingestion writes edge properties by schema index. The index is assigned by the schema draft, so a
@@ -72,6 +73,52 @@ class AgentIngestServiceTest {
         AgentIndex merged = AgentIngestService.mergeChunks(previous, current);
         assertEquals(List.of("doc-a-1", "doc-b-1"), merged.entities().get(0).chunkIds(),
                 "the same entity keeps both documents' chunks instead of the second overwriting the first");
+    }
+
+    @Test
+    void aMergeRewritesEveryEdgeFromDropToKeepAndMergesChunks() {
+        List<AgentIngestService.EdgeView> edges = List.of(
+                new AgentIngestService.EdgeView("Relates", "rel-1", "關羽", "颜良",
+                        Map.of("relation", "killed", "sentence", "關羽斩杀颜良")),
+                new AgentIngestService.EdgeView("Relates", "rel-2", "文丑", "關羽",
+                        Map.of("relation", "fought", "sentence", "文丑与關羽交战")),
+                new AgentIngestService.EdgeView("Mentions", "mention-c1-關羽", "c1", "關羽",
+                        Map.of("sentence", "關羽斩杀颜良")));
+
+        AgentIngestService.MergePlan plan = AgentIngestService.mergePlan("关羽", "關羽", edges,
+                List.of("c1"), List.of("c2"));
+
+        assertEquals(3, plan.writes().size(), plan.toString());
+        assertEquals(List.of("c1", "c2"), plan.chunkIds());
+        // an OUT edge keeps its source; only the endpoint that was drop moves to keep
+        assertEquals("关羽", plan.writes().get(0).source());
+        assertEquals("颜良", plan.writes().get(0).target());
+        // an IN edge keeps its source too, and the target moves to keep
+        assertEquals("文丑", plan.writes().get(1).source());
+        assertEquals("关羽", plan.writes().get(1).target());
+        // a mention edge is chunk -> entity, so the entity end moves to keep
+        assertEquals("c1", plan.writes().get(2).source());
+        assertEquals("关羽", plan.writes().get(2).target());
+    }
+
+    @Test
+    void aMergeFoldsDropIntoKeepInTheIndex() {
+        AgentIndex index = new AgentIndex("g", "hashing-64", 64, "now",
+                List.of(
+                        new AgentIndex.Entity("关羽", "Entity", "Person", "关羽", "card",
+                                new float[] {1f}, List.of("c1"), List.of("d1 §1")),
+                        new AgentIndex.Entity("關羽", "Entity", "Person", "關羽", "card",
+                                new float[] {2f}, List.of("c2"), List.of("d2 §1"))),
+                List.of(new AgentIndex.Relation("關羽", "killed", "颜良", "killed", "c2", "d2 §1", "關羽斩杀颜良")),
+                List.of(), Map.of());
+
+        AgentIndex merged = AgentIngestService.mergeIndex(index, "关羽", "關羽");
+
+        assertEquals(1, merged.entities().size(), merged.entities().toString());
+        assertEquals(List.of("c1", "c2"), merged.entities().get(0).chunkIds());
+        assertTrue(merged.entities().get(0).aliases().contains("關羽"), merged.entities().get(0).toString());
+        assertEquals("关羽", merged.relations().get(0).head());
+        assertEquals("颜良", merged.relations().get(0).tail());
     }
 
     private static AgentIndex sampleIndex() {
