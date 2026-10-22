@@ -293,7 +293,7 @@ public final class KnowledgeExtractor {
 
     /** Case, width, whitespace and punctuation are not an entity's identity. */
     private static String normalizedEntityName(String name) {
-        String normalized = Normalizer.normalize(name, Normalizer.Form.NFKC)
+        String normalized = ChineseSimplifier.toSimplified(Normalizer.normalize(name, Normalizer.Form.NFKC))
                 .strip()
                 .toLowerCase(Locale.ROOT)
                 .replaceAll("[\\s\\p{P}]+", "");

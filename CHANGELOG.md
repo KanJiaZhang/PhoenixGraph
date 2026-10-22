@@ -154,6 +154,11 @@ All notable changes to this project are recorded here. The format follows
 
 ### Changed
 
+- **Entity dedup is one safe step wider**: names that differ only by traditional vs simplified Chinese
+  (關羽 / 关羽) now merge through a curated, deterministic 繁→简 mapping, alongside the existing
+  case/whitespace/punctuation canonicalization. Near-duplicates (prefix, one edit, shared tokens) stay a
+  review list rather than a guess, and re-ingesting a document carries an entity's chunks over instead of
+  overwriting them.
 - **README** now leads with the auditable context layer, puts the three-minute demo and the Python client on
   the first path, and links the detailed material moved into `docs/`.
 - **The fact-graph binding now lives in the semantic graph** (S1's final form): each metric/dimension's

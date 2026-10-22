@@ -70,4 +70,28 @@ class EntityDedupTest {
         assertEquals(4, result.entities().size(), result.entities().toString());
         assertEquals(0, result.duplicatesRemoved());
     }
+
+    @Test
+    void traditionalAndSimplifiedSpellingsAreTheSameEntity() {
+        Map<String, String> dictionary = new java.util.LinkedHashMap<>();
+        dictionary.put("關羽", "Person");
+        dictionary.put("关羽", "Person");
+        dictionary.put("颜良", "Person");
+        dictionary.put("文丑", "Person");
+        List<Chunker.Document> documents = List.of(new Chunker.Document("d", "D", """
+                關羽斩杀颜良，又与文丑交战。
+                关羽斩杀文丑，又与颜良交战。
+                """));
+        KnowledgeExtractor.Options options = new KnowledgeExtractor.Options(dictionary, Map.of(),
+                RulePack.byName("sanguo"), true);
+        KnowledgeExtractor.Result result = KnowledgeExtractor.extract(documents, options);
+
+        // 關羽 and 关羽 are the same entity after 繁→简 (the variant becomes an alias), plus 颜良 and 文丑
+        assertEquals(3, result.entities().size(), result.entities().toString());
+        assertEquals(1, result.duplicatesRemoved());
+        KnowledgeExtractor.Entity guanYu = result.entities().stream()
+                .filter(entity -> entity.name().equals("关羽") || entity.aliases().contains("关羽"))
+                .findFirst().orElseThrow();
+        assertTrue(guanYu.name().equals("关羽") || guanYu.aliases().contains("關羽"), guanYu.toString());
+    }
 }

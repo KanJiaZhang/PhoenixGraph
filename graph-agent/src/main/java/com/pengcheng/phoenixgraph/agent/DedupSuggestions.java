@@ -73,7 +73,7 @@ public final class DedupSuggestions {
     }
 
     private static String normalize(String name) {
-        return Normalizer.normalize(name, Normalizer.Form.NFKC)
+        return ChineseSimplifier.toSimplified(Normalizer.normalize(name, Normalizer.Form.NFKC))
                 .strip()
                 .toLowerCase(Locale.ROOT)
                 .replaceAll("[\\s\\p{P}]+", "");
