@@ -239,7 +239,7 @@ node .logs/verify-agent-cases.mjs
 
 `Sale` 点把订单行**反范式化**成一张宽表（21 个属性）：`extendedprice, discount, tax, quantity, revenue, gross,
 discountAmount, taxAmount, lateDelivery, returned, region, nation, segment, priority, shipmode, partType, brand,
-supplierName, orderYear, orderMonth`。另一半是**语义层** `tpc-h-analytics`：17 个指标、11 个维度、8 张表，节点类型
+supplierName, orderYear, orderMonth`。另一半是**语义层** `tpc-h-analytics`：18 个指标、11 个维度、8 张表，节点类型
 `Metric / Dimension / Table / Column / Domain / Query`。
 
 ### B.2 步骤 1：自然语言 → 语义层落地（agent 的"接地"）
@@ -343,8 +343,9 @@ GROUP BY region.r_name ORDER BY region;
 | 退货行数 / 占比 | 351 / **4.39%** |
 | 缺失该字段的行 | 0 |
 
-> 这条自检也修正了本仓库 README 里的一条**旧结论**（曾据布尔查询写成「lateDelivery/returned 全为空」）——
-> 错的是问句的类型，不是数据。README 的数据注记已按此更正，并在文末留了指向本案例的链接。
+> 这条自检也修正了本仓库早先的一条**旧结论**（曾据布尔查询写成「lateDelivery/returned 全为空」）——
+> 错的是问句的类型，不是数据。更正后的数据注记见 [USE-CASES.md §2.3](USE-CASES.md#23-analysis-layer-from-the-numbers-to-the-explanation)
+> 与 [DATA-QUALITY.md](DATA-QUALITY.md)。
 
 ### B.7 步骤 3：给出**可信**的答案（拒答之后仍然交付价值）
 
@@ -435,6 +436,6 @@ node tools/semantic-sql.mjs --metric metric/revenue --group-by dim/order_date --
 一句话总结两者的差别：**案例 A 检验的是"关系本身可不可信"，案例 B 检验的是"维度本身可不可用"**；
 两者共用的动作都是——**在给用户结论之前，先找到能推翻自己的那个检查**。
 
-与之前工作的区别：README 里的语义层故事停在「生成 SQL 并复现 1996 vs 1995 的数字」；
+与之前工作的区别：[USE-CASES.md](USE-CASES.md) 里的语义层故事停在「生成 SQL 并复现 1996 vs 1995 的数字」；
 本文两个案例都**不止于执行**——A 会让图谱反驳自己（并给出可量化的偏差来源），
 B 会在三道自检全红之后**拒绝**回答原问题并交付替代分析。这正是"data agent"与"报表"的分界。

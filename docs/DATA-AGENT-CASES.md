@@ -120,9 +120,12 @@ its own base, so it is a structural deterioration rather than a general one; the
 MAD-based reading saying TRUCK is the unusual *improvement*. Cross-check: 375 + 396 = **771**, the late-delivery
 count this repository verified independently (`docs/DATA-QUALITY.md`), so two paths through the same data agree.
 
-The operational follow-up - **"did volume grow, or did the rate get worse?"** - needs the same dimension on
-`metric/order_count`, and that call currently returns rows without a measure: the `group().by(count())` shape is
-not parsed (recorded as a gap in `verification/eval-data-agent.mjs`, which is where the fix will be verified).
+The operational follow-up - **"did volume grow, or did the rate get worse?"** - is answerable with
+`metric/line_count` (订单行数) sliced by the same `dim/ship_mode`: it is bound to `count` (the fact graph's row
+count), so volume and the event count are comparable row-for-row, and the warehouse SQL agrees
+(`COUNT(*)` from `lineitem`). `metric/order_count` is deliberately not that volume - it is distinct orders
+(`COUNT(DISTINCT o_orderkey)`), and a line-item dimension may not slice it, so the question `各运输方式订单数` is
+refused with the model's own rule rather than answered with a wrong number.
 
 ---
 
@@ -137,8 +140,10 @@ not parsed (recorded as a gap in `verification/eval-data-agent.mjs`, which is wh
 3. **Noisy warning.** Any question that names years and groups by a non-date dimension gets
    `the question names a year but groups by … `. For an explicit two-year comparison that warning is a false
    alarm; it is recorded rather than silenced because the condition it guards is real in other phrasings.
-4. **Count metrics count rows, not distinct orders.** `metric/order_count` counts fact rows (line items), so any
-   rate derived from it is a row-level rate. The wording in the answer must say so.
+4. **A count is not one number.** `metric/order_count` is distinct orders (`COUNT(DISTINCT o_orderkey)` from
+   `orders`), while `metric/line_count` is the row count (`COUNT(*)` from `lineitem`) - the two differ by the
+   1:4 order-to-line ratio. A rate must name which count it divides: the late-delivery rate in §4 divides
+   `late_delivery_count` by `line_count`, never by `order_count`.
 5. **Demo scale.** About 8,000 rows over two years: a 12-row swing in one ship mode is real and thin
    (`docs/CAPACITY.md`), which is another reason the answer stops at description.
 
@@ -152,5 +157,5 @@ curl -s localhost:8081/api/v1/analysis/tpc-h-analytics/attribute -H 'content-typ
 
 node verification/verify-data-agent.mjs      # 22 assertions: the numbers above and the refusal rules
 node verification/eval-data-agent.mjs        # the answer-level ledger: five categories, gaps printed not hidden
-node tools/mcp-server.mjs --selftest         # the same tools through the MCP plugin (13 tools)
+node tools/mcp-server.mjs --selftest         # the same tools through the MCP plugin (14 tools)
 ```

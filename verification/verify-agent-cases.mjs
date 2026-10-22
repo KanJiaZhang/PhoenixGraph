@@ -292,7 +292,7 @@ check('the month curve runs 13,567,510.77 (Jan) to 18,211,062.47 (Jul) and back 
 const metrics = (await ask(SEM, "g.V('Node').has('entityType','Metric').values('name')")).length;
 const dimensions = (await ask(SEM, "g.V('Node').has('entityType','Dimension').values('name')")).length;
 const tables = (await ask(SEM, "g.V('Node').has('entityType','Table').values('name')")).length;
-check('the semantic layer holds 17 metrics / 11 dimensions / 8 tables', metrics === 17 && dimensions === 11 && tables === 8,
+check('the semantic layer holds 18 metrics / 11 dimensions / 8 tables', metrics === 18 && dimensions === 11 && tables === 8,
   `${metrics}/${dimensions}/${tables}`);
 const revenueNode = ((await ask(SEM, "g.V('metric/revenue','Node')"))[0] || {}).properties || {};
 check('metric/revenue carries the expression, unit and description the agent quotes',

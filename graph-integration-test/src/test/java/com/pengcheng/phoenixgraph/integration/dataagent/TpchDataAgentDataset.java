@@ -219,6 +219,8 @@ public final class TpchDataAgentDataset {
                 "AVG(l_receiptdate - l_commitdate)", "天"));
         m.add(Node.metric("metric/late_delivery_count", "延迟交付数：实际收货日晚于承诺交付日的行数", "base", "COUNT",
                 "COUNT(CASE WHEN l_receiptdate > l_commitdate THEN 1 END)", "行"));
+        m.add(Node.metric("metric/line_count", "订单行数：订单明细行的总数（晚交付率的分母）", "base", "COUNT",
+                "COUNT(*)", "行"));
         m.add(Node.metric("metric/profit", "利润：净收入 - 供应成本 - 折扣额（管理口径）", "derived", "RATIO",
                 "metric/revenue - metric/supply_cost", "元"));
         return m;
@@ -419,6 +421,7 @@ public final class TpchDataAgentDataset {
         m.put("metric/return_rate", List.of("lineitem"));
         m.put("metric/shipping_delay", List.of("lineitem"));
         m.put("metric/late_delivery_count", List.of("lineitem", "orders"));
+        m.put("metric/line_count", List.of("lineitem"));
         m.put("metric/profit", List.of("lineitem", "partsupp"));
         return m;
     }
@@ -441,6 +444,7 @@ public final class TpchDataAgentDataset {
         m.put("metric/return_rate", List.of("column/lineitem.l_returnflag"));
         m.put("metric/shipping_delay", List.of("column/lineitem.l_receiptdate", "column/lineitem.l_commitdate"));
         m.put("metric/late_delivery_count", List.of("column/lineitem.l_receiptdate", "column/lineitem.l_commitdate"));
+        m.put("metric/line_count", List.of("column/lineitem.l_linenumber"));
         m.put("metric/profit", List.of("column/lineitem.l_extendedprice", "column/lineitem.l_discount", "column/partsupp.ps_supplycost"));
         return m;
     }
@@ -477,6 +481,7 @@ public final class TpchDataAgentDataset {
         m.put("metric/quantity_sold", List.of("query/q18"));
         m.put("metric/supply_cost", List.of("query/q2"));
         m.put("metric/late_delivery_count", List.of("query/q4"));
+        m.put("metric/line_count", List.of("query/q1"));
         m.put("metric/total_revenue", List.of("query/q7"));
         m.put("metric/shipping_delay", List.of("query/q4"));
         m.put("metric/order_count", List.of("query/q4"));
@@ -500,6 +505,7 @@ public final class TpchDataAgentDataset {
         m.put("metric/return_rate", List.of("dim/return_flag", "dim/nation", "dim/mktsegment"));
         m.put("metric/shipping_delay", List.of("dim/ship_mode", "dim/order_priority"));
         m.put("metric/late_delivery_count", List.of("dim/order_priority", "dim/ship_mode"));
+        m.put("metric/line_count", List.of("dim/ship_mode", "dim/order_priority", "dim/order_date"));
         m.put("metric/profit", List.of("dim/region", "dim/mktsegment", "dim/supplier"));
         return m;
     }
@@ -522,6 +528,7 @@ public final class TpchDataAgentDataset {
         m.put("metric/return_rate", "domain/customer");
         m.put("metric/shipping_delay", "domain/shipping");
         m.put("metric/late_delivery_count", "domain/shipping");
+        m.put("metric/line_count", "domain/shipping");
         m.put("metric/profit", "domain/sales");
         return m;
     }

@@ -23,6 +23,7 @@
     "metric/tax_amount": "taxAmount",
     "metric/quantity_sold": "quantity",
     "metric/order_count": "count",
+    "metric/line_count": "count",
     "metric/late_delivery_count": "lateDelivery",
     "metric/return_rate": null,
     "metric/market_share": null,
@@ -69,6 +70,14 @@
       "晚交付",
       "迟交",
       "late"
+    ],
+    "metric/line_count": [
+      "行数",
+      "订单行数",
+      "明细行数",
+      "line count",
+      "line items",
+      "shipments"
     ],
     "dim/region": [
       "地区",

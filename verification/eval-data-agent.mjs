@@ -1,5 +1,5 @@
 // needs: service
-// what: the answer-level ledger for the data agent - five categories of question, each asserted against what the
+// what: the answer-level ledger for the data agent - six categories of question, each asserted against what the
 //       answer must contain. This is the piece the market comparison said was missing everywhere: 967 unit tests
 //       and 380 live assertions all check *behaviour*, and none of them checks whether an answer is right.
 //
@@ -15,6 +15,8 @@
 //                       ignored) as a known gap rather than pretending it is handled
 //   5. stale/absent   - a year the data does not cover (2026): the answer must not read as "revenue was zero"
 //                       without saying so, which is also recorded as a gap because the warning is not there yet
+//   6. volume follow-up - after an event metric moves, "did volume grow, or did the rate get worse?": the count
+//                       metric sliced by the same dimension must answer with numbers, or the rate cannot be read
 //
 // A failure here is a product failure: an answer that is wrong, or right for the wrong reason, is worse than a
 // refusal. The gaps are printed as GAP lines, counted, and never silently pass.
@@ -109,19 +111,23 @@ check('and that answer is still a zero rather than an error',
 
 // ---- 6. the volume follow-up, for an event metric ------------------------------------------------------
 // The first question an operator asks after "late deliveries went up" is "did volume grow, or did the rate get
-// worse?" - which needs the same dimension on a count metric. That path is broken today, and a ledger that only
-// listed what works would be a worse ledger, so the failure is asserted as a gap until the parse is fixed.
+// worse?" - which needs the same dimension on a count of the same rows. metric/line_count is that count: it is
+// bound to "count" (the fact graph's row count) and sliceable by ship_mode, so the volume and the event count
+// are comparable row-for-row. metric/order_count is deliberately *not* used here: it is distinct orders, and a
+// line-item dimension may not slice it - the refusal is the model's own rule, not a parse failure.
 console.log('--- 6. the volume follow-up (a count metric)');
-const volume = await ask({ question: '1995 年各运输方式订单数' });
+const volume = await ask({ question: '1995 年各运输方式订单行数' });
 const volumeRows = volume.json?.answer?.rows || [];
-if (volumeRows.length > 0 && volumeRows.every((row) => typeof row.measure === 'number')) {
-  check('a count metric answers with numbers, so volume can be compared with the event count',
-    volumeRows.length >= 6, `${volumeRows.length} rows`);
-} else {
-  gap('a count-metric question returns rows without a measure: metric/order_count is bound to "count", and the '
-    + 'shape group().by(count()) returns is not parsed - so "volume or rate?" cannot be answered yet',
-    `http ${volume.status} rows=${JSON.stringify(volumeRows).slice(0, 90)}`);
-}
+check('a count metric answers with numbers, so volume can be compared with the event count',
+  volumeRows.length >= 6 && volumeRows.every((row) => typeof row.measure === 'number'),
+  `${volumeRows.length} rows`);
+check('the volume is the line-item count the rate is denominated in',
+  volume.json?.plan?.metric === 'metric/line_count'
+  && /by\(count\(\)\)/.test(volume.json?.provenance?.traversal || ''),
+  `${volume.json?.plan?.metric} ${String(volume.json?.provenance?.traversal || '').slice(0, 90)}`);
+check('and the rows sum to the total (a count is additive)',
+  Math.abs(volumeRows.reduce((sum, row) => sum + row.measure, 0) - (volume.json?.answer?.total || 0)) <= 1,
+  `sum=${volumeRows.reduce((sum, row) => sum + row.measure, 0)} total=${volume.json?.answer?.total}`);
 
 // ---- the ledger ---------------------------------------------------------------------------------------
 console.log('');
