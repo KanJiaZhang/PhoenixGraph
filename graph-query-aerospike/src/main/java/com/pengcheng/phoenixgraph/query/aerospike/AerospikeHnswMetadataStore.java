@@ -9,6 +9,8 @@ import com.pengcheng.phoenixgraph.hnsw.HnswEntryPoint;
 import com.pengcheng.phoenixgraph.hnsw.HnswMetadata;
 import com.pengcheng.phoenixgraph.hnsw.HnswMetadataStore;
 import com.pengcheng.phoenixgraph.hnsw.HnswMetric;
+import com.pengcheng.phoenixgraph.schema.GraphSchema;
+import com.pengcheng.phoenixgraph.schema.VectorIndexSchemas;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -58,7 +60,21 @@ public final class AerospikeHnswMetadataStore implements HnswMetadataStore {
         this.key = new Key(namespace, set, Value.get(Objects.requireNonNull(recordKey, "recordKey")));
     }
 
-    /** Store for the first vector property of a vertex type (key {@code hnsw:<vertexName>}). */
+    /** Store for the first vector property of a vertex type, keyed by graph. */
+    public static AerospikeHnswMetadataStore forSchema(AerospikeClient client, String namespace, String set,
+                                                       GraphSchema schema, String vertexName) {
+        List<VectorIndexSchemas.VectorProperty> properties =
+                AerospikeHnswIndexFactory.vectorProperties(schema, vertexName);
+        if (properties.isEmpty()) {
+            throw new IllegalArgumentException("No vector property on " + vertexName + " in " + schema.name());
+        }
+        return new AerospikeHnswMetadataStore(client, namespace, set,
+                AerospikeHnswIndexFactory.metadataRecordKey(schema, vertexName,
+                        properties.get(0).propertyName()));
+    }
+
+    /** @deprecated the key does not include the graph; use {@link #forSchema}. */
+    @Deprecated
     public static AerospikeHnswMetadataStore forVertex(AerospikeClient client, String namespace, String set,
                                                       String vertexName) {
         return new AerospikeHnswMetadataStore(client, namespace, set, "hnsw:" + vertexName);

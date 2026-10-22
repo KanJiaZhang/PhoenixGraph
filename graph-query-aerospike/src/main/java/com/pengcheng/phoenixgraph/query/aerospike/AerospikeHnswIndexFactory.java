@@ -67,11 +67,19 @@ public final class AerospikeHnswIndexFactory {
                 VectorIndexSchemas.ensureLayer(schema, vertexName, vectorProperty, level);
     }
 
-    /** Record key of a vector property's metadata: {@code hnsw:<vertex>} or {@code hnsw:<vertex>:<property>}. */
+    /**
+     * Record key of a vector property's metadata. The graph name is part of the key: two graphs in one
+     * namespace can both have a {@code Vector}/{@code embedding} index, and a shared key made one graph's
+     * entry points point at vertices the other graph did not have.
+     *
+     * <p>{@code hnsw:<graph>:<vertex>} or {@code hnsw:<graph>:<vertex>:<property>}.
+     */
     public static String metadataRecordKey(GraphSchema schema, String vertexName, String propertyName) {
         List<VectorIndexSchemas.VectorProperty> properties = vectorProperties(schema, vertexName);
         boolean first = properties.isEmpty() || properties.get(0).propertyName().equals(propertyName);
-        return first ? "hnsw:" + vertexName : "hnsw:" + vertexName + ":" + propertyName;
+        String graph = schema == null || schema.name() == null || schema.name().isBlank() ? "" : schema.name();
+        String prefix = graph.isEmpty() ? "hnsw" : "hnsw:" + graph;
+        return first ? prefix + ":" + vertexName : prefix + ":" + vertexName + ":" + propertyName;
     }
 
     /** The index configuration of a vector property, taking an existing build into account. */

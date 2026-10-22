@@ -118,13 +118,13 @@ class AerospikeHnswIndexFactoryTest {
     @Test
     void metadataRecordsAreKeyedPerVectorProperty() {
         GraphSchema one = vectorSchema(VectorIndexConfig.DEFAULT, 1);
-        assertEquals("hnsw:Vector", AerospikeHnswIndexFactory.metadataRecordKey(one, "Vector", "vector"));
+        assertEquals("hnsw:hnsw-sift:Vector", AerospikeHnswIndexFactory.metadataRecordKey(one, "Vector", "vector"));
 
         GraphSchema two = vectorSchema(VectorIndexConfig.DEFAULT, 1);
         two.vertexSchema("Vector").property(new VertexPropertySchema(3, "embedding", null,
                 new PropertyType.ListType(PropertyType.ScalarType.DOUBLE)).vector(true));
-        assertEquals("hnsw:Vector", AerospikeHnswIndexFactory.metadataRecordKey(two, "Vector", "vector"));
-        assertEquals("hnsw:Vector:embedding",
+        assertEquals("hnsw:hnsw-sift:Vector", AerospikeHnswIndexFactory.metadataRecordKey(two, "Vector", "vector"));
+        assertEquals("hnsw:hnsw-sift:Vector:embedding",
                 AerospikeHnswIndexFactory.metadataRecordKey(two, "Vector", "embedding"));
         // several vector properties are rejected by the validator, but the keying stays defined
         assertEquals(2, AerospikeHnswIndexFactory.vectorProperties(two, "Vector").size());

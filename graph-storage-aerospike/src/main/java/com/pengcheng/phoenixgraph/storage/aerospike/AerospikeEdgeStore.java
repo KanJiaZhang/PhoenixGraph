@@ -469,19 +469,28 @@ public class AerospikeEdgeStore implements AdjacentEdgeStore {
             targets.add(new EdgeTargets(schemaId, source, sourceDir, destination, destinationDir, edgeId));
         }
 
-        record BinKey(int schemaId, Object vertexId, int dir) {}
-        Map<BinKey, BatchWriteResult> binOutcomes = new LinkedHashMap<>();
+        Map<Object, List<BinUpdate>> updatesByVertex = new LinkedHashMap<>();
         for (Map.Entry<Integer, Map<Object, Map<Integer, Map<String, Object>>>> schemaEntry
                 : bySchemaVertex.entrySet()) {
             EdgeSchema schema = schemas.get(schemaEntry.getKey());
             for (Map.Entry<Object, Map<Integer, Map<String, Object>>> vertexEntry
                     : schemaEntry.getValue().entrySet()) {
+                List<BinUpdate> updates = updatesByVertex.computeIfAbsent(vertexEntry.getKey(), key -> new ArrayList<>());
                 for (Map.Entry<Integer, Map<String, Object>> binEntry : vertexEntry.getValue().entrySet()) {
-                    binOutcomes.put(new BinKey(schemaEntry.getKey(), vertexEntry.getKey(), binEntry.getKey()),
-                            upsertBatchInto(vertexEntry.getKey(), schema, binEntry.getKey(), binEntry.getValue()));
+                    updates.add(new BinUpdate(schema, binEntry.getKey(), binEntry.getValue()));
                 }
             }
         }
+        Map<BinKey, BatchWriteResult> binOutcomes = new java.util.concurrent.ConcurrentHashMap<>();
+        java.util.stream.Stream<Map.Entry<Object, List<BinUpdate>>> groups = updatesByVertex.entrySet().stream();
+        if (updatesByVertex.size() > 1) {
+            groups = groups.parallel();
+        }
+        groups.forEach(entry -> {
+            for (BinWriteResult result : upsertBinsForVertex(entry.getKey(), entry.getValue())) {
+                binOutcomes.put(new BinKey(result.schemaId(), entry.getKey(), result.dir()), result.result());
+            }
+        });
 
         List<WriteOutcome> outcomes = new ArrayList<>(edges.size());
         for (EdgeTargets target : targets) {
@@ -635,6 +644,92 @@ public class AerospikeEdgeStore implements AdjacentEdgeStore {
         Object other = sourceIsVertex ? edge.destination() : edge.source();
         return new EdgeWritePlan(EDGE_DIR_BOTH, other, EDGE_DIR_BOTH, edgeId, edge);
     }
+    /**
+     * Writes every bin of one vertex with a single record read and a single operate. The bins are merged
+     * in memory first, so a vertex with both incoming and outgoing edges no longer pays two reads and two
+     * generation-CAS writes for the same record.
+     */
+    private List<BinWriteResult> upsertBinsForVertex(Object vertexId, List<BinUpdate> updates) {
+        if (updates.isEmpty()) {
+            return List.of();
+        }
+        Exception last = null;
+        for (int attempt = 1; attempt <= maxWriteAttempts; attempt++) {
+            Record record;
+            try {
+                record = db.get(null, key(vertexId));
+            } catch (AerospikeException e) {
+                last = e;
+                continue;
+            }
+            boolean create = record == null;
+            Map<String, Map<String, Object>> mergedByBin = new LinkedHashMap<>();
+            Map<String, Set<String>> staleByBin = new LinkedHashMap<>();
+            for (BinUpdate update : updates) {
+                String bin = edgeBin(update.schema().id(), update.dir());
+                Map<String, Object> existing = create ? new LinkedHashMap<>() : readEdgeMap(record, bin);
+                Set<String> stale = new LinkedHashSet<>();
+                if (!create) {
+                    for (Map.Entry<String, Object> entry : update.values().entrySet()) {
+                        Object existingValue = existing.get(entry.getKey());
+                        if (existingValue != null
+                                && mergeEdgeValue(entry.getKey(), entry.getValue(), existingValue) == null) {
+                            stale.add(entry.getKey());
+                        }
+                    }
+                }
+                mergedByBin.put(bin, mergeAndEvict(existing, update.values(),
+                        limitFor(update.schema(), update.dir()), metrics));
+                staleByBin.put(bin, stale);
+            }
+            Operation[] operations = mergedByBin.entrySet().stream()
+                    .map(entry -> Operation.put(new Bin(entry.getKey(), entry.getValue())))
+                    .toArray(Operation[]::new);
+            try {
+                db.operate(create ? createOnlyPolicy() : generationPolicy(record.generation), key(vertexId), operations);
+            } catch (AerospikeException e) {
+                last = e; // create race or generation conflict: re-read the whole vertex and retry
+                continue;
+            }
+
+            List<BinWriteResult> results = new ArrayList<>(updates.size());
+            for (BinUpdate update : updates) {
+                String bin = edgeBin(update.schema().id(), update.dir());
+                String target = vertexId + "@" + bin;
+                Set<String> stale = staleByBin.getOrDefault(bin, Set.of());
+                for (String edgeId : stale) {
+                    businessLog.record(BusinessLogEntry.failure("upsertEdgesOnVertex", target,
+                            Map.of("edgeId", edgeId, "bin", bin, "stale", true)));
+                }
+                Map<String, Object> details = new LinkedHashMap<>();
+                details.put("bin", bin);
+                details.put("count", update.values().size());
+                if (create) {
+                    details.put("createdVertex", true);
+                }
+                businessLog.record(BusinessLogEntry.success("upsertEdgesOnVertex", target, details));
+                WriteOutcome outcome = stale.size() == update.values().size()
+                        ? WriteOutcome.SUCCESS_STALE : WriteOutcome.SUCCESS;
+                results.add(new BinWriteResult(update.schema().id(), update.dir(),
+                        new BatchWriteResult(outcome, stale)));
+            }
+            return results;
+        }
+
+        String error = last == null ? "unknown" : last.toString();
+        List<BinWriteResult> results = new ArrayList<>(updates.size());
+        for (BinUpdate update : updates) {
+            String bin = edgeBin(update.schema().id(), update.dir());
+            String target = vertexId + "@" + bin;
+            Map<String, Object> details = Map.of("bin", bin, "count", update.values().size(), "error", error);
+            errorLog.record(BusinessLogEntry.failure("upsertEdgesOnVertex", target, details));
+            businessLog.record(BusinessLogEntry.failure("upsertEdgesOnVertex", target, details));
+            results.add(new BinWriteResult(update.schema().id(), update.dir(),
+                    new BatchWriteResult(WriteOutcome.FAILED, Set.of())));
+        }
+        return results;
+    }
+
 
     private BatchWriteResult upsertBatchInto(Object vertexId, EdgeSchema edgeSchema, int dir,
                                              Map<String, Object> edgeValues) {
@@ -742,6 +837,15 @@ public class AerospikeEdgeStore implements AdjacentEdgeStore {
 
     /** What one batch write into a shared bin did: the outcome and which edge ids were stale. */
     private record BatchWriteResult(WriteOutcome outcome, java.util.Set<String> staleEdgeIds) {
+    }
+
+    private record BinKey(int schemaId, Object vertexId, int dir) {
+    }
+
+    private record BinUpdate(EdgeSchema schema, int dir, Map<String, Object> values) {
+    }
+
+    private record BinWriteResult(int schemaId, int dir, BatchWriteResult result) {
     }
 
     /** An edge's outcome inside a shared bin: stale only when that bin kept its stored copy. */

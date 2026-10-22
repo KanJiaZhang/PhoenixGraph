@@ -19,3 +19,5 @@ server:
 phoenixgraph:
   # graph-http backend the UI proxies /api/query and /api/graphs to
   http-url: http://localhost:8081
+  # forwarded as Authorization: Bearer when the engine has security enabled
+  api-key: ${PHOENIXGRAPH_API_KEY:}

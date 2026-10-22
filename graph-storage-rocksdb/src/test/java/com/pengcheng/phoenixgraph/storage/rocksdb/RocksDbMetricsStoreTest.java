@@ -67,8 +67,11 @@ class RocksDbMetricsStoreTest {
         assertEquals(1, loaded.value(Metrics.EDGE_WRITE_STALE));
         assertEquals(2, loaded.latency(Metrics.queryLatency("gremlin")).count());
         assertEquals(8, loaded.latency(Metrics.queryLatency("gremlin")).meanMillis(), 0.5);
-        assertTrue(loaded.latency(Metrics.queryLatency("gremlin")).p95Millis() >= 8.5,
-                "the tail is kept, not just the mean");
+        assertTrue(loaded.latency(Metrics.queryLatency("gremlin")).toStats()
+                        .cumulativePercentileMillis(0.95) >= 8.5,
+                "the tail is kept in the cumulative view, not just the mean");
+        assertEquals(0, loaded.latency(Metrics.queryLatency("gremlin")).p95Millis(), 1e-9,
+                "restored history is not a current five-minute window");
     }
 
     @Test

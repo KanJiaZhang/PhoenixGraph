@@ -286,7 +286,7 @@ class HnswGraphIntegrationTest {
         AerospikeEdgeStore edgeStore =
                 new AerospikeEdgeStore(client, config.namespace(), set, schema, silentBusiness, silentErrors, attempts);
         AerospikeHnswMetadataStore metadataStore =
-                AerospikeHnswMetadataStore.forVertex(client, config.namespace(), METADATA_SET, "Vector");
+                AerospikeHnswMetadataStore.forSchema(client, config.namespace(), METADATA_SET, schema, "Vector");
 
         System.out.println("[hnsw] dataset     : " + size + " x " + dataset.vectors().get(0).length
                 + " vectors from " + directory);
