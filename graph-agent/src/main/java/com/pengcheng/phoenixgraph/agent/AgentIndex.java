@@ -43,7 +43,7 @@ public record AgentIndex(String graph, String embedding, int dimensions, String 
     /** One entity: the name an AI quotes, the type it is, the vector, and where it was read. */
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record Entity(String id, String vertexType, String type, String name, String description,
-                         float[] vector, List<String> chunkIds, List<String> cites) {
+                         float[] vector, List<String> chunkIds, List<String> cites, List<String> aliases) {
 
         public Entity {
             // the vertex type the graph stores it under (what a traversal names), and the domain type the
@@ -51,7 +51,13 @@ public record AgentIndex(String graph, String embedding, int dimensions, String 
             vertexType = vertexType == null || vertexType.isBlank() ? "Entity" : vertexType;
             chunkIds = chunkIds == null ? List.of() : List.copyOf(chunkIds);
             cites = cites == null ? List.of() : List.copyOf(cites);
+            aliases = aliases == null ? List.of() : List.copyOf(aliases);
         }
+
+        public Entity(String id, String vertexType, String type, String name, String description,
+                      float[] vector, List<String> chunkIds, List<String> cites) {
+            this(id, vertexType, type, name, description, vector, chunkIds, cites, List.of());
+    }
     }
 
     /** One relation of the graph, with the sentence it was read from. */
@@ -76,12 +82,14 @@ public record AgentIndex(String graph, String embedding, int dimensions, String 
             return List.of();
         }
         String needle = term.strip();
-        List<Entity> exact = entities.stream().filter(entity -> needle.equals(entity.id())).toList();
+        List<Entity> exact = entities.stream().filter(entity -> needle.equals(entity.id())
+                || entity.aliases().contains(needle)).toList();
         if (!exact.isEmpty()) {
             return exact;
         }
         return entities.stream()
-                .filter(entity -> needle.contains(entity.id()) || entity.id().contains(needle))
+                .filter(entity -> needle.contains(entity.id()) || entity.id().contains(needle)
+                        || entity.aliases().stream().anyMatch(alias -> needle.contains(alias) || alias.contains(needle)))
                 .sorted((a, b) -> Integer.compare(b.id().length(), a.id().length()))
                 .toList();
     }
@@ -102,17 +110,24 @@ public record AgentIndex(String graph, String embedding, int dimensions, String 
         return postings;
     }
 
-    /** The searchable terms of an entity: its name and every 2-character slice of it (Chinese-friendly). */
+    /** The searchable terms of an entity: its name, aliases and every 2-character slice (Chinese-friendly). */
     public static Set<String> termsOf(Entity entity) {
         Set<String> terms = new LinkedHashSet<>();
         String name = entity.name() == null ? entity.id() : entity.name();
+        addTerms(terms, name);
+        for (String alias : entity.aliases()) {
+            addTerms(terms, alias);
+        }
+        return terms;
+    }
+
+    private static void addTerms(Set<String> terms, String name) {
         if (name != null && name.length() >= 2) {
             terms.add(name);
             for (int i = 0; i + 2 <= name.length(); i++) {
                 terms.add(name.substring(i, i + 2));
             }
         }
-        return terms;
     }
 
     /** Writes the artifact (JSON) to a path, creating the parent directory. */

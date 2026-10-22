@@ -1,0 +1,13 @@
+{
+  "payment-service": "Service",
+  "checkout-api": "Service",
+  "Redis": "Component",
+  "Deploy 42": "Change",
+  "Alice": "Person",
+  "Bob": "Person",
+  "bad config": "Issue",
+  "cache leak": "Issue",
+  "latency spike": "Issue",
+  "old cache": "Component",
+  "outage": "Incident"
+}

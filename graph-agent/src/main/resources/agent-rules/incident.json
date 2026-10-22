@@ -1,0 +1,96 @@
+{
+  "name": "incident",
+  "description": "Business incident vocabulary: causes, fixes, ownership, dependencies and deployment relations in English prose.",
+  "relationWords": {},
+  "rules": [
+    {
+      "name": "caused",
+      "relation": "caused",
+      "between": "^(?:caused|causes|leads? to|led to)(?: the| a| an)?$"
+    },
+    {
+      "name": "was-caused-by",
+      "relation": "caused",
+      "between": "^(?:was|is) caused by(?: the| a| an)?$",
+      "swap": true
+    },
+    {
+      "name": "fixed",
+      "relation": "fixed",
+      "between": "^(?:fixed|resolved|repaired|mitigated)(?: the| a| an)?$"
+    },
+    {
+      "name": "reported",
+      "relation": "reported",
+      "between": "^(?:reported|reports|found)(?: the| a| an)?$"
+    },
+    {
+      "name": "depends-on",
+      "relation": "depends_on",
+      "between": "^(?:depends on|relies on)$"
+    },
+    {
+      "name": "uses",
+      "relation": "uses",
+      "between": "^(?:uses|used|consumes)(?: the| a| an)?$"
+    },
+    {
+      "name": "is-used-by",
+      "relation": "uses",
+      "between": "^(?:is|was) used by$",
+      "swap": true
+    },
+    {
+      "name": "owns",
+      "relation": "owns",
+      "between": "^(?:owns|owned)(?: the| a| an)?$"
+    },
+    {
+      "name": "is-owned-by",
+      "relation": "owns",
+      "between": "^(?:is|was) owned by$",
+      "swap": true
+    },
+    {
+      "name": "is-owner-of",
+      "relation": "owns",
+      "between": "^(?:is|was) (?:the )?owner of(?: the)?$"
+    },
+    {
+      "name": "assigned-to",
+      "relation": "assigned_to",
+      "between": "^(?:is|was) assigned to(?: the)?$"
+    },
+    {
+      "name": "on-call-for",
+      "relation": "on_call_for",
+      "between": "^(?:is|was) on call for(?: the)?$"
+    },
+    {
+      "name": "part-of",
+      "relation": "part_of",
+      "between": "^(?:is|was) part of(?: the)?$"
+    },
+    {
+      "name": "deployed-on",
+      "relation": "deployed_on",
+      "between": "^(?:is|was) deployed on(?: the)?$"
+    },
+    {
+      "name": "replaced",
+      "relation": "replaced",
+      "between": "^(?:replaced|replaces)(?: the| a| an)?$"
+    },
+    {
+      "name": "blocked",
+      "relation": "blocked",
+      "between": "^(?:blocked|blocks)(?: the| a| an)?$"
+    },
+    {
+      "name": "affects",
+      "relation": "affects",
+      "between": "^(?:affects|affected)(?: the| a| an)?$"
+    }
+  ],
+  "windows": []
+}

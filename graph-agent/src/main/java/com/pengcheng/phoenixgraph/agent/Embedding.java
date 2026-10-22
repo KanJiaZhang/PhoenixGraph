@@ -9,11 +9,11 @@ import java.util.Map;
  *
  * <p>The default implementation is a <b>hashing bag of character n-grams</b>: deterministic, offline,
  * dependency-free, and good enough to make the retrieval funnel work end to end (an inverted-index seed
- * stage, then a vector rerank). It is not a semantic embedder - a language model is better at that - and
- * the interface is the point: {@link Embedding.Function} is what the toolkit asks for, so an installation
- * that has a real model plugs it in and everything downstream (ingestion, the index artifact, the tools)
- * keeps working. What the hashing embedder does guarantee is that ingestion is reproducible: the same
- * document produces the same vectors on any machine, which is what a quality report needs to be
+ * stage, then a vector rerank). It is not a semantic embedder. An installation with a real model sets
+ * {@code phoenixgraph.agent.embedding.provider=http} and gets {@link HttpEmbedding} (an OpenAI-compatible
+ * endpoint); the artifact records which embedder produced its vectors, and the tools rebuild that same
+ * vector space at query time. What the hashing embedder does guarantee is that ingestion is reproducible:
+ * the same document produces the same vectors on any machine, which is what a quality report needs to be
  * comparable.
  *
  * <p>Character n-grams (2 and 3 characters, plus the whole-token bag for ASCII words) are chosen because
@@ -24,6 +24,11 @@ public interface Embedding {
 
     /** The number of dimensions every vector has. */
     int dimensions();
+
+    /** How the artifact names this embedder, so query time can rebuild the same vector space. */
+    default String name() {
+        return "hashing-" + dimensions();
+    }
 
     /** Embeds one text (an entity's description, a question) into a unit-length vector. */
     float[] embed(String text);

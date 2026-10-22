@@ -203,6 +203,21 @@
       copy: '复制',
       copied: '已复制',
       close: '关闭',
+      ingest: '文档入库',
+      ingestTitle: '把文档变成知识图谱',
+      ingestHint: '支持 Markdown / TXT / HTML。PDF 请用 tools/ingest-docs.mjs（依赖 pdftotext）或命令行入库。',
+      ingestGraph: '新图名称',
+      ingestRulePack: '抽取规则包',
+      ingestFiles: '文档文件',
+      ingestDictionary: '实体字典（可选 JSON）',
+      ingestAliases: '别名映射（可选 JSON）',
+      ingestSubmit: '开始入库',
+      ingestRunning: '正在抽取并写入…',
+      ingestDone: '入库完成',
+      ingestNoFiles: '请选择至少一个文本文件',
+      ingestNoGraph: '请填写图名称',
+      ingestBadJson: '字典或别名不是合法 JSON',
+      ingestFailed: '入库失败',
       type: '类型',
       community: '社区',
       count: '点',
@@ -354,6 +369,21 @@
       copy: 'Copy',
       copied: 'Copied',
       close: 'Close',
+      ingest: 'Ingest documents',
+      ingestTitle: 'Turn documents into a knowledge graph',
+      ingestHint: 'Markdown / TXT / HTML. For PDF use tools/ingest-docs.mjs (pdftotext) or the CLI.',
+      ingestGraph: 'New graph name',
+      ingestRulePack: 'Rule pack',
+      ingestFiles: 'Document files',
+      ingestDictionary: 'Entity dictionary (optional JSON)',
+      ingestAliases: 'Alias map (optional JSON)',
+      ingestSubmit: 'Ingest',
+      ingestRunning: 'Extracting and writing…',
+      ingestDone: 'Ingestion finished',
+      ingestNoFiles: 'Choose at least one text file',
+      ingestNoGraph: 'Enter a graph name',
+      ingestBadJson: 'The dictionary or alias map is not valid JSON',
+      ingestFailed: 'Ingestion failed',
       type: 'Type',
       community: 'Community',
       count: 'vertices',
@@ -476,6 +506,16 @@
     errorTraceBox: document.getElementById('errorModalTraceBox'),
     errorHint: document.getElementById('errorModalHint'),
     errorCopy: document.getElementById('errorModalCopy'),
+    ingestBtn: document.getElementById('ingestBtn'),
+    ingestModal: document.getElementById('ingestModal'),
+    ingestGraph: document.getElementById('ingestGraph'),
+    ingestRulePack: document.getElementById('ingestRulePack'),
+    ingestFiles: document.getElementById('ingestFiles'),
+    ingestDictionary: document.getElementById('ingestDictionary'),
+    ingestAliases: document.getElementById('ingestAliases'),
+    ingestSubmit: document.getElementById('ingestSubmit'),
+    ingestStatus: document.getElementById('ingestStatus'),
+    ingestResult: document.getElementById('ingestResult'),
   };
 
   let currentGraph = null;
@@ -993,6 +1033,124 @@
   function closeModal(id) {
     const node = document.getElementById(id);
     if (node) node.hidden = true;
+  }
+
+  /** Open the document-ingestion form and suggest a graph name that does not exist yet. */
+  function openIngest() {
+    if (!el.ingestModal) return;
+    const existing = new Set([...el.graphSelect.options].map((option) => option.value));
+    let name = 'uploaded-docs';
+    for (let i = 2; existing.has(name); i += 1) name = `uploaded-docs-${i}`;
+    el.ingestGraph.value = name;
+    el.ingestFiles.value = '';
+    el.ingestStatus.textContent = '';
+    el.ingestResult.hidden = true;
+    el.ingestResult.textContent = '';
+    el.ingestModal.hidden = false;
+    el.ingestGraph.focus();
+    el.ingestGraph.select();
+  }
+
+  /** The text of one uploaded file; HTML is reduced to its text so the extractor sees sentences. */
+  async function uploadedText(file) {
+    const raw = await file.text();
+    if (/\.html?$/i.test(file.name)) {
+      const document = new DOMParser().parseFromString(raw, 'text/html');
+      return document.body ? document.body.textContent : raw;
+    }
+    return raw;
+  }
+
+  async function submitIngest() {
+    if (!el.ingestSubmit) return;
+    const graphName = el.ingestGraph.value.trim();
+    if (!graphName) {
+      el.ingestStatus.textContent = t('ingestNoGraph');
+      return;
+    }
+    const files = [...(el.ingestFiles.files || [])];
+    if (files.length === 0) {
+      el.ingestStatus.textContent = t('ingestNoFiles');
+      return;
+    }
+    let dictionary = {};
+    let aliases = {};
+    try {
+      if (el.ingestDictionary.value.trim()) dictionary = JSON.parse(el.ingestDictionary.value);
+      if (el.ingestAliases.value.trim()) aliases = JSON.parse(el.ingestAliases.value);
+    } catch (ignored) {
+      el.ingestStatus.textContent = t('ingestBadJson');
+      return;
+    }
+    const documents = [];
+    for (const file of files) {
+      const text = (await uploadedText(file)).trim();
+      if (!text) continue;
+      documents.push({
+        id: file.name.replace(/\.[^.]+$/, ''),
+        title: file.name,
+        text,
+      });
+    }
+    if (documents.length === 0) {
+      el.ingestStatus.textContent = t('ingestNoFiles');
+      return;
+    }
+
+    el.ingestSubmit.disabled = true;
+    el.ingestStatus.textContent = t('ingestRunning');
+    el.ingestResult.hidden = true;
+    try {
+      const response = await fetch('/api/agent/ingest', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          graph: graphName,
+          description: `Uploaded from the UI: ${documents.length} document(s)`,
+          documents,
+          dictionary,
+          aliases,
+          apply: true,
+          rulePack: el.ingestRulePack.value,
+        }),
+      });
+      const raw = await response.text();
+      let body;
+      try {
+        body = raw ? JSON.parse(raw) : {};
+      } catch (ignored) {
+        body = { error: raw };
+      }
+      if (!response.ok) throw new Error(body.error || raw);
+      const quality = body.quality || {};
+      const percent = (value) => (value === undefined || value === null
+        ? 'n/a'
+        : `${(Number(value) * 100).toFixed(0)}%`);
+      el.ingestResult.hidden = false;
+      el.ingestResult.textContent = `${t('ingestDone')}: ${body.entities} entities, ${body.relations} relations\n`
+        + `provenance ${percent(quality.provenanceRate)} · type agreement ${percent(quality.typeAgreement)}`
+        + ` · linked ${percent(quality.entityLinkRate)}\n`
+        + (body.notes || []).join('\n');
+      el.ingestStatus.textContent = '';
+      toast(t('ingestDone'));
+      const graphs = await fetchGraphs();
+      const graph = graphs.find((candidate) => candidate.name === graphName);
+      if (graph) {
+        if (![...el.graphSelect.options].some((option) => option.value === graphName)) {
+          const option = document.createElement('option');
+          option.value = graph.name;
+          option.textContent = graph.name + (graph.storage && graph.storage !== 'Aerospike'
+            ? ' · ' + graph.storage : '');
+          el.graphSelect.appendChild(option);
+        }
+        el.graphSelect.value = graphName;
+        onGraphChange(graph);
+      }
+    } catch (error) {
+      el.ingestStatus.textContent = `${t('ingestFailed')}: ${error.message}`;
+    } finally {
+      el.ingestSubmit.disabled = false;
+    }
   }
 
   /** The text of the currently shown error, for the copy button. */
@@ -3780,6 +3938,8 @@
     }
     el.languageSelect.addEventListener('change', onLanguageChange);
     el.examplesBtn.addEventListener('click', toggleExamples);
+    el.ingestBtn.addEventListener('click', openIngest);
+    el.ingestSubmit.addEventListener('click', submitIngest);
     el.fuzzyBtn.addEventListener('click', runFuzzyExample);
     el.exampleSelect.addEventListener('change', () => {
       const query = el.exampleSelect.value;
@@ -3856,6 +4016,8 @@
     document.addEventListener('keydown', (event) => {
       if (event.key === 'Escape' && el.errorModal && !el.errorModal.hidden) {
         closeModal('errorModal');
+      } else if (event.key === 'Escape' && el.ingestModal && !el.ingestModal.hidden) {
+        closeModal('ingestModal');
       } else if (event.key === 'Escape' && mapOpen) {
         closeMap(); // the map is a view of its own: Escape is the way back from it as well
       } else if (event.key === 'Escape' && view3dOpen) {

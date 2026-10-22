@@ -35,7 +35,8 @@ public record QualityReport(int documents, int chunks, int characters, int entit
                             Map<String, Integer> relationsByType, double provenanceRate, double typeAgreement,
                             double entityLinkRate, int isolatedEntities, double chunkCoverage,
                             double dictionaryCoverage, double relationsPerThousandChars, int duplicatesRemoved,
-                            Map<String, Double> gold, List<String> warnings) {
+                            List<Map<String, Object>> mergedEntities,
+                            List<Map<String, Object>> mergeCandidates, Map<String, Double> gold, List<String> warnings) {
 
     /**
      * Computes the report for an extraction.
@@ -52,7 +53,15 @@ public record QualityReport(int documents, int chunks, int characters, int entit
         int characters = chunks.stream().mapToInt(chunk -> chunk.text().length()).sum();
 
         // accuracy: the sentence a relation cites must contain both of its ends
-        long supported = extraction.relations().stream().filter(QualityReport::supportedByItsSentence).count();
+        Map<String, Set<String>> evidenceNames = new LinkedHashMap<>();
+        for (KnowledgeExtractor.Entity entity : extraction.entities()) {
+            Set<String> names = new LinkedHashSet<>();
+            names.add(entity.id());
+            names.addAll(entity.aliases());
+            evidenceNames.put(entity.id(), names);
+        }
+        long supported = extraction.relations().stream()
+                .filter(relation -> supportedByItsSentence(relation, evidenceNames)).count();
         double provenanceRate = extraction.relations().isEmpty() ? 0
                 : (double) supported / extraction.relations().size();
 
@@ -83,26 +92,50 @@ public record QualityReport(int documents, int chunks, int characters, int entit
         double dictionaryCoverage = dictionary.isEmpty() ? 0 : (double) used / dictionary.size();
 
         double density = characters == 0 ? 0 : extraction.relations().size() * 1000.0 / characters;
+        List<Map<String, Object>> merged = extraction.entities().stream()
+                .filter(entity -> !entity.aliases().isEmpty())
+                .map(entity -> Map.<String, Object>of("canonical", entity.id(), "aliases", entity.aliases(),
+                        "mentions", entity.mentions()))
+                .toList();
+        List<Map<String, Object>> suggestions = DedupSuggestions.find(extraction.entities(), 20).stream()
+                .map(candidate -> Map.<String, Object>of("left", candidate.left(), "right", candidate.right(),
+                        "score", candidate.score(), "reason", candidate.reason()))
+                .toList();
 
         return new QualityReport(extraction.chunks().stream().map(Chunker.Chunk::documentId).distinct().toList().size(),
                 chunks.size(), characters, extraction.entities().size(), extraction.relations().size(),
                 new LinkedHashSet<>(extraction.relationsByType().keySet()), extraction.relationsByRule(),
                 extraction.relationsByType(), provenanceRate, typeAgreement, entityLinkRate, isolated,
-                chunkCoverage, dictionaryCoverage, density, 0, compare(gold, extraction), extraction.warnings());
+                chunkCoverage, dictionaryCoverage, density, extraction.duplicatesRemoved(), merged, suggestions,
+                compare(gold, extraction), extraction.warnings());
     }
 
     /** A report with the duplicate count filled in (the writer knows how many it merged). */
     public QualityReport withDuplicatesRemoved(int duplicates) {
         return new QualityReport(documents, chunks, characters, entities, relations, relationTypes,
                 relationsByRule, relationsByType, provenanceRate, typeAgreement, entityLinkRate, isolatedEntities,
-                chunkCoverage, dictionaryCoverage, relationsPerThousandChars, duplicates, gold, warnings);
+                chunkCoverage, dictionaryCoverage, relationsPerThousandChars, duplicates, mergedEntities,
+                mergeCandidates, gold, warnings);
     }
 
     /** Whether the sentence a relation cites really contains both ends (re-read, not assumed). */
-    private static boolean supportedByItsSentence(KnowledgeExtractor.Relation relation) {
+    private static boolean supportedByItsSentence(KnowledgeExtractor.Relation relation,
+                                                  Map<String, Set<String>> evidenceNames) {
         String sentence = relation.sentence();
-        return sentence != null && relation.head() != null && relation.tail() != null
-                && sentence.contains(relation.head()) && sentence.contains(relation.tail());
+        if (sentence == null || relation.head() == null || relation.tail() == null) {
+            return false;
+        }
+        return containsAny(sentence, evidenceNames.getOrDefault(relation.head(), Set.of(relation.head())))
+                && containsAny(sentence, evidenceNames.getOrDefault(relation.tail(), Set.of(relation.tail())));
+    }
+
+    private static boolean containsAny(String sentence, Set<String> names) {
+        for (String name : names) {
+            if (name != null && sentence.contains(name)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -114,6 +147,13 @@ public record QualityReport(int documents, int chunks, int characters, int entit
         if (gold == null || gold.isEmpty()) {
             return Map.of();
         }
+        Map<String, String> canonical = new LinkedHashMap<>();
+        for (KnowledgeExtractor.Entity entity : extraction.entities()) {
+            canonical.put(entity.id(), entity.id());
+            for (String alias : entity.aliases()) {
+                canonical.putIfAbsent(alias, entity.id());
+            }
+        }
         Set<String> goldTriples = new LinkedHashSet<>();
         Set<String> goldPairs = new LinkedHashSet<>();
         for (String line : gold) {
@@ -122,11 +162,16 @@ public record QualityReport(int documents, int chunks, int characters, int entit
                 continue;
             }
             String[] parts = cleaned.split("\\s*[|,\\t]\\s*");
+            if (parts.length >= 2) {
+                parts[0] = canonical.getOrDefault(parts[0], parts[0]);
+                parts[parts.length - 1] = canonical.getOrDefault(parts[parts.length - 1], parts[parts.length - 1]);
+            }
             goldTriples.add(String.join("|", parts));
             if (parts.length >= 2) {
                 goldPairs.add(parts[0] + "|" + parts[parts.length - 1]);
             }
         }
+
         Set<String> foundTriples = new LinkedHashSet<>();
         Set<String> foundPairs = new LinkedHashSet<>();
         for (KnowledgeExtractor.Relation relation : extraction.relations()) {
@@ -176,11 +221,21 @@ public record QualityReport(int documents, int chunks, int characters, int entit
         out.put("chunkCoverage", round(chunkCoverage));
         out.put("dictionaryCoverage", round(dictionaryCoverage));
         out.put("relationsPerThousandChars", round(relationsPerThousandChars));
+        if (duplicatesRemoved > 0) {
+            out.put("duplicatesRemoved", duplicatesRemoved);
+        }
+        if (mergedEntities != null && !mergedEntities.isEmpty()) {
+            out.put("mergedEntities", mergedEntities);
+        }
+        if (mergeCandidates != null && !mergeCandidates.isEmpty()) {
+            out.put("mergeCandidates", mergeCandidates);
+        }
         if (!gold.isEmpty()) {
             Map<String, Object> rounded = new LinkedHashMap<>();
             gold.forEach((key, value) -> rounded.put(key, round(value)));
             out.put("gold", rounded);
         }
+
         if (!warnings.isEmpty()) {
             out.put("warnings", warnings);
         }

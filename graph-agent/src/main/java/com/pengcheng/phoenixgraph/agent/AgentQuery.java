@@ -56,6 +56,7 @@ public final class AgentQuery {
     private final Embedding embedding;
     /** The edge class the entity-to-entity relations live in (an ingestion creates it). */
     private final String relationEdge;
+    private final Reranker reranker;
 
     public AgentQuery(Engine engine, AgentIndex index) {
         this(engine, index, Embedding.hashing(), "Relates");
@@ -66,10 +67,16 @@ public final class AgentQuery {
     }
 
     public AgentQuery(Engine engine, AgentIndex index, Embedding embedding, String relationEdge) {
+        this(engine, index, embedding, relationEdge, Reranker.none());
+    }
+
+    public AgentQuery(Engine engine, AgentIndex index, Embedding embedding, String relationEdge,
+                      Reranker reranker) {
         this.engine = engine;
         this.index = index;
         this.embedding = embedding == null ? Embedding.hashing() : embedding;
         this.relationEdge = relationEdge == null || relationEdge.isBlank() ? "Relates" : relationEdge;
+        this.reranker = reranker == null ? Reranker.none() : reranker;
     }
 
     // ------------------------------------------------------------------ the tools
@@ -94,14 +101,44 @@ public final class AgentQuery {
             scored.put(entity, 0.6 * named + 0.4 * cosine);
             reasons.put(entity, named > 0 ? "name" : "vector");
         }
-        List<Bundle.Hit> hits = scored.entrySet().stream()
+        List<Bundle.Hit> hits = reranker.rerank(question, scored.entrySet().stream()
                 .sorted(Map.Entry.<AgentIndex.Entity, Double>comparingByValue().reversed())
-                .limit(limit)
                 .map(entry -> hit(entry.getKey(), entry.getValue(), reasons.get(entry.getKey())))
-                .toList();
+                .toList(), limit);
         return bundle("find_entities", Map.of("question", question, "k", limit), hits, List.of(), List.of(),
                 citationsOf(hits), Map.of("candidates", scored.size(), "returned", hits.size(),
                         "truncated", scored.size() > hits.size()));
+    }
+
+    /**
+     * Hybrid recall: a name hit, the terms of the question found in the entity's description, and the
+     * vector, in one ranking. This is the tool to prefer when the question is a phrase rather than an
+     * entity id; {@code find_entities} remains the name-first shortcut.
+     */
+    public Bundle search(String question, int k) {
+        int limit = Math.max(1, k);
+        float[] asked = embedding.embed(question);
+        Set<String> questionTerms = terms(question);
+        Map<AgentIndex.Entity, Double> scored = new LinkedHashMap<>();
+        Map<AgentIndex.Entity, String> reasons = new LinkedHashMap<>();
+        for (AgentIndex.Entity entity : index.entities()) {
+            double named = nameScore(question, entity);
+            double lexical = lexicalScore(questionTerms, entity);
+            double cosine = Embedding.cosine(asked, entity.vector());
+            if (named <= 0 && lexical <= 0 && cosine <= 0.05) {
+                continue;
+            }
+            scored.put(entity, 0.5 * named + 0.3 * lexical + 0.2 * cosine);
+            reasons.put(entity, named > 0 ? "name" : lexical > 0 ? "hybrid" : "vector");
+        }
+        List<Bundle.Hit> hits = reranker.rerank(question, scored.entrySet().stream()
+                .sorted(Map.Entry.<AgentIndex.Entity, Double>comparingByValue().reversed())
+                .map(entry -> hit(entry.getKey(), entry.getValue(), reasons.get(entry.getKey())))
+                .toList(), limit);
+        return bundle("search", Map.of("question", question, "k", limit), hits, List.of(), List.of(),
+                citationsOf(hits), Map.of("candidates", scored.size(), "returned", hits.size(),
+                        "truncated", scored.size() > hits.size(),
+                        "method", "name + lexical + vector"));
     }
 
     /** What an entity is connected to, optionally only over one relation name, up to {@code hops} hops. */
@@ -338,7 +375,7 @@ public final class AgentQuery {
     /** What an agent may ask next, so a model does not have to guess the tool names. */
     private static List<String> next(String tool) {
         return switch (tool) {
-            case "find_entities" -> List.of("related(entity, relation, hops)", "context(question, k, hops)");
+            case "find_entities", "search" -> List.of("related(entity, relation, hops)", "context(question, k, hops)");
             case "related" -> List.of("similar(entity, k)", "related_similar(entity, k)", "path_between(from, to, maxHops)");
             case "similar" -> List.of("similar_related(entity, k)", "related(entity, relation, hops)");
             case "related_similar", "similar_related" -> List.of("related(entity, relation, hops)", "context(question, k, hops)");
@@ -422,17 +459,73 @@ public final class AgentQuery {
                 relation.cite(), relation.sentence());
     }
 
+    /** The terms a question and an entity can share: ASCII words and Chinese character bigrams. */
+    private static Set<String> terms(String text) {
+        Set<String> terms = new LinkedHashSet<>();
+        if (text == null || text.isBlank()) {
+            return terms;
+        }
+        String normal = text.toLowerCase();
+        for (String word : normal.split("[^\\p{L}\\p{N}]+")) {
+            if (word.length() >= 2) {
+                terms.add(word);
+            }
+        }
+        for (int i = 0; i + 2 <= normal.length(); i++) {
+            String gram = normal.substring(i, i + 2);
+            if (gram.codePoints().allMatch(cp -> Character.UnicodeScript.of(cp) == Character.UnicodeScript.HAN)) {
+                terms.add(gram);
+            }
+        }
+        return terms;
+    }
+
+    /** Share of the question's terms that occur in the entity's name and description (0..1). */
+    private static double lexicalScore(Set<String> questionTerms, AgentIndex.Entity entity) {
+        if (questionTerms.isEmpty()) {
+            return 0;
+        }
+        String text = (entity.name() == null ? "" : entity.name()) + " "
+                + String.join(" ", entity.aliases()) + " "
+                + (entity.description() == null ? "" : entity.description());
+        Set<String> entityTerms = terms(text);
+        if (entityTerms.isEmpty()) {
+            return 0;
+        }
+        int matched = 0;
+        for (String term : questionTerms) {
+            if (entityTerms.contains(term)) {
+                matched++;
+            }
+        }
+        return (double) matched / questionTerms.size();
+    }
+
     /** How well a question names an entity: the full name beats a piece of it, and nothing beats nothing. */
     private static double nameScore(String question, AgentIndex.Entity entity) {
         if (question == null || question.isBlank()) {
             return 0;
         }
+        String lower = question.toLowerCase();
         String name = entity.name() == null ? entity.id() : entity.name();
-        if (name == null || name.length() < 2) {
-            return 0;
+        List<String> names = new ArrayList<>();
+        if (name != null) {
+            names.add(name);
         }
-        if (question.contains(name)) {
-            return 1.0;
+        names.addAll(entity.aliases());
+        boolean han = false;
+        for (String candidate : names) {
+            if (candidate != null && candidate.length() >= 2 && lower.contains(candidate.toLowerCase())) {
+                return 1.0;
+            }
+            han = han || isHan(candidate);
+        }
+        // A two-character slice is a name hit for Chinese (诸葛亮 -> 诸葛), but for an ASCII name it is a
+        // false positive: "checkout-api" contains "ch", and "why did the checkout-api go out" would then
+        // name every entity whose name happens to contain "ch". English partial matching belongs to the
+        // lexical score, which uses whole words.
+        if (!han) {
+            return 0;
         }
         for (String term : AgentIndex.termsOf(entity)) {
             if (term.length() >= 2 && question.contains(term)) {
@@ -440,6 +533,10 @@ public final class AgentQuery {
             }
         }
         return 0;
+    }
+    private static boolean isHan(String value) {
+        return value != null && !value.isEmpty()
+                && value.codePoints().allMatch(cp -> Character.UnicodeScript.of(cp) == Character.UnicodeScript.HAN);
     }
 
     /** The vertex type a traversal must name (the graph stores every entity under one schema). */

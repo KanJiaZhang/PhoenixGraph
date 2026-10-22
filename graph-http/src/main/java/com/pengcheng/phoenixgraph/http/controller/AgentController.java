@@ -78,7 +78,8 @@ public class AgentController {
                 "dimensions", read.dimensions(),
                 "entities", read.entities().stream().map(entity -> Map.of(
                         "id", entity.id(), "type", entity.type(), "name", entity.name(),
-                        "description", entity.description(), "cites", entity.cites())).toList(),
+                        "description", entity.description(), "cites", entity.cites(),
+                        "aliases", entity.aliases())).toList(),
                 "relations", read.relations(),
                 "chunks", read.chunks(),
                 "quality", read.quality()));
@@ -94,6 +95,12 @@ public class AgentController {
     @PostMapping("/find-entities")
     public Map<String, Object> findEntities(@RequestBody ToolRequest request) {
         return tools(request).findEntities(request.question(), orDefault(request.k(), 5)).toJson();
+    }
+
+    /** Hybrid recall: name, description terms and vector in one ranking. */
+    @PostMapping("/search")
+    public Map<String, Object> search(@RequestBody ToolRequest request) {
+        return tools(request).search(request.question(), orDefault(request.k(), 5)).toJson();
     }
 
     /** What an entity is connected to, with the relation names and the sentences behind them. */

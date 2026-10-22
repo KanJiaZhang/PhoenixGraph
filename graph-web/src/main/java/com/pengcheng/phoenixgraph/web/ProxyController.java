@@ -28,11 +28,14 @@ public class ProxyController {
 
     private final RestTemplate restTemplate;
     private final String httpUrl;
+    private final String apiKey;
 
     public ProxyController(RestTemplate restTemplate,
-                           @Value("${phoenixgraph.http-url:http://localhost:8081}") String httpUrl) {
+                           @Value("${phoenixgraph.http-url:http://localhost:8081}") String httpUrl,
+                           @Value("${phoenixgraph.api-key:}") String apiKey) {
         this.restTemplate = restTemplate;
         this.httpUrl = httpUrl.endsWith("/") ? httpUrl.substring(0, httpUrl.length() - 1) : httpUrl;
+        this.apiKey = apiKey == null ? "" : apiKey;
     }
 
     @GetMapping("/graphs")
@@ -147,6 +150,12 @@ public class ProxyController {
         return forward(HttpMethod.GET, "/api/v1/fuzzy/patterns?graph=" + graph, null);
     }
 
+    /** The ingestion form: the same body and limits as {@code POST /api/v1/agent/ingest}. */
+    @PostMapping("/agent/ingest")
+    public ResponseEntity<String> ingest(@RequestBody String body) {
+        return forward(HttpMethod.POST, "/api/v1/agent/ingest", new HttpEntity<>(body, jsonHeaders()));
+    }
+
     /** The functions a fuzzy pattern is built from. */
     @GetMapping("/fuzzy/functions")
     public ResponseEntity<String> fuzzyFunctions() {
@@ -201,7 +210,15 @@ public class ProxyController {
 
     private ResponseEntity<String> forward(HttpMethod method, String path, HttpEntity<String> entity) {
         try {
-            return restTemplate.exchange(httpUrl + path, method, entity, String.class);
+            HttpHeaders headers = new HttpHeaders();
+            if (entity != null) {
+                headers.putAll(entity.getHeaders());
+            }
+            if (!apiKey.isBlank()) {
+                headers.setBearerAuth(apiKey);
+            }
+            HttpEntity<String> request = new HttpEntity<>(entity == null ? null : entity.getBody(), headers);
+            return restTemplate.exchange(httpUrl + path, method, request, String.class);
         } catch (HttpStatusCodeException e) {
             return ResponseEntity.status(e.getStatusCode())
                     .contentType(MediaType.APPLICATION_JSON)

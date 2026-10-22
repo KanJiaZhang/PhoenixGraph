@@ -6,6 +6,7 @@ import com.pengcheng.phoenixgraph.agent.Chunker;
 import com.pengcheng.phoenixgraph.agent.Embedding;
 import com.pengcheng.phoenixgraph.agent.KnowledgeExtractor;
 import com.pengcheng.phoenixgraph.agent.QualityReport;
+import com.pengcheng.phoenixgraph.agent.RulePack;
 import com.pengcheng.phoenixgraph.http.dto.BatchRequest;
 import com.pengcheng.phoenixgraph.http.dto.EdgePropertyRequest;
 import com.pengcheng.phoenixgraph.http.dto.EdgeRequest;
@@ -71,26 +72,32 @@ public class AgentIngestService {
     private static final int CHUNK_ORDINAL = 3;
     private static final int CHUNK_TEXT = 4;
 
-    /** Property indices of {@link #RELATION_EDGE}. */
-    private static final int RELATION_NAME = 3;
-    private static final int RELATION_RULE = 4;
-    private static final int RELATION_SENTENCE = 5;
-    private static final int RELATION_CHUNK = 6;
+    /** Property indices of {@link #RELATION_EDGE} (the declaration order of the schema below). */
+    private static final int RELATION_NAME = 1;
+    private static final int RELATION_RULE = 2;
+    private static final int RELATION_SENTENCE = 3;
+    private static final int RELATION_CHUNK = 4;
 
     /** Property indices of {@link #MENTION_EDGE}. */
-    private static final int MENTION_SENTENCE = 3;
+    private static final int MENTION_SENTENCE = 1;
 
     private final GraphAuthoringService authoring;
     private final GraphRegistry graphs;
     private final GraphService writes;
     private final QueryService queries;
+    private final EmbeddingFactory embeddings;
+    private final RulePackRegistry rules;
+    private final RerankerFactory rerankers;
 
     public AgentIngestService(GraphAuthoringService authoring, GraphRegistry graphs, GraphService writes,
-                              QueryService queries) {
+                              QueryService queries, EmbeddingFactory embeddings, RulePackRegistry rules, RerankerFactory rerankers) {
         this.authoring = Objects.requireNonNull(authoring, "authoring");
         this.graphs = Objects.requireNonNull(graphs, "graphs");
         this.writes = Objects.requireNonNull(writes, "writes");
         this.queries = Objects.requireNonNull(queries, "queries");
+        this.embeddings = Objects.requireNonNull(embeddings, "embeddings");
+        this.rules = Objects.requireNonNull(rules, "rules");
+        this.rerankers = Objects.requireNonNull(rerankers, "rerankers");
     }
 
     /** A document of the request. */
@@ -107,10 +114,13 @@ public class AgentIngestService {
      * @param gold       optional gold triples ({@code head|relation|tail}) for the accuracy metrics
      * @param apply      whether to write (false runs the pipeline and only reports)
      * @param replace    whether an existing graph may be replaced (its vertices are upserted either way)
+     * @param rulePack   the extraction vocabulary: {@code sanguo} (default), {@code incident}, or a pack in
+     *                   {@code agent-rules/<name>.json}
+     * @param dedupe     merge names that differ only by case/whitespace/punctuation (default true)
      */
     public record IngestRequest(String graph, String description, List<DocumentRequest> documents,
                                 Map<String, String> dictionary, Map<String, String> aliases, List<String> gold,
-                                Boolean apply, Boolean replace) {
+                                Boolean apply, Boolean replace, String rulePack, Boolean dedupe) {
 
         public IngestRequest {
             documents = documents == null ? List.of() : List.copyOf(documents);
@@ -142,7 +152,9 @@ public class AgentIngestService {
             throw new IllegalArgumentException("The ingestion needs at least one document with text");
         }
 
-        KnowledgeExtractor.Options options = new KnowledgeExtractor.Options(request.dictionary(), request.aliases());
+        RulePack pack = rules.resolve(request.rulePack());
+        KnowledgeExtractor.Options options = new KnowledgeExtractor.Options(request.dictionary(), request.aliases(), pack,
+                !Boolean.FALSE.equals(request.dedupe()));
         KnowledgeExtractor.Result extraction = KnowledgeExtractor.extract(documents, options);
         QualityReport report = QualityReport.of(extraction, options, request.gold());
         AgentIndex index = toIndex(request.graph(), extraction, report);
@@ -151,10 +163,12 @@ public class AgentIngestService {
         if (!apply) {
             return new IngestResult(request.graph(), false, report.metrics(), index.entities().size(),
                     index.relations().size(), 0, 0, null,
-                    List.of("dry run: nothing was written (pass apply=true to build the graph)"));
+                    List.of("dry run: nothing was written (pass apply=true to build the graph)",
+                            "rule pack: " + pack.name()));
         }
 
         List<String> notes = new ArrayList<>();
+        notes.add("rule pack: " + pack.name());
         ensureSchema(request.graph(), request.description(), notes);
         BatchRequest batch = toBatch(index);
         GraphService target = writes.forGraph(graphs, request.graph());
@@ -191,7 +205,7 @@ public class AgentIngestService {
                 return new ArrayList<>(list);
             }
             return List.of();
-        }, index, Embedding.hashing(index.dimensions()));
+        }, index, embeddings.forIndex(index.embedding()), "Relates", rerankers.current());
     }
 
     // ------------------------------------------------------------------ the graph it writes
@@ -217,7 +231,7 @@ public class AgentIngestService {
     }
 
     /** The schema of an ingested graph: the shape every ingestion uses, so tools always find it. */
-    private static SchemaDraft schemaDraft(String graph, String description) {
+    static SchemaDraft schemaDraft(String graph, String description) {
         List<SchemaDraft.PropertyDraft> entity = List.of(
                 new SchemaDraft.PropertyDraft("name", "string", "The name the documents use", true, false, false,
                         null, null, null, null, null, null),
@@ -265,7 +279,7 @@ public class AgentIngestService {
     }
 
     /** The artifact as the vertices and edges the write path takes. */
-    private BatchRequest toBatch(AgentIndex index) {
+    static BatchRequest toBatch(AgentIndex index) {
         List<VertexRequest> vertices = new ArrayList<>();
         List<EdgeRequest> edges = new ArrayList<>();
         long now = System.currentTimeMillis();
@@ -332,7 +346,7 @@ public class AgentIngestService {
 
     /** Builds the artifact: the entities with their context cards and vectors, and the relations. */
     private AgentIndex toIndex(String graph, KnowledgeExtractor.Result extraction, QualityReport report) {
-        Embedding embedding = Embedding.hashing();
+        Embedding embedding = embeddings.current();
         Map<String, List<Chunker.Chunk>> chunksByEntity = new LinkedHashMap<>();
         for (Chunker.Chunk chunk : extraction.chunks()) {
             for (String sentence : Chunker.sentences(chunk.text())) {
@@ -357,7 +371,7 @@ public class AgentIngestService {
                 chunkIds.add(chunkId);
             }
             entities.add(new AgentIndex.Entity(entity.id(), ENTITY_TYPE, entity.type(), entity.name(), description,
-                    embedding.embed(description), List.copyOf(chunkIds), List.copyOf(cites)));
+                    embedding.embed(description), List.copyOf(chunkIds), List.copyOf(cites), entity.aliases()));
         }
         Map<String, String> cites = new LinkedHashMap<>();
         for (Chunker.Chunk chunk : extraction.chunks()) {
@@ -374,7 +388,7 @@ public class AgentIngestService {
             chunks.add(new AgentIndex.Chunk(chunk.chunkId(), chunk.documentId(), chunk.title(), chunk.ordinal(),
                     chunk.text()));
         }
-        return new AgentIndex(graph, "hashing-" + embedding.dimensions(), embedding.dimensions(),
+        return new AgentIndex(graph, embedding.name(), embedding.dimensions(),
                 Instant.now().toString(), entities, relations, chunks, report.metrics());
     }
 

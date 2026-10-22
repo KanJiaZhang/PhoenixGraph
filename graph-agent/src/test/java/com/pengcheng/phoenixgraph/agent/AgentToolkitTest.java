@@ -143,7 +143,8 @@ class AgentToolkitTest {
         assertTrue(context.entities().size() >= 2, "the context holds the seeds and what sits around them");
         assertEquals(context.entities().size(), ((Number) context.coverage().get("entities")).intValue());
 
-        assertEquals(7, tools.tools().size(), "the catalog describes every tool");
+        assertEquals(14, tools.tools().size(), "the catalog describes every tool (8 retrieval + 6 data)");
+        assertTrue(tools.tools().stream().anyMatch(tool -> "search".equals(tool.get("name"))));
         assertTrue(AgentToolCatalog.describe().containsKey("answerShape"));
     }
 

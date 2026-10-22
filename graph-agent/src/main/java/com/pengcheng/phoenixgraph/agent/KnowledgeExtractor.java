@@ -1,10 +1,12 @@
 package com.pengcheng.phoenixgraph.agent;
 
+import java.text.Normalizer;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
@@ -23,7 +25,7 @@ import java.util.regex.Pattern;
  *       same dictionary give the same entities on any machine.</li>
  *   <li><b>Relations.</b> For every ordered pair of mentions in a sentence, the text <em>between</em> them
  *       and the text right after the second one are matched against a small rule table
- *       ({@link #RULES}). Chinese relation words are not verb-final the way English is, so the rules read
+ *       ({@link RulePack}). Chinese relation words are not verb-final the way English is, so the rules read
  *       the gap ("关羽<b>是</b>刘备<b>的臣</b>") rather than parse a sentence. A rule that finds no second
  *       known name runs in <em>window</em> mode: the 2-4 characters on the other side of its verb become a
  *       new entity, typed by the rule's slot hint - that is how a document introduces names the gazetteer
@@ -35,84 +37,6 @@ import java.util.regex.Pattern;
  * "can this knowledge be trusted".
  */
 public final class KnowledgeExtractor {
-
-    /**
-     * The relation words the rules understand, mapped to the canonical relation in the graph.
-     *
-     * <p>The direction is always "the head is the word of the tail": {@code A是B的臣} and {@code B的臣是A}
-     * are both {@code A --minister_of--> B}, so a word means the same thing whichever way the sentence puts
-     * it - which is why {@link #apply} swaps the ends for the {@code X的Y是Z} form.
-     */
-    private static final Map<String, String> RELATION_WORDS = Map.ofEntries(
-            Map.entry("臣", "minister_of"), Map.entry("部下", "subordinate_of"), Map.entry("部将", "subordinate_of"),
-            Map.entry("谋士", "advisor_of"), Map.entry("军师", "strategist_of"), Map.entry("主公", "lord_of"),
-            Map.entry("师傅", "teaches"), Map.entry("师父", "teaches"), Map.entry("徒弟", "studies_under"),
-            Map.entry("父亲", "parent_of"), Map.entry("儿子", "child_of"), Map.entry("哥哥", "sibling_of"),
-            Map.entry("弟弟", "sibling_of"), Map.entry("妻子", "spouse_of"), Map.entry("夫人", "spouse_of"),
-            Map.entry("兄弟", "sibling_of"), Map.entry("义弟", "sibling_of"), Map.entry("义兄", "sibling_of"));
-
-    /** What a rule may find around a pair of mentions. */
-    private enum Slot {
-        /** Nothing is said about the ends beyond the relation: any entity type will do. */
-        ANY,
-        /** The end is expected to be a person. */
-        PERSON,
-        /** The end is expected to be a place. */
-        PLACE
-    }
-
-    /**
-     * One relation rule: what the text between two mentions looks like, what may follow the second one,
-     * what the relation is called and what the ends are expected to be.
-     *
-     * <p>{@code between} is matched against the whole gap and must therefore say what it consumes
-     * ({@code 是}, {@code 效力于}); {@code after} is optional and tries the start of what follows the second
-     * mention ({@code 的臣}).
-     */
-    private record Rule(String name, String relation, Pattern between, Pattern after, Slot head, Slot tail) {
-    }
-
-    private static final List<Rule> RULES = List.of(
-            // 关羽 是 刘备 的臣 / 张飞 是 刘备 的 义弟
-            new Rule("is-of", null, Pattern.compile("^是?$"), Pattern.compile("^(?:的|之)([\\u4e00-\\u9fa5]{1,3})"),
-                    Slot.ANY, Slot.ANY),
-            // 关羽 的 主公 是 刘备
-            new Rule("of-is", null, Pattern.compile("^(?:的|之)([\\u4e00-\\u9fa5]{1,3}?)(?:是)?$"), null,
-                    Slot.ANY, Slot.ANY),
-            new Rule("serves", "serves", Pattern.compile("^(?:投奔|投效|效力于|归顺|归降|跟随|从属)$"), null,
-                    Slot.PERSON, Slot.ANY),
-            new Rule("studies_under", "studies_under", Pattern.compile("^拜$"), Pattern.compile("^为师$"),
-                    Slot.PERSON, Slot.PERSON),
-            new Rule("killed", "killed", Pattern.compile("^(?:斩杀|斩|诛杀|诛|杀死|刺杀|击杀|大破|击败)$"), null,
-                    Slot.PERSON, Slot.PERSON),
-            new Rule("fought", "fought", Pattern.compile("^(?:与|和)$"), Pattern.compile("^(?:交战|大战|决战|战)$"),
-                    Slot.PERSON, Slot.PERSON),
-            new Rule("advises", "advisor_of", Pattern.compile("^(?:为|担任|做了)$"), Pattern.compile("^(?:谋士|军师)(?:之一)?$"),
-                    Slot.PERSON, Slot.PERSON),
-            new Rule("held_office", "held_office", Pattern.compile("^(?:任|曾任|担任|被任命为|为)$"),
-                    Pattern.compile("^(?:太守|将军|丞相|刺史|都尉|校尉|尚书|侍中)$"), Slot.PERSON, Slot.ANY),
-            new Rule("stationed_at", "stationed_at", Pattern.compile("^(?:驻守|镇守|守|屯于|驻扎于)$"), null,
-                    Slot.PERSON, Slot.PLACE),
-            new Rule("born_in", "born_in", Pattern.compile("^(?:出生于|生于|籍贯)$"), null,
-                    Slot.PERSON, Slot.PLACE));
-
-    /** The verbs the window rule looks for and the slot they open. */
-    private static final List<Window> WINDOW_VERBS = List.of(
-            new Window("效力于", "serves", Slot.PERSON),
-            new Window("投奔", "serves", Slot.PERSON),
-            new Window("投效", "serves", Slot.PERSON),
-            new Window("拜", "studies_under", Slot.PERSON),
-            new Window("斩杀", "killed", Slot.PERSON),
-            new Window("杀死", "killed", Slot.PERSON),
-            new Window("诛杀", "killed", Slot.PERSON),
-            new Window("大破", "killed", Slot.PERSON),
-            new Window("击败", "defeated", Slot.PERSON),
-            new Window("驻守", "stationed_at", Slot.PLACE),
-            new Window("镇守", "stationed_at", Slot.PLACE));
-
-    /** A verb, the relation it marks and what the name in its slot is expected to be. */
-    private record Window(String verb, String relation, Slot slot) {
-    }
 
     private static final Pattern HANZI_NAME = Pattern.compile("[\\u4e00-\\u9fa5]{2,4}");
     private static final Pattern TRAILING_PARTICLE = Pattern.compile("[的了之与和及、，。；：是]$");
@@ -126,12 +50,24 @@ public final class KnowledgeExtractor {
      * @param dictionary known entities (name to type); entities found outside it are typed by the rule
      *                   that found them, or {@code Mention} when the rule says nothing
      * @param aliases    alias to canonical name (a document may say 玄德 where the graph says 刘备)
+     * @param rules      the relation vocabulary and rules; the default is the 三国 pack
      */
-    public record Options(Map<String, String> dictionary, Map<String, String> aliases) {
+    public record Options(Map<String, String> dictionary, Map<String, String> aliases, RulePack rules,
+                          boolean dedupe) {
 
         public Options {
             dictionary = dictionary == null ? Map.of() : Map.copyOf(dictionary);
             aliases = aliases == null ? Map.of() : Map.copyOf(aliases);
+            rules = rules == null ? RulePack.sanguo() : rules;
+        }
+
+        /** The default pack, for callers that have no domain vocabulary of their own. */
+        public Options(Map<String, String> dictionary, Map<String, String> aliases, RulePack rules) {
+            this(dictionary, aliases, rules, true);
+        }
+
+        public Options(Map<String, String> dictionary, Map<String, String> aliases) {
+            this(dictionary, aliases, RulePack.sanguo(), true);
         }
 
         public static Options of(Map<String, String> dictionary) {
@@ -144,7 +80,17 @@ public final class KnowledgeExtractor {
     }
 
     /** An entity of the draft graph, with the chunks it was seen in. */
-    public record Entity(String id, String type, String name, List<String> chunkIds, int mentions) {
+    public record Entity(String id, String type, String name, List<String> chunkIds, int mentions,
+                         List<String> aliases) {
+
+        public Entity {
+            chunkIds = chunkIds == null ? List.of() : List.copyOf(chunkIds);
+            aliases = aliases == null ? List.of() : List.copyOf(aliases);
+        }
+
+        public Entity(String id, String type, String name, List<String> chunkIds, int mentions) {
+            this(id, type, name, chunkIds, mentions, List.of());
+        }
     }
 
     /** A relation of the draft graph, with the provenance the report verifies. */
@@ -158,7 +104,7 @@ public final class KnowledgeExtractor {
     /** The extraction result: the draft graph plus what produced it. */
     public record Result(List<Entity> entities, List<Relation> relations, List<Chunker.Chunk> chunks,
                          Map<String, Integer> relationsByRule, Map<String, Integer> relationsByType,
-                         List<String> warnings) {
+                         List<String> warnings, int duplicatesRemoved) {
 
         public Result {
             entities = List.copyOf(entities);
@@ -167,6 +113,12 @@ public final class KnowledgeExtractor {
             relationsByRule = Map.copyOf(relationsByRule);
             relationsByType = Map.copyOf(relationsByType);
             warnings = List.copyOf(warnings);
+        }
+
+        public Result(List<Entity> entities, List<Relation> relations, List<Chunker.Chunk> chunks,
+                      Map<String, Integer> relationsByRule, Map<String, Integer> relationsByType,
+                      List<String> warnings) {
+            this(entities, relations, chunks, relationsByRule, relationsByType, warnings, 0);
         }
 
         /** The ids of every entity, in extraction order. */
@@ -184,6 +136,7 @@ public final class KnowledgeExtractor {
     public static Result extractChunks(List<Chunker.Chunk> chunks, Options options) {
         Map<String, String> dictionary = new LinkedHashMap<>(options.dictionary());
         Map<String, String> aliases = new LinkedHashMap<>(options.aliases());
+        RulePack pack = options.rules();
         // names sorted longest first: 诸葛亮 must win over 诸葛, and a mention is matched once
         List<String> gazetteer = dictionary.keySet().stream()
                 .filter(name -> name != null && name.length() >= 2)
@@ -221,7 +174,7 @@ public final class KnowledgeExtractor {
                         Mention tail = found.get(j);
                         String rawGap = sentence.substring(head.end(), tail.start());
                         String suffix = firstClause(sentence.substring(tail.end())).strip();
-                        Relation relation = apply(head, tail, rawGap, suffix, chunk, sentence, found.get(0) == head);
+                        Relation relation = apply(head, tail, rawGap, suffix, chunk, sentence, found.get(0) == head, pack);
                         if (relation != null) {
                             record(relation, relations, byRule, byType);
                         }
@@ -231,7 +184,7 @@ public final class KnowledgeExtractor {
                 // clause itself, because a clause is where a verb and its slot are.
                 for (String clause : sentence.split("[，,、；;：:]")) {
                     List<Mention> inClause = mentionsIn(clause, gazetteer, aliases, aliasNames, dictionary);
-                    for (Window window : WINDOW_VERBS) {
+                    for (RulePack.Window window : pack.windows()) {
                         for (Mention mention : inClause) {
                             Relation relation = byWindow(window, mention, clause, chunk, discoveredTypes, sentence);
                             if (relation != null) {
@@ -257,7 +210,14 @@ public final class KnowledgeExtractor {
         if (unsupported > 0) {
             warnings.add(unsupported + " relation candidates had no rule that understood them");
         }
-        return new Result(entities, new ArrayList<>(relations.values()), chunks, byRule, byType, warnings);
+        int duplicates = options.dedupe()
+                ? dedupeEntities(entities, relations, byRule, byType, dictionary)
+                : 0;
+        if (duplicates > 0) {
+            warnings.add(duplicates + " duplicate entity names merged (case/whitespace/punctuation)");
+        }
+        return new Result(entities, new ArrayList<>(relations.values()), chunks, byRule, byType, warnings,
+                duplicates);
     }
 
     /** First occurrence wins: the earliest sentence a relation was read from is the one it cites. */
@@ -268,6 +228,76 @@ public final class KnowledgeExtractor {
             byRule.merge(relation.rule(), 1, Integer::sum);
             byType.merge(relation.relation(), 1, Integer::sum);
         }
+    }
+
+    /**
+     * Merges entities whose names differ only by case, whitespace or punctuation. The canonical entity is
+     * the dictionary entry when there is one, otherwise the one with the most mentions. The other spellings
+     * are kept as aliases so a relation's sentence can still support both of its ends.
+     */
+    private static int dedupeEntities(List<Entity> entities, Map<String, Relation> relations,
+                                      Map<String, Integer> byRule, Map<String, Integer> byType,
+                                      Map<String, String> dictionary) {
+        Map<String, List<Entity>> groups = new LinkedHashMap<>();
+        for (Entity entity : entities) {
+            groups.computeIfAbsent(normalizedEntityName(entity.name()), key -> new ArrayList<>()).add(entity);
+        }
+        if (groups.values().stream().allMatch(group -> group.size() == 1)) {
+            return 0;
+        }
+        Map<String, String> canonicalOf = new LinkedHashMap<>();
+        List<Entity> resolved = new ArrayList<>();
+        int removed = 0;
+        for (List<Entity> group : groups.values()) {
+            Entity canonical = group.stream().min(Comparator
+                    .comparingInt((Entity entity) -> dictionary.containsKey(entity.name()) ? 0 : 1)
+                    .thenComparingInt(entity -> -entity.mentions())
+                    .thenComparingInt(entity -> -entity.name().length())
+                    .thenComparing(Entity::name)).orElseThrow();
+            Set<String> aliases = new LinkedHashSet<>();
+            Set<String> chunkIds = new LinkedHashSet<>();
+            int mentions = 0;
+            for (Entity entity : group) {
+                if (!entity.name().equals(canonical.name())) {
+                    aliases.add(entity.name());
+                }
+                chunkIds.addAll(entity.chunkIds());
+                mentions += entity.mentions();
+                canonicalOf.put(entity.id(), canonical.id());
+            }
+            String type = canonical.type();
+            if ("Mention".equals(type)) {
+                type = group.stream().map(Entity::type).filter(value -> !"Mention".equals(value))
+                        .findFirst().orElse(type);
+            }
+            resolved.add(new Entity(canonical.id(), type, canonical.name(), List.copyOf(chunkIds), mentions,
+                    List.copyOf(aliases)));
+            removed += group.size() - 1;
+        }
+
+        entities.clear();
+        entities.addAll(resolved);
+        Map<String, Relation> rewritten = new LinkedHashMap<>();
+        byRule.clear();
+        byType.clear();
+        for (Relation relation : relations.values()) {
+            Relation next = new Relation(canonicalOf.getOrDefault(relation.head(), relation.head()),
+                    relation.relation(), canonicalOf.getOrDefault(relation.tail(), relation.tail()),
+                    relation.rule(), relation.chunkId(), relation.sentence());
+            record(next, rewritten, byRule, byType);
+        }
+        relations.clear();
+        relations.putAll(rewritten);
+        return removed;
+    }
+
+    /** Case, width, whitespace and punctuation are not an entity's identity. */
+    private static String normalizedEntityName(String name) {
+        String normalized = Normalizer.normalize(name, Normalizer.Form.NFKC)
+                .strip()
+                .toLowerCase(Locale.ROOT)
+                .replaceAll("[\\s\\p{P}]+", "");
+        return normalized.isEmpty() ? name.strip().toLowerCase(Locale.ROOT) : normalized;
     }
 
     /** The text after the last clause separator: the clause the second mention starts in. */
@@ -348,7 +378,7 @@ public final class KnowledgeExtractor {
      * matched, and a leading connective ("也是", "又与") is not part of the relation.
      */
     private static Relation apply(Mention head, Mention tail, String gap, String suffix, Chunker.Chunk chunk,
-                                  String sentence, boolean headIsFirst) {
+                                  String sentence, boolean headIsFirst, RulePack pack) {
         if (head.name().equals(tail.name())) {
             return null;
         }
@@ -357,7 +387,7 @@ public final class KnowledgeExtractor {
             return null;
         }
         String trimmed = lastClause(gap).replaceFirst("^(?:也|又|再|遂|乃|亦|后|便|即|则|都|还|而)", "").strip();
-        for (Rule rule : RULES) {
+        for (RulePack.Rule rule : pack.rules()) {
             Matcher between = rule.between().matcher(trimmed);
             if (!between.matches()) {
                 continue;
@@ -365,7 +395,7 @@ public final class KnowledgeExtractor {
             String relation = rule.relation();
             if (relation == null && between.groupCount() >= 1 && between.group(1) != null) {
                 // the "是 X 的 Y" family: the relation word is in the text, the canonical name comes from it
-                relation = RELATION_WORDS.get(between.group(1));
+                relation = pack.relationWords().get(between.group(1));
                 if (relation == null) {
                     continue; // a word this toolkit has no relation for: skipping beats inventing one
                 }
@@ -376,7 +406,7 @@ public final class KnowledgeExtractor {
                     continue;
                 }
                 if (rule.relation() == null && after.groupCount() >= 1 && after.group(1) != null) {
-                    relation = RELATION_WORDS.get(after.group(1));
+                    relation = pack.relationWords().get(after.group(1));
                     if (relation == null) {
                         continue;
                     }
@@ -387,7 +417,7 @@ public final class KnowledgeExtractor {
             }
             // "X 的 Y 是 Z" says Z is the Y of X: the relation word describes the second name, so the ends
             // swap and the graph keeps one direction per relation whatever the sentence's word order
-            boolean swapped = "of-is".equals(rule.name());
+            boolean swapped = rule.swap();
             String from = swapped ? tail.name() : head.name();
             String to = swapped ? head.name() : tail.name();
             return new Relation(from, relation, to, rule.name(), chunk.chunkId(), sentence.strip());
@@ -402,7 +432,7 @@ public final class KnowledgeExtractor {
      * in the relation says the type came from the verb rather than from a dictionary, which is what the
      * quality report counts as a lower-confidence read.
      */
-    private static Relation byWindow(Window window, Mention mention, String clause, Chunker.Chunk chunk,
+    private static Relation byWindow(RulePack.Window window, Mention mention, String clause, Chunker.Chunk chunk,
                                      Map<String, String> discovered, String sentence) {
         int verbAt = clause.indexOf(window.verb());
         if (verbAt < 0) {

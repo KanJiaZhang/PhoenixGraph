@@ -6,7 +6,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * The tool catalog: the seven tools as a function-calling model wants them - a name, what it is for, and
+ * The tool catalog: every retrieval and data tool as a function-calling model wants it - a name, what it is for, and
  * the parameters with their types and defaults.
  *
  * <p>{@code GET /api/v1/agent/tools} returns exactly this, so an agent does not have to be told the
@@ -26,6 +26,12 @@ public final class AgentToolCatalog {
                 "Which entities is this text about? Name matches first, then the entities whose vector is "
                         + "closest to the text's. Call this first when you have a question but no entity id.",
                 params(required("question", "string", "the user's question or a phrase from the document"),
+                        optional("k", "integer", "how many entities to return (default 5)"))));
+        tools.add(tool("search",
+                "Hybrid search over names, the entity descriptions and their vectors: use it when the question "
+                        + "is a phrase rather than an entity id. It returns entities with the reason they matched "
+                        + "(name, hybrid or vector) and the citations behind them.",
+                params(required("question", "string", "the user's question or phrase"),
                         optional("k", "integer", "how many entities to return (default 5)"))));
         tools.add(tool("related",
                 "What is this entity connected to? Returns the neighbours with the relation names and the "
@@ -120,6 +126,7 @@ public final class AgentToolCatalog {
     public static Map<String, Map<String, Object>> bindings() {
         Map<String, Map<String, Object>> bindings = new LinkedHashMap<>();
         bindings.put("find_entities", post("/api/v1/agent/find-entities"));
+        bindings.put("search", post("/api/v1/agent/search"));
         bindings.put("related", post("/api/v1/agent/related"));
         bindings.put("similar", post("/api/v1/agent/similar"));
         bindings.put("related_similar", post("/api/v1/agent/related-similar"));
