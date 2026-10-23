@@ -85,12 +85,13 @@ policy beyond the conservative case/whitespace/punctuation dedup; the quality re
 **Definition of done:** an operator can deploy with auth/TLS on, rotate keys, restore a backup, and read a
 durable audit trail without editing application code.
 
-**Progress:** the `secure` profile, UI key forwarding, append-only audit file with rotation, tenant-scoped
-keys and optional per-tenant limits, the windowed-p99 fix, a multi-seed storage list, a Caddy TLS overlay,
-the benchmark harness/generator, a Helm chart, a Terraform module, scheduled backups with retention and
-a generated OpenAPI spec are in place. Still open: automatic promotion/failover, a measured 10⁷ run (a
-10⁶-vertex stepping stone and the edge-load ceiling are in BENCHMARK.md), and point-in-time recovery
-(only snapshots exist).
+**Progress:** the `secure` profile, UI key forwarding, append-only audit file with retention, tenant-scoped
+keys and optional per-tenant limits, the windowed-p99 fix, a multi-seed storage list, automatic failover
+(verified live: `verify-aerospike-ha.mjs` kills each node - including the seed - and the running engine
+keeps answering, then replication catches up when the node returns), a Caddy TLS overlay, the benchmark
+harness/generator (the edge-load bottleneck is closed: 100k edges in ~46 s, about 7×, see BENCHMARK.md),
+a Helm chart, a Terraform module, scheduled backups with retention and a generated OpenAPI spec are in
+place. Still open: a measured 10⁷ run and point-in-time recovery (only snapshots exist).
 
 ---
 
