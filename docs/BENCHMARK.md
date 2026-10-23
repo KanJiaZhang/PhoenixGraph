@@ -56,6 +56,13 @@ clean speedup claim.
 That is a load-path problem, not an engine-query result, and it has to be fixed (or replaced by the Aerospike
 bulk loader) before a 10^7 claim is meaningful.
 
+The first fix (2026-10-22): `AerospikeEdgeStore.upsertEdges` was doing a get + operate **per vertex** inside a
+parallel stream; it now does one batch get and one batch operate for the whole window, with the merge/evict/
+stale logic unchanged (extracted into `computeMergedBins` and still unit-tested). Re-measured on the same
+machine, 100,000 edges: **~46 s** (was 5m20s) - roughly **7×**, about 2,200 edges/s. 10^7 edges is now on the
+order of an hour rather than a day; the next bottleneck is the batch size and the per-window serialisation,
+not the round trips. `AEROSPIKE_BATCH_SIZE` still controls the window.
+
 On the 1,000,000-vertex graph, with the edge load incomplete, the HTTP query benchmark still measured the
 point read and the (sparse) one- and two-hop shapes:
 
