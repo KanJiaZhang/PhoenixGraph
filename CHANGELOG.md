@@ -129,6 +129,12 @@ All notable changes to this project are recorded here. The format follows
 
 ### Fixed
 
+- **Re-ingesting a document after a merge could not resurrect the folded-away entity.** A merge soft-deletes
+  the dropped vertex (a marker, not a removal), and the batch vertex upsert treated that marker as "key
+  absent" and tried to create over an existing key, so the create collided and the entity stayed gone. The
+  batch upsert now distinguishes a genuinely absent key from a soft-deleted one: a soft-deleted vertex takes
+  the update path, whose new lastUpdatedTime clears the marker. `AerospikeVertexStoreTest` pins the two
+  predicates (`isMissing` for reads, `isAbsent` for writes).
 - **The "volume or rate?" follow-up could not be answered.** The answer-level ledger's sixth category asked
   whether a count metric sliced by the same dimension as an event metric returns numbers, and it came back
   refused: `metric/order_count` is distinct orders (`COUNT(DISTINCT o_orderkey)` from `orders`), so a line-item

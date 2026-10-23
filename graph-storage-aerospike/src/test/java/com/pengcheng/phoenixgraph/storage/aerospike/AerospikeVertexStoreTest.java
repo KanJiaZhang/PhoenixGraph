@@ -65,6 +65,22 @@ class AerospikeVertexStoreTest {
                 "a record without the marker is live (older writes did not set it)");
     }
 
+    /**
+     * A soft-deleted vertex reads as missing but is <em>not</em> absent: its key still exists, so a batch
+     * upsert must take the update path (which clears the marker) rather than a create that would collide.
+     * This is what lets re-ingesting a document resurrect an entity a merge folded away.
+     */
+    @Test
+    void aSoftDeletedVertexIsNotAbsentForUpsert() {
+        Map<String, Object> deleted = new HashMap<>();
+        deleted.put(AerospikeVertexStore.LAST_UPDATED_TIME_BIN, AerospikeVertexStore.EXPIRED_LAST_UPDATED_TIME);
+        assertTrue(AerospikeVertexStore.isMissing(new Record(deleted, 2, 0)));
+        assertFalse(AerospikeVertexStore.isAbsent(new Record(deleted, 2, 0)),
+                "a soft-deleted key still exists, so an upsert updates it instead of colliding on a create");
+        assertTrue(AerospikeVertexStore.isAbsent(null));
+        assertTrue(AerospikeVertexStore.isAbsent(new Record(null, 0, 0)));
+    }
+
     @Test
     void maxPropertyLastModifiedReturnsMaxOrFallback() {
         assertEquals(300L, AerospikeVertexStore.maxPropertyLastModified(

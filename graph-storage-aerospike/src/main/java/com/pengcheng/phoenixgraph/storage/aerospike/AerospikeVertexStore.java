@@ -239,6 +239,11 @@ public class AerospikeVertexStore implements VertexStore {
         return updated instanceof Number number && number.longValue() <= EXPIRED_LAST_UPDATED_TIME;
     }
 
+    /** A batch-read record for a key that is genuinely absent - not a key that merely carries a soft-delete marker. */
+    static boolean isAbsent(Record record) {
+        return record == null || record.bins == null;
+    }
+
     /**
      * Upserts a vertex: inserts it when absent, otherwise updates each property
      * whose {@code lastModifiedTime} is strictly newer than the stored
@@ -356,7 +361,10 @@ public class AerospikeVertexStore implements VertexStore {
             for (int i = 0; i < merged.size(); i++) {
                 VertexUpsert upsert = merged.get(i);
                 Record record = records[i];
-                if (isMissing(record)) {
+                // a soft-deleted vertex is NOT absent: its key still exists, so a create would collide.
+                // It goes down the update path, where the new lastUpdatedTime clears the expired marker -
+                // which is what makes re-ingesting a document resurrect an entity a merge folded away.
+                if (isAbsent(record)) {
                     long effectiveUpdated = maxPropertyLastModified(upsert.properties(), upsert.lastUpdatedTime());
                     writes.add(new BatchWrite(createOnlyBatchPolicy(), keys[i],
                             buildCreateOps(upsert.properties(), upsert.createdTime(), effectiveUpdated,

@@ -6,8 +6,8 @@
 //       service's docker): without it the ingestion is refused and this check reports that instead of
 //       a false failure.
 const API = 'http://localhost:8081';
-// a fresh name per run: the merge soft-deletes a vertex, and a re-ingest does not resurrect it, so a
-// fixed name would fail the second run for the wrong reason
+// a fresh name per run keeps each run's graph self-contained (re-ingesting after a merge now resurrects
+// the folded-away entity, so a fixed name would also work - this just leaves no residue)
 const GRAPH = 'case-postmortem-' + Date.now();
 const DOCUMENT = 'The payment-service depends on Redis.\nDeploy 42 caused the checkout-api outage.\n'
   + 'Alice fixed the cache leak.\nPaymentService depends on the database.\n'
