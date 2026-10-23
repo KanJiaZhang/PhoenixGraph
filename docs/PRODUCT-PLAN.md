@@ -91,7 +91,11 @@ keys and optional per-tenant limits, the windowed-p99 fix, a multi-seed storage 
 keeps answering, then replication catches up when the node returns), a Caddy TLS overlay, the benchmark
 harness/generator (the edge-load bottleneck is closed: 100k edges in ~46 s, about 7×, see BENCHMARK.md),
 a Helm chart, a Terraform module, scheduled backups with retention and a generated OpenAPI spec are in
-place. Still open: a measured 10⁷ run and point-in-time recovery (only snapshots exist).
+place. Still open: point-in-time recovery (only snapshots exist). The 10⁷ question is answered as far as
+this hardware can answer it - 2·10⁶ vertices load in 105 s, 10⁶ edges load in 422 s (~2,370 edges/s) and
+that graph's queries are measured; the 10⁷ attempt stops at the dev container's namespace memory (3.0 GB,
+no disk storage engine) rather than at the loader, so a 10⁷ corpus is a deployment setting, and
+[BENCHMARK.md](BENCHMARK.md) says exactly that.
 
 ---
 

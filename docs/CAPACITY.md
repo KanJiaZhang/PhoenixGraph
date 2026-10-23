@@ -121,12 +121,19 @@ says whether the limit is right.
 ## 6. What is not measured here (and why)
 
 - **Sizes above ~10⁴ vertices.** The demo data stops there. The *method* in §2 is what to reuse: pick the
-  classes your callers use, measure p99 end to end, and keep the numbers next to the objectives. The
-  generator/loader and the 10⁷ plan are in [BENCHMARK.md](BENCHMARK.md).
+  classes your callers use, measure p99 end to end, and keep the numbers next to the objectives.
+  [BENCHMARK.md](BENCHMARK.md) now carries a 10⁶-vertex / 10⁶-edge run **with its edges loaded and queried**,
+  and the 10⁷ attempt with the ceiling it hit: at 3.0 GB of edge data the stock dev container's namespace
+  (no `storage-engine file`) refused writes with `Server memory error` at 70% used / 6% available. A 10⁷
+  corpus needs a disk-backed namespace; that is a deployment setting, not a loader limit - the loader itself
+  sustains ~2,370 edges/s, i.e. an hour for 10⁷.
 - **Cross-machine distributed runs.** `DIST` steps synchronise between workers, and on a demo-sized graph that
   is *slower* than the in-process path - which is expected, not a regression. A cross-machine benchmark is
   roadmap item M3-3 and is deliberately out of scope here.
 - **Write throughput.** The drills write a handful of vertices at a time. A bulk-load number belongs with the
-  loaders (`graph-batch-load`, `graph-mapreduce`), not with the serving path.
-- **Automatic promotion.** A seed list and replication keep a running engine alive and let a restart
-  bootstrap through another node, but there is no leader election or automatic promotion.
+  loaders (`graph-batch-load`, `graph-mapreduce`), not with the serving path; the current one is in
+  [BENCHMARK.md](BENCHMARK.md) (~2,370 edges/s after the batch uplift).
+- **Automatic promotion.** Covered by `verification/verify-aerospike-ha.mjs` from the availability side: a
+  two-node cluster with replication factor 2, the engine keeps answering when a node (including the seed)
+  is killed, and replication catches up when it returns. Aerospike does the promotion; the engine does not
+  elect anything.

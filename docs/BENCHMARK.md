@@ -73,8 +73,58 @@ point read and the (sparse) one- and two-hop shapes:
 | two hops | 15.3 ms | 15.9 ms | 15.9 ms |
 
 Those hop numbers are **not** a 10^6-edge result: the edge file did not finish loading. They are recorded
-only to show the HTTP floor did not move with the vertex count. The 10^7 plan below remains the target, and
-the edge-load bottleneck is now the first item to close.
+only to show the HTTP floor did not move with the vertex count.
+
+## The 10^6 run with its edges actually loaded (2026-10-23)
+
+The batch-uplift above made the previous gap closable, so the 10^6-edge graph was built and **queried with
+the edges in place** - the thing the earlier section explicitly could not report.
+
+| Step | Observed |
+|---|---|
+| generate 200,000 accounts + 1,000,000 payments | 17.7 MB / 90.7 MB of CSV |
+| load 200,000 vertices | **15 s**, 200,000 succeeded, 0 conflicts, 0 failed |
+| load 1,000,000 edges | **422 s** (~**2,370 edges/s**), 1,000,000 succeeded, 0 conflicts, 0 failed |
+
+Queries, 30 rounds after a warm-up, over HTTP, against that graph (a second engine instance on its own
+port, `payment-graph` from set `scale_v4`):
+
+| Query | p50 | p95 | p99 |
+|---|---:|---:|---:|
+| point (`g.V('1000','Account')`) | 15.5 ms | 17.3 ms | 18.7 ms |
+| one hop, hub of ~10 edges, `limit(50)` | 15.5 ms | 19.7 ms | 21.0 ms |
+| one hop, **hub of 1,005 edges**, `limit(2000)` | 16.1 ms | 30.7 ms | 31.6 ms |
+| two hops, `dedup().limit(200)`) | 15.4 ms | 19.2 ms | 28.6 ms |
+
+The generator makes a uniform random graph, so the average account has ~10 edges and `limit(50)` never
+fills: the 10^6-edge run would otherwise have measured an empty query. A 2,000-edge hub was therefore
+written to one account first (the schema's degree cap trimmed it to **1,005** in the bin), which is the
+shape the demo's hub has. The readings say what the earlier table could not: **a 1,005-edge adjacency
+costs about 0.6 ms of p50 over a point read, and the whole measurement is still the ~15 ms HTTP floor** -
+the graph size does not leak into a hop, only the degree does, and only at p95+.
+
+## The 10^7 attempt, and where it actually stops (2026-10-23)
+
+The same run was then pushed to 10^7 edges on the same single dev container.
+
+| Step | Observed |
+|---|---|
+| generate 2,000,000 accounts + 10,000,000 payments | vertices 182.7 MB, edges 936.7 MB |
+| load 2,000,000 vertices | **105 s**, 2,000,000 succeeded, 0 conflicts, 0 failed |
+| load 10,000,000 edges | ran **~1 h 49 m**, then the server refused writes: `Error 8 ... Server memory error` |
+| namespace state when it stopped | `data_used_bytes` 3.0 GB, `data_used_pct` **70%**, `data_avail_pct` **6%** |
+
+The load path is no longer the ceiling. The container is: the dev `aerospike` container runs the stock
+configuration, whose namespace has no `storage-engine file` - every record lives in the namespace's memory
+budget, and at 3.0 GB there is no room for another edge bin. Aerospike's own answer is explicit
+(`stop-writes` territory: 70% used against a 5% floor), and the loader's writes fail cleanly with a server
+error rather than silently dropping data.
+
+So the honest 10^7 statement is: **2·10^6 vertices load in under two minutes and 10^6 edges with their
+queries are measured above; 10^7 edges needs a namespace with a disk storage engine, not a faster loader.**
+The deployment change is a config one - add `storage-engine device { file ... data-size ... }` to the
+namespace (see `deploy/aerospike-cluster/` for the cluster shape) - and it belongs in the operator guide
+rather than in this benchmark. `docs/CAPACITY.md` records the same ceiling from the other direction.
 
 ## Generating a scale dataset
 

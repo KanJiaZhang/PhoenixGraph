@@ -27,7 +27,12 @@ All notable changes to this project are recorded here. The format follows
   sequential (no generation self-race); a vertex's bins are read and written once. A later change replaced
   the per-vertex get+operate with one batch get + one batch operate per window (the merge/evict/stale logic
   unchanged, extracted into `computeMergedBins`): 100k edges dropped from 5m20s to **~46 s** (~7×, about
-  2,200 edges/s), so 10^7 edges is now an hour's load rather than a day's.
+  2,200 edges/s), so 10^7 edges is now an hour's load rather than a day's. A 10^6-vertex/10^6-edge graph was
+then built and queried with its edges in place (1M edges in 422 s, 0 failed; a 1,005-edge adjacency costs
+~0.6 ms over a point read), and the 10^7 attempt is recorded with the ceiling it actually hits: the stock
+dev container's namespace refuses writes at 3.0 GB (`Server memory error`, 70% used / 6% available) because
+it has no disk storage engine - a deployment setting, not a loader limit. `docs/BENCHMARK.md` and
+`docs/CAPACITY.md` carry both.
 - **A Python client** (`clients/python`, `phoenixgraph-client`): zero runtime dependencies, wraps the query,
   ingestion, agent and semantic endpoints, sends an API key as `Authorization: Bearer`, and raises
   `PhoenixGraphError` with the status, body and `X-Request-Id`. Ten unit tests use a local HTTP server, so
