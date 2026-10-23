@@ -3,6 +3,9 @@
 > 前三个案例演示了「怎么调用」。这三个案例演示**为什么**——一个 LLM agent 在回答问题时，
 > PhoenixGraph 具体替它解决了什么、给了它什么别的组件给不了的东西。每个案例都对着运行中的
 > 服务执行，响应是真实的；工具名是 MCP 插件暴露的（`node tools/mcp-server.mjs --selftest` 可自测）。
+>
+> 姊妹篇：[`docs/END-TO-END.md`](END-TO-END.md)（从文档到归因的完整旅程）·
+> [`docs/AGENT-INGESTION-CASE.md`](AGENT-INGESTION-CASE.md)（摄取这一步的逐步交互详解）。
 
 三个案例对应三条产品主张：
 

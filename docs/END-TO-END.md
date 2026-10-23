@@ -3,6 +3,9 @@
 > 这是一份「能力验证」案例，不是一份功能介绍。下面每一步都对着**正在运行的服务**（8081）执行，
 > 每一个数字都来自真实的响应，并且每一条都能用文末的一条命令重新跑出来——这是 PhoenixGraph 与
 > 「能生成一段漂亮 SQL 的 demo」的区别：**答案可以复核，而复核靠的是答案自己携带的证据**。
+>
+> 姊妹篇：[`docs/AGENT-INGESTION-CASE.md`](AGENT-INGESTION-CASE.md)（摄取这一步的逐步交互详解）·
+> [`docs/AI-CONTEXT-CASES.md`](AI-CONTEXT-CASES.md)（PhoenixGraph 在 AI 拿上下文过程中的三个实际案例）。
 
 ---
 

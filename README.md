@@ -148,6 +148,7 @@ print(answer["coverage"])
 | AI agent toolkit and MCP | [docs/AI-TOOLKIT.md](docs/AI-TOOLKIT.md) |
 | Knowledge graph context and data-agent walkthrough | [docs/USE-CASES.md](docs/USE-CASES.md) |
 | Worked analyses and refusals | [docs/AGENT-CASES.md](docs/AGENT-CASES.md) · [docs/DATA-AGENT-CASES.md](docs/DATA-AGENT-CASES.md) |
+| End-to-end cases (the product in action) | [docs/END-TO-END.md](docs/END-TO-END.md) · [docs/AI-CONTEXT-CASES.md](docs/AI-CONTEXT-CASES.md) · [docs/AGENT-INGESTION-CASE.md](docs/AGENT-INGESTION-CASE.md) |
 | HTTP API, keys, limits, errors | [docs/API.md](docs/API.md) |
 | OpenAPI spec | [docs/OPENAPI.md](docs/OPENAPI.md) · [docs/openapi.json](docs/openapi.json) |
 | Backups, HA, upgrades, failure modes | [docs/OPERATIONS.md](docs/OPERATIONS.md) |
