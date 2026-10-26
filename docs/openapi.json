@@ -2,7 +2,7 @@
   "openapi": "3.0.3",
   "info": {
     "title": "PhoenixGraph API",
-    "version": "1.0.1",
+    "version": "1.1.0",
     "description": "Auditable context layer: query, write, agent tools and semantic layer. Paths and operation ids are generated from the controllers; field-level request/response documentation is in docs/API.md."
   },
   "servers": [
@@ -229,6 +229,50 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/IngestRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agent/merge": {
+      "post": {
+        "operationId": "Agent_merge",
+        "tags": [
+          "agent"
+        ],
+        "summary": "POST /api/v1/agent/merge",
+        "description": "Java: AgentController#merge",
+        "responses": {
+          "200": {
+            "description": "AgentIngestService.MergeResult",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentIngestService_MergeResult"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "AgentController",
+        "x-phoenixgraph-method": "merge",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MergeRequest"
               }
             }
           }
@@ -2700,6 +2744,14 @@
       "IngestRequest": {
         "type": "object",
         "description": "Request/response type IngestRequest; see docs/API.md for its fields."
+      },
+      "AgentIngestService_MergeResult": {
+        "type": "object",
+        "description": "Request/response type AgentIngestService.MergeResult; see docs/API.md for its fields."
+      },
+      "MergeRequest": {
+        "type": "object",
+        "description": "Request/response type MergeRequest; see docs/API.md for its fields."
       },
       "AskRequest": {
         "type": "object",
