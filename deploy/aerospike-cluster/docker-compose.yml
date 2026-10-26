@@ -29,7 +29,7 @@ services:
       - "3100:3000"        # the host sees node 1 on 3100, so the single-node deployment keeps 3000
       - "3103:3003"
     healthcheck:
-      test: ["CMD", "asinfo", "-v", "-c", "status"]
+      test: ["CMD", "asinfo", "-v", "status"]
       interval: 10s
       timeout: 5s
       retries: 12
@@ -47,7 +47,7 @@ services:
       - "3200:3000"
       - "3203:3003"
     healthcheck:
-      test: ["CMD", "asinfo", "-v", "-c", "status"]
+      test: ["CMD", "asinfo", "-v", "status"]
       interval: 10s
       timeout: 5s
       retries: 12

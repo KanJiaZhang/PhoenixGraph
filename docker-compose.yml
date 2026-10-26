@@ -19,7 +19,7 @@ services:
     ports:
       - "3000:3000"
     healthcheck:
-      test: ["CMD", "asinfo", "-v", "-c", "status"]
+      test: ["CMD", "asinfo", "-v", "status"]
       interval: 10s
       timeout: 5s
       retries: 12

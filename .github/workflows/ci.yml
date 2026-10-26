@@ -178,7 +178,7 @@ jobs:
         image: aerospike/aerospike-server:8.1.2.5
         ports: ['3000:3000']
         options: >-
-          --health-cmd "asinfo -v -c status"
+          --health-cmd "asinfo -v status"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 12
