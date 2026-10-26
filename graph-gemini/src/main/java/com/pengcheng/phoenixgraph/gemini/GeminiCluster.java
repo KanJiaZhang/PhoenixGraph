@@ -141,12 +141,17 @@ public final class GeminiCluster implements AutoCloseable {
     public GeminiCluster start() {
         if (config.mode() == Mode.LOCAL) {
             for (int i = 0; i < config.workers(); i++) {
+                // A configuration of 0 means "let the operating system pick one", and that has to reach every
+                // worker: asking for firstPort + i would ask for port 1, 2, 3 for the second, third and fourth
+                // worker - privileged on Linux (BindException: Permission denied) and taken on any machine that
+                // runs two clusters at once.
+                int requested = config.firstPort() == 0 ? 0 : config.firstPort() + i;
                 try {
-                    GeminiWorkerServer server = new GeminiWorkerServer(config.firstPort() + i).start();
+                    GeminiWorkerServer server = new GeminiWorkerServer(requested).start();
                     servers.add(server);
                     boundPorts.add(server.port());
                 } catch (IOException e) {
-                    throw new IllegalStateException("Cannot listen on port " + (config.firstPort() + i), e);
+                    throw new IllegalStateException("Cannot listen on port " + requested, e);
                 }
             }
         } else {
