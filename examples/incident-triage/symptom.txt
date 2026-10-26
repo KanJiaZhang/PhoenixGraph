@@ -1,0 +1,3 @@
+2026-10-24 14:32 起，checkout-api 的 p99 从 180ms 涨到 4.2s，error-rate-5xx 到 2.3%。
+同时 redis-cpu-percent 到 95%，redis-evictions-rate 高频抖动，redis-memory-used-percent 88%。
+上游网关重试把 QPS 又放大了 1.6 倍，错误日志里大量 cache miss。
