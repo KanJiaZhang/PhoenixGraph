@@ -14,7 +14,7 @@
 FROM eclipse-temurin:21-jre AS runtime
 
 # Labels are how an operator finds out what is running without shelling into it.
-ARG VERSION=1.1.1
+ARG VERSION=1.1.2
 LABEL org.opencontainers.image.title="PhoenixGraph HTTP" \
       org.opencontainers.image.description="HTAP graph database: Gremlin/Cypher, Gemini (Pregel) compute, vector and geo queries" \
       org.opencontainers.image.version="${VERSION}" \

@@ -117,11 +117,11 @@ Run it before a release and in CI; it reads the repository, not a running servic
 
 | | |
 |---|---|
-| released | `v1.0.0` (b1312e3), `v1.0.1` (3bd637c), `v1.1.0`, `v1.1.1` - all annotated, all pushed |
+| released | `v1.0.0` (b1312e3), `v1.0.1` (3bd637c), `v1.1.0`, `v1.1.1`, `v1.1.2` - all annotated, all pushed |
 | `main` / `develop` / `release/1.1` | all three at the 1.1.1 commit (106d2b0); `release/1.0` stays at `3bd637c` (= `v1.0.1`) for 1.0.x patches |
 | open defect carried into 1.1 | none from 1.0: the latency percentiles now decay, see below |
 | what 1.1.1 exists for | the checks that prove 1.1.0 had never run: a missing executable bit, privileged worker ports, a test bounded by the runner's core count and a health check `asinfo` rejects. `develop` is green as of 1.1.1 |
-| known and fixed forward | the `v1.1.1` tag's `docs/openapi.json` still says `info.version: 1.1.0`: the spec is generated from the pom and the bump made it stale, which CI caught one commit later. `tools/release-1.0.sh` now refuses to release with a stale generated document, so the next release cannot repeat it. A tag is not moved for a string |
+| known and fixed forward (closed in 1.1.2) | the `v1.1.1` tag's `docs/openapi.json` still says `info.version: 1.1.0`: the spec is generated from the pom and the bump made it stale, which CI caught one commit later. `tools/release-1.0.sh` now refuses to release with a stale generated document, so the next release cannot repeat it. A tag is not moved for a string |
 
 The percentile defect (`*_p99_millis` cumulative, so the latency alert could not clear) is closed in 1.1.0:
 `LatencySnapshot` stores the windowed percentile, restored history still restores the cumulative buckets and

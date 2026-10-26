@@ -20,6 +20,21 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+## [1.1.2] - 2026-10-26
+
+A documentation release. `v1.1.1` was tagged with `docs/openapi.json` still saying `info.version: 1.1.0`: the
+spec is generated from the pom, the version bump made it stale, and CI said so one commit after the tag. Nothing
+in the release ritual looked at the generated documents, so this release adds that guard and carries the
+regenerated spec. No code, API, or answer changed.
+
+### Changed
+
+- **`docs/openapi.json` is regenerated for this version** (`info.version: 1.1.2`), and `docs/API.md` re-checked
+  against the controllers (60 endpoints, 60 paths, 15 controllers).
+- **`tools/release-1.0.sh` refuses to build a release whose generated documents are stale**, naming the command
+  to run, and `docs/RELEASE-PROCESS.md` lists the regeneration between the version bump and `check-release.mjs` -
+  the step whose absence made 1.1.1 carry the wrong string.
+
 ## [1.1.1] - 2026-10-26
 
 A patch release for the pipeline around the 1.1.0 tag: the release itself was correct, the checks that were
@@ -430,7 +445,8 @@ A patch release with what the on-call drill found. No API change.
   evidence, `docs/SLO.md` says to treat the alert as noisy until then, and the drill states it as an explicit
   `XFAIL` - when that line starts failing, the fix has landed and it becomes an ordinary assertion.
 
-[Unreleased]: https://github.com/KanJiaZhang/PhoenixGraph/compare/v1.1.1...HEAD
+[Unreleased]: https://github.com/KanJiaZhang/PhoenixGraph/compare/v1.1.2...HEAD
+[1.1.2]: https://github.com/KanJiaZhang/PhoenixGraph/releases/tag/v1.1.2
 [1.1.1]: https://github.com/KanJiaZhang/PhoenixGraph/releases/tag/v1.1.1
 [1.1.0]: https://github.com/KanJiaZhang/PhoenixGraph/releases/tag/v1.1.0
 [1.0.1]: https://github.com/KanJiaZhang/PhoenixGraph/releases/tag/v1.0.1
