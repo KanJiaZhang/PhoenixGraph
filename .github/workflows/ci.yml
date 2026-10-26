@@ -121,21 +121,6 @@ jobs:
         run: docker compose build
       - name: Start the stack
         run: docker compose up -d
-      - name: Explain a stack that did not come up
-        if: failure()
-        run: |
-          # "dependency failed to start: container phoenixgraph-aerospike-1 is unhealthy" is true and useless: it
-          # costs a round trip to the runner to learn why. Print the containers, their health-check output, the
-          # service logs and what the runner had, which answers the only two questions worth asking - did the
-          # store start, and did the health check see it.
-          docker compose ps -a || true
-          docker compose logs --tail=200 aerospike || true
-          docker compose logs --tail=100 graph-http || true
-          for container in $(docker compose ps -aq); do
-            docker inspect -f '{{.Name}} status={{.State.Status}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container" || true
-          done
-          nproc || true
-          df -h / || true
       - name: Smoke it over HTTP
         run: |
           set -e
@@ -145,6 +130,12 @@ jobs:
           done
           curl -fsS localhost:8081/api/v1/health
           curl -fsS localhost:8081/api/v1/graphs | head -c 200
+          # the UI starts after the API reports healthy (depends_on: service_healthy), so it needs its own wait:
+          # curl'ing it straight after the API answers is a race that fails with "Recv failure"
+          for i in $(seq 1 60); do
+            if curl -fsS -o /dev/null localhost:8080/ 2>/dev/null; then break; fi
+            sleep 5
+          done
           curl -fsS -o /dev/null localhost:8080/
           # an unknown path must be a 404 with an error body, not a 500 (docs/API.md)
           code=$(curl -s -o /tmp/nope.json -w '%{http_code}' localhost:8081/api/v1/nope)
@@ -164,7 +155,15 @@ jobs:
             | grep -q 'checkout-api'
       - name: Logs on failure
         if: failure()
-        run: docker compose logs --no-color --tail 120
+        run: |
+          # A failing step here says what did not answer; this says why. Container states and health values, the
+          # store's own log (did it start? did the probe see it?), the API's, and what the runner had.
+          docker compose ps -a || true
+          for container in $(docker compose ps -aq); do
+            docker inspect -f '{{.Name}} status={{.State.Status}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container" || true
+          done
+          docker compose logs --no-color --tail 200 aerospike || true
+          docker compose logs --no-color --tail 120
       - name: Stop
         if: always()
         run: docker compose down -v
