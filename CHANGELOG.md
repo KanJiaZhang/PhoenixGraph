@@ -18,6 +18,50 @@ All notable changes to this project are recorded here. The format follows
 - **A release is a git tag and an image tag with the same name**; `docs/ROADMAP-1.0.md` says what is not in
   yet. Rollback is "deploy the previous tag" and is exercised in the M2 milestone.
 
+## [Unreleased]
+
+## [1.1.1] - 2026-10-26
+
+A patch release for the pipeline around the 1.1.0 tag: the release itself was correct, the checks that were
+supposed to prove it had never actually run. No API change, no behaviour change in a query or an answer.
+
+### Fixed
+
+- **The Aerospike health check used a flag `asinfo` does not have.** `asinfo -v -c status` printed the usage text
+  and exited non-zero, so every container running it reported unhealthy from the first minute: two local dev
+  containers had been "Up 3 days (unhealthy)" while answering queries, `docker compose up` never let the API
+  start (`depends_on: service_healthy`), and the Kubernetes liveness/readiness probes could never have passed.
+  It is `asinfo -v status` now (answers `ok`, exit 0; a probe container is healthy after ten seconds), in the
+  compose files, `deploy/aerospike-cluster`, the k8s storage manifest and the CI HA job.
+- **`mvnw` and the eleven `tools/*.sh` scripts were committed without the executable bit**, so the Linux CI job
+  failed with exit 126 - "not executable", not "tests failed" - on every push since 22 October. Windows does not
+  carry the bit the same way, which is why it built and released locally the whole time. Nothing about the
+  artifact was wrong; the only thing that could have caught it was the job that was failing.
+- **`config.local(n)` in the Gemini cluster asked for privileged ports.** `firstPort = 0` means "the operating
+  system picks one", but `start()` asked worker *i* for `firstPort + i`, so workers 2..4 asked for ports 1, 2 and
+  3 - which Windows grants without complaint and Linux refuses (`BindException: Permission denied`).
+  `GeminiClusterTest` failed on every runner and passed on every workstation for exactly this reason.
+- **`publish-python` failed on every `v*` tag.** The publish step handed an empty password to
+  `pypa/gh-action-pypi-publish` when `PYPI_API_TOKEN` was unset (it is unset), which fell back to trusted
+  publishing without `id-token: write`. The client version is independent of the server tag, so a release does
+  not have to publish it: both credential paths are now stated, and with neither configured the wheel is still
+  built and the publish step reports a skip instead of failing the tag's run.
+- **A seed-batch test asserted how many cores the runner had.** `seedBatchesNeverExceedTheConfiguredBatchSize`
+  compared the number of storage requests against `DEFAULT_PARALLELISM`, so 100 seeds at `batch(20)` was "five
+  requests" on a four-core runner and "eight" on an eight-core machine. The test now pins `parallelism(4)` and
+  the adaptive tuning, and asserts the split it gets; `GremlinContext.seedBatches` and
+  `GremlinGraphQuery.parallelism` now say what that split is - the seed read happens before any step runs, so
+  `batch(n)` sizes a fan-out, not the seeds.
+
+### Changed
+
+- **`docs/API.md` and `docs/openapi.json` are regenerated.** `POST /api/v1/agent/merge` was missing from both:
+  the generator now walks the whole `http` package instead of only `controller/`, so it sees the controllers that
+  live in their own packages. 60 endpoints and 60 paths across 15 controllers; CI checks both files.
+- **The container job waits for the UI before probing it** (it starts after the API reports healthy, so the
+  immediate `curl` raced it), and dumps the container states, their health values and the store's own log when
+  any step fails - the reason a red "unhealthy" line now comes with the log that explains it.
+
 ## [1.1.0] - 2026-10-26
 
 ### Added
@@ -386,7 +430,8 @@ A patch release with what the on-call drill found. No API change.
   evidence, `docs/SLO.md` says to treat the alert as noisy until then, and the drill states it as an explicit
   `XFAIL` - when that line starts failing, the fix has landed and it becomes an ordinary assertion.
 
-[Unreleased]: https://github.com/KanJiaZhang/PhoenixGraph/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/KanJiaZhang/PhoenixGraph/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/KanJiaZhang/PhoenixGraph/releases/tag/v1.1.1
 [1.1.0]: https://github.com/KanJiaZhang/PhoenixGraph/releases/tag/v1.1.0
 [1.0.1]: https://github.com/KanJiaZhang/PhoenixGraph/releases/tag/v1.0.1
 [1.0.0]: https://github.com/KanJiaZhang/PhoenixGraph/releases/tag/v1.0.0
