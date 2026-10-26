@@ -25,7 +25,8 @@ All notable changes to this project are recorded here. The format follows
 A documentation release. `v1.1.1` was tagged with `docs/openapi.json` still saying `info.version: 1.1.0`: the
 spec is generated from the pom, the version bump made it stale, and CI said so one commit after the tag. Nothing
 in the release ritual looked at the generated documents, so this release adds that guard and carries the
-regenerated spec. No code, API, or answer changed.
+regenerated spec. No API change and no change to an answer; the only code touched is the generators' `--check`
+and the release script's guard.
 
 ### Changed
 
@@ -34,6 +35,10 @@ regenerated spec. No code, API, or answer changed.
 - **`tools/release-1.0.sh` refuses to build a release whose generated documents are stale**, naming the command
   to run, and `docs/RELEASE-PROCESS.md` lists the regeneration between the version bump and `check-release.mjs` -
   the step whose absence made 1.1.1 carry the wrong string.
+- **`--check` in `tools/openapi.mjs` and `tools/api-endpoints.mjs` compares text, not bytes.** A Windows checkout
+  with `core.autocrlf` has CRLF in the working copy while the generator writes LF, so the new guard in the
+  release script failed on the machine that was cutting the release and passed in CI - the same file, the same
+  content, two answers.
 
 ## [1.1.1] - 2026-10-26
 

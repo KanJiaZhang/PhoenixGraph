@@ -117,7 +117,10 @@ if (process.argv.includes('--check')) {
   } catch {
     current = '';
   }
-  if (current !== json) {
+  // A checkout with core.autocrlf (Windows) has CRLF in the working copy while the generator writes LF. That is
+  // not staleness: compare the text, not the bytes, or the check fails on every Windows machine and passes in CI.
+  const normalise = (text) => text.replace(/\r\n/g, '\n');
+  if (normalise(current) !== normalise(json)) {
     console.error(`${TARGET} is out of date: run node tools/openapi.mjs`);
     process.exit(1);
   }

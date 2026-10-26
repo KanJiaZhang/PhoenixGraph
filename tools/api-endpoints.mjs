@@ -163,7 +163,10 @@ if (isMain) {
   const updated = document.slice(0, start) + table + document.slice(end + END.length);
 
   if (process.argv.includes('--check')) {
-    if (updated !== document) {
+    // Compare text, not bytes: a Windows checkout with core.autocrlf has CRLF here while the table is built with
+    // LF, and that is not a stale document (the spliced table keeps whatever the file uses).
+    const normalise = (text) => text.replace(/\r\n/g, '\n');
+    if (normalise(updated) !== normalise(document)) {
       console.error(`${TARGET} is out of date: run node tools/api-endpoints.mjs`);
       process.exit(1);
     }

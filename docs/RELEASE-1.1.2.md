@@ -3,8 +3,8 @@
 **Tag:** `v1.1.2` · **Image:** `phoenixgraph-http:1.1.2` / `phoenixgraph-web:1.1.2` · **Jar:** `dist/phoenixgraph.jar` (+ `.sha256`)
 **From:** `v1.1.1` · **Branch:** `release/1.1` (a patch release; see [`RELEASE-PROCESS.md`](RELEASE-PROCESS.md))
 
-A documentation release. No code, API, or answer changed: the artifact is 1.1.1 with the generated documents
-agreeing with it.
+A documentation release. No API change and no change to an answer: the artifact is 1.1.1 with the generated
+documents agreeing with it.
 
 ## Why this exists
 
@@ -23,6 +23,10 @@ when a generated document is stale.
   controllers (60 endpoints, 15 controllers).
 - **`tools/release-1.0.sh` runs `--check` on both generators and refuses to continue** with the command to run,
   and `docs/RELEASE-PROCESS.md` §3 lists the regeneration between the pom bump and `check-release.mjs`.
+- **`--check` compares text, not bytes.** The guard above immediately failed on this Windows machine, which was
+  cutting the release: `core.autocrlf` gives the working copy CRLF while the generator writes LF, so the same file
+  with the same content answered "stale" here and "current" in CI. Both generators normalise line endings before
+  comparing, because a line ending is not a stale document.
 
 ## Verifying this release
 
