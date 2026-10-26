@@ -116,9 +116,10 @@ Run it before a release and in CI; it reads the repository, not a running servic
 
 | | |
 |---|---|
-| released | `v1.0.0` (b1312e3), `v1.0.1` (3bd637c), `v1.1.0` - all annotated, all pushed |
-| `main` / `develop` | `main` moves to the 1.1.0 release commit; `release/1.0` stays at `3bd637c` (= `v1.0.1`) for 1.0.x patches |
-| open defect carried into 1.1 | the latency percentiles do not decay (`docs/DATA-QUALITY.md` §12) - fixed in 1.1, see below |
+| released | `v1.0.0` (b1312e3), `v1.0.1` (3bd637c), `v1.1.0`, `v1.1.1` - all annotated, all pushed |
+| `main` / `develop` / `release/1.1` | all three at the 1.1.1 commit (106d2b0); `release/1.0` stays at `3bd637c` (= `v1.0.1`) for 1.0.x patches |
+| open defect carried into 1.1 | none from 1.0: the latency percentiles now decay, see below |
+| what 1.1.1 exists for | the checks that prove 1.1.0 had never run: a missing executable bit, privileged worker ports, a test bounded by the runner's core count and a health check `asinfo` rejects. `develop` is green as of 1.1.1 |
 
 The percentile defect (`*_p99_millis` cumulative, so the latency alert could not clear) is closed in 1.1.0:
 `LatencySnapshot` stores the windowed percentile, restored history still restores the cumulative buckets and
