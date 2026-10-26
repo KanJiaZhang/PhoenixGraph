@@ -2,7 +2,7 @@
   "openapi": "3.0.3",
   "info": {
     "title": "PhoenixGraph API",
-    "version": "1.1.0",
+    "version": "1.1.1",
     "description": "Auditable context layer: query, write, agent tools and semantic layer. Paths and operation ids are generated from the controllers; field-level request/response documentation is in docs/API.md."
   },
   "servers": [

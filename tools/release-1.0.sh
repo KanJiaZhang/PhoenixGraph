@@ -64,6 +64,18 @@ fi
 
 # Every fact that does not depend on the tag has to hold before anything is built: the poms agree with each
 # other, the changelog has the section, the image tags follow the version, the release note exists.
+#
+# The generated docs are checked first, because they carry the version: docs/openapi.json's info.version is read
+# from the pom, so bumping the version makes the committed spec stale - the one edit a release must follow with a
+# regenerate, and the one that does not show up until CI looks (1.1.1 was tagged with a spec that still said
+# 1.1.0). Failing here is the point: the message says what to run and the fix is a commit, not a flag.
+for generated in tools/openapi.mjs tools/api-endpoints.mjs; do
+  if ! node "${generated}" --check >/dev/null 2>&1; then
+    echo "!! a generated document is stale: run node ${generated} and commit the result, then release again" >&2
+    node "${generated}" --check >&2 || true
+    exit 1
+  fi
+done
 node tools/check-release.mjs --expect-untagged
 
 # --- the artifact -------------------------------------------------------------------------------------
