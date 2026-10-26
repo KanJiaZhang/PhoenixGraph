@@ -1,8 +1,15 @@
 # Build and publish the Python client to PyPI on a release tag.
 #
-# Requires a repository secret PYPI_API_TOKEN (or configure PyPI trusted publishing and switch the
-# publish step to `permissions: id-token: write`). The client version is clients/python/pyproject.toml,
-# independent of the server tag.
+# The client version is clients/python/pyproject.toml, independent of the server tag, so a server release does
+# not have to publish anything. The build always runs - it proves the sdist and the wheel assemble - and the
+# publish step runs only when one of two credential paths is configured:
+#
+#   * the repository secret PYPI_API_TOKEN, or
+#   * PyPI trusted publishing: set the repository variable PYPI_TRUSTED_PUBLISHING=true and add a trusted
+#     publisher for this workflow on PyPI (the id-token: write permission below is what it needs).
+#
+# With neither, the publish step is skipped with a notice instead of failing the tag's run, which is what a
+# missing secret used to do.
 name: publish-python
 
 on:
@@ -34,13 +41,27 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     environment: pypi
+    permissions:
+      contents: read
+      id-token: write        # PyPI trusted publishing, when PYPI_TRUSTED_PUBLISHING is set
+    env:
+      PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+      PYPI_TRUSTED: ${{ vars.PYPI_TRUSTED_PUBLISHING }}
     steps:
       - uses: actions/download-artifact@v4
         with:
           name: python-dist
           path: dist
+      - name: Where the credentials are
+        run: |
+          if [ -n "${PYPI_TOKEN}" ]; then echo "publishing with PYPI_API_TOKEN"; fi
+          if [ "${PYPI_TRUSTED}" = "true" ]; then echo "publishing with PyPI trusted publishing"; fi
+          if [ -z "${PYPI_TOKEN}" ] && [ "${PYPI_TRUSTED}" != "true" ]; then
+            echo "::notice::no PYPI_API_TOKEN secret and no PYPI_TRUSTED_PUBLISHING variable: the wheel was built, PyPI was not touched"
+          fi
       - name: Publish to PyPI
+        if: env.PYPI_TOKEN != '' || env.PYPI_TRUSTED == 'true'
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          password: ${{ secrets.PYPI_API_TOKEN }}
+          password: ${{ env.PYPI_TOKEN }}
           skip-existing: true
