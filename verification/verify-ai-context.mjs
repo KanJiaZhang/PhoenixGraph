@@ -2,7 +2,10 @@
 // what: the three AI-context cases of docs/AI-CONTEXT-CASES.md: (1) a multi-hop question whose answer is a
 //       path with per-hop sentences, (2) cross-document entity resolution plus a coverage-based refusal, and
 //       (3) a semantic-layer attribution whose contributions add up and whose ratio metric is refused with
-//       the SQL. Case 1 reads the pre-loaded agent-demo graph; cases 2 and 3 ingest / read as they run.
+//       the SQL. Case 1 reads the agent-demo graph and ingests it from docs/agent-demo when its artifact is
+//       not there yet (the artifact is written by an ingestion, not committed); cases 2 and 3 ingest / read
+//       as they run.
+import { readFileSync } from 'node:fs';
 const API = 'http://localhost:8081';
 const SPEND_2025 = 14731149.38;
 
@@ -25,6 +28,38 @@ const rel = (r) => (r.relations || []).some((x) => x.head === r.head && x.relati
 
 // ---- 1. multi-hop: the answer is a path, and each hop carries its sentence ----------------------------
 console.log('--- 1. a multi-hop question answers with a traceable path');
+// agent-demo's artifact is the output of an ingestion (agent-demo.agent.json is gitignored), so a fresh clone
+// has the schema and no artifact. Provision it from the same two documents the docs quote, with the same
+// dictionary and gold set the three-minute demo uses; apply=true upserts, so an existing graph is unchanged.
+const ARTICLES = [
+  { id: 'guanyu', title: '三国志 · 关羽传（示例文本）',
+    text: readFileSync(new URL('../docs/agent-demo/guanyu.md', import.meta.url), 'utf8') },
+  { id: 'zhugeliang', title: '三国志 · 诸葛亮传（示例文本）',
+    text: readFileSync(new URL('../docs/agent-demo/zhugeliang.md', import.meta.url), 'utf8') },
+];
+const ARTICLE_DICTIONARY = {
+  关羽: 'Person', 刘备: 'Person', 诸葛亮: 'Person', 司马懿: 'Person', 水镜先生: 'Person',
+  张飞: 'Person', 曹操: 'Person', 张辽: 'Person', 黄月英: 'Person', 周仓: 'Person',
+  张郃: 'Person', 马谡: 'Person', 颜良: 'Person', 文丑: 'Person', 阆中: 'Place', 汉中: 'Place',
+};
+const ARTICLE_GOLD = ['关羽|killed|颜良', '诸葛亮|strategist_of|刘备', '张飞|sibling_of|刘备', '关羽|fought|文丑'];
+
+if ((await fetch(API + '/api/v1/agent/quality/agent-demo')).status !== 200) {
+  const provisioned = await post('/api/v1/agent/ingest', {
+    graph: 'agent-demo', apply: true, rulePack: 'sanguo',
+    description: 'Two biographies, ingested so the AI-context cases have something to cite.',
+    documents: ARTICLES, dictionary: ARTICLE_DICTIONARY, gold: ARTICLE_GOLD,
+  });
+  if (provisioned.status !== 200 || !provisioned.json?.applied) {
+    const problem = String(provisioned.json?.error || '').slice(0, 120) || 'http ' + provisioned.status;
+    console.log(`skipped: agent-demo has no artifact and could not be ingested (${problem})`);
+    console.log('         this case needs the Aerospike write path, or an already-ingested agent-demo graph');
+    process.exit(0);
+  }
+  const quality = provisioned.json.quality || {};
+  console.log(`  ingested docs/agent-demo into agent-demo: ${provisioned.json.entities} entities, `
+    + `${provisioned.json.relations} relations, provenanceRate ${quality.provenanceRate}`);
+}
 const multiHop = await post('/api/v1/agent/context', { graph: 'agent-demo', question: '关羽和诸葛亮什么关系' });
 const sibling = (multiHop.json.relations || []).find((x) => x.head === '关羽' && x.relation === 'sibling_of' && x.tail === '刘备');
 const strategist = (multiHop.json.relations || []).find((x) => x.head === '诸葛亮' && x.relation === 'strategist_of' && x.tail === '刘备');
