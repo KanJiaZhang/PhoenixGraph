@@ -112,10 +112,15 @@ Run it before a release and in CI; it reads the repository, not a running servic
 
 `--json` prints the same findings as data, for a pipeline that wants to publish them.
 
-## 6. The state at 1.0
+## 6. The state at 1.1
 
 | | |
 |---|---|
-| released | `v1.0.0` (b1312e3), `v1.0.1` (3bd637c) - both annotated, both pushed |
-| `main` / `release/1.0` / `develop` | all three at `3bd637c` (= `v1.0.1`) at the time of writing |
-| open defect carried into 1.0.x | the latency percentiles do not decay (`docs/DATA-QUALITY.md` §12) - fix it on `release/1.0`, release 1.0.2, merge back |
+| released | `v1.0.0` (b1312e3), `v1.0.1` (3bd637c), `v1.1.0` - all annotated, all pushed |
+| `main` / `develop` | `main` moves to the 1.1.0 release commit; `release/1.0` stays at `3bd637c` (= `v1.0.1`) for 1.0.x patches |
+| open defect carried into 1.1 | the latency percentiles do not decay (`docs/DATA-QUALITY.md` §12) - fixed in 1.1, see below |
+
+The percentile defect (`*_p99_millis` cumulative, so the latency alert could not clear) is closed in 1.1.0:
+`LatencySnapshot` stores the windowed percentile, restored history still restores the cumulative buckets and
+reports a windowed p99 of 0 until new samples arrive, and the alert drill's `XFAIL` is now an ordinary
+assertion. 1.0.x keeps the defect until a 1.0.2 is cut from `release/1.0`.

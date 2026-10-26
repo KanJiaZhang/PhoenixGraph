@@ -18,7 +18,7 @@ All notable changes to this project are recorded here. The format follows
 - **A release is a git tag and an image tag with the same name**; `docs/ROADMAP-1.0.md` says what is not in
   yet. Rollback is "deploy the previous tag" and is exercised in the M2 milestone.
 
-## [Unreleased]
+## [1.1.0] - 2026-10-26
 
 ### Added
 
@@ -133,6 +133,9 @@ it has no disk storage engine - a deployment setting, not a loader limit. `docs/
   nowhere and are refused with the warehouse SQL, never guessed. `verification/verify-demo-semantics.mjs` pins
   the deterministic baselines and proves the runner/interpreter/renderer are not hardcoded to TPC-H.
 
+- **The semantic layer over HTTP** (`graph-http/.../http/semantic`): `GET /api/v1/semantic/{graph}/model` is the vocabulary an agent plans against (metrics, dimensions, the fact-graph binding behind each dimension, the reference queries with their original SQL, and the lineage), `POST .../translate` renders warehouse SQL without running it, and `POST .../validate` answers whether a request is answerable, returning the vocabulary when it is not. The renderer is a port of `tools/semantic-sql.mjs` and `verification/verify-semantic-api.mjs` compares the two byte-for-byte (32 statements over a matrix of metrics, dimensions, grains and dialects), with seven unit tests pinning the strings offline: the base-table rule, the missing-join warning, the per-dialect grain functions, and a grain-to-fact-property binding that is read from the model rather than guessed.
+- **An MCP server** (`tools/mcp-server.mjs`): the graph tools and the semantic layer as an agent plugin, stateless in the 2026-07-28 revision of the protocol. Its tool list comes from `GET /api/v1/agent/tools`, which now also carries `bindings` - how to call each tool - so the plugin holds no tool knowledge and a tool cannot exist in one and not the other. User confirmation is a signed token rather than a session. `--selftest` checks the catalog, the schemas and three calls; a stdio round trip works end to end.
+
 ### Fixed
 
 - **Re-ingesting a document after a merge could not resurrect the folded-away entity.** A merge soft-deletes
@@ -167,6 +170,9 @@ it has no disk storage engine - a deployment setting, not a loader limit. `docs/
 - **`check-k8s.mjs` did not find Service selectors on Windows** because it matched LF only; it now normalizes
   CRLF before parsing.
 
+- **`tools/start-phoenixgraph.sh` started a stale jar.** It hardcoded `graph-http-0.1.0-SNAPSHOT.jar`, and the 1.0.0 release renamed every artifact: the script kept starting an old build while the build reported success, so new endpoints simply 404ed. It finds the jar now (newest first, `.original` skipped) and refuses to start when there is none.
+- **`tools/api-endpoints.mjs` missed whole packages.** It only scanned `controller/`, so a controller in its own package never reached `docs/API.md` - an endpoint the reference does not list is an endpoint nobody finds. It walks the `http` package tree now: 55 endpoints across 15 controllers.
+
 ### Changed
 
 - **Entity dedup is one safe step wider**: names that differ only by traditional vs simplified Chinese
@@ -190,6 +196,90 @@ The release the plan in [docs/ROADMAP-1.0.md](docs/ROADMAP-1.0.md) was written f
 it is that a stranger can now run this, get an answer, and re-derive every number in the documentation with a
 command in the repository. [docs/RELEASE-1.0.0.md](docs/RELEASE-1.0.0.md) is the release note; what follows is
 what changed, not what exists.
+
+
+Milestone **M2** of [`docs/ROADMAP-1.0.md`](docs/ROADMAP-1.0.md) continues here.
+
+### Added
+
+- **API keys, roles and an audit trail** (M2-2): `phoenixgraph.security` with named keys (token or its
+  SHA-256), the role ladder reader < writer < admin, optional per-graph scoping, `401`/`403` answered before
+  any work happens, and every call recorded to the `com.pengcheng.phoenixgraph.audit` logger plus a bounded
+  buffer read back through `GET /api/v1/audit/recent` (admin). Off by default; tokens are never logged.
+
+- **TLS** (M2-3): `server.ssl.*` with a PKCS12 keystore and the password from the environment
+  (`PHOENIXGRAPH_TLS_PASSWORD`), documented end to end and checked by `verification/verify-tls.mjs` against a
+  keystore it generates with keytool - including that verification stays on (a self-signed certificate is
+  refused by a verifying client) and that a wrong password stops the process instead of serving something else.
+
+### Fixed
+
+- **A key configured as its SHA-256 was never accepted**: the comparison hashed the configured digest a
+  second time, so the failure looked exactly like a wrong token. A query is also a read
+  (`POST /api/v1/query`, the pattern preview, the agent tools) - a reader role that could not query would
+  have been useless - and the audit view needs `admin` even though it is a `GET`.
+
+## 0.2.0 (2026-10-13) — milestone M1, never tagged
+
+> Not a tagged release: `0.2.0` was the *milestone* name in `docs/ROADMAP-1.0.md` while the pom still said
+> `0.1.0-SNAPSHOT`, so the two disagreed. It is kept here for the record; from 1.0 on the changelog version, the
+> pom version, the git tag and the image tag are the same string (`docs/RELEASE-PROCESS.md` §2).
+
+Milestone **M1** of the 1.0 plan: *a stranger can install it, see evidence, and file an issue*.
+
+### Added
+
+- **Published live verification suite** (`verification/`): ten checks that assert what the documentation
+  claims, by driving the real API and the real UI in a headless browser, plus `verification/run.mjs`, which
+  skips a check whose prerequisite is missing instead of reporting a false failure. Previously these lived
+  in a gitignored working directory, so "reproducible" was a promise nobody outside could keep.
+- **`QUICKSTART.md`**: ten minutes from clone to the first query, algorithm and agent tool call.
+- **`docs/API.md`**: the endpoint reference (46 endpoints, 11 controllers), generated from the controllers
+  by `tools/api-endpoints.mjs` so the table cannot drift; the error model, the write semantics and the
+  request/response shapes are hand-written around it.
+- **`docs/DATA-QUALITY.md`**: the ledger of data defects that make an analysis wrong, each with its
+  evidence query, its impact and its handling (TPC-H's cyclic `nation → region`, `region` ≡ `segment`, the
+  integer/boolean predicate trap, the 三国 `killed` relations being novel-sourced, truncated evidence text,
+  and the stale `TPC-H-ANALYTICS.md` §4/§5 figures).
+- **`docs/ROADMAP-1.0.md`**: the three milestones with acceptance criteria per item.
+- **CI** (`.github/workflows/ci.yml`): unit tests on every push, the container path built and smoke-tested
+  over HTTP, and a nightly job that seeds the demo graphs and runs the full live suite. `tools/check-ci.mjs`
+  validates the workflow against the pom and the compose file (JDK version, pinned store).
+- **Server-side request limits** (M2): a per-request wall-clock timeout, a concurrency gate and per-graph
+  quotas, configured under `phoenixgraph.limits`, answering `503`/`429` with `Retry-After` instead of
+  occupying the instance.
+- **Prometheus metrics** (M2): `GET /api/v1/metrics/prometheus` (and per graph) in text exposition format,
+  from the counters and latency histograms the engine already keeps.
+- **Structured request logging** (M2): every request logs one line with a request id (also returned as the
+  `X-Request-Id` header), the graph, the language, the outcome and the latency.
+
+### Changed
+
+- **Unknown paths answer `404` and a known path with the wrong method answers `405`** (with `Allow`), each
+  with the standard error body. Both used to fall through the catch-all and answer `500`, which told an
+  integrator the server was broken when the request was wrong.
+- **The Aerospike image is pinned** (`aerospike/aerospike-server:8.1.2.5`) in the deployment compose and in
+  CI, instead of `latest`.
+- **README carries a Limitations section** stating what this is not yet (no auth/TLS, single node, no
+  backup, no per-request limits, demo-scale numbers, unsupported traversal constructs).
+
+### Fixed
+
+- **`lateDelivery`/`returned` were never empty.** An earlier note here concluded "the flags are all false"
+  from `has('lateDelivery', true)`, which matches nothing because the loader writes integers: the integer
+  form matches **771** of 8,000 sales (9.64%) and **351** returned (4.39%). The question was wrong, not the
+  data - see `docs/DATA-QUALITY.md` §3.
+
+## 0.1.0 (2026-09-25) — first milestone, never tagged
+
+> Not a tagged release: the pom said `0.1.0-SNAPSHOT` and the number was a milestone in the plan (see the note
+> above `0.2.0`). Kept for the record.
+
+The first tagged state: the engine, the four storage schemes, Gremlin and openCypher, the graph algorithms
+(in-process and on the Gemini cluster), fuzzy linking, HNSW vectors, geo search, the agent toolkit, the
+semantic layer, and the visualization workbench. See `README.md` for what each of those does and
+`HANDOVER.md` (local) for how it was built.
+
 
 ### Added
 
@@ -296,101 +386,8 @@ A patch release with what the on-call drill found. No API change.
   evidence, `docs/SLO.md` says to treat the alert as noisy until then, and the drill states it as an explicit
   `XFAIL` - when that line starts failing, the fix has landed and it becomes an ordinary assertion.
 
-## [Unreleased]
-
-### Added
-
-- **The semantic layer over HTTP** (`graph-http/.../http/semantic`): `GET /api/v1/semantic/{graph}/model` is the vocabulary an agent plans against (metrics, dimensions, the fact-graph binding behind each dimension, the reference queries with their original SQL, and the lineage), `POST .../translate` renders warehouse SQL without running it, and `POST .../validate` answers whether a request is answerable, returning the vocabulary when it is not. The renderer is a port of `tools/semantic-sql.mjs` and `verification/verify-semantic-api.mjs` compares the two byte-for-byte (32 statements over a matrix of metrics, dimensions, grains and dialects), with seven unit tests pinning the strings offline: the base-table rule, the missing-join warning, the per-dialect grain functions, and a grain-to-fact-property binding that is read from the model rather than guessed.
-- **An MCP server** (`tools/mcp-server.mjs`): the graph tools and the semantic layer as an agent plugin, stateless in the 2026-07-28 revision of the protocol. Its tool list comes from `GET /api/v1/agent/tools`, which now also carries `bindings` - how to call each tool - so the plugin holds no tool knowledge and a tool cannot exist in one and not the other. User confirmation is a signed token rather than a session. `--selftest` checks the catalog, the schemas and three calls; a stdio round trip works end to end.
-
-### Fixed
-
-- **`tools/start-phoenixgraph.sh` started a stale jar.** It hardcoded `graph-http-0.1.0-SNAPSHOT.jar`, and the 1.0.0 release renamed every artifact: the script kept starting an old build while the build reported success, so new endpoints simply 404ed. It finds the jar now (newest first, `.original` skipped) and refuses to start when there is none.
-- **`tools/api-endpoints.mjs` missed whole packages.** It only scanned `controller/`, so a controller in its own package never reached `docs/API.md` - an endpoint the reference does not list is an endpoint nobody finds. It walks the `http` package tree now: 55 endpoints across 15 controllers.
-
-Milestone **M2** of [`docs/ROADMAP-1.0.md`](docs/ROADMAP-1.0.md) continues here.
-
-### Added
-
-- **API keys, roles and an audit trail** (M2-2): `phoenixgraph.security` with named keys (token or its
-  SHA-256), the role ladder reader < writer < admin, optional per-graph scoping, `401`/`403` answered before
-  any work happens, and every call recorded to the `com.pengcheng.phoenixgraph.audit` logger plus a bounded
-  buffer read back through `GET /api/v1/audit/recent` (admin). Off by default; tokens are never logged.
-
-- **TLS** (M2-3): `server.ssl.*` with a PKCS12 keystore and the password from the environment
-  (`PHOENIXGRAPH_TLS_PASSWORD`), documented end to end and checked by `verification/verify-tls.mjs` against a
-  keystore it generates with keytool - including that verification stays on (a self-signed certificate is
-  refused by a verifying client) and that a wrong password stops the process instead of serving something else.
-
-### Fixed
-
-- **A key configured as its SHA-256 was never accepted**: the comparison hashed the configured digest a
-  second time, so the failure looked exactly like a wrong token. A query is also a read
-  (`POST /api/v1/query`, the pattern preview, the agent tools) - a reader role that could not query would
-  have been useless - and the audit view needs `admin` even though it is a `GET`.
-
-## 0.2.0 (2026-10-13) — milestone M1, never tagged
-
-> Not a tagged release: `0.2.0` was the *milestone* name in `docs/ROADMAP-1.0.md` while the pom still said
-> `0.1.0-SNAPSHOT`, so the two disagreed. It is kept here for the record; from 1.0 on the changelog version, the
-> pom version, the git tag and the image tag are the same string (`docs/RELEASE-PROCESS.md` §2).
-
-Milestone **M1** of the 1.0 plan: *a stranger can install it, see evidence, and file an issue*.
-
-### Added
-
-- **Published live verification suite** (`verification/`): ten checks that assert what the documentation
-  claims, by driving the real API and the real UI in a headless browser, plus `verification/run.mjs`, which
-  skips a check whose prerequisite is missing instead of reporting a false failure. Previously these lived
-  in a gitignored working directory, so "reproducible" was a promise nobody outside could keep.
-- **`QUICKSTART.md`**: ten minutes from clone to the first query, algorithm and agent tool call.
-- **`docs/API.md`**: the endpoint reference (46 endpoints, 11 controllers), generated from the controllers
-  by `tools/api-endpoints.mjs` so the table cannot drift; the error model, the write semantics and the
-  request/response shapes are hand-written around it.
-- **`docs/DATA-QUALITY.md`**: the ledger of data defects that make an analysis wrong, each with its
-  evidence query, its impact and its handling (TPC-H's cyclic `nation → region`, `region` ≡ `segment`, the
-  integer/boolean predicate trap, the 三国 `killed` relations being novel-sourced, truncated evidence text,
-  and the stale `TPC-H-ANALYTICS.md` §4/§5 figures).
-- **`docs/ROADMAP-1.0.md`**: the three milestones with acceptance criteria per item.
-- **CI** (`.github/workflows/ci.yml`): unit tests on every push, the container path built and smoke-tested
-  over HTTP, and a nightly job that seeds the demo graphs and runs the full live suite. `tools/check-ci.mjs`
-  validates the workflow against the pom and the compose file (JDK version, pinned store).
-- **Server-side request limits** (M2): a per-request wall-clock timeout, a concurrency gate and per-graph
-  quotas, configured under `phoenixgraph.limits`, answering `503`/`429` with `Retry-After` instead of
-  occupying the instance.
-- **Prometheus metrics** (M2): `GET /api/v1/metrics/prometheus` (and per graph) in text exposition format,
-  from the counters and latency histograms the engine already keeps.
-- **Structured request logging** (M2): every request logs one line with a request id (also returned as the
-  `X-Request-Id` header), the graph, the language, the outcome and the latency.
-
-### Changed
-
-- **Unknown paths answer `404` and a known path with the wrong method answers `405`** (with `Allow`), each
-  with the standard error body. Both used to fall through the catch-all and answer `500`, which told an
-  integrator the server was broken when the request was wrong.
-- **The Aerospike image is pinned** (`aerospike/aerospike-server:8.1.2.5`) in the deployment compose and in
-  CI, instead of `latest`.
-- **README carries a Limitations section** stating what this is not yet (no auth/TLS, single node, no
-  backup, no per-request limits, demo-scale numbers, unsupported traversal constructs).
-
-### Fixed
-
-- **`lateDelivery`/`returned` were never empty.** An earlier note here concluded "the flags are all false"
-  from `has('lateDelivery', true)`, which matches nothing because the loader writes integers: the integer
-  form matches **771** of 8,000 sales (9.64%) and **351** returned (4.39%). The question was wrong, not the
-  data - see `docs/DATA-QUALITY.md` §3.
-
-## 0.1.0 (2026-09-25) — first milestone, never tagged
-
-> Not a tagged release: the pom said `0.1.0-SNAPSHOT` and the number was a milestone in the plan (see the note
-> above `0.2.0`). Kept for the record.
-
-The first tagged state: the engine, the four storage schemes, Gremlin and openCypher, the graph algorithms
-(in-process and on the Gemini cluster), fuzzy linking, HNSW vectors, geo search, the agent toolkit, the
-semantic layer, and the visualization workbench. See `README.md` for what each of those does and
-`HANDOVER.md` (local) for how it was built.
-
-[Unreleased]: https://github.com/KanJiaZhang/PhoenixGraph/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/KanJiaZhang/PhoenixGraph/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/KanJiaZhang/PhoenixGraph/releases/tag/v1.1.0
 [1.0.1]: https://github.com/KanJiaZhang/PhoenixGraph/releases/tag/v1.0.1
 [1.0.0]: https://github.com/KanJiaZhang/PhoenixGraph/releases/tag/v1.0.0
 

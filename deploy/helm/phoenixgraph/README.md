@@ -19,8 +19,8 @@ kubectl create secret generic phoenixgraph-secrets \
   --from-literal=dashboard-token=replace-with-a-long-random-token
 
 helm upgrade --install phoenixgraph deploy/helm/phoenixgraph \
-  --set image.http=ghcr.io/<owner>/phoenixgraph-http:1.0.1 \
-  --set image.web=ghcr.io/<owner>/phoenixgraph-web:1.0.1
+  --set image.http=ghcr.io/<owner>/phoenixgraph-http:1.1.0 \
+  --set image.web=ghcr.io/<owner>/phoenixgraph-web:1.1.0
 ```
 
 - The Secret carries the Spring `security.yml` (mounted read-only at `/etc/phoenixgraph`) and the token the
