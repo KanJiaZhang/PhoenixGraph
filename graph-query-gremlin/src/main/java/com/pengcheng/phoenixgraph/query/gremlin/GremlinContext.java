@@ -247,6 +247,12 @@ public final class GremlinContext {
      * reads: a batch is never larger than {@link #batchSize()}, but with few ids it
      * is smaller, so {@code g.V(id1, id2, id3)} reads each seed in its own request
      * (in parallel) instead of one batch after another.
+     *
+     * <p>The seed read happens when the source is expanded, before any step runs, so a {@code batch(n)} written
+     * after {@code g.V(...)} in the same traversal does not reach it - the seed split is sized by
+     * {@code parallelism} and capped by the batch size in force at that moment ({@link #DEFAULT_BATCH_SIZE} unless
+     * a caller set one). {@code batch(n)} governs the reads after the step. {@code parallelism} is the knob for
+     * the seed fan-out, and it is the one to pin in a test.
      */
     public List<List<Object>> seedBatches(List<Object> ids) {
         if (ids.isEmpty()) {

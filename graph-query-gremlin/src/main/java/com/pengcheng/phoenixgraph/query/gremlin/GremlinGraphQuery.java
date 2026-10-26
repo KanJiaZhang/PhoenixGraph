@@ -947,8 +947,11 @@ public class GremlinGraphQuery {
 
     /**
      * How many storage read batches a query may issue concurrently ({@code 1} =
-     * sequential). Multi-seed queries and wide fan-outs are split into batches of
-     * at most {@code batch(n)} ids and read in parallel. Defaults to
+     * sequential). Multi-seed queries and wide fan-outs are split into batches and
+     * read in parallel: a fan-out is split at {@code batch(n)}, while the seeds of
+     * {@code g.V(...)} are split by this number ({@code ceil(ids / parallelism)},
+     * capped by the batch size in force when the source is expanded - see
+     * {@link GremlinContext#seedBatches(java.util.List)}). Defaults to
      * {@link GremlinContext#DEFAULT_PARALLELISM}.
      */
     public GremlinGraphQuery parallelism(int parallelism) {

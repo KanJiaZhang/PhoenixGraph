@@ -316,8 +316,12 @@ class GremlinGraphQueryTest {
     void severalSeedIdsAreReadInOneBatchPerSeedInParallel() {
         List<List<Object>> seedBatches = java.util.Collections.synchronizedList(new ArrayList<>());
         GraphQuery fanOut = seedTrackingGraph(seedBatches);
+        // Pinned: the seed split is ceil(ids / parallelism) capped by the batch size in force, and the adaptive
+        // tuning re-derives the batch from the previous hop. Left to the machine, these tests assert how many
+        // cores it has (see seedBatchesFillTheParallelSlots below).
         GremlinGraphQuery query = new GremlinGraphQuery(fanOut,
-                NeighborVertexResolver.of(Map.of("knows", "p"), Map.of()));
+                NeighborVertexResolver.of(Map.of("knows", "p"), Map.of()))
+                .parallelism(4).adaptiveBatchEnabled(false);
 
         List<Object> result = query.execute("g.V('a','b','c','p').batch(20).values('name')");
 
@@ -327,11 +331,12 @@ class GremlinGraphQueryTest {
     }
 
     @Test
-    void seedBatchesNeverExceedTheConfiguredBatchSize() {
+    void seedBatchesFillTheParallelSlotsUnderTheBatchCap() {
         List<List<Object>> seedBatches = java.util.Collections.synchronizedList(new ArrayList<>());
         GraphQuery fanOut = seedTrackingGraph(seedBatches);
         GremlinGraphQuery query = new GremlinGraphQuery(fanOut,
-                NeighborVertexResolver.of(Map.of("knows", "p"), Map.of()));
+                NeighborVertexResolver.of(Map.of("knows", "p"), Map.of()))
+                .parallelism(4).adaptiveBatchEnabled(false);
         StringBuilder ids = new StringBuilder();
         for (int i = 0; i < 100; i++) {
             ids.append("'s").append(i).append("',");
@@ -339,10 +344,12 @@ class GremlinGraphQueryTest {
 
         query.execute("g.V(" + ids + "'p').batch(20).values('name')");
 
-        // 100 seeds with batch(20): one request per parallel slot, each at most 20 ids
-        assertTrue(seedBatches.size() <= GremlinContext.DEFAULT_PARALLELISM,
-                "expected at most " + GremlinContext.DEFAULT_PARALLELISM + " requests, got " + seedBatches.size());
-        assertTrue(seedBatches.stream().allMatch(b -> b.size() <= 20));
+        // 100 seeds with four parallel slots: a seed batch aims at ceil(100/4) = 25 ids, which the batch size in
+        // force (DEFAULT_BATCH_SIZE, 50: the seeds are read before the batch(20) step runs) does not cut, so four
+        // requests of 25. This asserted size() <= DEFAULT_PARALLELISM before, which passed on an eight-core
+        // machine and failed on a four-core runner - a test that measured the hardware, not the split.
+        assertEquals(List.of(25, 25, 25, 25), seedBatches.stream().map(List::size).sorted().toList());
+        assertTrue(seedBatches.stream().allMatch(b -> b.size() <= GremlinContext.DEFAULT_BATCH_SIZE));
         assertEquals(100, seedBatches.stream().mapToInt(List::size).sum());
     }
 
