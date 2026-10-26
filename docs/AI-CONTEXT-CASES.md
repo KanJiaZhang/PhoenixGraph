@@ -38,7 +38,7 @@ context        graph=agent-demo, question=...   → 拉取这两个实体周围�
 水镜先生 -teaches->     诸葛亮  「刘备的军师是诸葛亮，诸葛亮的师傅是水镜先生。」
 黄月英 -spouse_of->    诸葛亮  「诸葛亮的师傅是水镜先生，诸葛亮的妻子是黄月英。」
 关羽  -killed->        颜良   「关羽斩杀颜良，又与文丑交战。」
-…（共 16 条，每条带 chunkId + 原文句子）
+…（共 16 条，每条带原句与出处 `cite`；`citations` 里是带 `chunkId` 的原文块）
 ```
 
 **agent 据此回答**：从子图里抽出两条边组成 2 跳路径 `关羽 → sibling_of → 刘备 ← strategist_of ← 诸葛亮`，

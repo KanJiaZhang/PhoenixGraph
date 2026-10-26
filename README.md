@@ -1,20 +1,81 @@
 # PhoenixGraph
 
-PhoenixGraph is an auditable context layer for AI applications. It turns documents and graph data into a
-typed knowledge graph with provenance, searches it by vector, and returns the context an agent needs:
-entities, relations, paths, the source sentences and a count of what the answer rests on. Agents call it
-over HTTP or MCP. There is no language model inside the data path.
+PhoenixGraph is the context layer an AI agent calls when the answer has to be defensible. Documents go
+in; a typed knowledge graph with provenance comes out. Ask it a question and it returns **entities,
+directed relations, the sentence each relation was read from, citations and a coverage count** - the
+material for a cited answer or an honest refusal, instead of a pile of chunks a model has to guess about.
+Agents reach it over MCP or HTTP.
+
+Two properties follow from the design, and they are the whole argument:
+
+- **No language model in the data path.** Extraction is a dictionary plus rule packs, and the default
+  embedder is an offline hashing baseline, so the same documents produce the same graph - which is what
+  makes an audit possible. A real embedder or reranker plugs in through configuration; the tools do not
+  change.
+- **The answer shape is a contract.** Every relation carries the sentence it was read from and the citation
+  it belongs to, and those citations carry the `chunkId`; every answer carries `coverage`; when the corpus
+  does not support a question, the retrieval tools return no relation rather than an invented one, and the
+  data agent refuses with the SQL it would have run.
 
 The graph engine underneath is a real database: a graph's schema chooses Aerospike for keyed transactional
 reads and writes or RocksDB for ordered scans and analytics, and Gremlin, openCypher and the HTTP API are
 the same on both. See [Positioning](docs/POSITIONING.md) for who this is for and what it is not.
 
+## What an agent gets back
+
+`POST /api/v1/agent/context` on the bundled 三国 graph, asking 「关羽和诸葛亮什么关系」 (live response,
+fields elided):
+
+```json
+{ "coverage": {"entities": 14, "relations": 16, "citations": 4, "seeds": 5, "hops": 1},
+  "relations": [
+    {"head": "关羽", "relation": "sibling_of", "tail": "刘备", "rule": "is-of",
+     "cite": "三国志 · 关羽传（示例文本） §2",
+     "sentence": "关羽字云长，是刘备的义弟，也是刘备的臣。"},
+    {"head": "诸葛亮", "relation": "strategist_of", "tail": "刘备", "rule": "of-is",
+     "cite": "三国志 · 关羽传（示例文本） §2",
+     "sentence": "刘备的军师是诸葛亮，诸葛亮的师傅是水镜先生。"}],
+  "citations": [{"chunkId": "guanyu#1"}, {"chunkId": "zhugeliang#1"}] }
+```
+
+The agent can now walk `关羽 → sibling_of → 刘备 ← strategist_of ← 诸葛亮` and quote both sentences in the
+answer. A vector index would have returned the two chunks and left the model to work out how they connect -
+and to fill the gap confidently where they do not.
+
+## The three questions it is built for
+
+| Question | What comes back | Without it | Asserted by |
+| --- | --- | --- | --- |
+| 关羽 and 诸葛亮: how are they related? | 16 relations, each with the sentence it was read from and its citation; `coverage` states what the answer rests on | two chunks with no edges between them | `verify-ai-context.mjs:31,33` |
+| What did Deploy 42 cause? Who approved it? | 3 documents become one graph; `payment service` merged from three spellings (`mentions: 3`, `duplicatesRemoved: 2`); two `caused` edges; the approval question returns **0 name matches, 0 relations** - a refusal | three indexes, one per document; a confident guess for the approval | `:64,68,74` |
+| Why did spend change? Is ROI an efficiency problem? | `14,754,787.14 → 14,731,149.38`, `delta −23,637.76`, four slices that add up (`decompositionAddsUp: true`); CAC is refused, with the warehouse SQL | a hand-written SQL nobody can check; a ratio answered as a sum | `:82,87` |
+
+Every number above is asserted against a running service by `node verification/verify-ai-context.mjs`. The
+full response excerpts and where each number comes from are in the
+[one-page case sheet](docs/AI-CONTEXT-ONE-PAGER.md); the longer walkthroughs are
+[AI-CONTEXT-CASES.md](docs/AI-CONTEXT-CASES.md), [AGENT-INGESTION-CASE.md](docs/AGENT-INGESTION-CASE.md)
+and [END-TO-END.md](docs/END-TO-END.md).
+
 ## What it does
 
-**Context an agent can cite.** `POST /api/v1/agent/context` takes a question and returns the entities,
-relations, paths and the source sentences, plus a count of what the answer rests on. The bundled 三国
-graph answers "关羽 and 诸葛亮: how are they related?" from its own edges.
-[Use cases →](docs/USE-CASES.md#1-a-knowledge-graph-as-agent-context)
+**Ingestion with a measured quality report.** Documents become chunks, entities and relations (a
+domain dictionary plus a data-driven rule pack), then a graph with vectors. `POST /api/v1/agent/ingest`
+is a dry run unless `apply: true`, and always returns the numbers an operator needs before trusting it:
+`provenanceRate`, `typeAgreement`, precision/recall against a gold set, `entityLinkRate`,
+`duplicatesRemoved` with a `mergedEntities` review list, and `mergeCandidates` for near-duplicates that were
+deliberately **not** merged - `POST /api/v1/agent/merge` folds an approved one, rewriting its edges and
+recording its name as an alias. [AI toolkit →](docs/AI-TOOLKIT.md)
+
+**Eight retrieval tools, one answer shape.** `context`, `search`, `find_entities`, `related`, `similar`,
+`related_similar`, `similar_related` and `path_between` all return the same document - `entities`,
+`relations` with their sentences, `citations` with `chunkId`s, `coverage` and `next` - so an agent learns one
+shape and a client cannot drift from the service. The MCP server reads the catalog from the API rather than
+hard-coding it.
+
+**Data questions answered with a plan, or refused.** The semantic layer (`/api/v1/semantic/*`,
+`/api/v1/analysis/*`) returns a metric/dimension plan, the traversal it ran, the warehouse SQL to check it
+against and its provenance. A ratio the model cannot execute is refused with the SQL, never estimated.
+[DATA-AGENT.md](docs/DATA-AGENT.md)
 
 **Graph and vector search in one traversal.** `nearest(k)` is an ordinary step, so a query can go from
 similar accounts to their payments without a client-side join. Geo search is available the same way when
@@ -75,6 +136,13 @@ The two `curl` query calls return the vertices and the `subgraph` block the UI d
 returns entities, relations, citations and a `coverage` count. For ingestion, verification and more
 examples, see [QUICKSTART.md](QUICKSTART.md).
 
+The one command that proves the AI claims in this README against the running service:
+
+```bash
+node verification/verify-ai-context.mjs   # a per-hop-cited path, a cross-document merge, a coverage-based
+                                         # refusal, a decomposition that adds up, a refused ratio
+```
+
 ## See it
 
 ![a vector search followed by a graph walk](docs/screenshots/graph-vector-query.png)
@@ -92,6 +160,17 @@ Pick the path that matches what you already have:
 | Documents | Use the document icon in the UI, `POST /api/v1/agent/ingest`, or `node tools/ingest-docs.mjs <dir>` to build a graph with entities, relations, vectors and a quality report. Then call `search`, `context`, `related` or `path_between`. Scanned PDFs use `--ocr` (pdftoppm + tesseract). |
 | A schema or a curated graph | Query it directly with Gremlin or openCypher, or use the semantic layer (`/api/v1/semantic/*`) to ask data questions with a plan and provenance. |
 | An agent runtime | Connect `tools/mcp-server.mjs` over MCP, or register the 14 tools from `GET /api/v1/agent/tools`. |
+
+An agent needs three facts from the answer shape: every `relation` carries `sentence` and `cite`; every
+answer carries `coverage` (`entities`, `relations`, `citations`, `seeds`, `hops`); and `relations: 0` with no
+`via: "name"` entity means **the corpus does not answer this** - a finding a runtime can act on, rather than
+a prompt instruction it has to hope the model obeys. `next` names the tools worth calling after this one, so
+a runtime can keep going without a hand-written tool graph. The permission for a data answer is a signed
+token (plan hash + expiry), so a confirmed plan survives a restart and works across replicas.
+
+MCP over HTTP has the operational bits an agent platform needs, all of them stated in
+[docs/AI-TOOLKIT.md](docs/AI-TOOLKIT.md): loopback by default, a bearer token or a per-token tool scope map,
+`PHOENIXGRAPH_MCP_AUDIT` (JSONL, one line per `tools/call`) and `PHOENIXGRAPH_MCP_RATE_LIMIT`.
 
 The MCP server is stateless, reads its tool list from the running API, and forwards an API key when the
 service is secured. It runs over stdio or HTTP (`--http`); the HTTP endpoint requires a bearer token
@@ -112,12 +191,10 @@ and can be limited to a tool allowlist:
 }
 ```
 
-`GET /api/v1/agent/tools` advertises eight retrieval tools (`find_entities`, `search`, `related`, `similar`,
-`related_similar`, `similar_related`, `path_between`, `context`) and six data tools (`semantic_model`,
-`semantic_translate`, `semantic_validate`, `ask_data`, `analyze_business`, `attribute_change`). The eight
-retrieval tools share one answer shape (entities, relations, paths, citations, coverage); the six data
-tools return a plan, provenance and either an answer or a refusal. Details and a worked example are in
-[docs/AI-TOOLKIT.md](docs/AI-TOOLKIT.md); the data-agent contract is in
+`GET /api/v1/agent/tools` advertises fourteen tools - the eight retrieval tools above, plus six data tools
+(`semantic_model`, `semantic_translate`, `semantic_validate`, `ask_data`, `analyze_business`,
+`attribute_change`). The data tools return a plan, provenance and either an answer or a refusal. Details and
+a worked example are in [docs/AI-TOOLKIT.md](docs/AI-TOOLKIT.md); the data-agent contract is in
 [docs/DATA-AGENT.md](docs/DATA-AGENT.md).
 
 From Python, install the zero-dependency client with `pip install -e clients/python`, then:
@@ -148,7 +225,7 @@ print(answer["coverage"])
 | AI agent toolkit and MCP | [docs/AI-TOOLKIT.md](docs/AI-TOOLKIT.md) |
 | Knowledge graph context and data-agent walkthrough | [docs/USE-CASES.md](docs/USE-CASES.md) |
 | Worked analyses and refusals | [docs/AGENT-CASES.md](docs/AGENT-CASES.md) · [docs/DATA-AGENT-CASES.md](docs/DATA-AGENT-CASES.md) |
-| End-to-end cases (the product in action) | [docs/END-TO-END.md](docs/END-TO-END.md) · [docs/AI-CONTEXT-CASES.md](docs/AI-CONTEXT-CASES.md) · [docs/AGENT-INGESTION-CASE.md](docs/AGENT-INGESTION-CASE.md) |
+| End-to-end cases (the product in action) | [docs/AI-CONTEXT-ONE-PAGER.md](docs/AI-CONTEXT-ONE-PAGER.md) · [docs/END-TO-END.md](docs/END-TO-END.md) · [docs/AI-CONTEXT-CASES.md](docs/AI-CONTEXT-CASES.md) · [docs/AGENT-INGESTION-CASE.md](docs/AGENT-INGESTION-CASE.md) |
 | HTTP API, keys, limits, errors | [docs/API.md](docs/API.md) |
 | OpenAPI spec | [docs/OPENAPI.md](docs/OPENAPI.md) · [docs/openapi.json](docs/openapi.json) |
 | Backups, HA, upgrades, failure modes | [docs/OPERATIONS.md](docs/OPERATIONS.md) |
@@ -200,6 +277,14 @@ tenants, TLS and the audit file.
 The current release is [v1.0.1](https://github.com/KanJiaZhang/PhoenixGraph/releases/tag/v1.0.1), a
 developer release. It is usable and documented, but not finished. The known limits:
 
+- **Extraction is a dictionary plus rule packs, not a general extractor.** A new domain needs a vocabulary
+  and a rule pack (data, loaded from `phoenixgraph.agent.rules-dir`); the seam for a learned extractor
+  exists, but nothing ships that reads arbitrary prose. `dictionaryCoverage` and `chunkCoverage` in the
+  quality report are what tell you the configuration is thin, before an agent discovers it.
+- **The default embedder is an offline hashing baseline.** It is deterministic and needs no key or network,
+  and the retrieval evaluation measures it; `phoenixgraph.agent.embedding.provider=http` switches ingestion to
+  an OpenAI-compatible `/embeddings` endpoint, and the artifact records the vector space so queries rebuild
+  the same one.
 - **Authentication is off in the demo profile.** `SPRING_PROFILES_ACTIVE=secure` requires an API key and
   writes the audit to an append-only file; TLS is fronted or configured with `server.ssl.*`. See
   [docs/OPERATIONS.md](docs/OPERATIONS.md#5b-running-with-authentication-and-a-durable-audit).
