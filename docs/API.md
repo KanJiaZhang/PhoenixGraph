@@ -332,6 +332,7 @@ cannot disagree about the format.
 | `POST` | `/api/v1/agent/find-entities` | `AgentController#findEntities` | `ToolRequest` | `Map<String, Object>` |
 | `GET` | `/api/v1/agent/index/{graph}` | `AgentController#index` | — | `Object` |
 | `POST` | `/api/v1/agent/ingest` | `AgentController#ingest` | `IngestRequest` | `IngestResult` |
+| `POST` | `/api/v1/agent/merge` | `AgentController#merge` | `MergeRequest` | `AgentIngestService.MergeResult` |
 | `POST` | `/api/v1/agent/path` | `AgentController#path` | `ToolRequest` | `Map<String, Object>` |
 | `GET` | `/api/v1/agent/quality/{graph}` | `AgentController#quality` | — | `Object` |
 | `POST` | `/api/v1/agent/related` | `AgentController#related` | `ToolRequest` | `Map<String, Object>` |
@@ -388,7 +389,7 @@ cannot disagree about the format.
 | `DELETE` | `/api/v1/vertices/{id}/properties/{index}` | `VertexController#deleteProperty` | — | `ResponseEntity<WriteResult>` |
 | `PUT` | `/api/v1/vertices/{id}/properties/{index}` | `VertexController#updateProperty` | `PropertyUpdateRequest` | `ResponseEntity<WriteResult>` |
 
-59 endpoints across 15 controllers.
+60 endpoints across 15 controllers.
 <!-- endpoints:end -->
 
 ---
