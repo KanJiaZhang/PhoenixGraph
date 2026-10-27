@@ -79,6 +79,12 @@ phoenixgraph:
       # so find_entities/similar answer with the vector index the write path maintains
       - schema: agent-demo
         vertex-set: agent_demo_v2
+      # the on-call triage example (examples/incident-triage, docs/INCIDENT-TRIAGE.md): four RCAs plus the
+      # topology, hosts, metrics and one change window, ingested by examples/incident-triage/triage.mjs with the
+      # incident rule pack. Registered here so the graph survives a restart and the UI can draw it.
+      #   g.V('deploy-48','Entity').bothE('Relates').otherV().dedup()
+      - schema: incident-triage
+        vertex-set: incident_triage_v1
       # 方案 C：同一份数据 + 从文档自由文本（历史/小说）抽出的实体与关系，也是 RocksDB-Edge。
       # 比 sanguo-kg-rocksdb-edge 多 ~42 实体 / ~969 关系（mentions / holds / 军师 / 谋士 / 交战 / 斩杀），
       # 由 SanguoTextGraphTest / SanguoTextGraph 装载（.rocksdb/sanguo-kg-text）：

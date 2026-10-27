@@ -58,6 +58,7 @@ page settles. The retry is always visible - `FLKY` means "look at this check", n
 | `verify-geo-query-map.mjs` | browser | a query that reads coordinates puts *its* points on the map, and the scope switch works |
 | `verify-gcj-coordinates.cjs` | nothing | the offline WGS84 → GCJ-02 conversion the 高德 fallback applies |
 | `capture-sanguo-map.mjs` | browser | not a check: rebuilds `docs/screenshots/sanguo-map.png` |
+| `capture-incident-triage.mjs` | browser | not a check: rebuilds the two screenshots of [docs/INCIDENT-TRIAGE.md](../docs/INCIDENT-TRIAGE.md) (the change window deploy-48 touched, and the redis-cache failure signature) |
 | `capture-readme-screenshots.mjs` | browser | not a check: rebuilds the two README screenshots (`graph-vector-query.png`, `knowledge-graph-context.png`) |
 
 ## Adding a check

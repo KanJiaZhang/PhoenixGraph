@@ -154,10 +154,11 @@ values back from the DOM, the canvas pixels and the API.
 | I want to… | Read |
 |---|---|
 | see the value in three minutes | [examples/three-minute-demo](examples/three-minute-demo/README.md) — ingest, cited answer, refusal |
+| **triage a production incident** | [docs/INCIDENT-TRIAGE.md](docs/INCIDENT-TRIAGE.md) — RCAs + topology + metrics + releases → the most likely cause, with the UI screenshots and the ranking |
 | call it from Python | [clients/python](clients/python/README.md) — zero-dependency client |
 | ingest your own documents | [examples/business-demo](examples/business-demo/README.md) and `tools/ingest-docs.mjs` |
 | understand what this is | [README](README.md) — and its **Status** section for what it is *not* |
-| use the HTTP API | [docs/API.md](docs/API.md) (59 endpoints, generated from the controllers) |
+| use the HTTP API | [docs/API.md](docs/API.md) (60 endpoints, generated from the controllers) |
 | see two complete analyses | [docs/AGENT-CASES.md](docs/AGENT-CASES.md) — a knowledge-graph audit and a refused dimension |
 | know which numbers to distrust | [docs/DATA-QUALITY.md](docs/DATA-QUALITY.md) |
 | run it in production | [docs/ROADMAP-1.0.md](docs/ROADMAP-1.0.md) — M2 is the operator milestone, still ⬜ |

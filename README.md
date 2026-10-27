@@ -160,6 +160,7 @@ Pick the path that matches what you already have:
 | Documents | Use the document icon in the UI, `POST /api/v1/agent/ingest`, or `node tools/ingest-docs.mjs <dir>` to build a graph with entities, relations, vectors and a quality report. Then call `search`, `context`, `related` or `path_between`. Scanned PDFs use `--ocr` (pdftoppm + tesseract). |
 | A schema or a curated graph | Query it directly with Gremlin or openCypher, or use the semantic layer (`/api/v1/semantic/*`) to ask data questions with a plan and provenance. |
 | An agent runtime | Connect `tools/mcp-server.mjs` over MCP, or register the 14 tools from `GET /api/v1/agent/tools`. |
+| An on-call question (what is most likely wrong?) | [docs/INCIDENT-TRIAGE.md](docs/INCIDENT-TRIAGE.md): four RCAs, a topology, hosts, metrics and a change window become one graph, and a symptom is ranked against the causal edges with the sentence behind each. `node examples/incident-triage/triage.mjs` |
 
 An agent needs three facts from the answer shape: every `relation` carries `sentence` and `cite`; every
 answer carries `coverage` (`entities`, `relations`, `citations`, `seeds`, `hops`); and `relations: 0` with no
@@ -225,7 +226,7 @@ print(answer["coverage"])
 | AI agent toolkit and MCP | [docs/AI-TOOLKIT.md](docs/AI-TOOLKIT.md) |
 | Knowledge graph context and data-agent walkthrough | [docs/USE-CASES.md](docs/USE-CASES.md) |
 | Worked analyses and refusals | [docs/AGENT-CASES.md](docs/AGENT-CASES.md) · [docs/DATA-AGENT-CASES.md](docs/DATA-AGENT-CASES.md) |
-| Incident triage from a symptom (services, hosts, metrics, releases, 4 RCAs) | [examples/incident-triage](examples/incident-triage) |
+| Incident triage from a symptom — a worked case with the UI and the ranking | [docs/INCIDENT-TRIAGE.md](docs/INCIDENT-TRIAGE.md) · [examples/incident-triage](examples/incident-triage) |
 | End-to-end cases (the product in action) | [docs/AI-CONTEXT-ONE-PAGER.md](docs/AI-CONTEXT-ONE-PAGER.md) · [docs/END-TO-END.md](docs/END-TO-END.md) · [docs/AI-CONTEXT-CASES.md](docs/AI-CONTEXT-CASES.md) · [docs/AGENT-INGESTION-CASE.md](docs/AGENT-INGESTION-CASE.md) |
 | HTTP API, keys, limits, errors | [docs/API.md](docs/API.md) |
 | OpenAPI spec | [docs/OPENAPI.md](docs/OPENAPI.md) · [docs/openapi.json](docs/openapi.json) |

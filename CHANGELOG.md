@@ -20,6 +20,30 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **An on-call triage case** (`examples/incident-triage`, [`docs/INCIDENT-TRIAGE.md`](docs/INCIDENT-TRIAGE.md)):
+  four RCA documents plus the topology, hosts, metrics and one change window become a graph, and a fault symptom
+  is ranked against its causal edges - `deploy-48` through `cache-key-prefix-churn` on `redis-cache`, with
+  `INC-1042` named as the precedent, `deploy-42` as the runner-up and the DNS incident scored negative because
+  nothing it touches shows a signal. Every point of the score is printed with the sentence behind it, the report
+  ends with what would overturn it, and a symptom that names nothing is refused. `triage.mjs --json` is what
+  `verification/verify-incident-triage.mjs` asserts on (13 checks), and `verification/capture-incident-triage.mjs`
+  rebuilds the two UI screenshots in the document.
+- **The `incident-triage` graph is registered** in `application.yml` (with its schema in `graph-http/src/main/resources`),
+  so the example survives a restart and the UI can draw it - a schema created at runtime lives in the working
+  directory and is not reloaded otherwise.
+
+### Fixed
+
+- **Re-ingesting a document duplicated its relation edges.** The edge id was `rel-<n>`, a position in the
+  document, while the documented promise is that re-ingesting is an upsert: a second run wrote a fresh set of
+  edges whose ids happened to collide with the first run's *different* triples, so the graph kept two readings of
+  the same corpus (the artifact did not, which is why nothing caught it). The id is now derived from
+  `(head, relation, tail)` with SHA-256, so the same fact is one edge and a changed fact is a new one.
+  `AgentIngestServiceTest` pins the identity, and the triage case asserts that re-ingesting twice leaves
+  `deploy-48` with its six edges.
+
 ## [1.1.2] - 2026-10-26
 
 A documentation release. `v1.1.1` was tagged with `docs/openapi.json` still saying `info.version: 1.1.0`: the

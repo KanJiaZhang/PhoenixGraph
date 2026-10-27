@@ -15,11 +15,12 @@
 //     There is no model here and no hidden weight: you can disagree with a weight and re-run it.
 //   * The answer is a hypothesis with its evidence, the runner-up, and the checks that would flip it. A graph
 //     cannot know that a deploy was innocent, so it does not claim to.
-import { readFileSync, readdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { readFileSync, readdirSync, unlinkSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+const REPO = resolve(HERE, '../..');
 const API = (process.env.PHOENIXGRAPH_API || 'http://localhost:8081').replace(/\/+$/, '');
 const GRAPH = process.env.PHOENIXGRAPH_TRIAGE_GRAPH || 'incident-triage';
 const args = process.argv.slice(2);
@@ -71,6 +72,12 @@ const documents = () => {
 async function ensureGraph() {
   const documentsToIngest = documents();
   const dictionary = JSON.parse(readFileSync(join(HERE, 'dictionary.json'), 'utf8'));
+  if (flag('reingest')) {
+    // A rebuild starts from nothing. An artifact left on disk is merged into the new index - chunk ids and all -
+    // and those chunks are not in the graph the ingest is about to write, which fails the mention edges. Removing
+    // it is what "rebuild" has to mean; the corpus is the source, the artifact is output.
+    try { unlinkSync(join(REPO, `${GRAPH}.agent.json`)); } catch { /* there was nothing to remove */ }
+  }
   if (!flag('reingest')) {
     try {
       const known = await call('GET', `/api/v1/agent/index/${GRAPH}`);

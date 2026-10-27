@@ -1,5 +1,8 @@
 # Incident triage: from a symptom to the most likely cause
 
+> Long-form walkthrough with the UI screenshots, the queries and the ranking table: **[docs/INCIDENT-TRIAGE.md](../../docs/INCIDENT-TRIAGE.md)**.
+> This file is the short version: what it does, how to run it, what it is not.
+
 A worked case of PhoenixGraph as the context layer for **on-call triage**. The corpus is a small but realistic
 ops estate - five services, two datastores, five hosts, six metrics, five releases, four RCAs - and the question
 is the one an on-call engineer asks at 14:32:
