@@ -121,6 +121,21 @@ class AgentIngestServiceTest {
         assertEquals("颜良", merged.relations().get(0).tail());
     }
 
+    @Test
+    void relationEdgeIdsAreAFunctionOfTheTripleSoReingestingIsIdempotent() {
+        // The same triple in two ingestions has to produce one edge, not two. `rel-<n>` made the id a function of
+        // the position in the document, so a second run wrote a fresh set of edges that collided with the first
+        // run's different triples - the graph kept both readings of the same corpus.
+        String id = AgentIngestService.relationEdgeId("关羽", "killed", "颜良");
+        assertEquals(id, AgentIngestService.relationEdgeId("关羽", "killed", "颜良"));
+        assertTrue(id.startsWith("rel-"), id);
+        assertTrue(!id.equals(AgentIngestService.relationEdgeId("颜良", "killed", "关羽")), "direction is part of the identity");
+        assertTrue(!id.equals(AgentIngestService.relationEdgeId("关羽", "fought", "颜良")), "the relation is part of it too");
+        // Names may contain any character, so the id cannot be a concatenation that a separator could merge
+        assertTrue(!AgentIngestService.relationEdgeId("a-b", "c", "d")
+                .equals(AgentIngestService.relationEdgeId("a", "b-c", "d")), "a dash inside a name cannot collide");
+    }
+
     private static AgentIndex sampleIndex() {
         return new AgentIndex(
                 "test-graph", "hashing-64", 64, "now",

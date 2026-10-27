@@ -86,9 +86,37 @@ const unrelated = triage(UNRELATED);
 check('no seed entity, and no cause is named', !!unrelated.refusal && unrelated.ranked.length === 0,
   unrelated.refusal || JSON.stringify(unrelated.ranked.slice(0, 1)));
 
+// ---- the corpus can be ingested again without duplicating the graph --------------------------------------
+// The edge id is derived from (head, relation, tail), so a second ingestion of the same documents upserts. It
+// used to be `rel-<n>` - a position - which wrote a second set of edges over the same ids with different meanings.
+console.log('--- 4. re-ingesting upserts instead of duplicating');
+const { readFileSync, readdirSync } = await import('node:fs');
+const DIR = join(REPO, 'examples/incident-triage');
+const ingestBody = {
+  graph: GRAPH, apply: true, rulePack: 'incident',
+  dictionary: JSON.parse(readFileSync(join(DIR, 'dictionary.json'), 'utf8')),
+  documents: readdirSync(join(DIR, 'documents')).filter((name) => name.endsWith('.md')).sort()
+    .map((name) => ({ id: name.replace(/\.md$/, ''), title: name, text: readFileSync(join(DIR, 'documents', name), 'utf8') })),
+};
+const countDeploy48Edges = async () => {
+  const answer = await (await fetch(`${API}/api/v1/query`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    body: JSON.stringify({ graphName: GRAPH, query: "g.V('deploy-48','Entity').outE('Relates').limit(50)", includeResult: true, returnSubgraph: true }),
+  })).json();
+  return (answer.subgraph?.edges || []).length;
+};
+const before = await countDeploy48Edges();
+const again = await (await fetch(`${API}/api/v1/agent/ingest`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json; charset=utf-8' }, body: JSON.stringify(ingestBody),
+})).json();
+const after = await countDeploy48Edges();
+check('the second ingestion writes', again.applied === true, String(again.applied));
+check('deploy-48 still has its six edges, not twelve', before === 6 && after === 6, `${before} then ${after}`);
+
 console.log('');
 console.log(failures === 0
   ? 'the triage case holds: four RCAs become one graph, the spellings resolve, the change window outranks the '
-    + 'alternatives on the evidence, another day ranks differently, and an unknown symptom is refused'
+    + 'alternatives on the evidence, another day ranks differently, an unknown symptom is refused, and '
+    + 're-ingesting upserts instead of duplicating'
   : `${failures} FAILURES`);
 process.exit(failures === 0 ? 0 : 1);

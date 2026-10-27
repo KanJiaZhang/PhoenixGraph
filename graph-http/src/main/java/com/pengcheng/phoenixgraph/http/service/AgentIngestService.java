@@ -303,9 +303,13 @@ public class AgentIngestService {
                     new VertexPropertyRequest(CHUNK_TEXT, chunk.text(), null));
             vertices.add(new VertexRequest(chunk.chunkId(), CHUNK_TYPE, properties, now, now));
         }
-        int sequence = 0;
         for (AgentIndex.Relation relation : index.relations()) {
-            String edgeId = "rel-" + (sequence++);
+            // The id has to be a function of the triple, not of the position in this ingestion: re-ingesting a
+            // document is documented as idempotent, and a `rel-<n>` counter made every run write a fresh set of
+            // edges whose ids happened to collide with the previous run's different triples - the graph ended up
+            // holding both readings of the same document. A hash keeps the id stable without needing a separator
+            // that cannot appear in an extracted name ("payment service" contains a space, "deploy-48" a dash).
+            String edgeId = relationEdgeId(relation.head(), relation.relation(), relation.tail());
             edges.add(new EdgeRequest(edgeId, RELATION_EDGE, relation.head(), relation.tail(),
                     List.of(new EdgePropertyRequest(RELATION_NAME, relation.relation(), now, now),
                             new EdgePropertyRequest(RELATION_RULE, relation.rule(), now, now),
@@ -321,6 +325,24 @@ public class AgentIngestService {
             }
         }
         return new BatchRequest(vertices, edges, null);
+    }
+
+    /**
+     * The id of a relation edge: stable across ingestions, and different for every (head, relation, tail). The
+     * triple is hashed rather than concatenated because any separator could also appear inside an extracted name.
+     */
+    static String relationEdgeId(String head, String relation, String tail) {
+        try {
+            java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
+            byte[] bytes = digest.digest((head + '\u001f' + relation + '\u001f' + tail).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            StringBuilder hex = new StringBuilder("rel-");
+            for (int i = 0; i < 12; i++) {
+                hex.append(String.format("%02x", bytes[i]));
+            }
+            return hex.toString();
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 is required by the JDK", e);
+        }
     }
 
     /** The first sentence that mentions an entity, for the mention edge's own provenance. */
