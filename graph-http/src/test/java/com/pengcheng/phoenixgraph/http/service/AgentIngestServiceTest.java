@@ -46,9 +46,10 @@ class AgentIngestServiceTest {
     }
 
     @Test
-    void theRelationEdgeDeclaresFourPropertiesAndTheMentionEdgeOne() {
+    void theRelationEdgeDeclaresSixPropertiesAndTheMentionEdgeOne() {
         GraphSchema schema = AgentIngestService.schemaDraft("test-graph", "test").toSchema(1);
-        assertEquals(4, edge(schema, "Relates").properties().size());
+        // relation, rule, sentence, chunkId and the validity window the time dimension added
+        assertEquals(6, edge(schema, "Relates").properties().size());
         assertEquals(1, edge(schema, "Mentions").properties().size());
     }
 
@@ -140,9 +141,10 @@ class AgentIngestServiceTest {
         return new AgentIndex(
                 "test-graph", "hashing-64", 64, "now",
                 List.of(new AgentIndex.Entity("关羽", "Entity", "Person", "关羽", "card",
-                        new float[]{1f, 0f}, List.of("chunk-1"), List.of("doc §1"))),
+                        new float[]{1f, 0f}, List.of("chunk-1"), List.of("doc §1"), List.of(),
+                        1_700_000_000_000L, 1_800_000_000_000L)),
                 List.of(new AgentIndex.Relation("关羽", "killed", "颜良", "killed", "chunk-1",
-                        "doc §1", "关羽斩杀颜良")),
+                        "doc §1", "关羽斩杀颜良", 1_700_000_000_000L, 1_800_000_000_000L)),
                 List.of(new AgentIndex.Chunk("chunk-1", "doc", "title", 0, "关羽斩杀颜良")),
                 Map.of());
     }
