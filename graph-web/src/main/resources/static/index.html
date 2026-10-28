@@ -273,6 +273,10 @@
       <!-- 时间轴：图里有带 validFrom/validTo 的元素时才出现。移动它，画布只显示那一刻有效的点与边 -->
       <section id="timelinePanel" class="timeline" hidden>
         <div class="timeline-head">
+          <label class="timeline-switch" data-i18n-title="timelineToggle" title="打开 / 关闭时间轴">
+            <input id="timelineToggle" type="checkbox" checked aria-label="timeline on" />
+            <span class="timeline-track" aria-hidden="true"></span>
+          </label>
           <span data-i18n="timeline">时间轴</span>
           <span id="timelineLabel" class="timeline-label">—</span>
           <button id="timelineClear" class="icon-btn timeline-clear" type="button"
@@ -282,11 +286,13 @@
             </svg>
           </button>
         </div>
-        <input id="timelineSlider" type="range" min="0" max="1000" value="1000" step="1"
-               aria-label="validity timeline" />
-        <div class="timeline-range">
-          <span id="timelineFrom">—</span>
-          <span id="timelineTo">—</span>
+        <div class="timeline-body">
+          <input id="timelineSlider" type="range" min="0" max="1000" value="1000" step="1"
+                 aria-label="validity timeline" />
+          <div class="timeline-range">
+            <span id="timelineFrom">—</span>
+            <span id="timelineTo">—</span>
+          </div>
         </div>
       </section>
     </aside>

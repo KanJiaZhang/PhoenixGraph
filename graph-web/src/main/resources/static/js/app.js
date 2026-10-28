@@ -934,7 +934,13 @@
   // A graph whose elements carry validFrom/validTo answers "what was true when". The slider lives under the
   // panel: moving it re-runs the same query with an asOf instant, and the server drops every element whose
   // window excludes that instant - so the canvas shows the graph as it stood then, not a greyed-out copy.
-  const timeline = { asOf: null, from: null, to: null, query: null, timer: null };
+  const timeline = { asOf: null, from: null, to: null, query: null, timer: null, on: true };
+
+  /** Whether the timeline is switched on (the graph may be versioned and the user may still want it off). */
+  function timelineOn() {
+    const toggle = document.getElementById('timelineToggle');
+    return toggle ? toggle.checked : timeline.on;
+  }
 
   const DAY = 24 * 60 * 60 * 1000;
 
@@ -984,6 +990,7 @@
       return;
     }
     panel.hidden = false;
+    panel.classList.toggle('timeline-off', !timelineOn());
     slider.value = String(timeline.asOf == null ? 1000
       : Math.round(1000 * (timeline.asOf - timeline.from) / Math.max(1, timeline.to - timeline.from)));
     document.getElementById('timelineFrom').textContent = timelineDate(timeline.from);
@@ -1002,6 +1009,7 @@
 
   /** Re-runs the last query at the instant the slider points at. */
   function applyTimeline(value) {
+    if (!timelineOn()) return;
     const next = timelineInstant(value);
     const changed = next !== timeline.asOf;
     timeline.asOf = next;
@@ -1016,6 +1024,17 @@
   function wireTimeline() {
     const slider = document.getElementById('timelineSlider');
     const clear = document.getElementById('timelineClear');
+    const toggle = document.getElementById('timelineToggle');
+    if (toggle) {
+      // the switch is the whole feature: off means "answer with everything", and the answer re-runs so the
+      // canvas is not left showing a filtered graph whose filter is no longer applied anywhere
+      toggle.addEventListener('change', () => {
+        timeline.on = toggle.checked;
+        if (!timeline.on) timeline.asOf = null;
+        refreshTimeline(null);
+        if (timeline.query) queryCurrent(timeline.query);
+      });
+    }
     if (slider) slider.addEventListener('input', (event) => applyTimeline(event.target.value));
     if (clear) {
       clear.addEventListener('click', () => {
@@ -1050,7 +1069,7 @@
         includeResult: true, // the answer (a count, values, rows) next to the graph
         source: 'ui',        // the dashboard wants to see where its queries come from
         // what was true when: the server drops the elements whose validity window excludes this instant
-        asOf: timeline.asOf == null ? undefined : new Date(timeline.asOf).toISOString(),
+        asOf: timelineOn() && timeline.asOf != null ? new Date(timeline.asOf).toISOString() : undefined,
         script: scriptModeOn() ? true : undefined, // undefined = the backend decides from the text
       }),
     });

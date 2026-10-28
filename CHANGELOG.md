@@ -31,6 +31,15 @@ All notable changes to this project are recorded here. The format follows
   the side panel when the graph is versioned: moving it re-runs the query at that instant and the canvas keeps the
   elements that were true then ([docs/INCIDENT-TRIAGE.md](docs/INCIDENT-TRIAGE.md) §10 has the screenshots and
   the boundary cases).
+- **The UI timeline has a switch**: the panel header carries an on/off toggle. Off means "answer with every fact
+  the graph has" - the instant is cleared, the request stops sending `asOf`, and the query re-runs, so the canvas
+  cannot be left showing a filtered graph whose filter is gone. The header stays as a slim bar so it can be turned
+  back on.
+- **A design for shipping this as a pi plugin** ([docs/PI-PLUGIN.md](docs/PI-PLUGIN.md)): MCP as the capability
+  layer (the server already exists), a TypeScript extension for the policy - a sticky `asOf` that every tool call
+  inherits, `/pg` commands, and a ten-line `before_agent_start` block carrying the graph, the timeline state and
+  the answer contract. State is split by lifetime (tool details, `pi.appendEntry()`, a cross-session file, a
+  committable `.pi/phoenixgraph.json`), and the plan runs P0-P3 with an assertion for each phase.
 - **The triage case became temporal**: its corpus now says when each document's facts hold (the September RCA
   closes when `deploy-48` landed), and `triage.mjs --as-of` answers for an instant - as of 2026-10-20 the most
   likely cause is `deploy-42`, as of 2026-10-26 it is `deploy-48`.

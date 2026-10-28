@@ -1095,3 +1095,48 @@ button.btn-primary:hover, #queryBtn:hover { filter: brightness(1.07); }
 }
 
 #timelinePanel .timeline-clear { margin-left: 4px; }
+
+/* the timeline's on/off switch: a small track in the header, so the whole footer can go quiet */
+#timelinePanel .timeline-switch {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+}
+
+#timelinePanel .timeline-switch input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+#timelinePanel .timeline-switch .timeline-track {
+  width: 30px;
+  height: 16px;
+  border-radius: 999px;
+  background: var(--border-2);
+  transition: background 0.15s ease;
+  position: relative;
+}
+
+#timelinePanel .timeline-switch .timeline-track::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  transition: transform 0.15s ease;
+}
+
+#timelinePanel .timeline-switch input:checked + .timeline-track { background: var(--accent); }
+#timelinePanel .timeline-switch input:checked + .timeline-track::after { transform: translateX(14px); }
+#timelinePanel .timeline-switch input:focus-visible + .timeline-track { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* off = the slider and the range go away, the header stays so it can be turned back on */
+#timelinePanel.timeline-off .timeline-body { display: none; }
+#timelinePanel.timeline-off .timeline-label { color: var(--muted); }
