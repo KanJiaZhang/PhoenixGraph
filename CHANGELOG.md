@@ -22,6 +22,19 @@ All notable changes to this project are recorded here. The format follows
 
 ### Added
 
+- **A validity window on vertices and edges** (`validFrom`/`validTo`, epoch millis, either end optional;
+  `from <= t < to`). It is the third time an element carries: `createdTime`/`lastUpdatedTime` say what the
+  database did, this says what the world did. The ingestion takes the window per document (ISO-8601 or millis),
+  stamps the entities and relations it reads from it, and writes the two properties onto the graph;
+  `POST /api/v1/query` and the agent tools take `asOf` and drop the elements whose window excludes that instant,
+  so `context` cannot cite a fact that had not happened yet or has stopped holding. The UI shows a timeline under
+  the side panel when the graph is versioned: moving it re-runs the query at that instant and the canvas keeps the
+  elements that were true then ([docs/INCIDENT-TRIAGE.md](docs/INCIDENT-TRIAGE.md) §10 has the screenshots and
+  the boundary cases).
+- **The triage case became temporal**: its corpus now says when each document's facts hold (the September RCA
+  closes when `deploy-48` landed), and `triage.mjs --as-of` answers for an instant - as of 2026-10-20 the most
+  likely cause is `deploy-42`, as of 2026-10-26 it is `deploy-48`.
+
 - **An on-call triage case** (`examples/incident-triage`, [`docs/INCIDENT-TRIAGE.md`](docs/INCIDENT-TRIAGE.md)):
   four RCA documents plus the topology, hosts, metrics and one change window become a graph, and a fault symptom
   is ranked against its causal edges - `deploy-48` through `cache-key-prefix-churn` on `redis-cache`, with

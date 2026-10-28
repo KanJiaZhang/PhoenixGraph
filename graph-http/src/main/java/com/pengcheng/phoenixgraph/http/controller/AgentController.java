@@ -2,6 +2,7 @@ package com.pengcheng.phoenixgraph.http.controller;
 
 import com.pengcheng.phoenixgraph.agent.AgentQuery;
 import com.pengcheng.phoenixgraph.agent.AgentToolCatalog;
+import com.pengcheng.phoenixgraph.agent.Validity;
 import com.pengcheng.phoenixgraph.http.service.AgentIngestService;
 import com.pengcheng.phoenixgraph.http.service.AgentIngestService.IngestRequest;
 import com.pengcheng.phoenixgraph.http.service.AgentIngestService.IngestResult;
@@ -157,7 +158,7 @@ public class AgentController {
      * question object does not have to know which tool will answer it.
      */
     public record ToolRequest(String graph, String question, String entity, String relation, String from,
-                              String to, Integer k, Integer hops, Integer maxHops) {
+                              String to, Integer k, Integer hops, Integer maxHops, String asOf) {
     }
 
     private AgentQuery tools(ToolRequest request) {
@@ -165,6 +166,9 @@ public class AgentController {
             throw new IllegalArgumentException("A tool call needs the graph it is about");
         }
         AgentQuery tools = agent.tools(request.graph());
+        // A tool call may ask what was true at an instant: every tool then answers from the facts whose
+        // validity window contains it (a September incident stops explaining an October fault).
+        tools.asOf(Validity.parseMillis(request.asOf()));
         for (String required : requiredFields(request)) {
             throw new IllegalArgumentException(required);
         }

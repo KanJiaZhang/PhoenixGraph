@@ -43,7 +43,8 @@ public record AgentIndex(String graph, String embedding, int dimensions, String 
     /** One entity: the name an AI quotes, the type it is, the vector, and where it was read. */
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record Entity(String id, String vertexType, String type, String name, String description,
-                         float[] vector, List<String> chunkIds, List<String> cites, List<String> aliases) {
+                         float[] vector, List<String> chunkIds, List<String> cites, List<String> aliases,
+                         Long validFrom, Long validTo) {
 
         public Entity {
             // the vertex type the graph stores it under (what a traversal names), and the domain type the
@@ -56,14 +57,45 @@ public record AgentIndex(String graph, String embedding, int dimensions, String 
 
         public Entity(String id, String vertexType, String type, String name, String description,
                       float[] vector, List<String> chunkIds, List<String> cites) {
-            this(id, vertexType, type, name, description, vector, chunkIds, cites, List.of());
-    }
+            this(id, vertexType, type, name, description, vector, chunkIds, cites, List.of(), null, null);
+        }
+
+        public Entity(String id, String vertexType, String type, String name, String description,
+                      float[] vector, List<String> chunkIds, List<String> cites, List<String> aliases) {
+            this(id, vertexType, type, name, description, vector, chunkIds, cites, aliases, null, null);
+        }
+
+        /** The window this entity is valid in; unversioned entities are valid at every instant. */
+        public Validity validity() {
+            return new Validity(validFrom, validTo);
+        }
+
+        /** Whether the entity exists at {@code instant} (epoch millis). */
+        public boolean validAt(long instant) {
+            return validity().validAt(instant);
+        }
     }
 
-    /** One relation of the graph, with the sentence it was read from. */
+    /** One relation of the graph, with the sentence it was read from and the window it holds in. */
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record Relation(String head, String relation, String tail, String rule, String chunkId, String cite,
-                           String sentence) {
+                           String sentence, Long validFrom, Long validTo) {
+
+        /** A relation from before the validity dimension existed: valid at every instant. */
+        public Relation(String head, String relation, String tail, String rule, String chunkId, String cite,
+                        String sentence) {
+            this(head, relation, tail, rule, chunkId, cite, sentence, null, null);
+        }
+
+        /** The window this relation holds in. */
+        public Validity validity() {
+            return new Validity(validFrom, validTo);
+        }
+
+        /** Whether the relation held at {@code instant} (epoch millis). */
+        public boolean validAt(long instant) {
+            return validity().validAt(instant);
+        }
     }
 
     /** One chunk of one document (the citation unit). */

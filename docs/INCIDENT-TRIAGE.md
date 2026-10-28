@@ -252,3 +252,74 @@ node tools/mcp-server.mjs   # find_entities / context / related / path_between
 
 `context` 给 agent 的是同一个形状：实体、带句子的关系、引用、`coverage`。triage 只是把这些边按运维的判断
 排了一次序——排序规则留在仓库里，可以被改、被质疑、被替换，这是它和「一个会编故事的助手」的区别。
+
+## 10. 时间维度：图有「有效期」，答案随时间变
+
+一条事实不是永远为真：`deploy-42 replaced cache-key-prefix-v1` 在 2026-10-24 之后就不再成立（v2 换掉了它），
+但它不该被删除——它当时是真的。所以点与边除了 `createdTime`/`lastUpdatedTime`（数据库什么时候写的），
+还带一个**有效期** `validFrom`/`validTo`（世界什么时候是真的）：`from <= t < to`，两端都可缺省（缺省即无界）。
+没有窗口的元素在任何时刻都有效，所以老图的行为完全不变。
+
+### 10.1 语料里怎么写有效期
+
+摄取请求的每个文档可以带窗口（ISO 日期或毫秒）：
+
+```json
+{"id":"20-inc-1042","title":"RCA INC-1042 — 2026-09-12",
+ "validFrom":"2026-09-12", "validTo":"2026-10-24",
+ "text":"…deploy-42 replaced cache-key-prefix-v1.…"}
+```
+
+- 拓扑 / 机器 / 指标这类**结构性**事实：不给窗口 → 任何时刻都有效；
+- 9 月那次事故描述的是**当时的状态**：`[2026-09-12, 2026-10-24)` —— deploy-48 落地那一刻它失效；
+- 变更窗口：`[2026-10-24, ∞)`。
+
+`triage.mjs` 的 `WINDOWS` 表就是这套窗口，摄取后报告 `39 of 63 relations carry a validity window`。
+实体取它所有提及所在文档窗口的**并集**——只要有一处结构性提及，它就永久有效。
+
+### 10.2 查询：`asOf` 让「那一刻」成为查询的一部分
+
+| 入口 | 参数 | 行为 |
+|---|---|---|
+| `POST /api/v1/query` | `"asOf": "2026-10-21"` | 子图里丢掉窗口不含该时刻的点与边（连带丢掉悬空边），Gremlin / Cypher / 脚本都一样 |
+| `POST /api/v1/agent/*` | `"asOf": "2026-10-21"` | 8 个检索工具都从**过滤后的 artifact** 召回与扩展，所以 `context` 不会引用已失效的事实 |
+| `triage.mjs` | `--as-of 2026-10-21` | 排序用的边也按同一规则过滤，结论与证据不会打架 |
+
+同一张图、不同时刻，答案是不同的（这是时间维度的意义）：
+
+```
+$ node examples/incident-triage/triage.mjs --as-of 2026-10-20
+#1 deploy-42 -> cache-eviction-storm   score 10     ← 那时 deploy-48 还不存在
+$ node examples/incident-triage/triage.mjs --as-of 2026-10-26
+#1 deploy-48 -> cache-key-prefix-churn   score 18   ← 9 月的事实已经失效
+```
+
+直接查图也能看到：
+
+```
+asOf 无        -> 13 顶点 / 16 边   （含 deploy-48）
+asOf 2026-10-21 -> 10 顶点 /  8 边   （deploy-48 与它带来的一切都不存在）
+asOf 2026-10-26 -> 13 顶点 / 14 边   （deploy-48 在，9 月那条失效了）
+```
+
+### 10.3 UI：面板下方的时间轴
+
+图里有带有效期的元素时，右侧面板底部出现时间轴（范围取图的窗口两端）。移动它 → 用同一个查询带 `asOf`
+重跑，画布只剩下那一刻有效的点与边；点 `×` 回到最新。截图是把 `redis-cache` 与两个失败模式的邻域画出来，
+再把时间轴拖到 **2026-10-21**：`deploy-48` 与 `cache-key-prefix-churn` 消失，只剩 9 月的 `deploy-42` →
+`cache-eviction-storm`（被 `INC-1042` 记录）。
+
+![时间轴拖到 2026-10-21：deploy-48 还不存在](screenshots/incident-triage-timeline-before.png)
+
+在最新时刻的同一张图（时间轴在右端）：
+
+![时间轴在最新：deploy-48 的变更窗口](screenshots/incident-triage-timeline-latest.png)
+
+重建截图：`node .logs/capture-timeline.mjs`（开发脚本）或 `verification/capture-incident-triage.mjs`。
+
+### 10.4 边界（v1）
+
+- **过滤发生在答案上，不在遍历里**：一次走查仍可能经过一条已失效的边（它写在图里），但**答案**（子图、
+  `context` 的关系、排序用的边）不会包含它。要让遍历本身绕开失效边，需要把窗口下沉到引擎的邻居扩展里。
+- **不会自动按句子里的日期赋值**：窗口来自文档（摄取请求），不是从文本里猜出来的。
+- 有效期是**声明**，不是历史版本：同一三元组被重写时窗口随之更新（upsert），不会保留旧的窗口。

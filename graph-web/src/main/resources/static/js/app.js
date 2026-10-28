@@ -930,6 +930,103 @@
     return String(d.id);
   }
 
+  // ---- validity timeline --------------------------------------------------------------------------------
+  // A graph whose elements carry validFrom/validTo answers "what was true when". The slider lives under the
+  // panel: moving it re-runs the same query with an asOf instant, and the server drops every element whose
+  // window excludes that instant - so the canvas shows the graph as it stood then, not a greyed-out copy.
+  const timeline = { asOf: null, from: null, to: null, query: null, timer: null };
+
+  const DAY = 24 * 60 * 60 * 1000;
+
+  /** A millis value as YYYY-MM-DD (UTC), the granularity a timeline is read at. */
+  function timelineDate(millis) {
+    return new Date(millis).toISOString().slice(0, 10);
+  }
+
+  /** Reads the window of every element in a response, so the slider knows the extent of the graph. */
+  function timelineExtent(subgraph) {
+    let from = null;
+    let to = null;
+    let versioned = 0;
+    for (const element of [...((subgraph && subgraph.vertices) || []), ...((subgraph && subgraph.edges) || [])]) {
+      const properties = element.properties || {};
+      const start = properties.validFrom;
+      const end = properties.validTo;
+      if (start == null && end == null) continue;
+      versioned += 1;
+      if (start != null && (from === null || Number(start) < from)) from = Number(start);
+      if (end != null && (to === null || Number(end) > to)) to = Number(end);
+    }
+    return { from, to, versioned };
+  }
+
+  /** Shows, hides and re-scales the timeline after an answer. */
+  function refreshTimeline(subgraph) {
+    const panel = document.getElementById('timelinePanel');
+    const slider = document.getElementById('timelineSlider');
+    if (!panel || !slider) return;
+    // a filtered answer is narrower than the graph, so only an unfiltered one sets the extent
+    if (!timeline.asOf) {
+      const extent = timelineExtent(subgraph || {});
+      if (!extent.versioned) {
+        timeline.from = null;
+        timeline.to = null;
+        panel.hidden = true;
+        return;
+      }
+      const end = extent.to != null ? extent.to - 1 : Date.now();
+      const start = extent.from != null ? extent.from : end - 30 * DAY;
+      timeline.from = start;
+      timeline.to = Math.max(end, start + DAY);
+    }
+    if (timeline.from == null) {
+      panel.hidden = true;
+      return;
+    }
+    panel.hidden = false;
+    slider.value = String(timeline.asOf == null ? 1000
+      : Math.round(1000 * (timeline.asOf - timeline.from) / Math.max(1, timeline.to - timeline.from)));
+    document.getElementById('timelineFrom').textContent = timelineDate(timeline.from);
+    document.getElementById('timelineTo').textContent = timelineDate(timeline.to);
+    document.getElementById('timelineLabel').textContent = timeline.asOf == null
+      ? '' : new Date(timeline.asOf).toISOString().slice(0, 16).replace('T', ' ');
+    document.getElementById('timelineClear').hidden = timeline.asOf == null;
+  }
+
+  /** The instant the slider points at (the whole graph when it is at the far right). */
+  function timelineInstant(value) {
+    if (timeline.from == null) return null;
+    if (Number(value) >= 1000) return null;
+    return Math.round(timeline.from + (timeline.to - timeline.from) * (Number(value) / 1000));
+  }
+
+  /** Re-runs the last query at the instant the slider points at. */
+  function applyTimeline(value) {
+    const next = timelineInstant(value);
+    const changed = next !== timeline.asOf;
+    timeline.asOf = next;
+    refreshTimeline(null);
+    if (!changed || !timeline.query) return;
+    clearTimeout(timeline.timer);
+    timeline.timer = setTimeout(() => {
+      if (timeline.query) queryCurrent(timeline.query);
+    }, 220);
+  }
+
+  function wireTimeline() {
+    const slider = document.getElementById('timelineSlider');
+    const clear = document.getElementById('timelineClear');
+    if (slider) slider.addEventListener('input', (event) => applyTimeline(event.target.value));
+    if (clear) {
+      clear.addEventListener('click', () => {
+        timeline.asOf = null;
+        if (slider) slider.value = '1000';
+        refreshTimeline(null);
+        if (timeline.query) queryCurrent(timeline.query);
+      });
+    }
+  }
+
   // status line was removed from the stats tab; keep a console trace for debugging
   function setStatus(msg) { if (msg) console.debug('[PhoenixGraph]', msg); }
 
@@ -952,6 +1049,8 @@
         returnSubgraph: true,
         includeResult: true, // the answer (a count, values, rows) next to the graph
         source: 'ui',        // the dashboard wants to see where its queries come from
+        // what was true when: the server drops the elements whose validity window excludes this instant
+        asOf: timeline.asOf == null ? undefined : new Date(timeline.asOf).toISOString(),
         script: scriptModeOn() ? true : undefined, // undefined = the backend decides from the text
       }),
     });
@@ -3454,6 +3553,7 @@
    */
   async function queryCurrentBounded(query) {
     try {
+      timeline.query = query;
       const { result, bounded } = await runExpansionQuery(query, '查询');
       if (!bounded) {
         showQueryResult(result, query);
@@ -3499,6 +3599,9 @@
     const subgraph = responseSubgraph(result);
     resetGraph();
     const { addedV, addedE } = merge(subgraph);
+    // the timeline follows the answer: shown when the graph is versioned, hidden when it is not
+    timeline.query = query;
+    refreshTimeline(subgraph);
     const value = responseValue(result);
     // remembered so a query that read coordinates can drive the map (see geoAnswerPoints)
     lastAnswerRows = Array.isArray(value) ? value : null;
@@ -3954,6 +4057,7 @@
       await copyText(el.valueBody.textContent || '');
       el.valueCopy.textContent = '✓';
     });
+    wireTimeline();
     el.queryBtn.addEventListener('click', () => {
       if (el.modeToggle.checked) onGremlinQuery();
       else onIdQuery();

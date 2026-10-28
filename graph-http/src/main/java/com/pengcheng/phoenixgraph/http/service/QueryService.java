@@ -289,6 +289,17 @@ public class QueryService {
      */
     public Answer queryCapped(String graphName, String query, Map<String, String> params, String language,
                               boolean returnSubgraph, boolean includeResult, String source, Boolean script) {
+        return queryCapped(graphName, query, params, language, returnSubgraph, includeResult, source, script, null);
+    }
+
+    /**
+     * Runs a query, keeps only the elements valid at {@code asOf}, and caps the answer.
+     *
+     * @param asOf epoch millis, or null to answer with every element the graph has
+     */
+    public Answer queryCapped(String graphName, String query, Map<String, String> params, String language,
+                              boolean returnSubgraph, boolean includeResult, String source, Boolean script,
+                              Long asOf) {
         if (query == null) {
             throw new IllegalArgumentException("query must not be null");
         }
@@ -306,7 +317,9 @@ public class QueryService {
         String caller = source == null || source.isBlank() ? Metrics.SOURCE_HTTP : source.trim().toLowerCase();
         Object body = measured(graphName, selected, caller, () -> execute(graphName, query, params, selected,
                 returnSubgraph, includeResult, script));
-        return cap(body);
+        // what the query saw, then what is still true at that instant, then the cap: capping first would let
+        // expired elements eat the budget
+        return cap(SubgraphValidity.filter(body, asOf));
     }
 
     /**

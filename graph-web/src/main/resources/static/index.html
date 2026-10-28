@@ -270,6 +270,25 @@
           <p class="muted" data-i18n="metricsHint">正在读取系统指标…</p>
         </div>
       </section>
+      <!-- 时间轴：图里有带 validFrom/validTo 的元素时才出现。移动它，画布只显示那一刻有效的点与边 -->
+      <section id="timelinePanel" class="timeline" hidden>
+        <div class="timeline-head">
+          <span data-i18n="timeline">时间轴</span>
+          <span id="timelineLabel" class="timeline-label">—</span>
+          <button id="timelineClear" class="icon-btn timeline-clear" type="button"
+                  title="回到最新" data-i18n-title="timelineLatest" hidden>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M18 6 6 18M6 6l12 12"/>
+            </svg>
+          </button>
+        </div>
+        <input id="timelineSlider" type="range" min="0" max="1000" value="1000" step="1"
+               aria-label="validity timeline" />
+        <div class="timeline-range">
+          <span id="timelineFrom">—</span>
+          <span id="timelineTo">—</span>
+        </div>
+      </section>
     </aside>
   </main>
 

@@ -52,7 +52,8 @@ public final class AgentQuery {
     }
 
     private final Engine engine;
-    private final AgentIndex index;
+    /** The artifact the tools read; replaced by a filtered copy when a call asks for an instant. */
+    private AgentIndex index;
     private final Embedding embedding;
     /** The edge class the entity-to-entity relations live in (an ingestion creates it). */
     private final String relationEdge;
@@ -78,6 +79,27 @@ public final class AgentQuery {
         this.relationEdge = relationEdge == null || relationEdge.isBlank() ? "Relates" : relationEdge;
         this.reranker = reranker == null ? Reranker.none() : reranker;
     }
+
+    /**
+     * Answers as of an instant: only the entities and relations whose validity window contains it are visible
+     * to the tools, so a question about a release that had not happened yet gets the graph as it stood then.
+     * Everything downstream - recall, expansion, paths, coverage - reads the filtered index, so no tool can
+     * accidentally answer from a fact that is no longer (or not yet) true.
+     *
+     * @param asOf epoch millis, or null to answer with every fact the graph has ever had
+     */
+    public AgentQuery asOf(Long asOf) {
+        this.index = Validity.at(index, asOf);
+        this.asOf = asOf;
+        return this;
+    }
+
+    /** The instant this query answers as of, or null when it answers with everything. */
+    public Long asOf() {
+        return asOf;
+    }
+
+    private Long asOf;
 
     // ------------------------------------------------------------------ the tools
 

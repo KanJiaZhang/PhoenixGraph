@@ -30,6 +30,26 @@ const value = (name) => {
   return index < 0 ? undefined : args[index + 1];
 };
 
+const AS_OF = value('as-of') || process.env.PHOENIXGRAPH_AS_OF;
+
+/** Whether a fact holds at an instant; a fact with no window holds always. */
+const validAt = (fact, instant) => {
+  if (!instant) return true;
+  const from = fact.validFrom === undefined || fact.validFrom === null ? null : Number(fact.validFrom);
+  const to = fact.validTo === undefined || fact.validTo === null ? null : Number(fact.validTo);
+  return (from === null || instant >= from) && (to === null || instant < to);
+};
+
+const instantOf = (written) => {
+  if (!written) return undefined;
+  const text = String(written).trim();
+  if (/^\d+$/.test(text)) return Number(text);
+  const iso = text.length === 10 ? text + 'T00:00:00Z' : text;
+  const millis = Date.parse(iso);
+  if (Number.isNaN(millis)) throw new Error(`--as-of is not a date: ${written}`);
+  return millis;
+};
+
 const SYMPTOM = value('symptom')
   || process.env.PHOENIXGRAPH_SYMPTOM
   || readFileSync(join(HERE, 'symptom.txt'), 'utf8').replace(/\s+/g, ' ').trim();
@@ -63,10 +83,24 @@ const call = async (method, path, body) => {
   return payload;
 };
 
+// When each document's facts hold. The topology, hosts and metrics are structural (no window: true at every
+// instant); the September RCA describes the state before deploy-48, so its facts close the moment deploy-48
+// landed. That is the dimension this case illustrates: an expired fact is not deleted, it stops being true.
+const WINDOWS = {
+  '20-inc-1042.md': { validFrom: '2026-09-12', validTo: '2026-10-24' },
+  '21-inc-1051.md': { validFrom: '2026-10-02' },
+  '22-inc-1063.md': { validFrom: '2026-10-11' },
+  '23-inc-1070.md': { validFrom: '2026-10-20' },
+  '30-change-window.md': { validFrom: '2026-10-24' },
+};
+
 const documents = () => {
   const dir = join(HERE, 'documents');
   return readdirSync(dir).filter((name) => name.endsWith('.md')).sort()
-    .map((name) => ({ id: name.replace(/\.md$/, ''), title: name, text: readFileSync(join(dir, name), 'utf8') }));
+    .map((name) => ({
+      id: name.replace(/\.md$/, ''), title: name, text: readFileSync(join(dir, name), 'utf8'),
+      ...(WINDOWS[name] || {}),
+    }));
 };
 
 async function ensureGraph() {
@@ -136,19 +170,28 @@ const quote = (relation) => `"${(relation.sentence || '').trim()}"`;
 // ---- the triage ------------------------------------------------------------------------------------------
 async function main() {
   const { artifact, ingested } = await ensureGraph();
-  const relations = artifact.relations || [];
-  const entities = artifact.entities || [];
+  // The instant this run answers as of: the artifact is filtered here exactly as the server filters it, so the
+  // ranking and the evidence cannot disagree about what existed.
+  const asOf = instantOf(AS_OF);
+  const all = artifact.relations || [];
+  const relations = asOf === undefined ? all : all.filter((relation) => validAt(relation, asOf));
+  const entities = asOf === undefined ? artifact.entities || []
+    : (artifact.entities || []).filter((entity) => validAt(entity, asOf));
   const typeOf = new Map(entities.map((entity) => [entity.name, entity.type]));
 
   log('PhoenixGraph incident triage');
   log(`  api:      ${API}`);
   log(`  graph:    ${GRAPH} (${entities.length} entities, ${relations.length} relations,`
-    + ` provenanceRate ${artifact.quality?.provenanceRate ?? '?'})${ingested ? ' - ingested from documents/ just now' : ''}`);
+    + ` provenanceRate ${artifact.quality?.provenanceRate ?? '?'})${ingested ? ' - ingested from documents/ just now' : ''}`
+    + (asOf === undefined ? '' : ` as of ${new Date(asOf).toISOString().slice(0, 16).replace('T', ' ')} UTC`));
+  const windowed = all.filter((relation) => relation.validFrom != null || relation.validTo != null).length;
+  log(`            ${windowed} of ${all.length} relations carry a validity window; the rest hold always`);
   log(`  symptom:  ${SYMPTOM}`);
   log('');
 
   // 1. what the symptom names -----------------------------------------------------------------------------
-  const found = await call('POST', '/api/v1/agent/find-entities', { graph: GRAPH, question: SYMPTOM, k: 20 });
+  const found = await call('POST', '/api/v1/agent/find-entities',
+    { graph: GRAPH, question: SYMPTOM, k: 20, asOf: AS_OF });
   const named = (found.entities || []).filter((entity) => entity.via === 'name');
   log('1. What the symptom names (find_entities, via=name; vector-only matches are not used as seeds)');
   if (named.length === 0) {

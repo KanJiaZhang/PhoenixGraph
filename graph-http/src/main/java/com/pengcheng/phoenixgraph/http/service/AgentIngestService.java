@@ -7,6 +7,7 @@ import com.pengcheng.phoenixgraph.agent.Embedding;
 import com.pengcheng.phoenixgraph.agent.KnowledgeExtractor;
 import com.pengcheng.phoenixgraph.agent.QualityReport;
 import com.pengcheng.phoenixgraph.agent.RulePack;
+import com.pengcheng.phoenixgraph.agent.Validity;
 import com.pengcheng.phoenixgraph.http.dto.BatchRequest;
 import com.pengcheng.phoenixgraph.http.dto.EdgePropertyRequest;
 import com.pengcheng.phoenixgraph.http.dto.EdgeRequest;
@@ -67,6 +68,8 @@ public class AgentIngestService {
     private static final int ENTITY_DESCRIPTION = 3;
     private static final int ENTITY_CHUNKS = 4;
     private static final int ENTITY_VECTOR = 5;
+    private static final int ENTITY_VALID_FROM = 6;
+    private static final int ENTITY_VALID_TO = 7;
 
     /** Property indices of {@link #CHUNK_TYPE}. */
     private static final int CHUNK_DOCUMENT = 1;
@@ -79,6 +82,8 @@ public class AgentIngestService {
     private static final int RELATION_RULE = 2;
     private static final int RELATION_SENTENCE = 3;
     private static final int RELATION_CHUNK = 4;
+    private static final int RELATION_VALID_FROM = 5;
+    private static final int RELATION_VALID_TO = 6;
 
     /** Property indices of {@link #MENTION_EDGE}. */
     private static final int MENTION_SENTENCE = 1;
@@ -102,8 +107,20 @@ public class AgentIngestService {
         this.rerankers = Objects.requireNonNull(rerankers, "rerankers");
     }
 
-    /** A document of the request. */
-    public record DocumentRequest(String id, String title, String text) {
+    /**
+     * A document of the request.
+     *
+     * <p>It may state when its facts hold: {@code validFrom} is inclusive and {@code validTo} exclusive, in
+     * ISO-8601 ({@code 2026-10-24}, {@code 2026-10-24T10:00:00Z}) or epoch millis. Either end may be absent -
+     * a topology document is valid from the beginning of time, a change window runs to the next change. A
+     * document with neither is unversioned, and every fact read from it is valid at every instant.
+     */
+    public record DocumentRequest(String id, String title, String text, String validFrom, String validTo) {
+
+        /** A document with no window: its facts hold at every instant. */
+        public DocumentRequest(String id, String title, String text) {
+            this(id, title, text, null, null);
+        }
     }
 
     /**
@@ -143,12 +160,20 @@ public class AgentIngestService {
             throw new IllegalArgumentException("The ingestion needs a graph name");
         }
         List<Chunker.Document> documents = new ArrayList<>();
+        // The window each document's facts hold in. A document may state when it happened; a fact without a
+        // window is valid at every instant, which is what every graph built before this dimension was.
+        Map<String, Validity> windows = new LinkedHashMap<>();
         for (DocumentRequest document : request.documents()) {
             if (document == null || document.text() == null || document.text().isBlank()) {
                 continue;
             }
-            documents.add(new Chunker.Document(document.id() == null || document.id().isBlank()
-                    ? "doc-" + (documents.size() + 1) : document.id(), document.title(), document.text()));
+            String documentId = document.id() == null || document.id().isBlank()
+                    ? "doc-" + (documents.size() + 1) : document.id();
+            documents.add(new Chunker.Document(documentId, document.title(), document.text()));
+            Validity window = Validity.parse(document.validFrom(), document.validTo());
+            if (!window.isAlways()) {
+                windows.put(documentId, window);
+            }
         }
         if (documents.isEmpty()) {
             throw new IllegalArgumentException("The ingestion needs at least one document with text");
@@ -159,7 +184,7 @@ public class AgentIngestService {
                 !Boolean.FALSE.equals(request.dedupe()));
         KnowledgeExtractor.Result extraction = KnowledgeExtractor.extract(documents, options);
         QualityReport report = QualityReport.of(extraction, options, request.gold());
-        AgentIndex index = toIndex(request.graph(), extraction, report);
+        AgentIndex index = toIndex(request.graph(), extraction, report, windows);
 
         boolean apply = !Boolean.FALSE.equals(request.apply());
         if (!apply) {
@@ -265,6 +290,13 @@ public class AgentIngestService {
                         false, null, null, null, null, null, null),
                 new SchemaDraft.PropertyDraft("chunkId", "string", "The chunk it was read from", false, false,
                         false, null, null, null, null, null, null));
+        List<SchemaDraft.PropertyDraft> temporal = List.of(
+                new SchemaDraft.PropertyDraft(Validity.FROM_PROPERTY, "long",
+                        "When this fact started to hold (epoch millis, inclusive); absent means always", false, false,
+                        false, null, null, null, null, null, null),
+                new SchemaDraft.PropertyDraft(Validity.TO_PROPERTY, "long",
+                        "When it stopped holding (epoch millis, exclusive); absent means still holds", false, false,
+                        false, null, null, null, null, null, null));
         List<SchemaDraft.PropertyDraft> mention = List.of(
                 new SchemaDraft.PropertyDraft("sentence", "string", "The sentence the mention occurs in",
                         false, false, false, null, null, null, null, null, null));
@@ -273,12 +305,21 @@ public class AgentIngestService {
                         ? "Built by the agent toolkit from documents (entities, relations, chunks and vectors)"
                         : description,
                 "string", new SchemaDraft.StorageDraft("Aerospike", null, null, null, null),
-                List.of(new SchemaDraft.VertexDraft(ENTITY_TYPE, "An extracted entity", "name", entity),
+                List.of(new SchemaDraft.VertexDraft(ENTITY_TYPE, "An extracted entity", "name",
+                                concat(entity, temporal)),
                         new SchemaDraft.VertexDraft(CHUNK_TYPE, "A chunk of an ingested document", null, chunk)),
                 List.of(new SchemaDraft.EdgeDraft(RELATION_EDGE, "An extracted relation", "DIRECTED",
-                                ENTITY_TYPE, ENTITY_TYPE, false, null, null, null, relation),
+                                ENTITY_TYPE, ENTITY_TYPE, false, null, null, null, concat(relation, temporal)),
                         new SchemaDraft.EdgeDraft(MENTION_EDGE, "A chunk mentions an entity", "DIRECTED",
                                 CHUNK_TYPE, ENTITY_TYPE, false, null, null, null, mention)));
+    }
+
+    /** Two property lists, one after the other (the schema draft takes them as one). */
+    private static List<SchemaDraft.PropertyDraft> concat(List<SchemaDraft.PropertyDraft> first,
+                                                          List<SchemaDraft.PropertyDraft> second) {
+        List<SchemaDraft.PropertyDraft> all = new ArrayList<>(first);
+        all.addAll(second);
+        return List.copyOf(all);
     }
 
     /** The artifact as the vertices and edges the write path takes. */
@@ -287,13 +328,14 @@ public class AgentIngestService {
         List<EdgeRequest> edges = new ArrayList<>();
         long now = System.currentTimeMillis();
         for (AgentIndex.Entity entity : index.entities()) {
-            List<VertexPropertyRequest> properties = List.of(
+            List<VertexPropertyRequest> properties = new ArrayList<>(List.of(
                     new VertexPropertyRequest(ENTITY_NAME, entity.name(), null),
                     new VertexPropertyRequest(ENTITY_KIND, entity.type(), null),
                     new VertexPropertyRequest(ENTITY_DESCRIPTION, entity.description(), null),
                     new VertexPropertyRequest(ENTITY_CHUNKS, entity.chunkIds(), null),
-                    new VertexPropertyRequest(ENTITY_VECTOR, toDoubles(entity.vector()), null));
-            vertices.add(new VertexRequest(entity.id(), ENTITY_TYPE, properties, now, now));
+                    new VertexPropertyRequest(ENTITY_VECTOR, toDoubles(entity.vector()), null)));
+            addWindow(properties, entity.validFrom(), ENTITY_VALID_FROM, entity.validTo(), ENTITY_VALID_TO);
+            vertices.add(new VertexRequest(entity.id(), ENTITY_TYPE, List.copyOf(properties), now, now));
         }
         for (AgentIndex.Chunk chunk : index.chunks()) {
             List<VertexPropertyRequest> properties = List.of(
@@ -311,11 +353,7 @@ public class AgentIngestService {
             // that cannot appear in an extracted name ("payment service" contains a space, "deploy-48" a dash).
             String edgeId = relationEdgeId(relation.head(), relation.relation(), relation.tail());
             edges.add(new EdgeRequest(edgeId, RELATION_EDGE, relation.head(), relation.tail(),
-                    List.of(new EdgePropertyRequest(RELATION_NAME, relation.relation(), now, now),
-                            new EdgePropertyRequest(RELATION_RULE, relation.rule(), now, now),
-                            new EdgePropertyRequest(RELATION_SENTENCE, relation.sentence(), now, now),
-                            new EdgePropertyRequest(RELATION_CHUNK, relation.chunkId(), now, now)),
-                    now, now));
+                    relationProperties(relation, now), now, now));
         }
         for (AgentIndex.Entity entity : index.entities()) {
             String sentence = firstSentence(entity, index);
@@ -345,6 +383,37 @@ public class AgentIngestService {
         }
     }
 
+    /** Adds the two window properties of a vertex, when the fact has a window at all. */
+    private static void addWindow(List<VertexPropertyRequest> properties, Long from, int fromIndex,
+                                  Long to, int toIndex) {
+        if (from != null) {
+            properties.add(new VertexPropertyRequest(fromIndex, from, null));
+        }
+        if (to != null) {
+            properties.add(new VertexPropertyRequest(toIndex, to, null));
+        }
+    }
+
+    /**
+     * The properties of a relation edge, including its window. The window is written only when the fact has
+     * one: an absent property is what makes an element valid at every instant, so writing 0 would mean
+     * "valid since 1970".
+     */
+    private static List<EdgePropertyRequest> relationProperties(AgentIndex.Relation relation, long now) {
+        List<EdgePropertyRequest> properties = new ArrayList<>(List.of(
+                new EdgePropertyRequest(RELATION_NAME, relation.relation(), now, now),
+                new EdgePropertyRequest(RELATION_RULE, relation.rule(), now, now),
+                new EdgePropertyRequest(RELATION_SENTENCE, relation.sentence(), now, now),
+                new EdgePropertyRequest(RELATION_CHUNK, relation.chunkId(), now, now)));
+        if (relation.validFrom() != null) {
+            properties.add(new EdgePropertyRequest(RELATION_VALID_FROM, relation.validFrom(), now, now));
+        }
+        if (relation.validTo() != null) {
+            properties.add(new EdgePropertyRequest(RELATION_VALID_TO, relation.validTo(), now, now));
+        }
+        return List.copyOf(properties);
+    }
+
     /** The first sentence that mentions an entity, for the mention edge's own provenance. */
     private static String firstSentence(AgentIndex.Entity entity, AgentIndex index) {
         for (AgentIndex.Relation relation : index.relations()) {
@@ -370,7 +439,17 @@ public class AgentIngestService {
     // ------------------------------------------------------------------ the index artifact
 
     /** Builds the artifact: the entities with their context cards and vectors, and the relations. */
-    private AgentIndex toIndex(String graph, KnowledgeExtractor.Result extraction, QualityReport report) {
+    private AgentIndex toIndex(String graph, KnowledgeExtractor.Result extraction, QualityReport report,
+                               Map<String, Validity> windows) {
+        // A chunk id is "<documentId>#<ordinal>", so the window of a fact is the window of its document.
+        java.util.function.Function<String, Validity> windowOf = chunkId -> {
+            if (chunkId == null) {
+                return Validity.always();
+            }
+            int hash = chunkId.lastIndexOf('#');
+            String documentId = hash < 0 ? chunkId : chunkId.substring(0, hash);
+            return windows.getOrDefault(documentId, Validity.always());
+        };
         Embedding embedding = embeddings.current();
         Map<String, List<Chunker.Chunk>> chunksByEntity = new LinkedHashMap<>();
         for (Chunker.Chunk chunk : extraction.chunks()) {
@@ -395,8 +474,31 @@ public class AgentIngestService {
             for (String chunkId : entity.chunkIds()) {
                 chunkIds.add(chunkId);
             }
+            // An entity read in two documents exists for both, so its window is the union of theirs - but one
+            // structural (unversioned) mention makes it permanent, which is why "always" is tracked apart from
+            // "no window seen yet": folding both into one accumulator would make every entity unbounded.
+            List<Validity> entityWindows = new ArrayList<>();
+            for (String chunkId : chunkIds) {
+                entityWindows.add(windowOf.apply(chunkId));
+            }
+            Long validFrom = null;
+            Long validTo = null;
+            if (!entityWindows.isEmpty() && entityWindows.stream().noneMatch(Validity::isAlways)) {
+                for (Validity window : entityWindows) {
+                    // a null end means "for ever", and "for ever" wins the union: min/max cannot compare it
+                    if (window.from() != null) {
+                        validFrom = validFrom == null ? window.from() : Math.min(validFrom, window.from());
+                    }
+                    if (window.to() == null) {
+                        validTo = null;
+                    } else if (validTo != null) {
+                        validTo = Math.max(validTo, window.to());
+                    }
+                }
+            }
             entities.add(new AgentIndex.Entity(entity.id(), ENTITY_TYPE, entity.type(), entity.name(), description,
-                    embedding.embed(description), List.copyOf(chunkIds), List.copyOf(cites), entity.aliases()));
+                    embedding.embed(description), List.copyOf(chunkIds), List.copyOf(cites), entity.aliases(),
+                    validFrom, validTo));
         }
         Map<String, String> cites = new LinkedHashMap<>();
         for (Chunker.Chunk chunk : extraction.chunks()) {
@@ -404,9 +506,10 @@ public class AgentIngestService {
         }
         List<AgentIndex.Relation> relations = new ArrayList<>();
         for (KnowledgeExtractor.Relation relation : extraction.relations()) {
+            Validity window = windowOf.apply(relation.chunkId());
             relations.add(new AgentIndex.Relation(relation.head(), relation.relation(), relation.tail(),
                     relation.rule(), relation.chunkId(), cites.getOrDefault(relation.chunkId(), relation.chunkId()),
-                    relation.sentence()));
+                    relation.sentence(), window.from(), window.to()));
         }
         List<AgentIndex.Chunk> chunks = new ArrayList<>();
         for (Chunker.Chunk chunk : extraction.chunks()) {
