@@ -33,6 +33,12 @@ All notable changes to this project are recorded here. The format follows
   relation, its sentence and `coverage: 16 entities, 19 relations, 52 citations`, and a second process reported
   the same pin from the state file.
 
+- **`/pg show` no longer opens a blank canvas when nothing has been asked yet.** The link was built from the last
+  answer's seeds, and with no answer it fell back to `g.V().limit(0)` - an empty walk, which is exactly what the
+  canvas showed. The engine has no full scan (a start is ids or a type scan), so the fallback now reads the artifact
+  and seeds on the graph's most connected entities (`redis-cache`, `payment service`, ...), says so in the notice,
+  and opens the UI without a query when there is no artifact to read.
+
 - **`/pg show`: the context, drawn instead of described.** The UI accepts a link now -
   `/?graph=<name>&q=<gremlin>&asOf=<instant>` - and the extension builds it from the last answer: the entities it
   seeded on, the `Relates` edges around them, and the instant the answer was pinned to. The opener is the

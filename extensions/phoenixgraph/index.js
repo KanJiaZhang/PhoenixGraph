@@ -396,17 +396,47 @@ export default function phoenixgraphExtension(pi, options = {}) {
    * them, and the instant the answer was pinned to. It is a plain URL, so it also works pasted into a browser when
    * nothing can open one.
    */
-  function contextLink(entity) {
-    const seeds = entity ? [entity] : (state.lastContext?.seeds || []);
+  /** The entities with the most relations, from the artifact: what to show when nothing has been asked yet. */
+  function busiestEntities(index, limit = 4) {
+    const degree = new Map();
+    for (const relation of index.relations || []) {
+      for (const end of [relation.head, relation.tail]) {
+        if (end) degree.set(end, (degree.get(end) || 0) + 1);
+      }
+    }
+    return [...degree.entries()].sort((a, b) => b[1] - a[1]).slice(0, limit).map(([name]) => name);
+  }
+
+  async function contextLink(entity) {
+    let seeds = entity ? [entity] : (state.lastContext?.seeds || []);
+    let source = entity ? `the entity you named (${entity})`
+      : state.lastContext ? `${state.lastContext.question} (${state.lastContext.graph})`
+        : null;
+    if (!seeds.length) {
+      // Nothing asked yet in this session, so there are no seeds to draw. The engine has no full scan (a start is
+      // ids or a type scan), and the artifact knows every entity - so the busiest ones are the honest answer to
+      // "show me the graph", where an empty g.V().limit(0) was only a blank canvas.
+      try {
+        const response = await call(`${state.endpoint.replace(/\/+$/, '')}/api/v1/agent/index/${encodeURIComponent(state.graph)}`);
+        const index = await response.json();
+        seeds = busiestEntities(index);
+        source = seeds.length
+          ? `nothing asked yet - the ${seeds.length} most connected entities of '${state.graph}'`
+          : `nothing asked yet, and '${state.graph}' has no relations`;
+      } catch {
+        source = `nothing asked yet, and the artifact of '${state.graph}' is not readable - ingest it first`;
+      }
+    }
     const quoted = (name) => `'${String(name).replace(/'/g, "''")}','Entity'`;
     const ids = seeds.map(quoted).join(',');
-    const query = ids ? `g.V(${ids}).bothE('Relates').otherV().dedup().limit(40)` : 'g.V().limit(0)';
+    const query = ids ? `g.V(${ids}).bothE('Relates').otherV().dedup().limit(40)` : '';
     // the UI is the API's port with 8080, unless /pg ui said otherwise
     const ui = (state.ui || state.endpoint.replace(/:\d+$/, ':8080')).replace(/\/+$/, '');
     const asOf = state.timeline && state.asOf ? `&asOf=${encodeURIComponent(state.asOf)}` : '';
     return {
       query,
-      url: `${ui}/?graph=${encodeURIComponent(state.lastContext?.graph || state.graph)}&q=${encodeURIComponent(query)}${asOf}`,
+      source: source || 'the graph',
+      url: `${ui}/?graph=${encodeURIComponent(state.lastContext?.graph || state.graph)}${query ? `&q=${encodeURIComponent(query)}` : ''}${asOf}`,
     };
   }
 
@@ -466,12 +496,12 @@ export default function phoenixgraphExtension(pi, options = {}) {
           return;
         }
         case 'show': {
-          const link = contextLink(value || undefined);
+          const link = await contextLink(value || undefined);
           const opened = await openUrl(link.url);
           ctx.ui.notify([
             opened ? `opened ${link.url}` : `open this: ${link.url}`,
-            `query: ${link.query}`,
-            state.lastContext ? `from: ${state.lastContext.question}` : 'from: the graph itself (nothing asked yet)',
+            link.query ? `query: ${link.query}` : 'query: none - the graph has nothing to draw yet',
+            `from: ${link.source}`,
           ].join(String.fromCharCode(10)), opened ? 'info' : 'warning');
           return;
         }

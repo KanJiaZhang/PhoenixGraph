@@ -64,7 +64,7 @@ resume give the instant that branch was asking from. Nothing is written outside 
 ## Verify it
 
 ```bash
-node --test extensions/phoenixgraph/test/*.test.mjs   # 20 assertions, no pi, no service (a fake pi/fetch)
+node --test extensions/phoenixgraph/test/*.test.mjs   # 21 assertions, no pi, no service (a fake pi/fetch)
 ```
 
 What the tests pin: the MCP server is registered and `codemode`-exposed, both tools and `/pg` exist, an instant is
@@ -93,6 +93,12 @@ http://localhost:8080/?graph=incident-triage&q=g.V('redis-cache','Entity',…)&a
 
 The opener is the platform's (`start` / `open` / `xdg-open`); when it fails, the URL and the query are printed so
 they can be pasted. `/pg show <entity>` shows one entity's neighbourhood instead of the last question's.
+
+**With nothing asked yet** it shows the graph's most connected entities instead of an empty canvas: the engine has
+no full scan (a start is ids or a type scan), so a `/pg show` before any `pg_context` used to open
+`g.V().limit(0)` - a blank page. The seeds come from the artifact now, and the notice says so
+(`from: nothing asked yet - the 4 most connected entities of 'incident-triage'`). If the graph has no artifact at
+all, it opens the UI without a query and says to ingest it.
 
 ![the UI opened at the context the agent used](../../docs/screenshots/incident-triage-show-context.png)
 

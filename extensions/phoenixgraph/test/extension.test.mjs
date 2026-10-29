@@ -387,3 +387,19 @@ test('/pg show <entity> shows one entity, and still works when nothing can open 
   assert.match(message, /g\.V\('redis-cache','Entity'\)/);
   assert.equal(ctx.notifications.at(-1).type, 'warning');
 });
+
+test('/pg show with nothing asked shows the busiest entities instead of an empty canvas', async () => {
+  const opened = [];
+  const pi = fakePi();
+  pi.exec = async (command, args) => { opened.push(args[0]); return { exitCode: 0 }; };
+  // the artifact is what the fallback needs: entity ids the engine can be seeded with (it has no full scan)
+  phoenixgraphExtension(pi, { home: mkdtempSync(join(tmpdir(), 'pg-ext-home-')), fetch: triageFetch(), platform: 'linux' });
+  const ctx = fakeContext();
+  pi.handlers.get('session_start')({}, ctx);
+
+  await pi.commands.get('pg').handler('show', ctx);
+  const url = decodeURIComponent(opened[0]);
+  assert.match(url, /q=g\.V\('[^']+','Entity'/, 'the seeds come from the artifact, not from an empty start');
+  assert.doesNotMatch(url, /limit\(0\)/, 'an empty walk is not a picture');
+  assert.match(ctx.notifications.at(-1).message, /from: nothing asked yet - the \d+ most connected entities/);
+});
