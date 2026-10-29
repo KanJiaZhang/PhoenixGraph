@@ -1,0 +1,9 @@
+{
+  "name": "@phoenixgraph/pi-extension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "pi extension: PhoenixGraph as the context layer, with a sticky validity instant",
+  "main": "index.js",
+  "files": ["index.js", "README.md"]
+}

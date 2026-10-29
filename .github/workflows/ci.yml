@@ -63,6 +63,11 @@ jobs:
       - name: MCP HTTP tests (local mock API)
         run: node --test tools/mcp-server.test.mjs
 
+      # the pi extension of docs/PI-PLUGIN.md: a fake pi, a fake ctx and a fake fetch, so P0 and P1 are asserted
+      # without a running service or a model
+      - name: pi extension tests (fake pi, fake API)
+        run: node --test extensions/phoenixgraph/test/*.test.mjs
+
       # --expect-untagged because CI runs on every push, including the commit that bumps the version before the
       # tag exists: every fact that does not depend on the tag is still enforced here
       - name: the release state agrees with itself

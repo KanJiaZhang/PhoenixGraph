@@ -22,6 +22,17 @@ All notable changes to this project are recorded here. The format follows
 
 ### Added
 
+- **The pi extension, P0 and P1** (`extensions/phoenixgraph`): it registers the toolkit as an MCP server
+  (`exposure: "codemode"`, so fourteen tools do not crowd the context), adds `pg_context` and `pg_asof`, and the
+  `/pg status|graph|endpoint|timeline` switchboard. The validity instant is **sticky**: a question that does not
+  name one answers with the session's, and that survives a restart - it lives in a branch-safe `appendEntry` entry
+  and in `~/.pi/agent/state/phoenixgraph.json`, while a committable `.pi/phoenixgraph.json` can pin the graph and
+  the endpoint for a repository (never the instant). Eleven assertions in
+  `extensions/phoenixgraph/test/extension.test.mjs` drive it with a fake `pi`, a fake session and a fake fetch, so
+  CI has them as a step. Verified once in pi itself: pinning 2026-10-21 and asking a question returned the
+  relation, its sentence and `coverage: 16 entities, 19 relations, 52 citations`, and a second process reported
+  the same pin from the state file.
+
 - **A validity window on vertices and edges** (`validFrom`/`validTo`, epoch millis, either end optional;
   `from <= t < to`). It is the third time an element carries: `createdTime`/`lastUpdatedTime` say what the
   database did, this says what the world did. The ingestion takes the window per document (ISO-8601 or millis),
