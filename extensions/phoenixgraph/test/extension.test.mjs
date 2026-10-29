@@ -375,10 +375,15 @@ test('/pg show opens the UI at the context of the last answer', async () => {
   assert.match(ctx.notifications.at(-1).message, /from: checkout p99 up/);
 });
 
+const drawingFetch = (inner) => async (url, init) => (url.includes('/api/v1/query')
+  ? { ok: true, status: 200, json: async () => ({ subgraph: { vertices: [{ id: 'seed' }], edges: [] } }),
+      text: async () => JSON.stringify({ subgraph: { vertices: [{ id: 'seed' }], edges: [] } }) }
+  : inner(url, init));
+
 test('/pg show <entity> shows one entity, and still works when nothing can open a browser', async () => {
   const pi = fakePi();
   pi.exec = async () => { throw new Error('no opener here'); };
-  phoenixgraphExtension(pi, { home: mkdtempSync(join(tmpdir(), 'pg-ext-home-')), fetch: fakeFetch(() => contextAnswer('q')) });
+  phoenixgraphExtension(pi, { home: mkdtempSync(join(tmpdir(), 'pg-ext-home-')), fetch: drawingFetch(fakeFetch(() => contextAnswer('q'))) });
   const ctx = fakeContext();
   pi.handlers.get('session_start')({}, ctx);
   await pi.commands.get('pg').handler('show redis-cache', ctx);
@@ -393,7 +398,7 @@ test('/pg show with nothing asked shows the busiest entities instead of an empty
   const pi = fakePi();
   pi.exec = async (command, args) => { opened.push(args[0]); return { exitCode: 0 }; };
   // the artifact is what the fallback needs: entity ids the engine can be seeded with (it has no full scan)
-  phoenixgraphExtension(pi, { home: mkdtempSync(join(tmpdir(), 'pg-ext-home-')), fetch: triageFetch(), platform: 'linux' });
+  phoenixgraphExtension(pi, { home: mkdtempSync(join(tmpdir(), 'pg-ext-home-')), fetch: drawingFetch(triageFetch()), platform: 'linux' });
   const ctx = fakeContext();
   pi.handlers.get('session_start')({}, ctx);
 
@@ -529,4 +534,28 @@ test('/pg ingest says so when there is nothing to read', async () => {
   await pi.commands.get('pg').handler('ingest .', ctx);
   assert.equal(posted.length, 0, 'an empty directory does not post an empty ingestion');
   assert.match(ctx.notifications.at(-1).message, /nothing to ingest/);
+});
+
+test('/pg show explains an empty view instead of opening one', async () => {
+  const opened = [];
+  const pi = fakePi();
+  pi.exec = async (command, args) => { opened.push(args[0]); return { exitCode: 0 }; };
+  // the query returns nothing under the pin: the facts were ingested after the instant the session asked as of
+  const fetchImpl = async (url, init) => {
+    const payload = url.includes('/api/v1/query') ? { subgraph: { vertices: [], edges: [] } }
+      : url.includes('/agent/index/') ? artifact : contextAnswer('q');
+    return { ok: true, status: 200, json: async () => payload, text: async () => JSON.stringify(payload) };
+  };
+  phoenixgraphExtension(pi, { home: mkdtempSync(join(tmpdir(), 'pg-ext-home-')), fetch: fetchImpl, platform: 'linux' });
+  const ctx = fakeContext();
+  pi.handlers.get('session_start')({}, ctx);
+  await pi.tools.get('pg_asof').execute('t0', { instant: '2026-10-20' }, undefined, undefined, ctx);
+
+  await pi.commands.get('pg').handler('show redis-cache', ctx);
+  const warning = ctx.notifications.find((notification) => /this view is empty/.test(notification.message));
+  assert.ok(warning, 'an empty canvas is reported, not opened silently');
+  assert.match(warning.message, /pinned to 2026-10-20/, 'and the reason is the pin');
+  assert.match(warning.message, /timeline off/, 'with the way out');
+  assert.equal(warning.type, 'warning');
+  assert.match(ctx.notifications.at(-1).message, /opened http/, 'a pinned empty view still opens, so the pin can be moved');
 });

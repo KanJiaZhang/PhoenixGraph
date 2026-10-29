@@ -789,6 +789,35 @@ ${ingestSummary(answer)}`, 'info');
         }
         case 'show': {
           const link = await contextLink(value || undefined);
+          // Pre-flight: the UI will run exactly this query at exactly this instant. If that returns nothing, the
+          // honest answer is why - not a blank canvas.
+          let rendered = null;
+          if (link.query) {
+            try {
+              const answer = await postJson('/api/v1/query', {
+                graphName: state.lastContext?.graph || state.graph,
+                query: link.query,
+                returnSubgraph: true,
+                includeResult: true,
+                asOf: state.timeline && state.asOf ? state.asOf : undefined,
+              });
+              const subgraph = (answer && answer.subgraph) || {};
+              rendered = { vertices: (subgraph.vertices || []).length, edges: (subgraph.edges || []).length };
+            } catch (error) {
+              rendered = { error: String(error.message || error) };
+            }
+          }
+          if (rendered && rendered.vertices === 0) {
+            const pinned = state.timeline && state.asOf;
+            ctx.ui.notify([
+              `this view is empty (${link.query})`,
+              pinned
+                ? `the timeline is pinned to ${state.asOf}: facts outside their window are hidden - try /pg timeline off`
+                : 'the seeds returned no elements - try /pg show <entity> with a name the graph holds',
+              `from: ${link.source}`,
+            ].join(String.fromCharCode(10)), 'warning');
+            if (!pinned) return; // a pinned empty view is still worth opening: the pin is the reason
+          }
           const opened = await openUrl(link.url);
           ctx.ui.notify([
             opened ? `opened ${link.url}` : `open this: ${link.url}`,
