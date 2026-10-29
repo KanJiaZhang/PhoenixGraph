@@ -92,12 +92,10 @@ check('no seed entity, and no cause is named', !!unrelated.refusal && unrelated.
 console.log('--- 4. re-ingesting upserts instead of duplicating');
 const { readFileSync, readdirSync } = await import('node:fs');
 const DIR = join(REPO, 'examples/incident-triage');
-const ingestBody = {
-  graph: GRAPH, apply: true, rulePack: 'incident',
-  dictionary: JSON.parse(readFileSync(join(DIR, 'dictionary.json'), 'utf8')),
-  documents: readdirSync(join(DIR, 'documents')).filter((name) => name.endsWith('.md')).sort()
-    .map((name) => ({ id: name.replace(/\.md$/, ''), title: name, text: readFileSync(join(DIR, 'documents', name), 'utf8') })),
-};
+// The corpus - documents AND their validity windows - comes from the example, so this ingest cannot un-version
+// the graph the temporal assertions rest on. A second copy of the corpus here is a second corpus.
+const { dictionary, documents } = await import('../examples/incident-triage/corpus.mjs');
+const ingestBody = { graph: GRAPH, apply: true, rulePack: 'incident', dictionary: dictionary(), documents: documents() };
 const countDeploy48Edges = async () => {
   const answer = await (await fetch(`${API}/api/v1/query`, {
     method: 'POST', headers: { 'Content-Type': 'application/json; charset=utf-8' },

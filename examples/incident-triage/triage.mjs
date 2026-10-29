@@ -15,14 +15,15 @@
 //     There is no model here and no hidden weight: you can disagree with a weight and re-run it.
 //   * The answer is a hypothesis with its evidence, the runner-up, and the checks that would flip it. A graph
 //     cannot know that a deploy was innocent, so it does not claim to.
-import { readFileSync, readdirSync, unlinkSync } from 'node:fs';
+import { readFileSync, unlinkSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { DEFAULT_GRAPH, dictionary, documents } from './corpus.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, '../..');
 const API = (process.env.PHOENIXGRAPH_API || 'http://localhost:8081').replace(/\/+$/, '');
-const GRAPH = process.env.PHOENIXGRAPH_TRIAGE_GRAPH || 'incident-triage';
+const GRAPH = process.env.PHOENIXGRAPH_TRIAGE_GRAPH || DEFAULT_GRAPH;
 const args = process.argv.slice(2);
 const flag = (name) => args.includes(`--${name}`);
 const value = (name) => {
@@ -83,29 +84,9 @@ const call = async (method, path, body) => {
   return payload;
 };
 
-// When each document's facts hold. The topology, hosts and metrics are structural (no window: true at every
-// instant); the September RCA describes the state before deploy-48, so its facts close the moment deploy-48
-// landed. That is the dimension this case illustrates: an expired fact is not deleted, it stops being true.
-const WINDOWS = {
-  '20-inc-1042.md': { validFrom: '2026-09-12', validTo: '2026-10-24' },
-  '21-inc-1051.md': { validFrom: '2026-10-02' },
-  '22-inc-1063.md': { validFrom: '2026-10-11' },
-  '23-inc-1070.md': { validFrom: '2026-10-20' },
-  '30-change-window.md': { validFrom: '2026-10-24' },
-};
-
-const documents = () => {
-  const dir = join(HERE, 'documents');
-  return readdirSync(dir).filter((name) => name.endsWith('.md')).sort()
-    .map((name) => ({
-      id: name.replace(/\.md$/, ''), title: name, text: readFileSync(join(dir, name), 'utf8'),
-      ...(WINDOWS[name] || {}),
-    }));
-};
-
 async function ensureGraph() {
   const documentsToIngest = documents();
-  const dictionary = JSON.parse(readFileSync(join(HERE, 'dictionary.json'), 'utf8'));
+  const gazetteer = dictionary();
   if (flag('reingest')) {
     // A rebuild starts from nothing. An artifact left on disk is merged into the new index - chunk ids and all -
     // and those chunks are not in the graph the ingest is about to write, which fails the mention edges. Removing
@@ -120,7 +101,7 @@ async function ensureGraph() {
     } catch { /* not ingested yet: fall through */ }
   }
   const result = await call('POST', '/api/v1/agent/ingest', {
-    graph: GRAPH, apply: true, rulePack: 'incident', dictionary,
+    graph: GRAPH, apply: true, rulePack: 'incident', dictionary: gazetteer,
     description: 'Ops corpus: RCA documents, topology, hosts, metrics and change windows, for incident triage.',
     documents: documentsToIngest,
   });
