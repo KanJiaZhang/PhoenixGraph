@@ -33,6 +33,13 @@ All notable changes to this project are recorded here. The format follows
   relation, its sentence and `coverage: 16 entities, 19 relations, 52 citations`, and a second process reported
   the same pin from the state file.
 
+- **P3 of the pi plugin**: it is a pi package now (`keywords: ["pi-package"]` and `pi.extensions` in
+  `package.json`, so `pi install ./extensions/phoenixgraph` is the whole install), the MCP transport is a session
+  decision (`/pg mcp stdio|http <url>`, with the bearer token taken from `PHOENIXGRAPH_MCP_TOKEN` and remembered
+  with the other state), and a committable `.pi/phoenixgraph.json` lets a team pin the graph and the endpoint -
+  never the instant, which is the question being asked. The HTTP path is what a shared deployment uses, where the
+  token, the JSONL audit and the per-client rate limit already live on the server side.
+
 - **The triage example now imports the shared ranking** (`examples/incident-triage/triage.mjs` ->
   `tools/triage.mjs`): the weights, the tie-breaks and the precedent rule exist once. The case study keeps its own
   prose, and `verification/verify-incident-triage.mjs` gained an eighteenth check that runs the library's CLI on the

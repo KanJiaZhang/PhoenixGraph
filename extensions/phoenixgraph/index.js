@@ -67,7 +67,16 @@ export default function phoenixgraphExtension(pi, options = {}) {
   const file = stateFile(home);
 
   /** The state every tool reads: the graph, the endpoint, and the instant the answers are pinned to. */
-  let state = { ...DEFAULTS, asOf: null, timeline: true, inject: true, lastContext: null };
+  let state = {
+    ...DEFAULTS,
+    // stdio spawns the server next to the extension; an URL points at a shared deployment (tools/mcp-server.mjs
+    // --http), which is where tokens, the audit file and the rate limit live
+    mcpUrl: (options.env || process.env).PHOENIXGRAPH_MCP_URL || null,
+    asOf: null,
+    timeline: true,
+    inject: true,
+    lastContext: null,
+  };
   let loaded = false;
   let triageLib = null;
 
@@ -111,9 +120,11 @@ export default function phoenixgraphExtension(pi, options = {}) {
     state = { ...state, ...changes };
     pi.appendEntry('phoenixgraph.state', {
       graph: state.graph, endpoint: state.endpoint, asOf: state.asOf, timeline: state.timeline,
-      lastContext: state.lastContext,
+      mcpUrl: state.mcpUrl, lastContext: state.lastContext,
     });
-    writeFileState({ graph: state.graph, endpoint: state.endpoint, asOf: state.asOf, timeline: state.timeline });
+    writeFileState({
+      graph: state.graph, endpoint: state.endpoint, asOf: state.asOf, timeline: state.timeline, mcpUrl: state.mcpUrl,
+    });
     if (notify) notify();
     return state;
   }
@@ -185,15 +196,32 @@ export default function phoenixgraphExtension(pi, options = {}) {
   }
 
   // ---- P0: the tool surface ---------------------------------------------------------------------------
-  pi.registerMcpServer('phoenixgraph', {
-    type: 'stdio',
-    command: 'node',
-    args: [mcpServerPath()],
-    env: { PHOENIXGRAPH_API: state.endpoint, ...(env.PHOENIXGRAPH_API_KEY ? { PHOENIXGRAPH_API_KEY: env.PHOENIXGRAPH_API_KEY } : {}) },
-    exposure: 'codemode',
-    description: 'PhoenixGraph: an auditable context layer. Entities, relations with the sentence each was read '
-      + 'from, citations and coverage over an ingested knowledge graph, plus a semantic layer for data questions.',
-  });
+  const MCP_DESCRIPTION = 'PhoenixGraph: an auditable context layer. Entities, relations with the sentence each '
+    + 'was read from, citations and coverage over an ingested knowledge graph, plus a semantic layer for data '
+    + 'questions.';
+
+  /** The MCP server as this session reaches it: a spawned process, or a shared HTTP deployment. */
+  function mcpConfig() {
+    if (state.mcpUrl) {
+      return {
+        type: 'http',
+        url: state.mcpUrl,
+        ...(env.PHOENIXGRAPH_MCP_TOKEN ? { headers: { Authorization: `Bearer ${env.PHOENIXGRAPH_MCP_TOKEN}` } } : {}),
+        exposure: 'codemode',
+        description: MCP_DESCRIPTION,
+      };
+    }
+    return {
+      type: 'stdio',
+      command: 'node',
+      args: [mcpServerPath()],
+      env: { PHOENIXGRAPH_API: state.endpoint, ...(env.PHOENIXGRAPH_API_KEY ? { PHOENIXGRAPH_API_KEY: env.PHOENIXGRAPH_API_KEY } : {}) },
+      exposure: 'codemode',
+      description: MCP_DESCRIPTION,
+    };
+  }
+
+  pi.registerMcpServer('phoenixgraph', mcpConfig());
 
   // ---- P1: the sticky instant and the tools that use it ------------------------------------------------
   pi.registerTool({
@@ -363,7 +391,7 @@ export default function phoenixgraphExtension(pi, options = {}) {
   // ---- P1: the switchboard ------------------------------------------------------------------------------
   pi.registerCommand('pg', {
     description: 'PhoenixGraph: status | graph <name> | endpoint <url> | timeline on|off|<instant>',
-    getArgumentCompletions: (prefix) => ['status', 'graph', 'endpoint', 'timeline', 'inject']
+    getArgumentCompletions: (prefix) => ['status', 'graph', 'endpoint', 'timeline', 'inject', 'mcp']
       .filter((word) => word.startsWith(prefix)).map((word) => ({ value: word, label: word })),
     async handler(args, ctx) {
       reconstruct(ctx);
@@ -402,6 +430,19 @@ export default function phoenixgraphExtension(pi, options = {}) {
           }
           return;
         }
+        case 'mcp': {
+          if (!value) {
+            ctx.ui.notify(state.mcpUrl ? `mcp: http ${state.mcpUrl}` : 'mcp: stdio (spawned next to this extension)', 'info');
+            return;
+          }
+          const transport = value.toLowerCase() === 'stdio' ? null : value;
+          commit({ mcpUrl: transport }, {
+            notify: () => ctx.ui.notify(transport
+              ? `mcp: http ${transport} - takes effect on the next session (a server is registered at load)`
+              : 'mcp: stdio - takes effect on the next session', 'info'),
+          });
+          return;
+        }
         case 'inject': {
           if (!value) { ctx.ui.notify(`inject: ${state.inject ? 'on' : 'off'}`, 'info'); return; }
           const on = value.toLowerCase() !== 'off';
@@ -415,6 +456,7 @@ export default function phoenixgraphExtension(pi, options = {}) {
             `endpoint: ${state.endpoint}`,
             `timeline: ${state.timeline && state.asOf ? `pinned to ${state.asOf}` : 'off (answers use every fact)'}`,
             `inject:   ${state.inject ? 'on (the contract is in the prompt when this session is about a graph)' : 'off'}`,
+            `mcp:      ${state.mcpUrl ? `http ${state.mcpUrl}` : 'stdio (spawned next to this extension)'}`,
             state.lastContext
               ? `last:     ${state.lastContext.question} (${state.lastContext.graph}${state.lastContext.asOf ? `, as of ${state.lastContext.asOf}` : ''})`
               : 'last:     nothing asked yet',

@@ -4,9 +4,10 @@
 // inherited by `pg_context`, it survives a new session (the state file), the branch wins over the file, and an
 // unreachable service produces an instruction instead of an exception.
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
 import phoenixgraphExtension, { stateFile, toInstant } from '../index.js';
@@ -301,4 +302,51 @@ test('P2: the contract is a prompt section, only when the session is about a gra
   const muted = { systemPromptOptions: { sections: {} } };
   await first.pi.handlers.get('before_agent_start')(muted, first.ctx);
   assert.equal(muted.systemPromptOptions.sections.phoenixgraph, undefined, '/pg inject off silences it');
+});
+
+// ---- P3: distribution, the HTTP transport, and the team file ------------------------------------------------
+test('P3: the package declares the pi entry point, and it is the file that exists', () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const root = resolve(here, '..');
+  const manifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+  assert.deepEqual(manifest.pi.extensions, ['./index.js'], 'pi discovers the extension from the manifest');
+  assert.ok(existsSync(join(root, manifest.pi.extensions[0])), 'the declared entry exists');
+  assert.ok((manifest.keywords || []).includes('pi-package'), 'the keyword that makes it a pi package');
+  // host-provided packages must not be dependencies (they would be installed twice)
+  for (const host of ['@earendil-works/pi-ai', '@earendil-works/pi-coding-agent', 'typebox']) {
+    assert.equal(manifest.dependencies?.[host], undefined, `${host} must not be a dependency`);
+  }
+});
+
+test('P3: a shared deployment is reached over HTTP, with the bearer token', () => {
+  const pi = fakePi();
+  phoenixgraphExtension(pi, {
+    home: mkdtempSync(join(tmpdir(), 'pg-ext-home-')),
+    env: { PHOENIXGRAPH_MCP_URL: 'http://pg.internal:8090/mcp', PHOENIXGRAPH_MCP_TOKEN: 'secret' },
+  });
+  const server = pi.servers.get('phoenixgraph');
+  assert.equal(server.type, 'http');
+  assert.equal(server.url, 'http://pg.internal:8090/mcp');
+  assert.equal(server.headers.Authorization, 'Bearer secret');
+  assert.equal(server.exposure, 'codemode');
+});
+
+test('P3: /pg mcp switches the transport and remembers it', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'pg-ext-home-'));
+  const first = setup({ home });
+  first.pi.handlers.get('session_start')({}, first.ctx);
+  await first.pi.commands.get('pg').handler('mcp', first.ctx);
+  assert.match(first.ctx.notifications.at(-1).message, /mcp: stdio/);
+
+  await first.pi.commands.get('pg').handler('mcp http://pg.internal:8090/mcp', first.ctx);
+  assert.match(first.ctx.notifications.at(-1).message, /takes effect on the next session/);
+  assert.equal(JSON.parse(readFileSync(stateFile(home), 'utf8')).mcpUrl, 'http://pg.internal:8090/mcp');
+
+  // a new process reads it and registers the HTTP server
+  const pi = fakePi();
+  phoenixgraphExtension(pi, { home });
+  const ctx = fakeContext();
+  pi.handlers.get('session_start')({}, ctx);
+  await pi.commands.get('pg').handler('status', ctx);
+  assert.match(ctx.notifications.at(-1).message, /mcp:\s+http http:\/\/pg\.internal:8090\/mcp/);
 });

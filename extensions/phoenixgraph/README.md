@@ -12,7 +12,11 @@ P2 - the ranked answer and the contract. `pg_triage` ranks the causes a symptom 
 short `phoenixgraph` prompt **section** carries the graph, the instant, the tools and the answer contract - added
 only when the session is actually about a graph, and switchable with `/pg inject on|off`.
 
-Not here yet (P3 of the plan): distribution as a pi package, MCP over HTTP with tokens/audit, and `/pg ingest`.
+P3 - distribution: the package manifest (`pi.extensions` + the `pi-package` keyword, so `pi install` works), the
+MCP transport as a session decision (`/pg mcp stdio|http <url>`, with the bearer token from
+`PHOENIXGRAPH_MCP_TOKEN`), and a committable `.pi/phoenixgraph.json` so a team starts on the same graph.
+
+Not here yet: `/pg ingest` (a write path belongs behind a human command, and the design lists it as such).
 
 ## Install
 
@@ -60,7 +64,7 @@ resume give the instant that branch was asking from. Nothing is written outside 
 ## Verify it
 
 ```bash
-node --test extensions/phoenixgraph/test/*.test.mjs   # 15 assertions, no pi, no service (a fake pi/fetch)
+node --test extensions/phoenixgraph/test/*.test.mjs   # 18 assertions, no pi, no service (a fake pi/fetch)
 ```
 
 What the tests pin: the MCP server is registered and `codemode`-exposed, both tools and `/pg` exist, an instant is
