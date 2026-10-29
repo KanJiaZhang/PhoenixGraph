@@ -111,6 +111,23 @@ const after = await countDeploy48Edges();
 check('the second ingestion writes', again.applied === true, String(again.applied));
 check('deploy-48 still has its six edges, not twelve', before === 6 && after === 6, `${before} then ${after}`);
 
+
+// ---- 5. the example and the shared ranking answer the same thing ----------------------------------------
+// The example imports tools/triage.mjs, and the pi extension and the MCP server use the same file. This asserts
+// the wiring too - the seeds, the artifact and the instant filter - because a shared scoring function with two
+// different seed sets is still two answers.
+console.log('--- 5. the example and the shared ranking agree on the same symptom');
+const libRun = spawnSync(process.execPath, [join(REPO, 'tools/triage.mjs'), '--json', '--symptom', FAULT],
+  { cwd: REPO, encoding: 'utf8' });
+if (libRun.status !== 0) {
+  check('tools/triage.mjs answers the same symptom', false, (libRun.stderr || libRun.stdout).slice(0, 200));
+} else {
+  const viaLib = JSON.parse(libRun.stdout);
+  const shape = (ranked) => ranked.map((candidate) => [candidate.cause, candidate.effect, candidate.score]);
+  check('tools/triage.mjs ranks exactly what the example ranks', JSON.stringify(shape(viaLib.ranked)) === JSON.stringify(shape(first.ranked)),
+    JSON.stringify(shape(viaLib.ranked).slice(0, 3)));
+}
+
 console.log('');
 console.log(failures === 0
   ? 'the triage case holds: four RCAs become one graph, the spellings resolve, the change window outranks the '

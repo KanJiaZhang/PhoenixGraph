@@ -19,6 +19,7 @@ import { readFileSync, unlinkSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DEFAULT_GRAPH, dictionary, documents } from './corpus.mjs';
+import { rank } from '../../tools/triage.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, '../..');
@@ -109,41 +110,11 @@ async function ensureGraph() {
   return { artifact: await call('GET', `/api/v1/agent/index/${GRAPH}`), ingested: true };
 }
 
-// ---- the graph as a plain edge list ----------------------------------------------------------------------
-const INFRA = new Set(['affects', 'depends_on', 'uses', 'deployed_on', 'part_of']);
-
-function adjacency(relations) {
-  const neighbours = new Map();
-  for (const relation of relations) {
-    if (!INFRA.has(relation.relation)) continue;
-    if (!neighbours.has(relation.head)) neighbours.set(relation.head, []);
-    if (!neighbours.has(relation.tail)) neighbours.set(relation.tail, []);
-    neighbours.get(relation.head).push({ to: relation.tail, relation });
-    neighbours.get(relation.tail).push({ to: relation.head, relation, reversed: true });
-  }
-  return neighbours;
-}
-
-/** Shortest infrastructure path from `from` to any of `targets`, at most `maxHops` hops. */
-function reachable(neighbours, from, targets, maxHops) {
-  const found = new Map();
-  const seen = new Set([from]);
-  let frontier = [{ node: from, hops: 0, path: [] }];
-  while (frontier.length) {
-    const next = [];
-    for (const { node, hops, path } of frontier) {
-      if (targets.has(node) && node !== from) found.set(node, { hops, path });
-      if (hops === maxHops) continue;
-      for (const edge of neighbours.get(node) || []) {
-        if (seen.has(edge.to)) continue;
-        seen.add(edge.to);
-        next.push({ node: edge.to, hops: hops + 1, path: [...path, edge] });
-      }
-    }
-    frontier = next;
-  }
-  return found;
-}
+/** The seeds, deduplicated by name and in the order find-entities ranked them. */
+const orderedSeeds = (named) => {
+  const seen = new Set();
+  return named.filter((entity) => (seen.has(entity.name) ? false : seen.add(entity.name)));
+};
 
 const show = (relation) => `${relation.head} -${relation.relation}-> ${relation.tail}`;
 const quote = (relation) => `"${(relation.sentence || '').trim()}"`;
@@ -183,197 +154,59 @@ async function main() {
     finish({ graph: GRAPH, symptom: SYMPTOM, refusal: 'no entity in the graph is named by this symptom', seeds: [], observed: {}, ranked: [] });
   }
   for (const entity of named) log(`   ${entity.name} (${entity.type ?? typeOf.get(entity.name) ?? '?'})`);
-  const seeds = new Set(named.map((entity) => entity.name));
+  const seeds = orderedSeeds(named);
 
-  // 2. which components the named metrics watch -----------------------------------------------------------
-  const metricSeeds = named.filter((entity) => (entity.type ?? typeOf.get(entity.name)) === 'Metric');
-  const observed = new Map(); // component -> metrics that watch it
-  for (const relation of relations) {
-    if (relation.relation !== 'affects' || !metricSeeds.some((metric) => metric.name === relation.head)) continue;
-    if (!observed.has(relation.tail)) observed.set(relation.tail, []);
-    observed.get(relation.tail).push(relation.head);
-  }
-  const observedComponents = new Set(observed.keys());
+  // 2. what the scoring sees: a metric names the component it observes, so a spike names a suspect ---------
+  // 3. the ranking: the weights live in tools/triage.mjs - one implementation for this case, the MCP server and
+  // the pi extension, so the three cannot quietly disagree about what "most likely" means.
+  const result = rank({ relations, seeds: named, types: typeOf });
+
   log('');
   log('2. The components those metrics watch (a metric names its component, so a spike names a suspect)');
-  if (observedComponents.size === 0) log('   none: the symptom names no metric, so nothing anchors the search to a component.');
-  for (const [component, metrics] of observed) {
-    log(`   ${component}: ${metrics.join(', ')}`);
-  }
-
-  // 3. candidate causes, scored ---------------------------------------------------------------------------
-  const neighbours = adjacency(relations);
-  const causal = relations.filter((relation) => relation.relation === 'caused');
-  const deployNumber = (name) => {
-    const match = /deploy-(\d+)/.exec(name);
-    return match ? Number(match[1]) : null;
-  };
-  const deploys = causal.map((relation) => deployNumber(relation.head)).filter((number) => number !== null);
-  const newest = deploys.length ? Math.max(...deploys) : null;
-
-  const effectsOf = new Map();
-  for (const relation of causal) if (!effectsOf.has(relation.tail)) effectsOf.set(relation.tail, []);
-  for (const relation of causal) effectsOf.get(relation.tail).push(relation.head);
-
-  // The metrics the symptom names, as opposed to the components they watch: a failure mode that moved
-  // checkout-p99-latency is a candidate even though the *component* in the symptom is the checkout service.
-  const observedMetrics = new Set(metricSeeds.map((metric) => metric.name));
-  const effectTargets = new Map();
-  for (const relation of relations) {
-    if (relation.relation !== 'affects') continue;
-    if (!effectTargets.has(relation.head)) effectTargets.set(relation.head, []);
-    effectTargets.get(relation.head).push(relation.tail);
-  }
-
-  const candidates = causal.map((relation) => {
-    const cause = relation.head;
-    const effect = relation.tail;
-    const reasons = [];
-    let score = 0;
-
-    // Does the failure mode act on the thing that is broken, on a metric that moved, or on something the
-    // symptom says is fine? That is the question that separates the cache story from the deploy story when both
-    // touch the checkout service.
-    const targets = effectTargets.get(effect) || [];
-    const onComponent = targets.filter((target) => observedComponents.has(target));
-    const onMetric = targets.filter((target) => observedMetrics.has(target));
-    if (onComponent.length) {
-      score += 6;
-      reasons.push(`the failure mode acts on ${[...new Set(onComponent)].join(', ')}, which the symptom's metrics observe (+6)`);
-    } else if (onMetric.length) {
-      score += 4;
-      reasons.push(`the failure mode moves ${[...new Set(onMetric)].join(', ')} (+4)`);
-    } else if (targets.length) {
-      score -= 3;
-      reasons.push(`the failure mode acts on ${[...new Set(targets)].join(', ')}, which shows no signal here (-3)`);
-    }
-
-    const touched = relations.filter((other) => other.relation === 'affects' && other.head === cause
-      && observedComponents.has(other.tail)).map((other) => other.tail);
-    if (touched.length) {
-      score += Math.min(6, 3 * touched.length);
-      reasons.push(`a change window that touches ${[...new Set(touched)].join(' and ')} (+${Math.min(6, 3 * touched.length)})`);
-    }
-
-    const reached = reachable(neighbours, cause, observedComponents, 2);
-    if (reached.size) {
-      score += Math.min(4, 2 * reached.size);
-      reasons.push(`reaches ${[...reached.keys()].join(' and ')} within ${Math.max(...[...reached.values()].map((r) => r.hops))} hop(s) (+${Math.min(4, 2 * reached.size)})`);
-    }
-
-    // A precedent is a *documented* incident that failed the same way on the same component: the same shape of
-    // failure on the same thing, which is what an on-call engineer means by "we have seen this before". The
-    // incident number comes from the graph (`INC-1042 reports cache-eviction-storm`), so the claim is checkable;
-    // an effect with no incident behind it is not a precedent, it is another guess.
-    const myTargets = new Set(relations.filter((edge) => edge.relation === 'affects' && edge.head === effect
-      && observedComponents.has(edge.tail)).map((edge) => edge.tail));
-    const precedents = [];
-    for (const other of causal) {
-      if (other === relation) continue;
-      const shared = relations.filter((edge) => edge.relation === 'affects' && edge.head === other.tail
-        && myTargets.has(edge.tail));
-      if (!shared.length) continue;
-      const incidents = relations.filter((edge) => edge.relation === 'reported' && edge.tail === other.tail)
-        .map((edge) => edge.head);
-      if (!incidents.length) continue;
-      precedents.push({ cause: other.head, effect: other.tail, component: shared[0].tail, incidents });
-    }
-    if (precedents.length) {
-      score += 2;
-      const first = precedents[0];
-      reasons.push(`${first.incidents.join('/')} (${first.cause} -> ${first.effect}) already failed on ${first.component} (+2)`);
-    }
-
-    const number = deployNumber(cause);
-    if (number !== null && number === newest) {
-      score += 2;
-      reasons.push('the newest change in the corpus (+2)');
-    } else if (number !== null && number === newest - 1) {
-      score += 1;
-      reasons.push('the second-newest change in the corpus (+1)');
-    }
-
-    return { relation, cause, effect, score, reasons, reached, precedents };
-  }).sort((a, b) => b.score - a.score || (deployNumber(b.cause) ?? 0) - (deployNumber(a.cause) ?? 0));
+  const observed = Object.entries(result.observed);
+  if (!observed.length) log('   none: the symptom names no metric, so nothing anchors the search to a component.');
+  for (const [component, metrics] of observed) log(`   ${component}: ${metrics.join(', ')}`);
 
   log('');
   log('3. Candidate causes the graph supports, ranked');
-  if (!candidates.length) {
-    log('   none: the corpus has no causal edge at all, so there is nothing to rank.');
-    finish({ graph: GRAPH, symptom: SYMPTOM, refusal: 'the corpus has no causal edge to rank', seeds: [...seeds], observed: Object.fromEntries(observed), ranked: [] });
-  }
-  for (const [index, candidate] of candidates.entries()) {
+  for (const [index, candidate] of result.ranked.entries()) {
     log(`   #${index + 1} ${candidate.cause} -> ${candidate.effect}   score ${candidate.score}`);
     for (const reason of candidate.reasons) log(`       ${reason}`);
-    log(`       ${show(candidate.relation)}   ${quote(candidate.relation)}`);
-    const support = relations.filter((other) => other.relation === 'affects' && other.head === candidate.effect);
-    for (const edge of support) log(`       ${show(edge)}   ${quote(edge)}`);
+    for (const edge of candidate.edges) log(`       ${show(edge)}   ${quote(edge)}`);
   }
 
   // 4. the verdict, with what would overturn it -----------------------------------------------------------
-  const [best, second] = candidates;
+  const { verdict } = result;
   log('');
   log('4. Most likely cause');
-  log(`   ${best.cause} (score ${best.score}), through ${best.effect}`);
-  const withWindow = candidates.filter((candidate) => relations.some((edge) => edge.relation === 'affects'
-    && edge.head === candidate.cause && observedComponents.has(edge.tail)));
-  const explanation = relations.filter((other) => other.relation === 'affects' && other.head === best.effect
-    && observedComponents.has(other.tail)).map((other) => other.tail);
-  if (explanation.length && withWindow.length === 1) {
-    log(`   It is the only candidate with a change window that touches ${[...new Set(explanation)].join(' and ')},`
-      + ' which is where the symptom\'s own metrics point.');
+  log(`   ${verdict.cause} (score ${verdict.score}), through ${verdict.effect}`);
+  if (verdict.runnerUp) {
+    const runnerUp = result.ranked[1];
+    const reason = runnerUp && runnerUp.reasons.length ? ` - ${runnerUp.reasons[0]}` : '';
+    log(`   Runner-up: ${verdict.runnerUp.cause} -> ${verdict.runnerUp.effect} (score ${verdict.runnerUp.score})${reason}.`);
   }
-  if (best.precedents.length) {
-    const first = best.precedents[0];
-    log(`   The shape is not new: ${first.incidents.join('/') || first.cause} was ${first.effect} on ${first.component}.`
-      + ' That is the argument for treating it as the same class of failure first.');
-  }
-  const unexplained = [...observedComponents].filter((component) => !best.reached.has(component));
-  if (unexplained.length) log(`   It does not touch ${unexplained.join(', ')}: if that is where the errors really are, look at #2.`);
-  if (second) {
-    log(`   Runner-up: ${second.cause} -> ${second.effect} (score ${second.score})`
-      + `${second.reasons.length ? ` - ${second.reasons[0]}` : ''}.`);
+  if (verdict.unexplainedComponents.length) {
+    log(`   It does not touch ${verdict.unexplainedComponents.join(', ')}: if that is where the errors really are, look at #2.`);
   }
 
   log('');
   log('5. What would overturn this, and what the graph cannot say');
-  const checks = [];
-  const changeWindow = relations.filter((other) => other.relation === 'affects' && other.head === best.cause
-    && observedComponents.has(other.tail));
-  if (changeWindow.length) checks.push(`${best.cause} did not actually ship the change it claims (check the release diff, not the ticket)`);
-  checks.push(`the ${[...observedComponents].join(' / ')} signal started before ${best.cause} landed (order the metrics by minute)`);
-  if (second) checks.push(`the errors concentrate on a code path that never touches ${best.effect} (then #2 explains them better)`);
-  for (const check of checks) log(`   - ${check}`);
-  log(`   The corpus has no approval, ownership or rollback record for ${best.cause} unless one was ingested:`);
+  for (const check of verdict.checks) log(`   - ${check}`);
+  log(`   The corpus has no approval, ownership or rollback record for ${verdict.cause} unless one was ingested:`);
   log('   ask "who approved it" and the tools return no name match - a refusal, not a guess.');
   log('');
-  log(`   evidence: ${candidates.length} causal edges, ${relations.filter((edge) => edge.relation === 'affects').length} `
+  log(`   evidence: ${result.ranked.length} causal edges, ${relations.filter((edge) => edge.relation === 'affects').length} `
     + `affects edges, ${entities.length} entities; every sentence above is in the artifact`
     + ` (${GRAPH}.agent.json) with its chunk.`);
 
   finish({
     graph: GRAPH,
     symptom: SYMPTOM,
-    seeds: named.map((entity) => ({ name: entity.name, type: entity.type ?? typeOf.get(entity.name) ?? null })),
-    observed: Object.fromEntries(observed),
-    ranked: candidates.map((candidate) => ({
-      cause: candidate.cause,
-      effect: candidate.effect,
-      score: candidate.score,
-      reasons: candidate.reasons,
-      edges: [candidate.relation, ...relations.filter((edge) => edge.relation === 'affects' && edge.head === candidate.effect)]
-        .map((edge) => ({ head: edge.head, relation: edge.relation, tail: edge.tail, sentence: edge.sentence, cite: edge.cite })),
-      reaches: [...candidate.reached.keys()],
-      precedents: candidate.precedents,
-    })),
-    verdict: {
-      cause: best.cause,
-      effect: best.effect,
-      score: best.score,
-      runnerUp: second ? { cause: second.cause, effect: second.effect, score: second.score } : null,
-      unexplainedComponents: [...observedComponents].filter((component) => !best.reached.has(component)),
-      checks,
-    },
+    ...(asOf === undefined ? {} : { asOf }),
+    seeds: seeds.map((entity) => ({ name: entity.name, type: entity.type ?? typeOf.get(entity.name) ?? null })),
+    observed: result.observed,
+    ranked: result.ranked,
+    verdict: result.verdict,
   });
 }
 

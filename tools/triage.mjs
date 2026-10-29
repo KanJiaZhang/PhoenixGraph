@@ -8,6 +8,9 @@
 // The point of the split: the ranking is a *judgement* (weights, tie-breaks, what counts as a precedent), so it
 // lives in one file that can be read and argued with. Three copies of it - an example, a server, an extension -
 // would be three answers that agree only until someone edits one.
+import { pathToFileURL } from 'node:url';
+import { resolve } from 'node:path';
+
 const INFRA = new Set(['affects', 'depends_on', 'uses', 'deployed_on', 'part_of']);
 
 /** Whether a fact holds at an instant; a fact with no window holds always. */
@@ -274,7 +277,10 @@ export function render(result) {
 }
 
 // ---- CLI: the same result a human can read -------------------------------------------------------------------
-if (process.argv[1] && process.argv[1].endsWith('triage.mjs')) {
+// Only when this file *is* the entry point: examples/incident-triage/triage.mjs imports it, and that path also
+// ends with triage.mjs (a suffix test would have run this CLI inside the example).
+const invokedDirectly = process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url;
+if (invokedDirectly) {
   const argv = process.argv.slice(2);
   const value = (name) => {
     const index = argv.indexOf(`--${name}`);

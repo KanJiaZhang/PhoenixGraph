@@ -33,6 +33,12 @@ All notable changes to this project are recorded here. The format follows
   relation, its sentence and `coverage: 16 entities, 19 relations, 52 citations`, and a second process reported
   the same pin from the state file.
 
+- **The triage example now imports the shared ranking** (`examples/incident-triage/triage.mjs` ->
+  `tools/triage.mjs`): the weights, the tie-breaks and the precedent rule exist once. The case study keeps its own
+  prose, and `verification/verify-incident-triage.mjs` gained an eighteenth check that runs the library's CLI on the
+  same symptom and asserts the two rankings are identical triple for triple - a shared scoring function with two
+  different seed sets would still be two answers, so the wiring is asserted too.
+
 - **P2 of the pi plugin** (`tools/triage.mjs`, `pg_triage`, the prompt section): the triage ranking is now a
   library - `rank()` pure over an artifact, `triage()` the two calls that feed it, `render()` the report - so the
   example, the MCP server and the extension share one set of weights instead of three that agree until someone
