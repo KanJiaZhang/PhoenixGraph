@@ -52,7 +52,7 @@ class QueryControllerTest {
     @Test
     void queryEndpointBindsRequestAndReturnsJsonArray() throws Exception {
         when(queryService.queryCapped("payment-graph", "g.V('${id}','Account').count()", Map.of("id", "1001"),
-                "gremlin", false, false, "http", null)).thenReturn(answer(List.of(6L)));
+                "gremlin", false, false, "http", null, null)).thenReturn(answer(List.of(6L)));
 
         mockMvc.perform(post("/api/v1/query")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -65,7 +65,7 @@ class QueryControllerTest {
                 .andExpect(jsonPath("$[0]").value(6));
 
         verify(queryService).queryCapped("payment-graph", "g.V('${id}','Account').count()", Map.of("id", "1001"),
-                "gremlin", false, false, "http", null);
+                "gremlin", false, false, "http", null, null);
     }
 
     @Test
@@ -74,7 +74,7 @@ class QueryControllerTest {
                 List.of(new Subgraph.Vertex("Account", "888", Map.of("accountStatus", "ACTIVE"), 1L, 2L)),
                 List.of(new Subgraph.Edge("Payment", "e1", "888", "1001", Map.of("status", "SUCCESS"), 1L, 2L)));
         when(queryService.queryCapped("payment-graph", "g.V(888,'Account').out('Payment')", Map.of(),
-                "gremlin", true, false, "http", null)).thenReturn(answer(subgraph));
+                "gremlin", true, false, "http", null, null)).thenReturn(answer(subgraph));
 
         mockMvc.perform(post("/api/v1/query")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -99,7 +99,7 @@ class QueryControllerTest {
                         new Subgraph.Vertex("Phone", "6000", Map.of(), 1L, 2L)),
                 List.of(new Subgraph.Edge("AccountToPhone", "atp_0", "1000", "6000", Map.of(), 1L, 2L)));
         when(queryService.queryCapped("payment-graph", "g.V('1000','Account').out('AccountToPhone').count()",
-                Map.of(), "gremlin", true, true, "http", null))
+                Map.of(), "gremlin", true, true, "http", null, null))
                 .thenReturn(answer(new QueryResponse(List.of(2L), subgraph)));
 
         mockMvc.perform(post("/api/v1/query")
@@ -119,14 +119,14 @@ class QueryControllerTest {
                 .andExpect(jsonPath("$.subgraph.edges[0].label").value("AccountToPhone"));
 
         verify(queryService).queryCapped(eq("payment-graph"), anyString(), anyMap(), eq("gremlin"),
-                eq(true), eq(true), anyString(), isNull());
+                eq(true), eq(true), anyString(), isNull(), isNull());
     }
 
     @Test
     void withoutIncludeResultTheSubgraphResponseIsUnchanged() throws Exception {
         Subgraph subgraph = new Subgraph(
                 List.of(new Subgraph.Vertex("Account", "888", Map.of(), 1L, 2L)), List.of());
-        when(queryService.queryCapped(eq("payment-graph"), anyString(), anyMap(), eq("gremlin"), eq(true), eq(false), anyString(), isNull()))
+        when(queryService.queryCapped(eq("payment-graph"), anyString(), anyMap(), eq("gremlin"), eq(true), eq(false), anyString(), isNull(), isNull()))
                 .thenReturn(answer(subgraph));
 
         mockMvc.perform(post("/api/v1/query")
@@ -148,7 +148,7 @@ class QueryControllerTest {
                 new Subgraph(List.of(new Subgraph.Vertex("Account", "100", Map.of(), 1L, 2L)), List.of()));
         when(queryService.queryCapped("payment-graph",
                 "MATCH (a:Account {id: $id})-[p:Payment]->(b:Account) RETURN b.id, p.amount",
-                Map.of("id", "100"), "cypher", true, false, "http", null)).thenReturn(answer(result));
+                Map.of("id", "100"), "cypher", true, false, "http", null, null)).thenReturn(answer(result));
 
         mockMvc.perform(post("/api/v1/query")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -167,12 +167,12 @@ class QueryControllerTest {
                 .andExpect(jsonPath("$.subgraph.vertices[0].id").value("100"));
 
         verify(queryService).queryCapped(eq("payment-graph"), anyString(), anyMap(), eq("cypher"), eq(true),
-                eq(false), anyString(), isNull()); // this request did not ask for the answer separately
+                eq(false), anyString(), isNull(), isNull()); // this request did not ask for the answer separately
     }
 
     @Test
     void theLanguageDefaultsToGremlin() throws Exception {
-        when(queryService.queryCapped(anyString(), anyString(), anyMap(), anyString(), anyBoolean(), anyBoolean(), anyString(), isNull()))
+        when(queryService.queryCapped(anyString(), anyString(), anyMap(), anyString(), anyBoolean(), anyBoolean(), anyString(), isNull(), isNull()))
                 .thenReturn(answer(List.of()));
 
         mockMvc.perform(post("/api/v1/query")
@@ -183,12 +183,12 @@ class QueryControllerTest {
                 .andExpect(status().isOk());
 
         // the controller normalises a missing language to gremlin
-        verify(queryService).queryCapped("payment-graph", "g.V()", Map.of(), "gremlin", false, false, "http", null);
+        verify(queryService).queryCapped("payment-graph", "g.V()", Map.of(), "gremlin", false, false, "http", null, null);
     }
 
     @Test
     void failedQueryReturnsMessageExceptionAndStackTrace() throws Exception {
-        when(queryService.queryCapped(eq("payment-graph"), anyString(), anyMap(), anyString(), anyBoolean(), anyBoolean(), anyString(), isNull()))
+        when(queryService.queryCapped(eq("payment-graph"), anyString(), anyMap(), anyString(), anyBoolean(), anyBoolean(), anyString(), isNull(), isNull()))
                 .thenThrow(new QueryException("Unknown Gremlin step: nope"));
 
         mockMvc.perform(post("/api/v1/query")
@@ -211,7 +211,7 @@ class QueryControllerTest {
 
     @Test
     void aCypherErrorIsReportedWithItsPosition() throws Exception {
-        when(queryService.queryCapped(eq("payment-graph"), anyString(), anyMap(), eq("cypher"), anyBoolean(), anyBoolean(), anyString(), isNull()))
+        when(queryService.queryCapped(eq("payment-graph"), anyString(), anyMap(), eq("cypher"), anyBoolean(), anyBoolean(), anyString(), isNull(), isNull()))
                 .thenThrow(new QueryException("line 1, column 23: expected ')'"));
 
         mockMvc.perform(post("/api/v1/query")
@@ -229,7 +229,7 @@ class QueryControllerTest {
     @Test
     void aCappedAnswerIsFlaggedInAHeader() throws Exception {
         when(queryService.queryCapped(eq("payment-graph"), anyString(), anyMap(), anyString(), anyBoolean(),
-                anyBoolean(), anyString(), isNull()))
+                anyBoolean(), anyString(), isNull(), isNull()))
                 .thenReturn(new QueryService.Answer(List.of(1L), true, 200_000));
 
         mockMvc.perform(post("/api/v1/query")
@@ -245,7 +245,7 @@ class QueryControllerTest {
 
     @Test
     void unknownGraphReturnsBadRequestWithAvailableGraphs() throws Exception {
-        when(queryService.queryCapped(eq("nope"), anyString(), anyMap(), anyString(), anyBoolean(), anyBoolean(), anyString(), isNull()))
+        when(queryService.queryCapped(eq("nope"), anyString(), anyMap(), anyString(), anyBoolean(), anyBoolean(), anyString(), isNull(), isNull()))
                 .thenThrow(new IllegalArgumentException(
                         "Unknown graph 'nope'; available graphs: payment-graph"));
 
@@ -266,7 +266,7 @@ class QueryControllerTest {
         Subgraph subgraph = new Subgraph(
                 List.of(new Subgraph.Vertex("Account", "1001", Map.of(), 1L, 2L)), List.of());
         String script = "def ids = g.V(1001, 'Account').values('id').toList()\nprint(ids)";
-        when(queryService.queryCapped("payment-graph", script, Map.of(), "gremlin", true, true, "ui", true))
+        when(queryService.queryCapped("payment-graph", script, Map.of(), "gremlin", true, true, "ui", true, null))
                 .thenReturn(answer(new ScriptResponse(List.of(1001L), List.of("[1001]"), subgraph)));
 
         mockMvc.perform(post("/api/v1/query")
@@ -285,12 +285,36 @@ class QueryControllerTest {
                 .andExpect(jsonPath("$.output[0]").value("[1001]"))
                 .andExpect(jsonPath("$.subgraph.vertices[0].id").value("1001"));
 
-        verify(queryService).queryCapped("payment-graph", script, Map.of(), "gremlin", true, true, "ui", true);
+        verify(queryService).queryCapped("payment-graph", script, Map.of(), "gremlin", true, true, "ui", true, null);
+    }
+
+    @Test
+    void anAsOfRequestReachesTheServiceAsAnInstant() throws Exception {
+        // "what was true then" is part of the query, not a filter the client is trusted to apply: the controller
+        // parses the request's date (ISO-8601 or millis) and hands the instant to the service, which drops the
+        // elements whose validity window excludes it.
+        long instant = java.time.Instant.parse("2026-10-21T00:00:00Z").toEpochMilli();
+        when(queryService.queryCapped(eq("payment-graph"), anyString(), anyMap(), anyString(), anyBoolean(),
+                anyBoolean(), anyString(), isNull(), eq(instant)))
+                .thenReturn(answer(List.of(7L)));
+
+        mockMvc.perform(post("/api/v1/query")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                { "graphName": "payment-graph",
+                                  "query": "g.V('deploy-48','Entity')",
+                                  "asOf": "2026-10-21" }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0]").value(7));
+
+        verify(queryService).queryCapped(eq("payment-graph"), anyString(), anyMap(), anyString(), eq(false),
+                eq(false), anyString(), isNull(), eq(instant));
     }
 
     @Test
     void unknownLanguageIsRejected() throws Exception {
-        when(queryService.queryCapped(eq("payment-graph"), anyString(), anyMap(), eq("sparql"), anyBoolean(), anyBoolean(), anyString(), isNull()))
+        when(queryService.queryCapped(eq("payment-graph"), anyString(), anyMap(), eq("sparql"), anyBoolean(), anyBoolean(), anyString(), isNull(), isNull()))
                 .thenThrow(new QueryException("Unknown query language 'sparql'; supported: gremlin, cypher"));
 
         mockMvc.perform(post("/api/v1/query")

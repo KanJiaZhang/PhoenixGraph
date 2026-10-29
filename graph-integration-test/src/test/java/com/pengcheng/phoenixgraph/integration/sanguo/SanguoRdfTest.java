@@ -292,7 +292,9 @@ class SanguoRdfTest {
         try (InputStream in = SanguoRdfTest.class.getResourceAsStream(path)) {
             assertNotNull(in, "missing committed artifact: " + path
                     + " (regenerate with -Dsanguo.rdf.write=true)");
-            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+            // Text, not bytes: a checkout with core.autocrlf (Windows) has CRLF in the committed file while the
+            // generator writes LF, and that is not a different artifact - the same content read on two machines.
+            return new String(in.readAllBytes(), StandardCharsets.UTF_8).replace("\r\n", "\n");
         }
     }
 
