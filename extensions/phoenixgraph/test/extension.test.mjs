@@ -460,3 +460,73 @@ test('/pg remember says so when there is nothing to remember', async () => {
   assert.match(ctx.notifications.at(-1).message, /nothing to remember yet/);
   assert.equal(ctx.notifications.at(-1).type, 'warning');
 });
+
+// ---- ingesting documents by hand ----------------------------------------------------------------------------
+function ingestSetup({ dir, fetchImpl }) {
+  const pi = fakePi();
+  const posted = [];
+  const fetch = async (url, init) => {
+    if (init?.body && url.includes('/agent/ingest')) posted.push(JSON.parse(init.body));
+    return fetchImpl(url, init);
+  };
+  phoenixgraphExtension(pi, { home: mkdtempSync(join(tmpdir(), 'pg-ext-home-')), fetch });
+  const ctx = fakeContext({ cwd: dir });
+  pi.handlers.get('session_start')({}, ctx);
+  return { pi, ctx, posted };
+}
+
+const ingestAnswer = (body) => ({
+  applied: body.apply, entities: 3, relations: 2,
+  quality: { documents: body.documents.length, chunks: body.documents.length, provenanceRate: 1, typeAgreement: 1, entityLinkRate: 1 },
+});
+
+test('/pg ingest is a dry run unless --apply, and reads the directory it is given', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pg-ingest-'));
+  writeFileSync(join(dir, 'runbook.md'), 'checkout-api depends on redis-cache.\n');
+  writeFileSync(join(dir, 'notes.txt'), 'Deploy 41 caused the outage.\n');
+  writeFileSync(join(dir, 'logo.png'), 'binary-ish');
+  writeFileSync(join(dir, 'dictionary.json'), JSON.stringify({ 'checkout-api': 'Service', 'redis-cache': 'Datastore' }));
+
+  const { pi, ctx, posted } = ingestSetup({
+    dir,
+    fetchImpl: async (url, init) => {
+      const body = url.includes('/agent/ingest') ? ingestAnswer(JSON.parse(init.body)) : artifact;
+      return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) };
+    },
+  });
+
+  await pi.commands.get('pg').handler('ingest .', ctx);
+  assert.equal(posted.length, 1);
+  assert.equal(posted[0].apply, false, 'a command that writes must be asked to write');
+  assert.deepEqual(posted[0].documents.map((document) => document.id).sort(), ['notes', 'runbook'],
+    'the text files are read, the image and the dictionary are not documents');
+  assert.equal(posted[0].dictionary['redis-cache'], 'Datastore', 'the directory gazetteer is merged in');
+  assert.match(ctx.notifications.at(-1).message, /dry run: 2 document\(s\) would be ingested/);
+  assert.match(ctx.notifications.at(-1).message, /not text \(\.png\)/);
+});
+
+test('/pg ingest --apply --from writes, with a validity window on every document', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pg-ingest-'));
+  writeFileSync(join(dir, 'incident.md'), 'deploy-48 caused cache-key-prefix-churn.\n');
+  const { pi, ctx, posted } = ingestSetup({
+    dir,
+    fetchImpl: async (url, init) => {
+      const body = url.includes('/agent/ingest') ? ingestAnswer(JSON.parse(init.body)) : artifact;
+      return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) };
+    },
+  });
+
+  await pi.commands.get('pg').handler('ingest incident.md --apply --from 2026-10-24 --graph ops', ctx);
+  assert.equal(posted[0].apply, true);
+  assert.equal(posted[0].graph, 'ops');
+  assert.equal(posted[0].documents[0].validFrom, '2026-10-24', 'the window is passed through as written');
+  assert.match(ctx.notifications.at(-1).message, /ingested 1 document\(s\) into 'ops'/);
+});
+
+test('/pg ingest says so when there is nothing to read', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pg-ingest-'));
+  const { pi, ctx, posted } = ingestSetup({ dir, fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({}), text: async () => '{}' }) });
+  await pi.commands.get('pg').handler('ingest .', ctx);
+  assert.equal(posted.length, 0, 'an empty directory does not post an empty ingestion');
+  assert.match(ctx.notifications.at(-1).message, /nothing to ingest/);
+});

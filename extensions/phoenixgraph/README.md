@@ -64,7 +64,7 @@ resume give the instant that branch was asking from. Nothing is written outside 
 ## Verify it
 
 ```bash
-node --test extensions/phoenixgraph/test/*.test.mjs   # 23 assertions, no pi, no service (a fake pi/fetch)
+node --test extensions/phoenixgraph/test/*.test.mjs   # 26 assertions, no pi, no service (a fake pi/fetch)
 ```
 
 What the tests pin: the MCP server is registered and `codemode`-exposed, both tools and `/pg` exist, an instant is
@@ -129,6 +129,27 @@ learned" survives a `/compact`.
 Because the graph is the one every session of this project uses, the next session sees it: verified by remembering
 in one `pi -p` and asking in a fresh one, which answered `checkout-api -depends_on-> payment service` with the
 sentence it came from.
+
+## Ingesting documents, by hand
+
+`/pg ingest <path>` reads local Markdown/text and posts it to the ingest API. It is a command and not a tool on
+purpose: **writing to a graph is a human decision**, so the model cannot do it while answering a question.
+
+```
+/pg ingest docs/runbooks                 # dry run: the whole pipeline runs, nothing is written
+/pg ingest docs/runbooks --apply --from 2026-10-24
+ingested 2 document(s) into 'incident-triage'
+4 entities, 3 relations from 2 document(s) (2 chunks)
+provenanceRate 1 · typeAgreement 1 · entityLinkRate 0.5
+```
+
+- A file, or a directory walked three levels deep; `.md .markdown .txt .text .html .htm .csv .yaml .yml .log`.
+  Images, PDFs and anything else are listed as skipped rather than silently dropped (PDF goes through
+  `tools/ingest-docs.mjs --ocr`).
+- Caps: 50 files and 2 MB per call, so a mistyped `/` cannot post a repository.
+- `--from`/`--to` give every document a validity window; without them the facts hold at every instant.
+- The gazetteer is the graph's own entities plus a `dictionary.json` next to the documents, if there is one.
+- An empty directory posts nothing and says so.
 
 ## Limits
 

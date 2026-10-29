@@ -14,10 +14,10 @@
  * Written as plain ESM JavaScript so `node --test` can drive it with a fake `pi` - see test/extension.test.mjs.
  * The second parameter is for tests only; pi calls the factory with `pi` alone.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { homedir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -591,10 +591,94 @@ export default function phoenixgraphExtension(pi, options = {}) {
     },
   });
 
+  // ---- ingesting documents, by hand ---------------------------------------------------------------
+  // `/pg ingest <path>` reads local Markdown/text (or a whole directory) and posts it to the ingest API. It is a
+  // command and not a tool on purpose: writing to a graph is a human decision, so the model cannot do it while
+  // answering a question. Following tools/ingest-docs.mjs, it is a **dry run unless --apply** is given - the same
+  // pipeline runs and the report says what would be written.
+
+  const INGEST_MAX_FILES = 50;
+  const INGEST_MAX_BYTES = 2 * 1024 * 1024;
+  const TEXT_EXTENSIONS = new Set(['.md', '.markdown', '.txt', '.text', '.html', '.htm', '.csv', '.yaml', '.yml', '.log']);
+
+  /** Every readable document under a path (a file, or a directory walked three levels deep). */
+  function readDocuments(target) {
+    const documents = [];
+    const skipped = [];
+    let bytes = 0;
+    const visit = (path, depth) => {
+      let stats;
+      try {
+        stats = statSync(path);
+      } catch {
+        skipped.push(`${path}: not readable`);
+        return;
+      }
+      if (stats.isFile()) {
+        const extension = extname(path).toLowerCase();
+        if (!TEXT_EXTENSIONS.has(extension)) {
+          skipped.push(`${basename(path)}: not text (${extension || 'no extension'})`);
+          return;
+        }
+        if (documents.length >= INGEST_MAX_FILES) {
+          skipped.push(`${basename(path)}: over the ${INGEST_MAX_FILES}-file limit`);
+          return;
+        }
+        if (bytes + stats.size > INGEST_MAX_BYTES) {
+          skipped.push(`${basename(path)}: over the ${Math.round(INGEST_MAX_BYTES / 1024)} KB limit`);
+          return;
+        }
+        const text = readFileSync(path, 'utf8');
+        bytes += stats.size;
+        documents.push({ id: basename(path).replace(/\.[^.]+$/, ''), title: basename(path), text });
+        return;
+      }
+      if (!stats.isDirectory() || depth > 3) return;
+      for (const entry of readdirSync(path).sort()) {
+        if (entry === '.git' || entry === 'node_modules' || entry.startsWith('.')) continue;
+        visit(join(path, entry), depth + 1);
+      }
+    };
+    visit(target, 0);
+    return { documents, skipped, bytes };
+  }
+
+  /** The gazetteer a directory may carry next to its documents (like the examples do). */
+  function dictionaryFrom(target) {
+    const file = join(statSync(target).isDirectory() ? target : dirname(target), 'dictionary.json');
+    try {
+      const parsed = JSON.parse(readFileSync(file, 'utf8'));
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+
+  /** `--flag value` pairs and the positional argument, for the /pg subcommands that take options. */
+  function parseOptions(args, valueFlags = ['from', 'to', 'graph', 'pack']) {
+    const words = String(args || '').trim().split(/\s+/).filter(Boolean);
+    const options = { positional: [], flags: {} };
+    for (let index = 0; index < words.length; index += 1) {
+      const word = words[index];
+      if (word.startsWith('--')) {
+        const name = word.slice(2);
+        if (valueFlags.includes(name)) {
+          options.flags[name] = words[index + 1];
+          index += 1;
+        } else {
+          options.flags[name] = true;
+        }
+      } else {
+        options.positional.push(word);
+      }
+    }
+    return options;
+  }
+
   // ---- P1: the switchboard ------------------------------------------------------------------------------
   pi.registerCommand('pg', {
-    description: 'PhoenixGraph: status | show [entity] | remember [graph] | note <sentence> | graph <name> | endpoint <url> | timeline on|off|<instant> | mcp stdio|url | inject on|off',
-    getArgumentCompletions: (prefix) => ['status', 'show', 'remember', 'note', 'graph', 'endpoint', 'timeline', 'inject', 'mcp']
+    description: 'PhoenixGraph: status | show [entity] | remember [graph] | note <sentence> | ingest <path> [--apply] [--from <date>] | graph <name> | endpoint <url> | timeline on|off|<instant> | mcp stdio|url | inject on|off',
+    getArgumentCompletions: (prefix) => ['status', 'show', 'remember', 'note', 'ingest', 'graph', 'endpoint', 'timeline', 'inject', 'mcp']
       .filter((word) => word.startsWith(prefix)).map((word) => ({ value: word, label: word })),
     async handler(args, ctx) {
       reconstruct(ctx);
@@ -630,6 +714,52 @@ export default function phoenixgraphExtension(pi, options = {}) {
             commit({ timeline: true, asOf: instant }, { notify: () => ctx.ui.notify(`timeline: ${instant}`, 'info') });
           } catch (error) {
             ctx.ui.notify(String(error.message || error), 'error');
+          }
+          return;
+        }
+        case 'ingest': {
+          const parsed = parseOptions(value);
+          const target = parsed.positional[0];
+          if (!target) {
+            ctx.ui.notify('usage: /pg ingest <file-or-directory> [--apply] [--from <date>] [--graph <name>]'
+              + ' [--pack incident]', 'warning');
+            return;
+          }
+          const path = resolve(ctx.cwd || process.cwd(), target);
+          let found;
+          try {
+            found = readDocuments(path);
+          } catch (error) {
+            ctx.ui.notify(`cannot read ${target}: ${error.message}`, 'error');
+            return;
+          }
+          if (!found.documents.length) {
+            ctx.ui.notify(`nothing to ingest under ${target}${found.skipped.length ? `: ${found.skipped.slice(0, 3).join('; ')}` : ''}`, 'warning');
+            return;
+          }
+          const graph = parsed.flags.graph || state.graph;
+          const apply = parsed.flags.apply === true;
+          try {
+            const answer = await postJson('/api/v1/agent/ingest', {
+              graph,
+              apply,
+              rulePack: parsed.flags.pack || 'incident',
+              dictionary: { ...(await graphDictionary(graph)), ...dictionaryFrom(join(path, '')) },
+              documents: found.documents.map((document) => ({
+                ...document,
+                ...(parsed.flags.from ? { validFrom: parsed.flags.from } : {}),
+                ...(parsed.flags.to ? { validTo: parsed.flags.to } : {}),
+              })),
+            });
+            const head = apply
+              ? `ingested ${found.documents.length} document(s) into '${graph}'`
+              : `dry run: ${found.documents.length} document(s) would be ingested into '${graph}' (add --apply)`;
+            const skipped = found.skipped.length ? `
+skipped: ${found.skipped.slice(0, 5).join('; ')}` : '';
+            ctx.ui.notify(`${head}
+${ingestSummary(answer)}${skipped}`, 'info');
+          } catch (error) {
+            ctx.ui.notify(`PhoenixGraph is not answering at ${state.endpoint} (${error.message})`, 'error');
           }
           return;
         }
