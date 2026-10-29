@@ -64,7 +64,7 @@ resume give the instant that branch was asking from. Nothing is written outside 
 ## Verify it
 
 ```bash
-node --test extensions/phoenixgraph/test/*.test.mjs   # 21 assertions, no pi, no service (a fake pi/fetch)
+node --test extensions/phoenixgraph/test/*.test.mjs   # 23 assertions, no pi, no service (a fake pi/fetch)
 ```
 
 What the tests pin: the MCP server is registered and `codemode`-exposed, both tools and `/pg` exist, an instant is
@@ -102,11 +102,41 @@ all, it opens the UI without a query and says to ingest it.
 
 ![the UI opened at the context the agent used](../../docs/screenshots/incident-triage-show-context.png)
 
+## Remembering a conversation
+
+A conclusion reached in a transcript is reachable by the next model only if someone pastes it back. `/pg remember`
+turns the session into a document - the user and assistant turns, oldest first, system prompt and tool output left
+out - and ingests it with a validity window that **starts now**, into the session's graph:
+
+```
+/pg remember
+remembered into 'incident-triage':
+4 entities, 1 relations from 1 document(s) (2 chunks)
+provenanceRate 1 · typeAgreement 1 · entityLinkRate 0.05
+```
+
+What comes back is what the extraction rules can read, and the report says so rather than implying more:
+
+- every turn is now a **chunk with a citation**, so a later answer can quote the conversation;
+- sentences written in the pack's vocabulary (`caused`, `depends on`, `uses`, `deployed on`, `affects`, ...)
+  become **entities and relations** - prose like "I think the cache is unhappy" does not;
+- the gazetteer is the graph's own entities, so a known name keeps its type instead of being re-guessed.
+
+`/pg note "checkout-api depends on redis-cache."` records one fact without the transcript - usually what you want
+after a long debugging session. The model can do the same through `pg_remember`, which is how "write down what we
+learned" survives a `/compact`.
+
+Because the graph is the one every session of this project uses, the next session sees it: verified by remembering
+in one `pi -p` and asking in a fresh one, which answered `checkout-api -depends_on-> payment service` with the
+sentence it came from.
+
 ## Limits
 
 - `pg_context` is a thin, honest wrapper: it does not rank, summarise or fill gaps. When the graph has no relation
   it says so and the model is told not to guess (the P2 contract makes that explicit).
 - The instant is a **declaration of fact time**, not a snapshot of rows: an element without a validity window is
   valid at every instant, and expires only if the ingestion gave it one.
-- No write path: ingestion is `POST /api/v1/agent/ingest` (or `tools/ingest-docs.mjs`) today, and
-  `/pg ingest` is P2.
+- **A remembered sentence is not a verified one.** The ingest keeps the sentence it read, so a note carries the
+  provenance of "asserted in a conversation", not "read from documentation" - the model is right to say so.
+- Remembering does not replace re-ingesting: the corpus documents are still the source of the facts that came with
+  a rule pack and a window. `/pg remember` adds to the graph; it never deletes.

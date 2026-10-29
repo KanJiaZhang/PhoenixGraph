@@ -81,7 +81,7 @@ test('P0: the MCP server is registered, exposed to codemode, pointing at a real 
 
 test('P1: the two tools and the /pg command are registered', () => {
   const { pi } = setup();
-  assert.deepEqual([...pi.tools.keys()].sort(), ['pg_asof', 'pg_context', 'pg_triage']);
+  assert.deepEqual([...pi.tools.keys()].sort(), ['pg_asof', 'pg_context', 'pg_remember', 'pg_triage']);
   assert.ok(pi.commands.get('pg'), '/pg is registered');
   assert.equal(pi.tools.get('pg_context').parameters.required[0], 'question');
 });
@@ -402,4 +402,61 @@ test('/pg show with nothing asked shows the busiest entities instead of an empty
   assert.match(url, /q=g\.V\('[^']+','Entity'/, 'the seeds come from the artifact, not from an empty start');
   assert.doesNotMatch(url, /limit\(0\)/, 'an empty walk is not a picture');
   assert.match(ctx.notifications.at(-1).message, /from: nothing asked yet - the \d+ most connected entities/);
+});
+
+// ---- remembering a conversation -----------------------------------------------------------------------------
+function branchWith(turns) {
+  return turns.map((turn, index) => ({
+    type: 'message', id: `m${index}`, parentId: index ? `m${index - 1}` : null,
+    timestamp: new Date(Date.UTC(2026, 9, 29, 6, index)).toISOString(),
+    message: turn.role === 'assistant'
+      ? { role: 'assistant', content: [{ type: 'text', text: turn.text }] }
+      : { role: turn.role, content: turn.text },
+  }));
+}
+
+test('pg_remember ingests the conversation with a window that starts now', async () => {
+  const pi = fakePi();
+  const posted = [];
+  const fetchImpl = async (url, init) => {
+    const payload = init?.body ? JSON.parse(init.body) : null;
+    if (url.includes('/agent/ingest')) posted.push(payload);
+    const body = url.includes('/agent/index/') ? artifact
+      : payload && payload.documents ? { applied: true, entities: 4, relations: 2, quality: { documents: 1, chunks: 2, provenanceRate: 1, typeAgreement: 1, entityLinkRate: 1, duplicatesRemoved: 0 } }
+        : contextAnswer('q');
+    return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) };
+  };
+  phoenixgraphExtension(pi, { home: mkdtempSync(join(tmpdir(), 'pg-ext-home-')), fetch: fetchImpl });
+  const ctx = fakeContext({
+    branch: branchWith([
+      { role: 'user', text: '为什么 checkout 慢？' },
+      { role: 'assistant', text: 'deploy-48 caused cache-key-prefix-churn.' },
+      { role: 'toolResult', text: 'huge tool output that must not be remembered' },
+    ]),
+  });
+  pi.handlers.get('session_start')({}, ctx);
+
+  const answer = await pi.tools.get('pg_remember').execute('t1', { note: 'checkout-api depends on redis-cache.' }, undefined, undefined, ctx);
+  assert.equal(posted.length, 1, 'one ingestion');
+  const body = posted[0];
+  assert.equal(body.rulePack, 'incident');
+  assert.equal(body.documents.length, 1);
+  const document = body.documents[0];
+  assert.match(document.text, /^user: 为什么 checkout 慢？/m, 'the user turn is kept, oldest first');
+  assert.match(document.text, /assistant: deploy-48 caused cache-key-prefix-churn\./);
+  assert.match(document.text, /checkout-api depends on redis-cache\./, 'the explicit note is appended');
+  assert.doesNotMatch(document.text, /huge tool output/, 'tool output is not the reasoning; it stays out');
+  assert.match(document.validFrom, /^2026-|^20\d\d-/, 'the window starts at ingest time');
+  assert.equal(body.dictionary['deploy-48'], 'Deploy', 'the graph\'s own entities are the gazetteer');
+  assert.match(answer.content[0].text, /4 entities, 2 relations/);
+});
+
+test('/pg remember says so when there is nothing to remember', async () => {
+  const pi = fakePi();
+  phoenixgraphExtension(pi, { home: mkdtempSync(join(tmpdir(), 'pg-ext-home-')), fetch: fakeFetch(() => ({})) });
+  const ctx = fakeContext({ branch: [] });
+  pi.handlers.get('session_start')({}, ctx);
+  await pi.commands.get('pg').handler('remember', ctx);
+  assert.match(ctx.notifications.at(-1).message, /nothing to remember yet/);
+  assert.equal(ctx.notifications.at(-1).type, 'warning');
 });

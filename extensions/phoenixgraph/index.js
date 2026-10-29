@@ -453,10 +453,148 @@ export default function phoenixgraphExtension(pi, options = {}) {
     }
   }
 
+  // ---- remembering a conversation -------------------------------------------------------------------------
+  // A session's conclusions live in a transcript: searchable by the next model only if someone pastes them back.
+  // `/pg remember` (and the pg_remember tool) turn the conversation into a document and ingest it into the graph,
+  // so a later session - another day, another person - can cite it the same way it cites an RCA.
+  //
+  // What comes out is what the extraction rules can read: prose yields chunks and citations, and the sentences
+  // written in the rule pack's vocabulary (caused, depends on, uses, deployed on, affects, ...) become edges. The
+  // quality report says which, so nobody mistakes "remembered" for "understood".
+
+  const REMEMBER_MAX_CHARS = 120_000;
+
+  /** The text of one message, whatever shape its content has. */
+  function messageText(message) {
+    const content = message && message.content;
+    if (typeof content === 'string') return content.trim();
+    if (!Array.isArray(content)) return '';
+    return content.filter((block) => block && block.type === 'text' && block.text)
+      .map((block) => block.text).join('\n').trim();
+  }
+
+  /**
+   * The conversation as one document: the user and assistant turns, oldest first, cut down to the newest
+   * REMEMBER_MAX_CHARS characters. System prompts and tool output are left out - the first is the harness talking,
+   * the second is the corpus of the work and not the reasoning about it.
+   */
+  function conversationText(ctx) {
+    const branch = (ctx && ctx.sessionManager && ctx.sessionManager.getBranch && ctx.sessionManager.getBranch()) || [];
+    const turns = [];
+    for (const entry of branch) {
+      if (!entry || entry.type !== 'message') continue;
+      const role = entry.message && entry.message.role;
+      if (role !== 'user' && role !== 'assistant') continue;
+      const text = messageText(entry.message);
+      if (text) turns.push(`${role}: ${text}`);
+    }
+    const kept = [];
+    let chars = 0;
+    for (let index = turns.length - 1; index >= 0; index -= 1) {
+      chars += turns[index].length + 2;
+      if (chars > REMEMBER_MAX_CHARS && kept.length) break;
+      kept.unshift(turns[index]);
+    }
+    return kept.join('\n\n');
+  }
+
+  /** The entities the graph already knows, as the gazetteer for this ingestion (names keep their types). */
+  async function graphDictionary(graph) {
+    try {
+      const response = await call(`${state.endpoint.replace(/\/+$/, '')}/api/v1/agent/index/${encodeURIComponent(graph)}`);
+      const index = await response.json();
+      const dictionary = {};
+      for (const entity of index.entities || []) {
+        if (entity.name && entity.type) dictionary[entity.name] = entity.type;
+      }
+      return dictionary;
+    } catch {
+      return {};
+    }
+  }
+
+  /** Ingests text into a graph with the window starting now; returns the ingest report. */
+  async function ingestText(graph, title, text) {
+    const documents = [{
+      id: `session-${now().toISOString().replace(/[^0-9]/g, '').slice(0, 14)}`,
+      title,
+      text,
+      validFrom: now().toISOString(),
+    }];
+    const answer = await postJson('/api/v1/agent/ingest', {
+      graph,
+      apply: true,
+      rulePack: 'incident',
+      dictionary: await graphDictionary(graph),
+      documents,
+    });
+    return answer;
+  }
+
+  /** A one-screen report of what the ingestion actually read out of the text. */
+  function ingestSummary(answer) {
+    const quality = (answer && answer.quality) || {};
+    const lines = [
+      `${answer.entities} entities, ${answer.relations} relations from ${quality.documents ?? '?'} document(s)`
+        + ` (${quality.chunks ?? '?'} chunks)`,
+      `provenanceRate ${quality.provenanceRate ?? '?'} · typeAgreement ${quality.typeAgreement ?? '?'}`
+        + ` · entityLinkRate ${quality.entityLinkRate ?? '?'}`,
+    ];
+    if (quality.duplicatesRemoved) lines.push(`${quality.duplicatesRemoved} duplicate name(s) merged`);
+    const merged = quality.mergedEntities || [];
+    for (const entry of merged.slice(0, 5)) lines.push(`merged: ${entry.canonical} <- ${(entry.aliases || []).join(', ')}`);
+    const candidates = quality.mergeCandidates || [];
+    for (const pair of candidates.slice(0, 3)) lines.push(`review: ${pair.left} ~ ${pair.right} (${pair.reason})`);
+    if (!answer.relations) {
+      lines.push('no relation was read: the conversation is now citable, but it did not state a fact in the pack\'s vocabulary.');
+    }
+    return lines.join('\n');
+  }
+
+  pi.registerTool({
+    name: 'pg_remember',
+    label: 'PhoenixGraph remember',
+    description: 'Ingest this conversation into a PhoenixGraph graph so later sessions can cite it: the turns become '
+      + 'chunks with provenance, and the sentences written in the extraction vocabulary (caused, depends on, uses, '
+      + 'deployed on, affects, ...) become entities and relations. Returns the ingestion report.',
+    promptSnippet: 'pg_remember() - put this conversation into the graph, with citations',
+    parameters: {
+      type: 'object',
+      properties: {
+        graph: { type: 'string', description: 'Graph to write into; defaults to the session graph' },
+        note: { type: 'string', description: 'One extra fact to record verbatim, e.g. "checkout-api depends on redis-cache."' },
+      },
+      required: [],
+    },
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const graph = params.graph || state.graph;
+      const text = [conversationText(ctx), params.note].filter(Boolean).join('\n\n') || '';
+      if (!text.trim()) {
+        return { content: [{ type: 'text', text: 'There is nothing to remember yet: this session has no turns.' }], details: { graph } };
+      }
+      try {
+        const answer = await postJson('/api/v1/agent/ingest', {
+          graph, apply: true, rulePack: 'incident',
+          dictionary: await graphDictionary(graph),
+          documents: [{
+            id: `session-${now().toISOString().replace(/[^0-9]/g, '').slice(0, 14)}`,
+            title: 'conversation', text, validFrom: now().toISOString(),
+          }],
+        });
+        return { content: [{ type: 'text', text: ingestSummary(answer) }], details: { graph, answer } };
+      } catch (error) {
+        return {
+          content: [{ type: 'text', text: `PhoenixGraph is not answering at ${state.endpoint} (${error.message}).` }],
+          details: { error: String(error), graph },
+        };
+      }
+    },
+  });
+
   // ---- P1: the switchboard ------------------------------------------------------------------------------
   pi.registerCommand('pg', {
-    description: 'PhoenixGraph: status | show [entity] | graph <name> | endpoint <url> | timeline on|off|<instant> | mcp stdio|url | inject on|off',
-    getArgumentCompletions: (prefix) => ['status', 'graph', 'endpoint', 'timeline', 'inject', 'mcp', 'show']
+    description: 'PhoenixGraph: status | show [entity] | remember [graph] | note <sentence> | graph <name> | endpoint <url> | timeline on|off|<instant> | mcp stdio|url | inject on|off',
+    getArgumentCompletions: (prefix) => ['status', 'show', 'remember', 'note', 'graph', 'endpoint', 'timeline', 'inject', 'mcp']
       .filter((word) => word.startsWith(prefix)).map((word) => ({ value: word, label: word })),
     async handler(args, ctx) {
       reconstruct(ctx);
@@ -492,6 +630,30 @@ export default function phoenixgraphExtension(pi, options = {}) {
             commit({ timeline: true, asOf: instant }, { notify: () => ctx.ui.notify(`timeline: ${instant}`, 'info') });
           } catch (error) {
             ctx.ui.notify(String(error.message || error), 'error');
+          }
+          return;
+        }
+        case 'remember': {
+          const graph = value || state.graph;
+          const text = conversationText(ctx);
+          if (!text.trim()) { ctx.ui.notify('nothing to remember yet: this session has no turns', 'warning'); return; }
+          try {
+            const answer = await ingestText(graph, 'conversation', text);
+            ctx.ui.notify(`remembered into '${graph}':
+${ingestSummary(answer)}`, 'info');
+          } catch (error) {
+            ctx.ui.notify(`PhoenixGraph is not answering at ${state.endpoint} (${error.message})`, 'error');
+          }
+          return;
+        }
+        case 'note': {
+          if (!value) { ctx.ui.notify('usage: /pg note <sentence>', 'warning'); return; }
+          try {
+            const answer = await ingestText(state.graph, 'note', `user: ${value}`);
+            ctx.ui.notify(`noted into '${state.graph}':
+${ingestSummary(answer)}`, 'info');
+          } catch (error) {
+            ctx.ui.notify(`PhoenixGraph is not answering at ${state.endpoint} (${error.message})`, 'error');
           }
           return;
         }

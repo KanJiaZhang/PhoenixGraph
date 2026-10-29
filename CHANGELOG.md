@@ -39,6 +39,14 @@ All notable changes to this project are recorded here. The format follows
   and seeds on the graph's most connected entities (`redis-cache`, `payment service`, ...), says so in the notice,
   and opens the UI without a query when there is no artifact to read.
 
+- **`/pg remember` and `pg_remember`**: a conversation can be ingested into the graph. The extension assembles
+  the session's turns (user and assistant, oldest first, system prompt and tool output left out), posts them as one
+  document with a validity window starting now, and uses the graph's own entities as the gazetteer, so a name that
+  is already typed keeps its type. The report prints what was actually read - entities, relations, provenance,
+  duplicates - and says so when the conversation contained no fact in the pack's vocabulary, because "remembered"
+  is not "understood". `/pg note <sentence>` records a single fact without the transcript. Verified across
+  processes: remembered in one `pi -p`, answered with its source sentence in a fresh one.
+
 - **`/pg show`: the context, drawn instead of described.** The UI accepts a link now -
   `/?graph=<name>&q=<gremlin>&asOf=<instant>` - and the extension builds it from the last answer: the entities it
   seeded on, the `Relates` edges around them, and the instant the answer was pinned to. The opener is the
