@@ -64,7 +64,7 @@ resume give the instant that branch was asking from. Nothing is written outside 
 ## Verify it
 
 ```bash
-node --test extensions/phoenixgraph/test/*.test.mjs   # 18 assertions, no pi, no service (a fake pi/fetch)
+node --test extensions/phoenixgraph/test/*.test.mjs   # 20 assertions, no pi, no service (a fake pi/fetch)
 ```
 
 What the tests pin: the MCP server is registered and `codemode`-exposed, both tools and `/pg` exist, an instant is
@@ -80,6 +80,21 @@ disappears with `/pg inject off`.
 Verified once in pi itself (`pi --extension ./extensions/phoenixgraph/index.js -p "…"`): the model pinned
 2026-10-21, asked `pg_context`, and answered with the relation, its sentence and `coverage: 16 entities, 19
 relations, 52 citations`; a second, fresh process reported the same pin from the state file.
+
+## Seeing it: `/pg show`
+
+An answer in a transcript is a list; the relations it rests on are a graph. `/pg show` opens the UI at exactly the
+context the last answer used - the graph, the traversal over the entities the answer seeded on, and the instant the
+answer was pinned to - because the UI accepts a link:
+
+```
+http://localhost:8080/?graph=incident-triage&q=g.V('redis-cache','Entity',…)&asOf=2026-10-26T00:00:00.000Z
+```
+
+The opener is the platform's (`start` / `open` / `xdg-open`); when it fails, the URL and the query are printed so
+they can be pasted. `/pg show <entity>` shows one entity's neighbourhood instead of the last question's.
+
+![the UI opened at the context the agent used](../../docs/screenshots/incident-triage-show-context.png)
 
 ## Limits
 

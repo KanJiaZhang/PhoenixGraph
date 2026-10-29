@@ -350,3 +350,40 @@ test('P3: /pg mcp switches the transport and remembers it', async () => {
   await pi.commands.get('pg').handler('status', ctx);
   assert.match(ctx.notifications.at(-1).message, /mcp:\s+http http:\/\/pg\.internal:8090\/mcp/);
 });
+
+// ---- the UI command: show what the agent just used ---------------------------------------------------------
+test('/pg show opens the UI at the context of the last answer', async () => {
+  const opened = [];
+  const pi = fakePi();
+  pi.exec = async (command, args) => { opened.push({ command, args }); return { exitCode: 0 }; };
+  const fetchImpl = fakeFetch((url) => (url.includes('/context') ? contextAnswer('q') : {}));
+  phoenixgraphExtension(pi, { home: mkdtempSync(join(tmpdir(), 'pg-ext-home-')), fetch: fetchImpl, platform: 'linux' });
+  const ctx = fakeContext();
+  pi.handlers.get('session_start')({}, ctx);
+
+  await pi.tools.get('pg_asof').execute('t0', { instant: '2026-10-21' }, undefined, undefined, ctx);
+  await pi.tools.get('pg_context').execute('t1', { question: 'checkout p99 up' }, undefined, undefined, ctx);
+  await pi.commands.get('pg').handler('show', ctx);
+
+  assert.equal(opened.length, 1, 'the opener was called once');
+  const url = decodeURIComponent(opened[0].args[0]);
+  assert.match(url, /^http:\/\/localhost:8080\/\?graph=incident-triage&q=/);
+  assert.match(url, /g\.V\('deploy-48','Entity'\)\.bothE\('Relates'\)/,
+    'the query is built from the entities the answer seeded on');
+  assert.match(url, /asOf=/, 'and it carries the instant the answer was pinned to');
+  assert.match(ctx.notifications.at(-1).message, /opened http/);
+  assert.match(ctx.notifications.at(-1).message, /from: checkout p99 up/);
+});
+
+test('/pg show <entity> shows one entity, and still works when nothing can open a browser', async () => {
+  const pi = fakePi();
+  pi.exec = async () => { throw new Error('no opener here'); };
+  phoenixgraphExtension(pi, { home: mkdtempSync(join(tmpdir(), 'pg-ext-home-')), fetch: fakeFetch(() => contextAnswer('q')) });
+  const ctx = fakeContext();
+  pi.handlers.get('session_start')({}, ctx);
+  await pi.commands.get('pg').handler('show redis-cache', ctx);
+  const message = ctx.notifications.at(-1).message;
+  assert.match(message, /open this: http:\/\/localhost:8080\//, 'the URL is printed when it cannot be opened');
+  assert.match(message, /g\.V\('redis-cache','Entity'\)/);
+  assert.equal(ctx.notifications.at(-1).type, 'warning');
+});

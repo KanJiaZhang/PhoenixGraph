@@ -261,7 +261,10 @@ export default function phoenixgraphExtension(pi, options = {}) {
           details: { error: String(error), graph, endpoint: state.endpoint },
         };
       }
-      commit({ lastContext: { graph, question: params.question, asOf, at: now().toISOString() } });
+      const seeds = (answer.entities || []).filter((entity) => entity.via === 'name').map((entity) => entity.name);
+      commit({ lastContext: {
+        graph, question: params.question, asOf, seeds, at: now().toISOString(),
+      } });
       return {
         content: [{ type: 'text', text: renderContext(answer, asOf) }],
         details: { graph, asOf, answer },
@@ -388,10 +391,42 @@ export default function phoenixgraphExtension(pi, options = {}) {
     }
   }
 
+  /**
+   * The link that shows what the agent just used: the seeded entities of the last context, the relation edges around
+   * them, and the instant the answer was pinned to. It is a plain URL, so it also works pasted into a browser when
+   * nothing can open one.
+   */
+  function contextLink(entity) {
+    const seeds = entity ? [entity] : (state.lastContext?.seeds || []);
+    const quoted = (name) => `'${String(name).replace(/'/g, "''")}','Entity'`;
+    const ids = seeds.map(quoted).join(',');
+    const query = ids ? `g.V(${ids}).bothE('Relates').otherV().dedup().limit(40)` : 'g.V().limit(0)';
+    // the UI is the API's port with 8080, unless /pg ui said otherwise
+    const ui = (state.ui || state.endpoint.replace(/:\d+$/, ':8080')).replace(/\/+$/, '');
+    const asOf = state.timeline && state.asOf ? `&asOf=${encodeURIComponent(state.asOf)}` : '';
+    return {
+      query,
+      url: `${ui}/?graph=${encodeURIComponent(state.lastContext?.graph || state.graph)}&q=${encodeURIComponent(query)}${asOf}`,
+    };
+  }
+
+  /** Opens a URL with the platform's opener; returns the command it tried (or null when it could not). */
+  async function openUrl(url) {
+    const platform = options.platform || process.platform;
+    const [command, args] = platform === 'win32' ? ['cmd', ['/c', 'start', '', url]]
+      : platform === 'darwin' ? ['open', [url]] : ['xdg-open', [url]];
+    try {
+      await pi.exec(command, args);
+      return command;
+    } catch {
+      return null;
+    }
+  }
+
   // ---- P1: the switchboard ------------------------------------------------------------------------------
   pi.registerCommand('pg', {
-    description: 'PhoenixGraph: status | graph <name> | endpoint <url> | timeline on|off|<instant>',
-    getArgumentCompletions: (prefix) => ['status', 'graph', 'endpoint', 'timeline', 'inject', 'mcp']
+    description: 'PhoenixGraph: status | show [entity] | graph <name> | endpoint <url> | timeline on|off|<instant> | mcp stdio|url | inject on|off',
+    getArgumentCompletions: (prefix) => ['status', 'graph', 'endpoint', 'timeline', 'inject', 'mcp', 'show']
       .filter((word) => word.startsWith(prefix)).map((word) => ({ value: word, label: word })),
     async handler(args, ctx) {
       reconstruct(ctx);
@@ -428,6 +463,16 @@ export default function phoenixgraphExtension(pi, options = {}) {
           } catch (error) {
             ctx.ui.notify(String(error.message || error), 'error');
           }
+          return;
+        }
+        case 'show': {
+          const link = contextLink(value || undefined);
+          const opened = await openUrl(link.url);
+          ctx.ui.notify([
+            opened ? `opened ${link.url}` : `open this: ${link.url}`,
+            `query: ${link.query}`,
+            state.lastContext ? `from: ${state.lastContext.question}` : 'from: the graph itself (nothing asked yet)',
+          ].join(String.fromCharCode(10)), opened ? 'info' : 'warning');
           return;
         }
         case 'mcp': {

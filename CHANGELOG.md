@@ -33,6 +33,13 @@ All notable changes to this project are recorded here. The format follows
   relation, its sentence and `coverage: 16 entities, 19 relations, 52 citations`, and a second process reported
   the same pin from the state file.
 
+- **`/pg show`: the context, drawn instead of described.** The UI accepts a link now -
+  `/?graph=<name>&q=<gremlin>&asOf=<instant>` - and the extension builds it from the last answer: the entities it
+  seeded on, the `Relates` edges around them, and the instant the answer was pinned to. The opener is the
+  platform's; when it fails the URL and the query are printed so they can be pasted. A pinned link also makes the
+  timeline show the pin (there is no unfiltered answer to take its extent from), so the canvas opens at the moment
+  the answer was about ([screenshot](docs/screenshots/incident-triage-show-context.png)).
+
 - **P3 of the pi plugin**: it is a pi package now (`keywords: ["pi-package"]` and `pi.extensions` in
   `package.json`, so `pi install ./extensions/phoenixgraph` is the whole install), the MCP transport is a session
   decision (`/pg mcp stdio|http <url>`, with the bearer token taken from `PHOENIXGRAPH_MCP_TOKEN` and remembered

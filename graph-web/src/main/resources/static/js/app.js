@@ -985,6 +985,16 @@
       timeline.from = start;
       timeline.to = Math.max(end, start + DAY);
     }
+    // A link can arrive already pinned (?asOf=…), with no unfiltered answer to take the extent from: use the
+    // windows of what is on screen, so the panel shows the pin instead of hiding itself.
+    if (timeline.from == null && timeline.asOf != null) {
+      const seen = timelineExtent(subgraph || {});
+      if (seen.versioned) {
+        const end = seen.to != null ? seen.to - 1 : Date.now();
+        timeline.from = seen.from != null ? seen.from : end - 30 * DAY;
+        timeline.to = Math.max(end, timeline.from + DAY);
+      }
+    }
     if (timeline.from == null) {
       panel.hidden = true;
       return;
@@ -4025,6 +4035,44 @@
   }
 
   // ---- init ----
+  /**
+   * The link, if there is one: ?graph=<name>&q=<gremlin>&asOf=<iso>. The PhoenixGraph pi extension opens the UI
+   * this way, so "show me what you just used" is one command and no retyping.
+   */
+  function deepLink() {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const graph = params.get('graph');
+      const query = params.get('q') || params.get('query');
+      const asOf = params.get('asOf');
+      if (!graph && !query && !asOf) return null;
+      return { graph, query, asOf };
+    } catch {
+      return null;
+    }
+  }
+
+  /** Applies a link once the graphs are known: select the graph, fill the editor, pin the instant, run it. */
+  async function applyDeepLink(link) {
+    if (!link) return false;
+    if (link.asOf) {
+      const millis = Date.parse(link.asOf.length === 10 ? `${link.asOf}T00:00:00Z` : link.asOf);
+      if (!Number.isNaN(millis)) {
+        timeline.asOf = millis;
+        const label = document.getElementById('timelineLabel');
+        if (label) label.textContent = new Date(millis).toISOString().slice(0, 16).replace('T', ' ');
+      }
+    }
+    if (!link.query) {
+      render();
+      return true;
+    }
+    el.gremlinInput.value = link.query;
+    autoGrowGremlin();
+    await queryCurrent(link.query);
+    return true;
+  }
+
   async function init() {
     refreshRowsTab(); // the result tab is Cypher only: hidden until a Cypher query runs
     const graphs = await fetchGraphs();
@@ -4041,6 +4089,12 @@
       el.graphSelect.appendChild(opt);
     }
     onGraphChange(graphs[0]);
+    // a link wins over the default graph: /pg show opens exactly the context the agent used
+    const deep = deepLink();
+    if (deep && deep.graph) {
+      const named = graphs.find((candidate) => candidate.name === deep.graph);
+      if (named) { el.graphSelect.value = named.name; onGraphChange(named); }
+    }
 
     el.graphSelect.addEventListener('change', () => {
       onGraphChange(graphs.find((g) => g.name === el.graphSelect.value));
@@ -4155,6 +4209,10 @@
 
     applyI18n();
     render();
+    if (deep) {
+      // after the first render, and never fatal: a stale link must not leave the UI empty
+      applyDeepLink(deep).catch(() => {});
+    }
   }
 
   function onGraphChange(g) {
