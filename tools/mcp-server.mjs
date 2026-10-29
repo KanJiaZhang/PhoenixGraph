@@ -17,10 +17,11 @@
 //      each tool). This file holds no tool knowledge: adding a tool in AgentToolCatalog makes it available here,
 //      and a tool that exists here but not there cannot happen. It is also why this server exposes the semantic
 //      tools the moment they are served, without a plugin release.
-//   2. **No session state**, matching the MCP 2026-07-28 revision (sessions, the handshake and server push were
-//      removed): every request stands on its own, and the user-confirmation flow is a *token* returned by the API
+//   2. **No session state** - the revision that removed sessions and server push: every request stands on its
+//      own, and the user-confirmation flow is a *token* returned by the API
 //      (plan hash + expiry, signed), not a server-side conversation. A confirmation therefore survives a restart
-//      of this plugin and works across replicas, which a session-based flow would not.
+//      of this plugin and works across replicas, which a session-based flow would not. The protocol revision is
+//      negotiated with the client (see PROTOCOL_VERSIONS): the features this needs are the same in all of them.
 //
 //   PHOENIXGRAPH_API        the service (default http://localhost:8081)
 //   PHOENIXGRAPH_API_KEY    sent as Authorization: Bearer <key> when security is enabled
@@ -84,7 +85,18 @@ const AUDIT_FILE = process.env.PHOENIXGRAPH_MCP_AUDIT || '';
 const RATE_LIMIT = Number(process.env.PHOENIXGRAPH_MCP_RATE_LIMIT || 0);
 const RATE_WINDOW_MS = 60_000;
 const RATE_STATE = new Map();
-const PROTOCOL = '2026-07-28';
+// The protocol revisions this server speaks. They differ from each other only in features it does not use
+// (sessions, server push, prompts, resources): tools/list and tools/call are the same document, so a client that
+// asks for any of these gets that version back and sees no difference.
+//
+// Negotiating matters: pi 1.3 rejects a server that answers with a revision it does not know
+// ("MCP server selected unsupported protocol version"), and answering every client with the newest one we can
+// imagine is exactly how that happens.
+const PROTOCOL = '2025-11-25';
+const PROTOCOL_VERSIONS = [PROTOCOL, '2025-06-18', '2025-03-26', '2024-11-05'];
+
+/** The revision to answer with: the client's, when we speak it; ours otherwise. */
+const negotiate = (requested) => (PROTOCOL_VERSIONS.includes(requested) ? requested : PROTOCOL);
 const argv = process.argv.slice(2);
 
 const call = async (method, path, body) => {
@@ -214,7 +226,7 @@ const handleResult = async (request, scope = null) => {
   switch (method) {
     case 'initialize':
       return message(id, {
-        protocolVersion: PROTOCOL,
+        protocolVersion: negotiate(params && params.protocolVersion),
         capabilities: { tools: { listChanged: false } },
         serverInfo: { name: 'phoenixgraph', version: '1.0.1' },
         instructions: 'Data questions with provenance: read semantic_model first, then semantic_validate, then '

@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
+const SERVER = join(ROOT, 'tools', 'mcp-server.mjs');
 
 const mockApi = async () => {
   const server = createServer((request, response) => {
@@ -185,4 +186,26 @@ test('MCP audit records calls and the rate limit stops the second one', async ()
     api.close();
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test('the protocol revision is negotiated with the client', async () => {
+  // pi 1.3 rejects a server that selects a revision it does not know ("MCP server selected unsupported protocol
+  // version"), so the server answers with the client's when it speaks it, and with its own latest otherwise.
+  const ask = (protocolVersion) => new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [SERVER], { stdio: ['pipe', 'pipe', 'inherit'] });
+    let out = '';
+    child.stdout.on('data', (chunk) => { out += chunk; });
+    child.on('error', reject);
+    child.on('close', () => {
+      try { resolve(JSON.parse(out.split('\n')[0])); } catch (error) { reject(error); }
+    });
+    child.stdin.end(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion } })}\n`);
+  });
+
+  const latest = await ask('2025-11-25');
+  assert.equal(latest.result.protocolVersion, '2025-11-25', 'the revision pi speaks is echoed back');
+  const older = await ask('2024-11-05');
+  assert.equal(older.result.protocolVersion, '2024-11-05', 'an older one this server speaks is echoed too');
+  const unknown = await ask('2099-01-01');
+  assert.equal(unknown.result.protocolVersion, '2025-11-25', 'an unknown one falls back to our latest');
 });
