@@ -35,6 +35,7 @@
 //   PHOENIXGRAPH_MCP_AUDIT  JSONL file: one line per tools/call with client, tool, graph, status, duration
 //   PHOENIXGRAPH_MCP_RATE_LIMIT  calls per client per minute (default 0 = unlimited)
 import { appendFileSync, mkdirSync } from 'node:fs';
+import { triage as runTriage } from './triage.mjs';
 import { dirname } from 'node:path';
 import { createInterface } from 'node:readline';
 import { createServer } from 'node:http';
@@ -130,10 +131,35 @@ const catalog = async (scope = null) => {
       _binding: bindings[entry.name] || null,
     };
   });
+  // the ranking is not an HTTP binding, but it belongs on the same surface: "what is most likely wrong" is the
+  // question an on-call agent actually asks
+  tools.push(LOCAL_TRIAGE);
   const clientAllows = (name) => !scope || !scope.tools || scope.tools.has('*') || scope.tools.has(name);
   return tools.filter((tool) => (ALLOW_TOOLS.size === 0 || ALLOW_TOOLS.has(tool.name))
     && !DENY_TOOLS.has(tool.name)
     && clientAllows(tool.name));
+};
+
+/**
+ * The one tool that is not an HTTP binding: the triage ranking runs here, over the artifact the API serves, so the
+ * weights and the tie-breaks have a single home (tools/triage.mjs) instead of one per client.
+ */
+const LOCAL_TRIAGE = {
+  name: 'triage',
+  description: 'Rank the causes a fault symptom supports in a PhoenixGraph graph: each candidate with the score '
+    + 'it earned, the sentence behind its causal edge, the documented incidents that failed the same way, and the '
+    + 'checks that would overturn it. Answers as of a validity instant when one is given.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      symptom: { type: 'string', description: 'The fault symptom, in words (what moved, by how much, when)' },
+      graph: { type: 'string', description: 'Graph name (default incident-triage)' },
+      asOf: { type: 'string', description: 'Answer as of this instant (2026-10-21 or an ISO instant)' },
+      k: { type: 'number', description: 'How many seed entities to consider (default 20)' },
+    },
+    required: ['symptom'],
+  },
+  _local: 'triage',
 };
 
 /** Calls one tool by mapping its arguments onto the endpoint the catalog binds it to. */
@@ -142,6 +168,12 @@ const invoke = async (name, args, scope = null) => {
   const tool = tools.find((entry) => entry.name === name);
   if (!tool) {
     throw new Error(`unknown tool '${name}'; this server advertises ${tools.map((t) => t.name).join(', ')}`);
+  }
+  if (tool._local === 'triage') {
+    const asOf = args.asOf ? Date.parse(String(args.asOf).length === 10 ? `${args.asOf}T00:00:00Z` : String(args.asOf)) : null;
+    const result = await runTriage({ endpoint: API, graph: args.graph || 'incident-triage', symptom: args.symptom,
+      k: args.k, asOf: Number.isNaN(asOf) ? null : asOf });
+    return { status: 200, text: JSON.stringify(result), json: result };
   }
   if (!tool._binding) {
     throw new Error(`tool '${name}' has no HTTP binding: the catalog and the server disagree`);
@@ -240,7 +272,9 @@ if (argv.includes('--selftest')) {
   try {
     const tools = await catalog();
     check('the tool catalog is reachable and carries bindings',
-      tools.length >= 10 && tools.every((tool) => tool._binding), `${tools.length} tools`);
+      tools.length >= 10 && tools.every((tool) => tool._binding || tool._local), `${tools.length} tools`);
+    check('the triage ranking is advertised next to the tools that feed it',
+      tools.some((tool) => tool.name === 'triage'), tools.map((tool) => tool.name).join(', '));
     check('the graph tools an agent uses first are advertised',
       ['find_entities', 'related', 'context'].every((name) => tools.some((tool) => tool.name === name)),
       tools.slice(0, 3).map((tool) => tool.name).join(', '));

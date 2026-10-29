@@ -123,16 +123,17 @@ answer contract: quote coverage; every relation carries a sentence; if no name m
 
 ## 5. 分阶段与验收标准
 
-> **P0、P1 已落地**：扩展在 [`extensions/phoenixgraph`](../extensions/phoenixgraph)（`index.js` + `README.md`），
+> **P0、P1、P2 已落地**：扩展在 [`extensions/phoenixgraph`](../extensions/phoenixgraph)（`index.js` + `README.md`），
 > 11 条断言在 `extensions/phoenixgraph/test/extension.test.mjs` 里跑（fake pi / fake fetch，不需要服务或模型），
-> CI 里作为一个独立步骤执行。P2（`pg_triage` + `before_agent_start` 注入）仍是设计。
+> CI 里作为一个独立步骤执行。P2 也在同一目录：`pg_triage` 用 `tools/triage.mjs`（与 MCP server、示例同一份打分），`before_agent_start` 只在该会话确实与图有关时加一个
+`phoenixgraph` **prompt section**（不是整段替换，缓存不失效），`/pg inject on|off` 可关。P3 仍是设计。
 
 
 | 阶段 | 内容 | 验收（可执行） |
 |---|---|---|
 | **P0**（今天） | `mcp.json` 注册现有 MCP server；写 `~/.pi/agent/extensions/phoenixgraph.ts` 只做 `registerMcpServer` | 新会话 `/mcp` 列出 14 工具；`context` 返回 `coverage` |
 | **P1** ✅ | `pg_context`/`pg_asof` + `/pg status|graph|endpoint|timeline` + `appendEntry` + 状态文件 + 项目文件 | 实机：`pg_asof` 钉 2026-10-21 → 新进程仍报同一刻；`pg_context` 返回的是该时刻的图（16 实体 / 19 关系 / 52 引用） |
-| **P2** | `tools/triage.mjs` + `pg_triage`；`before_agent_start` 注入契约与状态；skill 文本 | 用 `symptom.txt` 的真实症状：第一名 = `deploy-48`；把 `asOf` 设到 2026-10-20 后第一名 = `deploy-42`；无关症状返回拒答 |
+| **P2** ✅ | `tools/triage.mjs`（rank/triage/render）+ MCP `triage` 工具 + `pg_triage` + 契约 section + `/pg inject` | 15 条扩展测试 + MCP selftest（15 工具）；实机：钉 2026-10-20 → 第一名 `deploy-42`，并自陈证据薄 |
 | **P3** | pi package 分发（`pi` 字段声明入口）、MCP over HTTP + token/audit/rate-limit、团队 `.pi/phoenixgraph.json` | 另一台机器 `pi install` 后 `/pg status` 直接可用；审计文件里每次 `tools/call` 一行 |
 
 ## 6. 风险与取舍

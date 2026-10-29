@@ -158,7 +158,7 @@ public class AgentController {
      * question object does not have to know which tool will answer it.
      */
     public record ToolRequest(String graph, String question, String entity, String relation, String from,
-                              String to, Integer k, Integer hops, Integer maxHops, String asOf) {
+                              String to, Integer k, Integer hops, Integer maxHops, Object asOf) {
     }
 
     private AgentQuery tools(ToolRequest request) {

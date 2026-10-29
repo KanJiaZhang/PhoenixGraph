@@ -33,6 +33,17 @@ All notable changes to this project are recorded here. The format follows
   relation, its sentence and `coverage: 16 entities, 19 relations, 52 citations`, and a second process reported
   the same pin from the state file.
 
+- **P2 of the pi plugin** (`tools/triage.mjs`, `pg_triage`, the prompt section): the triage ranking is now a
+  library - `rank()` pure over an artifact, `triage()` the two calls that feed it, `render()` the report - so the
+  example, the MCP server and the extension share one set of weights instead of three that agree until someone
+  edits one. The MCP server advertises `triage` as its one locally computed tool (15 tools, selftest green), and
+  the extension adds `pg_triage` plus a `phoenixgraph` **prompt section** carrying the graph, the pinned instant,
+  the tools and the answer contract - a section rather than a replacement, so pi keeps the transcript delta and the
+  provider keeps its cache, added only when the session is about a graph and switchable with `/pg inject on|off`.
+  `ToolRequest.asOf` now takes millis or an ISO instant, so a client that computed an epoch does not 400.
+  Verified in pi: pinned 2026-10-20, `pg_triage` answered `deploy-42` with its sentence and said the ranking rests
+  on a single causal edge.
+
 - **A validity window on vertices and edges** (`validFrom`/`validTo`, epoch millis, either end optional;
   `from <= t < to`). It is the third time an element carries: `createdTime`/`lastUpdatedTime` say what the
   database did, this says what the world did. The ingestion takes the window per document (ISO-8601 or millis),

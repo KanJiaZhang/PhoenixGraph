@@ -15,6 +15,7 @@
  * The second parameter is for tests only; pi calls the factory with `pi` alone.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -66,8 +67,25 @@ export default function phoenixgraphExtension(pi, options = {}) {
   const file = stateFile(home);
 
   /** The state every tool reads: the graph, the endpoint, and the instant the answers are pinned to. */
-  let state = { ...DEFAULTS, asOf: null, timeline: true, lastContext: null };
+  let state = { ...DEFAULTS, asOf: null, timeline: true, inject: true, lastContext: null };
   let loaded = false;
+  let triageLib = null;
+
+  /**
+   * The ranking lives in tools/triage.mjs - one implementation for the example, the MCP server and this
+   * extension. It is imported from the repository on first use, so an extension copied out of the repo says so
+   * instead of running a stale copy of the weights.
+   */
+  async function ranking() {
+    if (triageLib) return triageLib;
+    const path = resolve(HERE, '..', '..', 'tools', 'triage.mjs');
+    if (!existsSync(path)) {
+      throw new Error('pg_triage needs the repository: tools/triage.mjs was not found next to this extension '
+        + '(set PHOENIXGRAPH_REPO to the checkout, or use pg_context / the MCP server for the graph tools)');
+    }
+    triageLib = await import(pathToFileURL(path).href);
+    return triageLib;
+  }
 
   function readFileState() {
     try {
@@ -259,10 +277,93 @@ export default function phoenixgraphExtension(pi, options = {}) {
     },
   });
 
+  // ---- P2: the ranked answer, and the contract around it ------------------------------------------------
+  pi.registerTool({
+    name: 'pg_triage',
+    label: 'PhoenixGraph triage',
+    description: 'Rank the causes a fault symptom supports in the PhoenixGraph graph: each candidate with the score it '
+      + 'earned, the sentence behind its causal edge, the documented incidents that failed the same way before, and '
+      + 'the checks that would overturn it. Answers as of the validity instant the session is pinned to.',
+    promptSnippet: 'pg_triage(symptom) - what is most likely wrong, with the evidence and what would refute it',
+    parameters: {
+      type: 'object',
+      properties: {
+        symptom: { type: 'string', description: 'What moved: the component, the metric, how much, and when' },
+        asOf: { type: 'string', description: 'Answer as of this instant; defaults to the session instant' },
+        graph: { type: 'string', description: 'Graph name; defaults to the session graph' },
+      },
+      required: ['symptom'],
+    },
+    async execute(_toolCallId, params) {
+      const asOf = effectiveAsOf(params.asOf);
+      const graph = params.graph || state.graph;
+      let lib;
+      try {
+        lib = await ranking();
+      } catch (error) {
+        return { content: [{ type: 'text', text: String(error.message || error) }], details: { error: String(error) } };
+      }
+      let result;
+      try {
+        result = await lib.triage({ endpoint: state.endpoint, graph, symptom: params.symptom, asOf: asOf ? Date.parse(asOf) : null, fetchImpl: call });
+      } catch (error) {
+        return {
+          content: [{ type: 'text', text: `PhoenixGraph is not answering at ${state.endpoint} (${error.message}). `
+            + 'Start it with tools/start-phoenixgraph.sh --no-build, or set the endpoint with /pg endpoint <url>.' }],
+          details: { error: String(error), graph, endpoint: state.endpoint },
+        };
+      }
+      return {
+        content: [{ type: 'text', text: lib.render(result) }],
+        details: { graph, asOf, result },
+      };
+    },
+  });
+
+  /**
+   * The block a model sees on every turn: the graph, the instant, the tools, and the answer contract. It is a
+   * *section* of the structured prompt (mutated in place), not a replacement - pi keeps the transcript delta and
+   * the provider keeps its cache. It is only added when this session is actually about a graph: a pin, a previous
+   * answer, a project file, or the user running /pg.
+   */
+  function contextBlock() {
+    const pinned = state.timeline && state.asOf;
+    return [
+      `[phoenixgraph] graph=${state.graph} endpoint=${state.endpoint}`,
+      pinned
+        ? `answers are pinned to ${state.asOf}: facts outside their validity window are hidden (pg_asof moves it)`
+        : 'answers use every fact the graph has (pg_asof instants pin them to a moment)',
+      'tools: pg_triage(symptom) ranks causes with their evidence; pg_context(question) returns cited context; pg_asof(instant)',
+      'answer contract: quote the sentence and the coverage behind every claim; when the ranking is thin or there is',
+      'no relation at all, say so - a missing edge is a finding, not a gap to fill.',
+    ].join('\n');
+  }
+
+  pi.on('before_agent_start', async (event, ctx) => {
+    reconstruct(ctx);
+    if (!state.inject) return;
+    const aware = Boolean(state.lastContext) || Boolean(state.asOf) || loadedFromProject(ctx);
+    if (!aware) return;
+    const options = event && event.systemPromptOptions;
+    if (options && typeof options === 'object') {
+      // a named section, so later turns can replace it without rebuilding the prompt
+      options.sections = { ...(options.sections || {}), phoenixgraph: contextBlock() };
+    }
+  });
+
+  /** Whether the current project carries a .pi/phoenixgraph.json (a team that pinned a graph). */
+  function loadedFromProject(ctx) {
+    try {
+      return existsSync(join(ctx?.cwd || '', '.pi', 'phoenixgraph.json'));
+    } catch {
+      return false;
+    }
+  }
+
   // ---- P1: the switchboard ------------------------------------------------------------------------------
   pi.registerCommand('pg', {
     description: 'PhoenixGraph: status | graph <name> | endpoint <url> | timeline on|off|<instant>',
-    getArgumentCompletions: (prefix) => ['status', 'graph', 'endpoint', 'timeline']
+    getArgumentCompletions: (prefix) => ['status', 'graph', 'endpoint', 'timeline', 'inject']
       .filter((word) => word.startsWith(prefix)).map((word) => ({ value: word, label: word })),
     async handler(args, ctx) {
       reconstruct(ctx);
@@ -301,12 +402,19 @@ export default function phoenixgraphExtension(pi, options = {}) {
           }
           return;
         }
+        case 'inject': {
+          if (!value) { ctx.ui.notify(`inject: ${state.inject ? 'on' : 'off'}`, 'info'); return; }
+          const on = value.toLowerCase() !== 'off';
+          commit({ inject: on }, { notify: () => ctx.ui.notify(`inject: ${on ? 'on' : 'off'}`, 'info') });
+          return;
+        }
         case 'status':
         default: {
           const lines = [
             `graph:    ${state.graph}`,
             `endpoint: ${state.endpoint}`,
             `timeline: ${state.timeline && state.asOf ? `pinned to ${state.asOf}` : 'off (answers use every fact)'}`,
+            `inject:   ${state.inject ? 'on (the contract is in the prompt when this session is about a graph)' : 'off'}`,
             state.lastContext
               ? `last:     ${state.lastContext.question} (${state.lastContext.graph}${state.lastContext.asOf ? `, as of ${state.lastContext.asOf}` : ''})`
               : 'last:     nothing asked yet',

@@ -80,7 +80,7 @@ test('P0: the MCP server is registered, exposed to codemode, pointing at a real 
 
 test('P1: the two tools and the /pg command are registered', () => {
   const { pi } = setup();
-  assert.deepEqual([...pi.tools.keys()].sort(), ['pg_asof', 'pg_context']);
+  assert.deepEqual([...pi.tools.keys()].sort(), ['pg_asof', 'pg_context', 'pg_triage']);
   assert.ok(pi.commands.get('pg'), '/pg is registered');
   assert.equal(pi.tools.get('pg_context').parameters.required[0], 'question');
 });
@@ -197,4 +197,108 @@ test('P1: a question that names nothing is reported as a refusal, not as an empt
   pi.handlers.get('session_start')({}, ctx);
   const answer = await pi.tools.get('pg_context').execute('t1', { question: 'anything' }, undefined, undefined, ctx);
   assert.match(answer.content[0].text, /no relation was found: say so, do not fill the gap/);
+});
+
+// ---- P2: the ranked answer and the contract in the prompt --------------------------------------------------
+const artifact = {
+  graph: 'incident-triage',
+  entities: [
+    { name: 'redis-cpu-percent', type: 'Metric' },
+    { name: 'error-rate-5xx', type: 'Metric' },
+    { name: 'deploy-48', type: 'Deploy' },
+    { name: 'deploy-42', type: 'Deploy' },
+  ],
+  relations: [
+    { head: 'redis-cpu-percent', relation: 'affects', tail: 'redis-cache' },
+    { head: 'error-rate-5xx', relation: 'affects', tail: 'checkout-api' },
+    { head: 'deploy-48', relation: 'caused', tail: 'churn', sentence: 'deploy-48 caused churn.', validFrom: Date.parse('2026-10-24') },
+    { head: 'deploy-48', relation: 'affects', tail: 'redis-cache' },
+    { head: 'deploy-42', relation: 'caused', tail: 'storm', sentence: 'deploy-42 caused storm.', validFrom: Date.parse('2026-09-12') },
+    { head: 'churn', relation: 'affects', tail: 'redis-cache' },
+    { head: 'storm', relation: 'affects', tail: 'redis-cache' },
+    { head: 'INC-1042', relation: 'reported', tail: 'storm' },
+  ],
+  chunks: [],
+};
+
+function triageFetch() {
+  const calls = [];
+  const impl = async (url, init) => {
+    calls.push({ url, body: init?.body ? JSON.parse(init.body) : null });
+    const payload = url.includes('/agent/index/') ? artifact
+      : {
+        entities: [
+          { name: 'redis-cpu-percent', type: 'Metric', via: 'name' },
+          { name: 'error-rate-5xx', type: 'Metric', via: 'name' },
+        ],
+      };
+    return { ok: true, status: 200, json: async () => payload, text: async () => JSON.stringify(payload) };
+  };
+  impl.calls = calls;
+  return impl;
+}
+
+test('P2: pg_triage ranks the causes and renders the evidence', async () => {
+  const pi = fakePi();
+  const fetchImpl = triageFetch();
+  phoenixgraphExtension(pi, { home: mkdtempSync(join(tmpdir(), 'pg-ext-home-')), fetch: fetchImpl });
+  const ctx = fakeContext();
+  pi.handlers.get('session_start')({}, ctx);
+
+  const answer = await pi.tools.get('pg_triage').execute('t1', { symptom: 'redis cpu 95%, p99 up' }, undefined, undefined, ctx);
+  assert.match(answer.content[0].text, /1\. deploy-48 -> churn\s+score/);
+  assert.match(answer.content[0].text, /"deploy-48 caused churn\."/, 'the sentence behind the edge is quoted');
+  assert.match(answer.content[0].text, /most likely: deploy-48/);
+  assert.match(answer.content[0].text, /what would overturn it:/);
+  assert.equal(answer.details.result.ranked[0].cause, 'deploy-48');
+});
+
+test('P2: pg_triage answers as of the pinned instant, so a later change is not a candidate', async () => {
+  const pi = fakePi();
+  const fetchImpl = triageFetch();
+  phoenixgraphExtension(pi, { home: mkdtempSync(join(tmpdir(), 'pg-ext-home-')), fetch: fetchImpl });
+  const ctx = fakeContext();
+  pi.handlers.get('session_start')({}, ctx);
+  await pi.tools.get('pg_asof').execute('t0', { instant: '2026-10-20' }, undefined, undefined, ctx);
+  const answer = await pi.tools.get('pg_triage').execute('t1', { symptom: 'redis cpu 95%' }, undefined, undefined, ctx);
+  assert.equal(answer.details.result.ranked[0].cause, 'deploy-42', 'deploy-48 did not exist on 2026-10-20');
+  assert.ok(fetchImpl.calls.some((call) => call.body && call.body.asOf === '2026-10-20T00:00:00.000Z'));
+});
+
+test('P2: a symptom that names nothing is a refusal, and the model is told not to name a cause', async () => {
+  const pi = fakePi();
+  const fetchImpl = async (url) => {
+    const payload = url.includes('/agent/index/') ? artifact : { entities: [] };
+    return { ok: true, status: 200, json: async () => payload, text: async () => JSON.stringify(payload) };
+  };
+  phoenixgraphExtension(pi, { home: mkdtempSync(join(tmpdir(), 'pg-ext-home-')), fetch: fetchImpl });
+  const ctx = fakeContext();
+  pi.handlers.get('session_start')({}, ctx);
+  const answer = await pi.tools.get('pg_triage').execute('t1', { symptom: 'the certificate expiring?' }, undefined, undefined, ctx);
+  assert.match(answer.content[0].text, /refused: no entity in the graph is named by this symptom/);
+  assert.match(answer.content[0].text, /Do not name a cause/);
+});
+
+test('P2: the contract is a prompt section, only when the session is about a graph', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'pg-ext-home-'));
+  const first = setup({ home });
+  const quiet = { systemPromptOptions: { sections: { preamble: 'x' } } };
+  await first.pi.handlers.get('before_agent_start')(quiet, first.ctx);
+  assert.equal(quiet.systemPromptOptions.sections.phoenixgraph, undefined,
+    'a fresh session with no graph history stays quiet');
+
+  await first.pi.tools.get('pg_asof').execute('t1', { instant: '2026-10-21' }, undefined, undefined, first.ctx);
+  const aware = { systemPromptOptions: { sections: { preamble: 'x' } } };
+  await first.pi.handlers.get('before_agent_start')(aware, first.ctx);
+  const block = aware.systemPromptOptions.sections.phoenixgraph;
+  assert.match(block, /\[phoenixgraph\] graph=incident-triage/);
+  assert.match(block, /pinned to 2026-10-21T00:00:00\.000Z/);
+  assert.match(block, /pg_triage\(symptom\)/);
+  assert.match(block, /answer contract: quote the sentence and the coverage/);
+  assert.equal(aware.systemPromptOptions.sections.preamble, 'x', 'the other sections are untouched');
+
+  await first.pi.commands.get('pg').handler('inject off', first.ctx);
+  const muted = { systemPromptOptions: { sections: {} } };
+  await first.pi.handlers.get('before_agent_start')(muted, first.ctx);
+  assert.equal(muted.systemPromptOptions.sections.phoenixgraph, undefined, '/pg inject off silences it');
 });

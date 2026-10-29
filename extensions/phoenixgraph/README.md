@@ -7,7 +7,12 @@ The pi extension of [`docs/PI-PLUGIN.md`](../../docs/PI-PLUGIN.md), P0 and P1 of
 - **P1 - the switchboard.** Two tools and one command, plus a *sticky* validity instant: `pg_asof` pins the answers
   to an instant, every later `pg_context` inherits it, and it survives the conversation.
 
-Not here yet (P2 of the plan): `pg_triage`, and the `before_agent_start` block that states the answer contract.
+P2 - the ranked answer and the contract. `pg_triage` ranks the causes a symptom supports (the weights live in
+[`tools/triage.mjs`](../../tools/triage.mjs), one implementation shared with the MCP server and the example), and a
+short `phoenixgraph` prompt **section** carries the graph, the instant, the tools and the answer contract - added
+only when the session is actually about a graph, and switchable with `/pg inject on|off`.
+
+Not here yet (P3 of the plan): distribution as a pi package, MCP over HTTP with tokens/audit, and `/pg ingest`.
 
 ## Install
 
@@ -31,6 +36,7 @@ repository; set `PHOENIXGRAPH_REPO` when the extension is copied somewhere else.
 |---|---|---|
 | tool | `pg_context(question, k?, hops?, asOf?, graph?)` | entities, relations with the sentence each was read from, citations and a coverage count - the same document `POST /api/v1/agent/context` returns, rendered for a model |
 | tool | `pg_asof(instant?, on?)` | pins the answers to an instant (`2026-10-21`), clears it (`on: false`), or reports it |
+| tool | `pg_triage(symptom, asOf?, graph?)` | ranks the causes the symptom supports: score, reasons, the sentence behind each causal edge, the documented precedent, and what would overturn it |
 | command | `/pg status` | graph, endpoint, the pinned instant, the last question asked |
 | command | `/pg graph <name>` · `/pg endpoint <url>` | which graph and which service this session talks to |
 | command | `/pg timeline on\|off\|<instant>` | the same switch as the tool, from the keyboard |
@@ -54,7 +60,7 @@ resume give the instant that branch was asking from. Nothing is written outside 
 ## Verify it
 
 ```bash
-node --test extensions/phoenixgraph/test/*.test.mjs   # 11 assertions, no pi, no service (a fake pi/fetch)
+node --test extensions/phoenixgraph/test/*.test.mjs   # 15 assertions, no pi, no service (a fake pi/fetch)
 ```
 
 What the tests pin: the MCP server is registered and `codemode`-exposed, both tools and `/pg` exist, an instant is
@@ -62,7 +68,10 @@ normalised (`2026-10-21` -> `2026-10-21T00:00:00.000Z`) and a bad one is refused
 `pg_context` inherits the pin and quotes the sentence and coverage, a per-call `asOf` overrides without moving it,
 `on: false` clears it and stops sending it, the file carries the pin into a new conversation and a branch overrides
 the file, a project file pins the graph but not the instant, `/pg` reports status, an unreachable service is
-explained instead of thrown, and a question that names nothing is reported as a refusal.
+explained instead of thrown, and a question that names nothing is reported as a refusal. P2 adds: `pg_triage` ranks and quotes the sentence,
+it answers as of the pinned instant (a later release is not a candidate), a symptom that names nothing is a
+refusal the model is told not to override, and the contract section appears only for a graph-aware session and
+disappears with `/pg inject off`.
 
 Verified once in pi itself (`pi --extension ./extensions/phoenixgraph/index.js -p "…"`): the model pinned
 2026-10-21, asked `pg_context`, and answered with the relation, its sentence and `coverage: 16 entities, 19
