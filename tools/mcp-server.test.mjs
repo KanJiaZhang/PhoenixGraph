@@ -90,7 +90,7 @@ test('MCP HTTP requires its token and passes the graph through to the API', asyn
     assert.equal(initialize.body.result.serverInfo.name, 'phoenixgraph');
 
     const list = await rpc(port, { jsonrpc: '2.0', id: 3, method: 'tools/list' });
-    assert.deepEqual(list.body.result.tools.map((tool) => tool.name), ['find_entities', 'related']);
+    assert.deepEqual(list.body.result.tools.map((tool) => tool.name), ['find_entities', 'related', 'triage']);
 
     const call = await rpc(port, {
       jsonrpc: '2.0', id: 4, method: 'tools/call',
@@ -146,7 +146,7 @@ test('per-client tokens see only their tools', async () => {
     assert.deepEqual(agent.body.result.tools.map((tool) => tool.name), ['find_entities']);
 
     const admin = await rpc(port, { jsonrpc: '2.0', id: 2, method: 'tools/list' }, 'admin-token');
-    assert.deepEqual(admin.body.result.tools.map((tool) => tool.name), ['find_entities', 'related']);
+    assert.deepEqual(admin.body.result.tools.map((tool) => tool.name), ['find_entities', 'related', 'triage']);
 
     const rejected = await rpc(port, { jsonrpc: '2.0', id: 3, method: 'tools/list' }, 'no-such-token');
     assert.equal(rejected.status, 401);
