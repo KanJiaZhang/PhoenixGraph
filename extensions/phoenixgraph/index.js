@@ -675,10 +675,96 @@ export default function phoenixgraphExtension(pi, options = {}) {
     return options;
   }
 
+  // ---- /pg doctor: the whole chain, one screen --------------------------------------------------------------
+  // "the graph is empty" can mean six different things (no service, no graph, no artifact, no seeds, a pin hiding
+  // the facts, a UI that never ran the query). This walks the chain in order and prints what it finds, so the next
+  // report is a fact rather than a guess.
+  async function doctor(ctx) {
+    const lines = [];
+    const ok = (label, detail) => lines.push(`ok    ${label}${detail ? ` - ${detail}` : ''}`);
+    const bad = (label, detail) => lines.push(`FAIL  ${label}${detail ? ` - ${detail}` : ''}`);
+    const base = state.endpoint.replace(/\/+$/, '');
+
+    lines.push(`graph ${state.graph} · endpoint ${base} · timeline ${state.timeline && state.asOf ? `pinned to ${state.asOf}` : 'off'}`);
+
+    // 1. the service
+    let graphs = null;
+    try {
+      const response = await call(`${base}/api/v1/graphs`);
+      graphs = await response.json();
+      ok('service is answering', `${Array.isArray(graphs) ? graphs.length : '?'} graph(s)`);
+    } catch (error) {
+      bad('service is not answering', `${error.message} - start it with tools/start-phoenixgraph.sh --no-build`);
+      return lines.join('\n');
+    }
+
+    // 2. the graph is served
+    const served = Array.isArray(graphs) && graphs.some((entry) => entry.name === state.graph);
+    if (served) ok(`graph '${state.graph}' is served`);
+    else bad(`graph '${state.graph}' is not served`, `available: ${(graphs || []).map((entry) => entry.name).slice(0, 8).join(', ')}`);
+
+    // 3. the artifact (what the tools read for recall)
+    let index = null;
+    try {
+      const response = await call(`${base}/api/v1/agent/index/${encodeURIComponent(state.graph)}`);
+      index = await response.json();
+      const versioned = (index.relations || []).filter((relation) => relation.validFrom != null || relation.validTo != null).length;
+      ok('artifact is readable', `${(index.entities || []).length} entities, ${(index.relations || []).length} relations,`
+        + ` ${versioned} with a validity window`);
+    } catch (error) {
+      bad('artifact is not readable', `${error.message} - ingest the graph first (node examples/incident-triage/triage.mjs --reingest)`);
+    }
+
+    // 4. the traversal /pg show would draw, with and without the pin
+    const link = await contextLink(undefined);
+    if (!link.query) {
+      bad('no traversal to draw', link.source);
+    } else {
+      const count = async (asOf) => {
+        const answer = await postJson('/api/v1/query', {
+          graphName: state.graph, query: link.query, returnSubgraph: true, includeResult: true, asOf,
+        });
+        return (answer.subgraph && answer.subgraph.vertices ? answer.subgraph.vertices.length : 0);
+      };
+      try {
+        const now = await count(undefined);
+        if (now) ok('/pg show would draw', `${now} vertices (${link.source})`);
+        else bad('/pg show would draw nothing', `the seeds are not in the graph: ${link.query}`);
+        if (state.timeline && state.asOf) {
+          const pinned = await count(state.asOf);
+          if (pinned) ok(`the pin (${state.asOf}) leaves`, `${pinned} vertices`);
+          else bad(`the pin (${state.asOf}) hides everything`, 'facts outside their window are hidden by design - /pg timeline off');
+        }
+      } catch (error) {
+        bad('the query API refused the traversal', error.message);
+      }
+    }
+
+    // 5. the UI, and whether the build that serves it understands the link
+    const ui = (state.ui || state.endpoint.replace(/:\d+$/, ':8080')).replace(/\/+$/, '');
+    try {
+      const page = await call(`${ui}/`);
+      const script = await call(`${ui}/js/app.js`);
+      const body = await script.text();
+      const deepLinks = body.includes('applyDeepLink');
+      if (page.ok && deepLinks) ok('the UI is up and understands ?graph=&q=&asOf=', ui);
+      else if (page.ok) bad('the UI is up but its app.js predates deep links', `${ui} - rebuild the web module, or hard-reload the tab`);
+      else bad('the UI is not answering', `${ui} (${page.status})`);
+    } catch (error) {
+      bad('the UI is not answering', `${error.message} - tools/start-phoenixgraph.sh starts it on 8080`);
+    }
+
+    // 6. the session state, which is what decides the pin
+    lines.push(`state: graph=${state.graph} asOf=${state.asOf || 'none'} timeline=${state.timeline ? 'on' : 'off'}`
+      + ` lastContext=${state.lastContext ? state.lastContext.question : 'none'}`);
+    lines.push(`cwd: ${ctx && ctx.cwd ? ctx.cwd : '?'}`);
+    return lines.join('\n');
+  }
+
   // ---- P1: the switchboard ------------------------------------------------------------------------------
   pi.registerCommand('pg', {
-    description: 'PhoenixGraph: status | show [entity] | remember [graph] | note <sentence> | ingest <path> [--apply] [--from <date>] | graph <name> | endpoint <url> | timeline on|off|<instant> | mcp stdio|url | inject on|off',
-    getArgumentCompletions: (prefix) => ['status', 'show', 'remember', 'note', 'ingest', 'graph', 'endpoint', 'timeline', 'inject', 'mcp']
+    description: 'PhoenixGraph: status | doctor | show [entity] | remember [graph] | note <sentence> | ingest <path> [--apply] [--from <date>] | graph <name> | endpoint <url> | timeline on|off|<instant> | mcp stdio|url | inject on|off',
+    getArgumentCompletions: (prefix) => ['status', 'doctor', 'show', 'remember', 'note', 'ingest', 'graph', 'endpoint', 'timeline', 'inject', 'mcp']
       .filter((word) => word.startsWith(prefix)).map((word) => ({ value: word, label: word })),
     async handler(args, ctx) {
       reconstruct(ctx);
@@ -785,6 +871,10 @@ ${ingestSummary(answer)}`, 'info');
           } catch (error) {
             ctx.ui.notify(`PhoenixGraph is not answering at ${state.endpoint} (${error.message})`, 'error');
           }
+          return;
+        }
+        case 'doctor': {
+          ctx.ui.notify(await doctor(ctx), 'info');
           return;
         }
         case 'show': {

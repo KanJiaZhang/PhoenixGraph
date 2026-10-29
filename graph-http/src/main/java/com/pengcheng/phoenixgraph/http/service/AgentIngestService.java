@@ -575,28 +575,72 @@ public class AgentIngestService {
         if (extended > 0) {
             notes.add(extended + " entities carried chunks over from an earlier ingestion of '" + graph + "'");
         }
+        notes.add("artifact now holds " + merged.entities().size() + " entities and " + merged.relations().size()
+                + " relations (this ingestion contributed " + current.relations().size() + ")");
         return merged;
     }
 
-    /** The pure merge: an entity keeps its old chunks plus the new ones, keyed by id. */
+    /**
+     * The pure merge: an ingestion is additive into the graph, so the artifact it writes has to be additive too -
+     * the entities and relations of the earlier ingestions, with this one's reading winning on a collision.
+     *
+     * <p>It used to merge entity chunk lists and then take this ingestion's relations wholesale, so ingesting one
+     * new document left the artifact holding that document's facts only: the graph kept its sixty-three relations,
+     * the artifact (which recall and triage read) kept two, and every question answered "no relation found". A graph
+     * and an artifact that disagree is the one state these tools cannot survive.
+     */
     static AgentIndex mergeChunks(AgentIndex previous, AgentIndex current) {
-        Map<String, Set<String>> prior = new LinkedHashMap<>();
+        Map<String, AgentIndex.Entity> prior = new LinkedHashMap<>();
         for (AgentIndex.Entity entity : previous.entities()) {
-            prior.put(entity.id(), new LinkedHashSet<>(entity.chunkIds()));
+            prior.put(entity.id(), entity);
         }
         List<AgentIndex.Entity> merged = new ArrayList<>();
         for (AgentIndex.Entity entity : current.entities()) {
-            Set<String> ids = new LinkedHashSet<>(prior.getOrDefault(entity.id(), Set.of()));
-            ids.addAll(entity.chunkIds());
-            if (ids.size() == entity.chunkIds().size()) {
+            AgentIndex.Entity earlier = prior.remove(entity.id());
+            if (earlier == null) {
                 merged.add(entity);
-            } else {
-                merged.add(new AgentIndex.Entity(entity.id(), entity.vertexType(), entity.type(), entity.name(),
-                        entity.description(), entity.vector(), List.copyOf(ids), entity.cites(), entity.aliases()));
+                continue;
             }
+            Set<String> ids = new LinkedHashSet<>(earlier.chunkIds());
+            ids.addAll(entity.chunkIds());
+            Set<String> cited = new LinkedHashSet<>(earlier.cites());
+            cited.addAll(entity.cites());
+            Set<String> aliases = new LinkedHashSet<>(earlier.aliases());
+            aliases.addAll(entity.aliases());
+            // the description and the vector are the current reading (a context card is a snapshot, not a sum);
+            // what accumulates is where it was read - the chunk list and its citations
+            merged.add(new AgentIndex.Entity(entity.id(), entity.vertexType(), entity.type(), entity.name(),
+                    entity.description(), entity.vector(), List.copyOf(ids), List.copyOf(cited),
+                    List.copyOf(aliases),
+                    earlier.validFrom() == null ? entity.validFrom() : earlier.validFrom(),
+                    earlier.validTo() == null ? entity.validTo() : earlier.validTo()));
         }
+        // an entity this ingestion did not mention is still in the graph, so it stays in the artifact
+        merged.addAll(prior.values());
+
+        Map<String, AgentIndex.Relation> relations = new LinkedHashMap<>();
+        for (AgentIndex.Relation relation : previous.relations()) {
+            relations.put(relationKey(relation), relation);
+        }
+        for (AgentIndex.Relation relation : current.relations()) {
+            relations.put(relationKey(relation), relation);
+        }
+
+        Map<String, AgentIndex.Chunk> chunks = new LinkedHashMap<>();
+        for (AgentIndex.Chunk chunk : previous.chunks()) {
+            chunks.put(chunk.chunkId(), chunk);
+        }
+        for (AgentIndex.Chunk chunk : current.chunks()) {
+            chunks.put(chunk.chunkId(), chunk);
+        }
+
         return new AgentIndex(current.graph(), current.embedding(), current.dimensions(), current.createdAt(),
-                merged, current.relations(), current.chunks(), current.quality());
+                merged, List.copyOf(relations.values()), List.copyOf(chunks.values()), current.quality());
+    }
+
+    /** The identity of a relation in the artifact: the same triple is one fact, whichever ingestion wrote it. */
+    private static String relationKey(AgentIndex.Relation relation) {
+        return relation.head() + '\u001f' + relation.relation() + '\u001f' + relation.tail();
     }
 
     // ------------------------------------------------------------------ the review workflow: merging two entities

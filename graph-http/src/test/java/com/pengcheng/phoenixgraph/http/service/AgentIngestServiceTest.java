@@ -137,6 +137,31 @@ class AgentIngestServiceTest {
                 .equals(AgentIngestService.relationEdgeId("a", "b-c", "d")), "a dash inside a name cannot collide");
     }
 
+    @Test
+    void aSecondIngestionAddsToTheArtifactInsteadOfReplacingIt() {
+        // The graph is additive, so the artifact must be too: an ingestion used to keep only its own relations, and
+        // after one new document the artifact held 2 of the graph's 63 - every tool then answered "no relation
+        // found" while the graph still had the edges. This is that regression, at the level of the merge.
+        AgentIndex previous = new AgentIndex("g", "hashing-64", 64, "now",
+                List.of(new AgentIndex.Entity("deploy-42", "Entity", "Deploy", "deploy-42", "card",
+                        new float[] {1f}, List.of("c1"), List.of("doc §1"))),
+                List.of(
+                        new AgentIndex.Relation("deploy-42", "caused", "storm", "caused", "c1", "doc §1", "deploy-42 caused storm."),
+                        new AgentIndex.Relation("storm", "affects", "redis-cache", "affects", "c1", "doc §1", "storm affects redis-cache.")),
+                List.of(new AgentIndex.Chunk("c1", "doc", "doc", 0, "deploy-42 caused storm.")), Map.of());
+        AgentIndex current = new AgentIndex("g", "hashing-64", 64, "now",
+                List.of(new AgentIndex.Entity("deploy-48", "Entity", "Deploy", "deploy-48", "card",
+                        new float[] {2f}, List.of("c2"), List.of("doc §2"))),
+                List.of(new AgentIndex.Relation("deploy-48", "caused", "churn", "caused", "c2", "doc §2", "deploy-48 caused churn.")),
+                List.of(new AgentIndex.Chunk("c2", "doc", "doc", 1, "deploy-48 caused churn.")), Map.of());
+
+        AgentIndex merged = AgentIngestService.mergeChunks(previous, current);
+
+        assertEquals(3, merged.relations().size(), merged.relations().toString());
+        assertEquals(2, merged.entities().size(), "the entity this ingestion did not mention survives");
+        assertEquals(2, merged.chunks().size(), "and so does its chunk");
+    }
+
     private static AgentIndex sampleIndex() {
         return new AgentIndex(
                 "test-graph", "hashing-64", 64, "now",
