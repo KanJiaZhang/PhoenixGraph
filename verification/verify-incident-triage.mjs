@@ -128,6 +128,29 @@ if (libRun.status !== 0) {
     JSON.stringify(shape(viaLib.ranked).slice(0, 3)));
 }
 
+// ---- 6. an ingestion adds to the artifact, it never shrinks it ------------------------------------------
+console.log('--- 6. a second ingestion adds to the artifact instead of shrinking it');
+const artifactOf = async () => (await (await fetch(`${API}/api/v1/agent/index/${GRAPH}`)).json());
+const beforeIngest = await artifactOf();
+const probe = await (await fetch(`${API}/api/v1/agent/ingest`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json; charset=utf-8' },
+  body: JSON.stringify({
+    graph: GRAPH, apply: true, rulePack: 'incident',
+    dictionary: { 'checkout-api': 'Service', 'redis-cache': 'Datastore' },
+    documents: [{ id: 'probe-artifact', title: 'probe',
+      text: 'checkout-api depends on redis-cache.', validFrom: '2026-10-29' }],
+  }),
+})).json();
+const afterIngest = await artifactOf();
+check('the probe ingestion writes', probe.applied === true, String(probe.applied));
+check('the artifact keeps every earlier relation', afterIngest.relations.length >= beforeIngest.relations.length,
+  `${beforeIngest.relations.length} then ${afterIngest.relations.length}`);
+check('and it gains the one the probe read',
+  afterIngest.relations.some((relation) => relation.head === 'checkout-api' && relation.tail === 'redis-cache'),
+  afterIngest.relations.length + ' relations');
+check('the entities survived too', afterIngest.entities.length >= beforeIngest.entities.length,
+  `${beforeIngest.entities.length} then ${afterIngest.entities.length}`);
+
 console.log('');
 console.log(failures === 0
   ? 'the triage case holds: four RCAs become one graph, the spellings resolve, the change window outranks the '

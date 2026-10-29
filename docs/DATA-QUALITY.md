@@ -140,3 +140,16 @@
 | **发现方式** | 值班演练（`verification/verify-alert-drill.mjs`）——**逐条复现告警条件并读它读的那个数**，而不是只检查规则文件写得对不对 |
 | **影响** | 该缺陷存在时：延迟告警可能在一个空闲图上持续触发（噪音），或者在被恢复历史压低的实例上失去意义；修复后：`p99` 反映最近 5 分钟，可以自然消除 ✓ |
 | **验证** | `verification/verify-alert-drill.mjs`：6 条告警的度量都会随条件变化（拒绝计数 0→3、存储失败计数 0→2、错误计数、服务实例自己的 p99 是活值）✓；`LatencyStatsTest` 20 条单测 ✓ |
+
+## 13. 图与 artifact 不一致：第二次摄取把 artifact 清成只剩新文档（已修复，2026-10-29）
+
+| 项 | 内容 |
+|---|---|
+| **现象** | `/pg ingest 一个文件`（或 `/pg remember`、`/pg note`、任何第二次摄取）之后，agent 说"图里没有关系"、`pg_triage` 排不出候选、`/pg context` 只有实体没有边；而 UI 从图里查仍然能画出 23 个点 ✓ |
+| **根因** | artifact（`<graph>.agent.json`）是召回、排因、`context` 读取的那个表面。摄取时的 `mergeChunks` 只把**实体的 chunk 列表**与旧 artifact 合并，**关系整段用本次摄取的结果替换**：图里 63 条关系、artifact 里 2 条。两个表面各说各话，工具自然"查不到" |
+| **为什么隐蔽** | 质量报告读的是**本次抽取**的结果（`41 entities, 2 relations`），不是合并后的 artifact；UI 与 `/agent/context` 的基础查询走的是**图**。两条路径都"看起来正常"，只有把 artifact 单独读出来才看得到差集 |
+| **已修复** | `mergeChunks` 变成**加法合并**：实体（chunk / cites / aliases 取并集，描述与向量用当前读数，有效期取并集，本次未提及的实体原样保留）、关系（按 `(head, relation, tail)` 三元组，当前读数胜出）、chunk（按 id）。摄取结果的 `notes` 现在写明「artifact now holds N entities and M relations (this ingestion contributed K)」 |
+| **发现方式** | 用户三次报告"ingest 之后图还是空的"，前两次都被"图能画出 23 个点"误导；第三次改为**先读 artifact 再读图**（`/pg doctor` 的第一个非服务检查就是 artifact），一眼看到 `41 entities, 2 relations` |
+| **影响** | 该缺陷存在时：任何第二次摄取都会让 agent 侧的召回退化到"只有刚读的那篇文档"，历史关系全部不可见，而图本身完好 —— 一个**只影响工具、不影响画布**的静默退化 |
+| **验证** | `AgentIngestServiceTest.aSecondIngestionAddsToTheArtifactInsteadOfReplacingIt`（3 条关系 + 2 个实体 + 2 个 chunk 全部保留）；实测：语料 63 条 → 单文档摄取 → 64 条 ✓ |
+| **同类风险（已加护栏）** | 一切"图里有、artifact 里没有"的状态都表现为工具说"没有"。`/pg doctor`（pi 扩展）按序检查：服务 → 图是否被服务 → **artifact 是否可读且计数合理** → `/pg show` 会画多少（带钉点/不带各一次）→ UI 是否支持深链 → 会话状态，任何一环断掉都指名道姓 |
