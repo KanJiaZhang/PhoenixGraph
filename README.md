@@ -226,7 +226,7 @@ print(answer["coverage"])
 | AI agent toolkit and MCP | [docs/AI-TOOLKIT.md](docs/AI-TOOLKIT.md) |
 | Knowledge graph context and data-agent walkthrough | [docs/USE-CASES.md](docs/USE-CASES.md) |
 | Worked analyses and refusals | [docs/AGENT-CASES.md](docs/AGENT-CASES.md) · [docs/DATA-AGENT-CASES.md](docs/DATA-AGENT-CASES.md) |
-| Use it from a pi agent | [extensions/phoenixgraph](extensions/phoenixgraph/README.md) (P0+P1) · [docs/PI-PLUGIN.md](docs/PI-PLUGIN.md) (design) |
+| Use it from a pi agent | [extensions/phoenixgraph](extensions/phoenixgraph/README.md) — tools, `/pg` commands, `/pg show`, `/pg remember` · [docs/PI-PLUGIN.md](docs/PI-PLUGIN.md) (design) |
 | Incident triage from a symptom — a worked case with the UI and the ranking | [docs/INCIDENT-TRIAGE.md](docs/INCIDENT-TRIAGE.md) · [examples/incident-triage](examples/incident-triage) |
 | End-to-end cases (the product in action) | [docs/AI-CONTEXT-ONE-PAGER.md](docs/AI-CONTEXT-ONE-PAGER.md) · [docs/END-TO-END.md](docs/END-TO-END.md) · [docs/AI-CONTEXT-CASES.md](docs/AI-CONTEXT-CASES.md) · [docs/AGENT-INGESTION-CASE.md](docs/AGENT-INGESTION-CASE.md) |
 | HTTP API, keys, limits, errors | [docs/API.md](docs/API.md) |
@@ -241,7 +241,7 @@ print(answer["coverage"])
 | Visualisation options | [docs/WEB-UI.md](docs/WEB-UI.md) · [docs/GRAPH-VISUALIZATION.md](docs/GRAPH-VISUALIZATION.md) |
 | 三国 graph and extraction | [SANGUO-KG.md](SANGUO-KG.md) · [SANGUO-KG-TEXT-EXTRACTION.md](SANGUO-KG-TEXT-EXTRACTION.md) · [SANGUO-KG-QUERIES.md](SANGUO-KG-QUERIES.md) |
 | TPC-H semantic layer | [TPC-H-ANALYTICS.md](TPC-H-ANALYTICS.md) |
-| Release notes and roadmap | [docs/RELEASE-1.1.2.md](docs/RELEASE-1.1.2.md) · [docs/RELEASE-1.1.1.md](docs/RELEASE-1.1.1.md) · [docs/RELEASE-1.1.0.md](docs/RELEASE-1.1.0.md) · [docs/RELEASE-1.0.1.md](docs/RELEASE-1.0.1.md) · [docs/ROADMAP-1.0.md](docs/ROADMAP-1.0.md) |
+| Release notes and roadmap | [docs/RELEASE-1.2.0.md](docs/RELEASE-1.2.0.md) · [docs/RELEASE-1.1.1.md](docs/RELEASE-1.1.1.md) · [docs/RELEASE-1.1.0.md](docs/RELEASE-1.1.0.md) · [docs/RELEASE-1.0.1.md](docs/RELEASE-1.0.1.md) · [docs/ROADMAP-1.0.md](docs/ROADMAP-1.0.md) |
 
 ## Build and test
 
@@ -277,7 +277,7 @@ tenants, TLS and the audit file.
 
 ## Status
 
-The current release is [v1.1.2](https://github.com/KanJiaZhang/PhoenixGraph/releases/tag/v1.1.2), a
+The current release is [v1.2.0](https://github.com/KanJiaZhang/PhoenixGraph/releases/tag/v1.2.0), a
 developer release. It is usable and documented, but not finished. The known limits:
 
 - **Extraction is a dictionary plus rule packs, not a general extractor.** A new domain needs a vocabulary
@@ -299,7 +299,7 @@ developer release. It is usable and documented, but not finished. The known limi
 - **RocksDB graphs are loaded, not written over REST.** Bulk loaders fill the ordered tables.
 
 The full list, with the evidence for each item, is in [docs/RELEASE-1.0.0.md](docs/RELEASE-1.0.0.md);
-what changed in the current release is in [docs/RELEASE-1.1.2.md](docs/RELEASE-1.1.2.md); what is still
+what changed in the current release is in [docs/RELEASE-1.2.0.md](docs/RELEASE-1.2.0.md); what is still
 planned is in [docs/ROADMAP-1.0.md](docs/ROADMAP-1.0.md).
 
 ## License

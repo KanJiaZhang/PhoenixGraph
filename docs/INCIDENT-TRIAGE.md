@@ -323,3 +323,55 @@ asOf 2026-10-26 -> 13 顶点 / 14 边   （deploy-48 在，9 月那条失效了�
   `context` 的关系、排序用的边）不会包含它。要让遍历本身绕开失效边，需要把窗口下沉到引擎的邻居扩展里。
 - **不会自动按句子里的日期赋值**：窗口来自文档（摄取请求），不是从文本里猜出来的。
 - 有效期是**声明**，不是历史版本：同一三元组被重写时窗口随之更新（upsert），不会保留旧的窗口。
+
+## 11. 会话记忆：把这次排查变成可引用的知识
+
+排查的结论如果只留在聊天记录里，下一个人（或下一次会话）只能靠"我记得好像说过"。`/pg remember` 把**当前会话**
+变成一篇文档摄取进图，于是它和 RCA 一样可以被引用；`/pg note` 则在长会话里只记一条事实。
+
+### 11.1 它做什么
+
+```
+/pg remember                  # 整个会话（user + assistant 的轮次，正序）
+/pg note "deploy-48 replaced cache-key-prefix-v1 with v2 on 2026-10-24."
+```
+
+装配规则：只取 `user` / `assistant`，**丢掉** system prompt 与 toolResult（后者是工作的语料，不是对工作的推理），
+最多保留最新 120k 字符。摄取时：
+
+- `rulePack: incident`，所以 `caused` / `depends on` / `uses` / `deployed on` / `affects` 这类句子会成为边；
+- **词典取图自己已有的实体**，已知名字保留类型，不会被重新猜；
+- **有效期从"现在"开始** —— 这条知识从对话发生那一刻起为真。
+
+### 11.2 真实验证：两个进程
+
+第一个进程记下一条事实：
+
+```bash
+pi --no-builtin-tools -t pg_remember -p \
+  "Call pg_remember with the note 'checkout-api depends on payment service.' …"
+# → Entities: 41 · Relations: 1
+```
+
+第二个**全新进程**问同一件事：
+
+```bash
+pi --no-builtin-tools -t pg_context -p \
+  "…whether checkout-api -depends_on-> payment service appears…"
+```
+
+```
+Yes — the relation appears.
+  checkout-api -depends_on-> payment service
+  Source: "user: Call pg_remember with the note 'checkout-api depends on payment service.'"
+  …并且它自己指出：这条边的出处是「对话里被断言」，不是「文档里被读到」。
+```
+
+最后那句自我提醒是设计的一部分：**记住 ≠ 证实**。对话抽取出来的边，provenance 是"有人说过"；要"文档写过"，
+就得摄取文档。
+
+### 11.3 边界
+
+- 只有规则包认识的句式会成为边；"感觉缓存不太对"不会。但**每一轮都成了可引用的 chunk**，所以至少能引用原话。
+- 只增不删：`/pg remember` 往图里加，不替换语料；重建语料仍用 `--reingest`。
+- 想隔离"会话知识"与"事故语料"，可以记到另一张图：`/pg remember ops-notes`，需要时 `/pg graph ops-notes`。

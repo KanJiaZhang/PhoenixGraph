@@ -20,6 +20,8 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-29
+
 ### Added
 
 - **The pi extension, P0 and P1** (`extensions/phoenixgraph`): it registers the toolkit as an MCP server
@@ -552,7 +554,8 @@ A patch release with what the on-call drill found. No API change.
   evidence, `docs/SLO.md` says to treat the alert as noisy until then, and the drill states it as an explicit
   `XFAIL` - when that line starts failing, the fix has landed and it becomes an ordinary assertion.
 
-[Unreleased]: https://github.com/KanJiaZhang/PhoenixGraph/compare/v1.1.2...HEAD
+[Unreleased]: https://github.com/KanJiaZhang/PhoenixGraph/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/KanJiaZhang/PhoenixGraph/releases/tag/v1.2.0
 [1.1.2]: https://github.com/KanJiaZhang/PhoenixGraph/releases/tag/v1.1.2
 [1.1.1]: https://github.com/KanJiaZhang/PhoenixGraph/releases/tag/v1.1.1
 [1.1.0]: https://github.com/KanJiaZhang/PhoenixGraph/releases/tag/v1.1.0

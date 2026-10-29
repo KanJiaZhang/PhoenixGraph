@@ -3,8 +3,8 @@
 springProfiles: secure
 
 image:
-  http: phoenixgraph-http:1.1.2
-  web: phoenixgraph-web:1.1.2
+  http: phoenixgraph-http:1.2.0
+  web: phoenixgraph-web:1.2.0
   pullPolicy: IfNotPresent
 
 http:
