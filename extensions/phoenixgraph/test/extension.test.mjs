@@ -635,3 +635,40 @@ test('auto memory can be switched off, and stays off across a session', async ()
   const section = event.systemPromptOptions.sections.phoenixgraph;
   assert.ok(!section || !/what the graph already holds/.test(section), 'a session that is not about a graph gets no section at all');
 });
+
+test('session_start catches up the turns that were answered before the loop existed', async () => {
+  const branch = [
+    ...branchWith([
+      { role: 'user', text: '第一个问题' },
+      { role: 'assistant', text: 'storefront-api depends on inventory-db.' },
+    ]),
+  ];
+  const posted = [];
+  const fetchImpl = async (url, init) => {
+    if (init?.body && url.includes('/agent/ingest')) posted.push(JSON.parse(init.body));
+    const body = url.includes('/agent/index/') ? artifact
+      : url.includes('/agent/ingest') ? { applied: true, entities: 4, relations: 1, quality: { documents: 1, chunks: 2 } }
+        : {};
+    return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) };
+  };
+  const home = mkdtempSync(join(tmpdir(), 'pg-ext-home-'));
+  const pi = fakePi();
+  // pi.appendEntry writes into the session, so the branch grows: the test's fake must do the same
+  pi.appendEntry = (customType, data) => { pi.entries.push({ customType, data }); branch.push({ type: 'custom', customType, data }); };
+  phoenixgraphExtension(pi, { home, fetch: fetchImpl });
+  const ctx = fakeContext({ branch });
+  await pi.commands.get('pg').handler('auto on', ctx); // decision first, then a start
+  posted.length = 0;
+
+  await pi.handlers.get('session_start')({}, ctx);
+  const caught = posted.find((body) => body.documents && body.documents[0].id.startsWith('catch-up-'));
+  assert.ok(caught, 'the earlier turn was written on start');
+  assert.match(caught.documents[0].text, /user: 第一个问题/);
+  assert.ok(pi.entries.some((entry) => entry.customType === 'phoenixgraph.turn' && entry.data.catchUp),
+    'and marked, so a reload does not repeat it');
+
+  // a second start on the same branch has nothing left to do
+  posted.length = 0;
+  await pi.handlers.get('session_start')({}, ctx);
+  assert.equal(posted.filter((body) => body.documents && body.documents[0].id.startsWith('catch-up-')).length, 0);
+});

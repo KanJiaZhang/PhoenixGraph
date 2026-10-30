@@ -905,6 +905,85 @@ export default function phoenixgraphExtension(pi, options = {}) {
     }
   });
 
+  // ---- catching up: the turns a session answered before memory existed --------------------------------------
+  // A session that was already running when the loop was switched on has turns nobody recorded. On start, the newest
+  // few are written once (bounded, and keyed like live turns so a reload does not repeat them), which is what makes
+  // "my conversation is in the graph" true for the conversation that came before the feature.
+
+  const CATCH_UP_TURNS = 10;
+  const CATCH_UP_CHARS = 60_000;
+
+  /** Every answered turn on the branch: a user message and the assistant message that follows it. */
+  function allTurns(ctx) {
+    const branch = (ctx && ctx.sessionManager && ctx.sessionManager.getBranch && ctx.sessionManager.getBranch()) || [];
+    const turns = [];
+    let pending = null;
+    for (const entry of branch) {
+      if (!entry || entry.type !== 'message') continue;
+      const role = entry.message && entry.message.role;
+      const text = messageText(entry.message);
+      if (!text) continue;
+      if (role === 'user') {
+        pending = { question: text, at: entry.timestamp };
+      } else if (role === 'assistant' && pending) {
+        turns.push({ ...pending, answer: text });
+        pending = null;
+      }
+    }
+    return turns;
+  }
+
+  /** The turn keys the session already recorded, so nothing is written twice. */
+  function recordedTurns(ctx) {
+    const branch = (ctx && ctx.sessionManager && ctx.sessionManager.getBranch && ctx.sessionManager.getBranch()) || [];
+    const keys = new Set();
+    for (const entry of branch) {
+      if (entry && entry.type === 'custom' && entry.customType === 'phoenixgraph.turn' && entry.data && entry.data.key) {
+        keys.add(entry.data.key);
+      }
+    }
+    return keys;
+  }
+
+  /** Writes the newest unrecorded turns of this session, in one ingestion, once. */
+  async function catchUp(ctx) {
+    if (!autoOn(ctx)) return null;
+    const recorded = recordedTurns(ctx);
+    const missing = allTurns(ctx).filter((turn) => !recorded.has(turnKey(turn)));
+    if (!missing.length) return null;
+    const recent = missing.slice(-CATCH_UP_TURNS);
+    const cells = [];
+    let chars = 0;
+    for (const turn of recent) {
+      const text = ('user: ' + turn.question + '\n\nassistant: ' + turn.answer);
+      if (chars + text.length > CATCH_UP_CHARS) break;
+      chars += text.length;
+      cells.push({ turn, text });
+    }
+    const dictionary = { ...cells.reduce((all, cell) => ({ ...all, ...dictionaryFromText(cell.text) }), {}),
+      ...(await graphDictionary(state.graph)) };
+    const answer = await postJson('/api/v1/agent/ingest', {
+      graph: state.graph,
+      apply: true,
+      rulePack: 'incident',
+      dictionary,
+      documents: cells.map((cell, index) => ({
+        id: 'catch-up-' + now().toISOString().replace(/[^0-9]/g, '').slice(0, 14) + '-' + (index + 1),
+        title: 'conversation turn (caught up)',
+        text: cell.text.slice(0, 20_000),
+        validFrom: cell.turn.at || now().toISOString(),
+      })),
+    });
+    pi.appendEntry('phoenixgraph.turn', {
+      graph: state.graph, keys: cells.map((cell) => turnKey(cell.turn)), catchUp: true, at: now().toISOString(),
+    });
+    // the recordedTurns() walk reads `key`; keep a marker that matches it for each caught-up turn
+    for (const cell of cells) {
+      pi.appendEntry('phoenixgraph.turn', { graph: state.graph, key: turnKey(cell.turn), catchUp: true, at: now().toISOString() });
+    }
+    return { documents: cells.length, answer };
+  }
+
   // ---- P1: the switchboard ------------------------------------------------------------------------------
   pi.registerCommand('pg', {
     description: 'PhoenixGraph: status | doctor | show [entity] | remember [graph] | note <sentence> | ingest <path> [--apply] [--from <date>] | graph <name> | endpoint <url> | timeline on|off|<instant> | mcp stdio|url | inject on|off',
@@ -1109,7 +1188,19 @@ ${ingestSummary(answer)}`, 'info');
   });
 
   // ---- P1: the state follows the conversation ------------------------------------------------------------
-  pi.on('session_start', async (_event, ctx) => reconstruct(ctx));
+  pi.on('session_start', async (_event, ctx) => {
+    reconstruct(ctx);
+    // a session that answered turns before the loop existed: write the newest ones once, and say so
+    try {
+      const caught = await catchUp(ctx);
+      if (caught && caught.documents) {
+        ctx.ui.notify("phoenixgraph: caught up " + caught.documents + " earlier turn(s) into '" + state.graph + "' ("
+          + caught.answer.relations + " relations now in the graph)", 'info');
+      }
+    } catch (error) {
+      pi.events?.emit?.('phoenixgraph.catch_up_failed', { error: String(error.message || error) });
+    }
+  });
   pi.on('session_tree', async (_event, ctx) => reconstruct(ctx));
 
   return { state: () => ({ ...state }) };
