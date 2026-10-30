@@ -75,9 +75,15 @@ export default function phoenixgraphExtension(pi, options = {}) {
     asOf: null,
     timeline: true,
     inject: true,
+    // null = decide from the session: a session that is about a graph remembers every turn, one that is not does
+    // not; /pg auto on|off overrides and is remembered.
+    auto: null,
     lastContext: null,
   };
   let loaded = false;
+  /** The turn already written into the graph (its key), so a retry, a resume or a branch is idempotent. */
+  let lastRemembered = null;
+  let turnNumber = 0;
   let triageLib = null;
 
   /**
@@ -373,13 +379,33 @@ export default function phoenixgraphExtension(pi, options = {}) {
   pi.on('before_agent_start', async (event, ctx) => {
     reconstruct(ctx);
     if (!state.inject) return;
-    const aware = Boolean(state.lastContext) || Boolean(state.asOf) || loadedFromProject(ctx);
+    // auto memory is itself a statement that this session is about a graph
+    const aware = autoOn(ctx) || Boolean(state.lastContext) || Boolean(state.asOf) || loadedFromProject(ctx);
     if (!aware) return;
     const options = event && event.systemPromptOptions;
-    if (options && typeof options === 'object') {
-      // a named section, so later turns can replace it without rebuilding the prompt
-      options.sections = { ...(options.sections || {}), phoenixgraph: contextBlock() };
+    if (!options || typeof options !== 'object') return;
+
+    // What the graph holds about *this* question, retrieved before the model sees it: that is the point of a
+    // memory. Best effort and bounded - a slow or absent service must not cost a turn, so a failure simply leaves
+    // the section without the excerpt.
+    let excerpt = '';
+    const prompt = event && event.messageType === 'user' ? event.prompt : '';
+    if (autoOn(ctx) && prompt && prompt.trim().length > 3) {
+      try {
+        const asOf = state.timeline && state.asOf ? state.asOf : undefined;
+        const answer = await postJson('/api/v1/agent/context', {
+          graph: state.graph, question: String(prompt).slice(0, 2000), k: 6, hops: 1, asOf,
+        });
+        if ((answer.relations || []).length) {
+          excerpt = 'what the graph already holds about this question:\n' + renderForPrompt(answer, asOf);
+        }
+      } catch {
+        // no service, no excerpt: the contract below still tells the model how to answer
+      }
     }
+
+    // a named section, so later turns can replace it without rebuilding the prompt
+    options.sections = { ...(options.sections || {}), phoenixgraph: excerpt ? contextBlock() + '\n' + excerpt : contextBlock() };
   });
 
   /** Whether the current project carries a .pi/phoenixgraph.json (a team that pinned a graph). */
@@ -496,6 +522,24 @@ export default function phoenixgraphExtension(pi, options = {}) {
       kept.unshift(turns[index]);
     }
     return kept.join('\n\n');
+  }
+
+  /**
+   * The identifier-shaped names a text uses (storefront-api, inventory_db, orders.region, CheckoutApi), as gazetteer
+   * entries. The extraction rules relate two *known* mentions; without this, a conversation that introduces a new
+   * service produced a citable chunk and no edge at all. It is a regex, not a model: names that look like
+   * identifiers, capped at thirty, and the graph's own types win over the generic "Entity".
+   */
+  function dictionaryFromText(text) {
+    const found = {};
+    const pattern = /\b[A-Za-z][A-Za-z0-9]*(?:[-_.][A-Za-z0-9]+)+\b|\b[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]+)+\b/g;
+    for (const match of String(text || '').matchAll(pattern)) {
+      const name = match[0];
+      if (name.length < 4 || name.length > 60) continue;
+      found[name] = 'Entity';
+      if (Object.keys(found).length >= 30) break;
+    }
+    return found;
   }
 
   /** The entities the graph already knows, as the gazetteer for this ingestion (names keep their types). */
@@ -761,10 +805,110 @@ export default function phoenixgraphExtension(pi, options = {}) {
     return lines.join('\n');
   }
 
+  // ---- automatic memory: every turn in, the relevant part back ------------------------------------------
+  // A conversation is where a team works out what is true; a graph is where the next question finds it. The two
+  // halves are one loop: after a turn is answered its question and answer are ingested (the rules read whatever
+  // facts they can, and the text is citable either way); before the next turn, what the graph holds about the new
+  // question goes into the prompt, so the model starts from the evidence instead of from memory.
+
+  /** Whether turn memory runs here: the explicit setting first, else "is this session about a graph". */
+  function autoOn(ctx) {
+    if (state.auto !== null && state.auto !== undefined) return Boolean(state.auto);
+    return Boolean(state.lastContext) || Boolean(state.asOf) || loadedFromProject(ctx);
+  }
+
+  /** The newest user message and the assistant answer that follows it, as text. */
+  function lastTurn(ctx) {
+    const branch = (ctx && ctx.sessionManager && ctx.sessionManager.getBranch && ctx.sessionManager.getBranch()) || [];
+    const messages = branch
+      .filter((entry) => entry && entry.type === 'message')
+      .map((entry) => ({ role: entry.message && entry.message.role, text: messageText(entry.message) }))
+      .filter((message) => message.text);
+    let answerIndex = -1;
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      if (messages[index].role === 'assistant') { answerIndex = index; break; }
+    }
+    if (answerIndex < 0) return null;
+    let questionIndex = -1;
+    for (let index = answerIndex - 1; index >= 0; index -= 1) {
+      if (messages[index].role === 'user') { questionIndex = index; break; }
+    }
+    if (questionIndex < 0) return null;
+    return { question: messages[questionIndex].text, answer: messages[answerIndex].text };
+  }
+
+  /** A cheap, stable identity for a turn, so the same turn is not ingested twice (a retry, a resume, a branch). */
+  function turnKey(turn) {
+    const text = turn.question + '\u0000' + turn.answer;
+    let hash = 0;
+    for (let index = 0; index < text.length; index += 1) {
+      hash = (hash * 31 + text.charCodeAt(index)) | 0;
+    }
+    return text.length + ':' + hash;
+  }
+
+  /**
+   * Records one turn: the question and the answer as a document with a window starting now. Facts the rules can read
+   * become entities and relations; the rest stays a citable chunk, which is what the next turn's retrieval quotes.
+   */
+  async function rememberTurn(turn) {
+    const key = turnKey(turn);
+    if (key === lastRemembered) return null;
+    lastRemembered = key;
+    turnNumber += 1;
+    const stamp = now().toISOString().replace(/[^0-9]/g, '').slice(0, 14);
+    const text = ('user: ' + turn.question + '\n\nassistant: ' + turn.answer).slice(0, 20000);
+    const answer = await postJson('/api/v1/agent/ingest', {
+      graph: state.graph,
+      apply: true,
+      rulePack: 'incident',
+      // the graph's own types first, then the names this turn introduced: the rules need both ends known
+      dictionary: { ...dictionaryFromText(text), ...(await graphDictionary(state.graph)) },
+      documents: [{ id: 'turn-' + stamp + '-' + turnNumber, title: 'conversation turn', text, validFrom: now().toISOString() }],
+    });
+    pi.appendEntry('phoenixgraph.turn', {
+      graph: state.graph, key, question: turn.question.slice(0, 200),
+      relations: answer.relations, entities: answer.entities, at: now().toISOString(),
+    });
+    return answer;
+  }
+
+  /** The relations the graph holds about a question, as prompt lines (the same shape pg_context renders). */
+  function renderForPrompt(answer, asOf) {
+    const lines = [];
+    for (const relation of (answer.relations || []).slice(0, 8)) {
+      const sentence = relation.sentence ? '  "' + String(relation.sentence).trim().slice(0, 140) + '"' : '';
+      lines.push(relation.head + ' -' + relation.relation + '-> ' + relation.tail + sentence);
+    }
+    const coverage = answer.coverage || {};
+    lines.push('coverage: ' + (coverage.entities ?? 0) + ' entities, ' + (coverage.relations ?? 0) + ' relations, '
+      + (coverage.citations ?? 0) + ' citations' + (asOf ? ', as of ' + asOf : ''));
+    return lines.join('\n');
+  }
+
+  // The turn that was just answered goes into the graph. A failure is reported through the event bus, never thrown
+  // into the turn: memory is a convenience, not a reason to break a conversation.
+  pi.on('turn_end', async (_event, ctx) => {
+    reconstruct(ctx);
+    if (!autoOn(ctx)) return;
+    const turn = lastTurn(ctx);
+    if (!turn) return;
+    try {
+      const answer = await rememberTurn(turn);
+      if (answer && answer.relations) {
+        pi.events?.emit?.('phoenixgraph.remembered', {
+          graph: state.graph, relations: answer.relations, entities: answer.entities,
+        });
+      }
+    } catch (error) {
+      pi.events?.emit?.('phoenixgraph.remember_failed', { graph: state.graph, error: String(error.message || error) });
+    }
+  });
+
   // ---- P1: the switchboard ------------------------------------------------------------------------------
   pi.registerCommand('pg', {
     description: 'PhoenixGraph: status | doctor | show [entity] | remember [graph] | note <sentence> | ingest <path> [--apply] [--from <date>] | graph <name> | endpoint <url> | timeline on|off|<instant> | mcp stdio|url | inject on|off',
-    getArgumentCompletions: (prefix) => ['status', 'doctor', 'show', 'remember', 'note', 'ingest', 'graph', 'endpoint', 'timeline', 'inject', 'mcp']
+    getArgumentCompletions: (prefix) => ['status', 'doctor', 'show', 'remember', 'note', 'ingest', 'auto', 'graph', 'endpoint', 'timeline', 'inject', 'mcp']
       .filter((word) => word.startsWith(prefix)).map((word) => ({ value: word, label: word })),
     async handler(args, ctx) {
       reconstruct(ctx);
@@ -929,6 +1073,16 @@ ${ingestSummary(answer)}`, 'info');
           });
           return;
         }
+        case 'auto': {
+          if (!value) {
+            ctx.ui.notify(`auto memory: ${autoOn(ctx) ? 'on' : 'off'} - each answered turn is written into '`
+              + `${state.graph}', and what the graph holds about the next question is put in its prompt`, 'info');
+            return;
+          }
+          const on = value.toLowerCase() !== 'off';
+          commit({ auto: on }, { notify: () => ctx.ui.notify(`auto memory: ${on ? 'on' : 'off'}`, 'info') });
+          return;
+        }
         case 'inject': {
           if (!value) { ctx.ui.notify(`inject: ${state.inject ? 'on' : 'off'}`, 'info'); return; }
           const on = value.toLowerCase() !== 'off';
@@ -943,6 +1097,7 @@ ${ingestSummary(answer)}`, 'info');
             `timeline: ${state.timeline && state.asOf ? `pinned to ${state.asOf}` : 'off (answers use every fact)'}`,
             `inject:   ${state.inject ? 'on (the contract is in the prompt when this session is about a graph)' : 'off'}`,
             `mcp:      ${state.mcpUrl ? `http ${state.mcpUrl}` : 'stdio (spawned next to this extension)'}`,
+            `auto:     ${autoOn(ctx) ? 'on (a turn is written into the graph and read back before the next one)' : 'off'}`,
             state.lastContext
               ? `last:     ${state.lastContext.question} (${state.lastContext.graph}${state.lastContext.asOf ? `, as of ${state.lastContext.asOf}` : ''})`
               : 'last:     nothing asked yet',

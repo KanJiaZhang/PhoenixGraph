@@ -559,3 +559,79 @@ test('/pg show explains an empty view instead of opening one', async () => {
   assert.equal(warning.type, 'warning');
   assert.match(ctx.notifications.at(-1).message, /opened http/, 'a pinned empty view still opens, so the pin can be moved');
 });
+
+// ---- automatic per-turn memory ------------------------------------------------------------------------------
+function memorySetup({ fetchImpl, branch }) {
+  const pi = fakePi();
+  const posts = [];
+  const fetch = async (url, init) => {
+    if (init?.body) posts.push({ url, body: JSON.parse(init.body) });
+    return fetchImpl(url, init);
+  };
+  phoenixgraphExtension(pi, { home: mkdtempSync(join(tmpdir(), 'pg-ext-home-')), fetch });
+  const ctx = fakeContext({ branch });
+  pi.handlers.get('session_start')({}, ctx);
+  return { pi, ctx, posts };
+}
+
+const memoryFetch = () => async (url, init) => {
+  const body = url.includes('/agent/ingest')
+    ? { applied: true, entities: 3, relations: 1, quality: { documents: 1, chunks: 2, provenanceRate: 1, typeAgreement: 1, entityLinkRate: 1 } }
+    : url.includes('/agent/context') ? contextAnswer('q')
+      : url.includes('/agent/index/') ? artifact : {};
+  return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) };
+};
+
+test('turn_end writes the question and the answer into the graph, once', async () => {
+  const branch = branchWith([
+    { role: 'user', text: 'checkout 为什么慢？' },
+    { role: 'assistant', text: 'checkout-api depends on redis-cache.' },
+  ]);
+  const { pi, ctx, posts } = memorySetup({ fetchImpl: memoryFetch(), branch });
+  // a session that has used the graph before: memory is on by decision
+  await pi.commands.get('pg').handler('auto on', ctx);
+  posts.length = 0;
+
+  await pi.handlers.get('turn_end')({}, ctx);
+  const ingest = posts.find((post) => post.url.includes('/agent/ingest'));
+  assert.ok(ingest, 'the turn was ingested');
+  assert.match(ingest.body.documents[0].text, /^user: checkout 为什么慢？/m);
+  assert.match(ingest.body.documents[0].text, /assistant: checkout-api depends on redis-cache\./);
+  assert.ok(ingest.body.documents[0].validFrom, 'with a window that starts now');
+  assert.ok(pi.entries.some((entry) => entry.customType === 'phoenixgraph.turn'), 'and a session entry for the record');
+
+  await pi.handlers.get('turn_end')({}, ctx);
+  assert.equal(posts.filter((post) => post.url.includes('/agent/ingest')).length, 1,
+    'the same turn is not written twice (a retry or a resume must be idempotent)');
+});
+
+test('before_agent_start puts what the graph holds about the new question into the prompt', async () => {
+  const branch = branchWith([{ role: 'user', text: 'nothing yet' }, { role: 'assistant', text: 'ok' }]);
+  const { pi, ctx, posts } = memorySetup({ fetchImpl: memoryFetch(), branch });
+  await pi.commands.get('pg').handler('auto on', ctx);
+  posts.length = 0;
+
+  const event = { messageType: 'user', prompt: 'checkout 为什么慢', systemPromptOptions: { sections: {} } };
+  await pi.handlers.get('before_agent_start')(event, ctx);
+  const section = event.systemPromptOptions.sections.phoenixgraph;
+  assert.match(section, /\[phoenixgraph\] graph=incident-triage/, 'the contract is still there');
+  assert.match(section, /what the graph already holds about this question/);
+  assert.match(section, /deploy-48 -caused-> cache-key-prefix-churn/, 'with the relations');
+  assert.match(section, /coverage: 9 entities, 6 relations/, 'and the coverage');
+  const asked = posts.find((post) => post.url.includes('/agent/context'));
+  assert.equal(asked.body.question, 'checkout 为什么慢', 'retrieved with the question being asked');
+});
+
+test('auto memory can be switched off, and stays off across a session', async () => {
+  const branch = branchWith([{ role: 'user', text: 'q' }, { role: 'assistant', text: 'a' }]);
+  const home = mkdtempSync(join(tmpdir(), 'pg-ext-home-'));
+  const first = memorySetup({ fetchImpl: memoryFetch(), branch });
+  await first.pi.commands.get('pg').handler('auto off', first.ctx);
+  first.posts.length = 0;
+  await first.pi.handlers.get('turn_end')({}, first.ctx);
+  const event = { messageType: 'user', prompt: 'anything', systemPromptOptions: { sections: {} } };
+  await first.pi.handlers.get('before_agent_start')(event, first.ctx);
+  assert.equal(first.posts.length, 0, 'off means no ingest and no retrieval');
+  const section = event.systemPromptOptions.sections.phoenixgraph;
+  assert.ok(!section || !/what the graph already holds/.test(section), 'a session that is not about a graph gets no section at all');
+});
