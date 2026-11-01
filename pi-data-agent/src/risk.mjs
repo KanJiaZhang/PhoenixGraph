@@ -10,7 +10,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { attribute } from './attribution.mjs';
 import { projectRoot } from './config.mjs';
-import { escapeHtml, gremlinString, round, unique } from './util.mjs';
+import { escapeHtml, gremlinString, pathSegment, round, unique } from './util.mjs';
 
 /** RFC-4180-ish CSV: quoted fields, embedded commas/newlines, CRLF. */
 export function parseCsv(text) {
@@ -223,6 +223,12 @@ export async function enrichRing(client, graph, ringId, ring, options = {}) {
     { name: 'payments present', pass: payments.length > 0 && paymentAmount > 0, detail: `${payments.length} payment(s), amount=${round(paymentAmount, 2)}` },
   ];
   result.executed = members.length > 0;
+  // the queries ran and found nothing: say which ids were asked for. An empty ring is a finding only when the
+  // reader can tell "these accounts are not in this graph" from "nobody could read the accounts".
+  if (!result.executed) {
+    result.reason = `the graph returned no ${vertexType} vertex for the ${accounts.length} account id(s) this ring`
+      + ' maps to (the payment graph may be empty, or the manifest may name accounts that were never loaded)';
+  }
   result.members = members.map((member) => ({ id: String(member.id), name: member.firstName || member.username || member.name, email: member.email, phone: member.phoneNumber, ip: member.ipAddress, card: member.cardNumber }));
   result.memberCount = members.length;
   result.link = link ? { id: link.id, key: link.key, patternId: link.patternId, pattern: link.pattern } : null;
@@ -536,7 +542,7 @@ export function saveRiskDashboard(dashboard, options = {}) {
   const directory = options.outDir || join(projectRoot(), '.pi', 'data-agent', 'risk');
   mkdirSync(directory, { recursive: true });
   const stamp = new Date(options.now ?? Date.now()).toISOString().replace(/[:.]/g, '-');
-  const base = join(directory, `risk-${dashboard.period}-${stamp}`);
+  const base = join(directory, `risk-${pathSegment(dashboard.period, 'period')}-${stamp}`);
   const html = options.html || renderRiskDashboardHtml(dashboard);
   writeFileSync(`${base}.html`, html);
   writeFileSync(`${base}.json`, `${JSON.stringify(dashboard, null, 2)}\n`);

@@ -21,6 +21,20 @@ export function slug(name) {
   return replaced || 'unnamed';
 }
 
+/**
+ * A name that is safe as ONE path segment. A graph name or a ledger period comes from a parameter or a file, and
+ * `../x` in it would write outside the state directory - but letters, digits, `.`, `-` and `_` are what graph names
+ * already look like, so they stay: sanitising must not turn `pi-data-agent-verify` into a second schema file (two
+ * files carrying one schema id are refused at start-up).
+ */
+export function pathSegment(name, fallback = 'unnamed') {
+  const text = String(name ?? '').normalize('NFKC').trim();
+  const cleaned = text
+    .replace(/[^\p{L}\p{N}._-]+/gu, '_')
+    .replace(/^[._-]+|[._-]+$/g, '');
+  return cleaned || fallback;
+}
+
 /** A stable short id for a source document, independent of its absolute path on disk. */
 export function documentId(name, text = '') {
   const base = slug(String(name ?? '').replace(/^.*[\\/]/, '').replace(/\.[^.]+$/, ''));

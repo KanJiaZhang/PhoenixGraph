@@ -3,6 +3,16 @@
   "version": "0.1.0",
   "description": "A pi package that builds an evidence-carrying metadata and semantic layer from PDF/Markdown/wiki/Word documents and database SHOW/DDL output, stores it in PhoenixGraph, edits it under review, and reads dashboards and attribution from it.",
   "type": "module",
+  "author": "PhoenixGraph",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/KanJiaZhang/PhoenixGraph.git",
+    "directory": "pi-data-agent"
+  },
+  "homepage": "https://github.com/KanJiaZhang/PhoenixGraph/tree/main/pi-data-agent#readme",
+  "bugs": {
+    "url": "https://github.com/KanJiaZhang/PhoenixGraph/issues"
+  },
   "keywords": [
     "pi-package",
     "phoenixgraph",

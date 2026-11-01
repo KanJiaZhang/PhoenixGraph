@@ -1,7 +1,12 @@
+---
+description: Review a data-agent model end to end - coverage, metric expressions and bindings, dimensions, relations and duplicates - and list the edits to make before anyone trusts a number from it
+argument-hint: "[model-graph]"
+---
+
 # Review a data-agent model
 
-Read the model with `pg_data_model` (or the snapshot under `.pi/data-agent/models/`). Review it in this
-order, and report findings rather than silently fixing them.
+Read the model with `pg_data_model` (graph `${1:-the session graph}`, or the snapshot under
+`.pi/data-agent/models/`). Review it in this order, and report findings rather than silently fixing them.
 
 1. **Coverage** — which tables/columns came from the DDL or `SHOW` output, and which source documents
    contributed descriptions. Name the sources; a table with no evidence is a finding.
@@ -23,4 +28,5 @@ Then ask two questions before declaring the layer usable:
 - Does the fact vertex type actually carry the properties the model names? If not, the refusal is the answer;
   do not substitute a similar-looking column.
 
-Close with a table of `id | expression | binding | evidence | status`, and the list of edits you recommend.
+Close with a table of `id | expression | binding | evidence | status`, and the list of edits you recommend -
+as `pg_data_edit` operations when they are unambiguous, so the reviewer can apply them without retyping.

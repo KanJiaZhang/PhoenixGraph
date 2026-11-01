@@ -33,10 +33,10 @@ pi -e ./pi-data-agent
 
 | 资源 | 路径 | 作用 |
 |---|---|---|
-| extension | `extensions/pi-data-agent/index.js` | 6 个工具 + `/data` 命令 + 每轮契约注入 |
-| skill | `skills/pi-data-agent/SKILL.md` | 建模/修订/看板/归因的流程与拒答规则 |
-| prompt | `prompts/data-agent-review.md` | 模型评审模板 |
-| CLI | `src/cli.mjs` | 不经过 pi 也能 scan/build/model/edit/dashboard/attribute |
+| extension | `extensions/pi-data-agent/index.js` | 8 个工具 + `/data` 命令 + 每轮契约注入 |
+| skill | `skills/pi-data-agent/SKILL.md` | 建模/修订/看板/归因/风控的流程与拒答规则 |
+| prompt | `prompts/data-agent-review.md` | 模型评审模板（`/data-agent-review [graph]`） |
+| CLI | `src/cli.mjs` | 不经过 pi 也能 scan/build/model/edit/dashboard/attribute/risk-dashboard/risk-attribute |
 
 服务端需要已经在 `http://localhost:8081` 运行（`tools/start-phoenixgraph.sh`）。端点、图名、事实图都可以配置：
 
@@ -53,9 +53,19 @@ pi -e ./pi-data-agent
 环境变量：`PHOENIXGRAPH_API`、`PHOENIXGRAPH_API_KEY`、`PI_DATA_AGENT_GRAPH`、`PI_DATA_AGENT_DATA_GRAPH`、
 `PI_DATA_AGENT_VERTEX_TYPE`、`PI_DATA_AGENT_STATE_FILE`。
 
+装好之后三样东西都进 pi（已在本机装好后逐项验证过）：
+
+| 装了以后 | 怎么用 | 验证到的行为 |
+|---|---|---|
+| 扩展 | 8 个 `pg_*` 工具 + `/data` | `pg_data_model({graph:"pi-data-agent-verify"})` 返回 7 个指标 |
+| 提示词模板 | `/data-agent-review <graph>` | 模板被展开，模型确实去调 `pg_data_model` 并逐节评审 |
+| skill | `/skill:pi-data-agent`（模型也会自动加载） | 模型复述出 skill 里的两条硬规则 |
+
+`pi list` 能看到这个包；`pi remove ./pi-data-agent` 移除它。
+
 ---
 
-## 2. 四件事怎么用
+## 2. 五件事怎么用
 
 ### 2.1 从文档/数据库构建元数据层
 
@@ -142,6 +152,44 @@ node src/cli.mjs attribute --graph pi-data-agent-demo3 \
 - `topMover`、`concentrationBefore/After`（HHI、top1）、离群分数
 - `limits`：**描述性，不是因果**
 
+### 2.5 风控账本 + 支付图：哪个团伙、哪条规则、为什么
+
+前四件事回答“这个指标是什么、多少”；风控这件事回答“变化是谁造成的、证据是什么”。两个输入：
+
+| 输入 | 例 | 作用 |
+|---|---|---|
+| 案件账本（CSV/JSON） | `examples/risk-control/risk-cases.csv`（120 行，2025-09 / 2025-10） | 每个 period×channel×rule×ring 的 exposure / loss / blocked / cases / fp_cases / review_hours |
+| 风控 manifest（JSON） | `examples/risk-control/risk-model.json` | 指标聚合方式、维度、敏感规则、团伙→账户映射、实体图名 |
+
+```bash
+# 看板：KPI + 上期对比 + by ring/rule/channel 拆解 + 每个团伙的图上证据
+node src/cli.mjs risk-dashboard --period 2025-10
+# 归因：敞口 2025-09 → 2025-10，按 ring 拆解，再回支付图找证据
+node src/cli.mjs risk-attribute --by ring --from 2025-09 --to 2025-10
+```
+
+在 pi 里是 `pg_risk_dashboard({period:"2025-10"})` 和 `pg_risk_attribution({by:"ring"})`，或 `/data risk`、
+`/data risk-attr`。**账本回答“什么变了”，图回答“背后是谁”**：
+
+```
+团伙 ring_a（7 个账户）→ FuzzyLink key mail.ru|10.20|621700 → 2 笔付款 / 2000 元 → 收款账户 collector-9
+receiver degree 40，payers 3，dominance 13.33 → verdict: confirmed
+```
+
+- **每条结论都带证据和查询**：`evidence[].kind` 是 `members / fuzzy link / payments / receiver / centrality`，
+  每一项都带 `citation`（图/顶点 id）和真正跑的 `query`。
+- **验收用 checks，不用形容词**：团伙人数、共享 FuzzyLink、唯一收款账户、收款账户是否主导网络、是否有付款；
+  全过是 `confirmed`，否则是 `candidate` 并列出 `failedChecks`。
+- **图答不上来不是 0**：一条查询失败会进 `warnings`，该团伙降级为 `candidate`（或在无 client 时
+  `executed:false` + 原因），绝不静默当零。
+- **假设必须可推翻**：`risk_attribution` 给出排好序的候选解释（`rule-sensitivity` / `loss-improvement` /
+  `ring-reentry`），每个都带 `support`、`checks` 和 `refutations`（推翻条件）。
+- **口径**：`contributionsSum == delta`（`decompositionAddsUp`）；`limits` 明说“描述性、不是因果”，
+  并且 **FuzzyLink 是模式相似候选，不是欺诈事实**。
+
+示例账本的真实数字（2025-09 → 2025-10）：敞口 1,000,000 → 1,420,000；确认损失 80,000 → 54,999.99；
+拦截 250,000.02 → 619,999.98；FP 率 15% → 25%；ring_a 贡献 57.14%、ring_b 28.57%。
+
 ---
 
 ## 3. 存储模型
@@ -203,6 +251,8 @@ PhoenixGraph 的 `phoenixgraph.storage.schema-dir` 在启动时发现这个目�
 | `pg_data_edit` | 写 | 校验并应用修订，生成 audit/快照 |
 | `pg_data_dashboard` | 只读 | 生成 HTML/JSON 看板 |
 | `pg_data_attribute` | 只读 | 两期变化按一个维度归因 |
+| `pg_risk_dashboard` | 写（生成 HTML） | 风控 KPI 看板 + ring/rule/channel 拆解 + 团伙图上证据 |
+| `pg_risk_attribution` | 只读 | 风险指标两期归因 + 团伙证据 + 可推翻的候选解释 |
 
 ```text
 /data status
@@ -213,6 +263,8 @@ PhoenixGraph 的 `phoenixgraph.storage.schema-dir` 在启动时发现这个目�
 /data model
 /data dashboard [--year 2025] [--top 5]
 /data attribute <metric> --by <dimension> --from 2024 --to 2025
+/data risk [cases] [--period 2025-10]
+/data risk-attr [cases] [--by ring --from 2025-09 --to 2025-10]
 /data edit <operations.json>
 ```
 
@@ -232,6 +284,10 @@ PHOENIXGRAPH_LIVE=1 npm run verify
 `SHOW TABLES` 输出。它对齐 `demo-data` / `MarketingDay`，可以直接跑通 scan → build → dashboard →
 attribute。
 
+风控示例在 `examples/risk-control/`：120 行案件账本（2025-09 / 2025-10，含团伙 ring_a/ring_b、敏感规则
+`DEVICE_SHARE`、MINI 渠道）和它的 manifest。它不需要事实图就能算 KPI 和归因；团伙证据要 `payment-graph`
+里有对应 Account/FuzzyLink/Payment 顶点，没有就降级为 `candidate` 并说明原因。
+
 ---
 
 ## 6. 明确不做
@@ -240,6 +296,8 @@ attribute。
 - 不连接数据库；`SHOW` 输出/DLL 由用户提供。
 - 不猜属性绑定，不把“看起来像”的列当成同一列；没有绑定就拒绝执行。
 - 不把描述性归因说成因果。
+- 不把 FuzzyLink 当欺诈事实：它是模式相似候选，`confirmed` 也要人工复核账户与资金路径。
+- 不推算没进账本的案件：账本里没有的 period×切片不在答案里，归因也不会替它补一个 0。
 - 不做 PDF 的手写解析：PDF 依赖 `pdftotext`（可选 OCR）。
 - 不做实时 wiki 爬取/页面树同步；给 URL 就抓这一页，导出 HTML 也可以。
 

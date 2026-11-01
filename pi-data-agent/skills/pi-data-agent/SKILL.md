@@ -1,6 +1,6 @@
 ---
 name: pi-data-agent
-description: Build and use a data agent's metadata and semantic layer in PhoenixGraph. Use when asked to read data definitions from PDF, Markdown, wiki, Word or database SHOW/DDL output, to find metrics/dimensions and their formulas, to add or correct metadata and relations, or to produce a dashboard or a change attribution.
+description: Build and use a data agent's metadata, semantic layer and risk-control answers in PhoenixGraph. Use when asked to read data definitions from PDF, Markdown, wiki, Word or database SHOW/DDL output, to find metrics/dimensions and their formulas, to add or correct metadata and relations, to produce a dashboard or a change attribution, or to explain why a risk exposure/loss/case volume moved and which ring or rule is behind it.
 ---
 
 # pi-data-agent
@@ -48,6 +48,32 @@ snapshot/audit paths when reporting.
   returns the same tiles as markdown. Tiles that cannot execute are refusals with SQL, not empty charts.
 - `pg_data_attribute({metric:"营收", by:"渠道", from:"2024", to:"2025"})` decomposes the change. Quote the
   totals, the top movers, `decompositionAddsUp`, and the **descriptive, not causal** limit.
+
+## Risk: the ledger and the graph
+
+When the question is about risk (why exposure/loss/case volume moved, which ring, which rule), the two halves are
+the **case ledger** (what moved, by ring/rule/channel) and the **payment graph** (who is behind the slice).
+
+1. Run `pg_risk_dashboard({period:"2025-10"})` for the period the question names: KPIs, the previous period,
+   the ring/rule/channel breakdowns, and the entity evidence for every ring the manifest maps to accounts.
+2. Run `pg_risk_attribution({by:"ring", from, to})` for the change. Report, in this order: the delta, the
+   contributions with `shareOfChange`, `contributionsSum` vs `delta` (`decompositionAddsUp`), then the ranked
+   hypotheses with their `checks` and `refutations`.
+3. Quote the evidence by kind (`members` / `fuzzy link` / `payments` / `receiver` / `centrality`), each of which
+   carries a `citation` and the `query` that produced it. A ring whose evidence could not be read is
+   `executed:false` with a `reason` - say that, never render it as zero accounts or zero payments.
+4. `verdict: confirmed` means the graph passed every check (ring size, shared FuzzyLink, one collection receiver,
+   receiver dominance, payments present); `candidate` means at least one failed - list `failedChecks`.
+
+Contract for risk answers:
+
+- **FuzzyLink is a pattern-similarity candidate, not a fraud fact.** Even a `confirmed` ring needs a human
+  review of the accounts and the money path; say so.
+- **Attribution is descriptive, not causal.** Report the limits the bundle carries instead of writing a cause.
+- **A hypothesis without its refutation is not an answer.** Every hypothesis lists what would overturn it; quote
+  at least one.
+- **The ledger is the boundary of the answer.** A period or slice missing from `risk-cases.csv` is not in the
+  result; do not interpolate a zero for it.
 
 ## Answer contract
 

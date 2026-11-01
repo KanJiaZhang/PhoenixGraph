@@ -6,13 +6,22 @@
  *   PHOENIXGRAPH_LIVE=1 PHOENIXGRAPH_API=http://localhost:8081 node verification/verify-package.mjs
  *
  * It builds the retail example into a graph of its own, reads it back through the Model catalog, computes a
- * dashboard and an attribution, and applies one audited edit. It leaves the model graph in place: PhoenixGraph
+ * dashboard and an attribution, applies one audited edit, and then runs the risk ledger end to end (KPIs,
+ * deltas, breakdowns, ring evidence, hypotheses) - the risk numbers come from the ledger, so they are the same
+ * on a machine whose payment graph is empty; what the graph cannot answer is reported as such. It leaves the model graph in place: PhoenixGraph
  * has no delete-graph endpoint, and a verification that quietly removes what it built is not one you can
  * inspect afterwards. The graph name is printed at the end.
  */
 import process from 'node:process';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { clientFor, buildDataAgent, loadModel, dashboardFor, attributeFor, editDataAgent } from '../src/service.mjs';
 import { renderDashboardHtml } from '../src/dashboard.mjs';
+import {
+  readRiskCases, loadRiskManifest, riskDashboard, riskAttribution, renderRiskDashboardHtml, saveRiskDashboard,
+} from '../src/risk.mjs';
 
 if (process.env.PHOENIXGRAPH_LIVE !== '1') {
   console.log('skipped: set PHOENIXGRAPH_LIVE=1 (and start PhoenixGraph) to run the live verification');
@@ -23,7 +32,10 @@ const API = process.env.PHOENIXGRAPH_API || 'http://localhost:8081';
 const BASE_GRAPH = process.env.PI_DATA_AGENT_VERIFY_GRAPH || 'pi-data-agent-verify';
 const DATA_GRAPH = process.env.PI_DATA_AGENT_VERIFY_DATA_GRAPH || 'demo-data';
 const VERTEX_TYPE = process.env.PI_DATA_AGENT_VERIFY_VERTEX_TYPE || 'MarketingDay';
-const SOURCES = ['examples/retail'];
+const SOURCES = [join(fileURLToPath(new URL('..', import.meta.url)), 'examples/retail')];
+// the risk example is read relative to the package too, so the check runs from any directory
+const RISK_CASES = join(fileURLToPath(new URL('..', import.meta.url)), 'examples/risk-control/risk-cases.csv');
+const RISK_MANIFEST = join(fileURLToPath(new URL('..', import.meta.url)), 'examples/risk-control/risk-model.json');
 let failures = 0;
 let checks = 0;
 
@@ -98,6 +110,35 @@ try {
   const revenue = after.nodes.find((node) => node.id === 'metric/营收');
   check('the description persisted', revenue?.properties.description === 'live verification: reviewed definition', revenue?.properties.description);
   check('the alias persisted', revenue?.properties.alias.includes('销售收入'), JSON.stringify(revenue?.properties.alias));
+
+  console.log('\n--- risk');
+  const { rows: riskRows } = readRiskCases(RISK_CASES);
+  const riskManifest = loadRiskManifest(RISK_MANIFEST);
+  const riskBoard = await riskDashboard(client, riskRows, riskManifest, { period: '2025-10' });
+  check('the risk dashboard reads the ledger period', riskBoard.period === '2025-10' && riskBoard.summary.rows === 60, `${riskBoard.summary.rows} ledger rows`);
+  check('the KPIs are the ledger sums, not estimates', riskBoard.summary.exposure === 1420000 && riskBoard.summary.cases === 180 && riskBoard.summary.fp_rate === 25, JSON.stringify({ exposure: riskBoard.summary.exposure, cases: riskBoard.summary.cases, fpRate: riskBoard.summary.fp_rate }));
+  check('the previous period gives the deltas', riskBoard.previous?.period === '2025-09' && riskBoard.deltas.exposure === 420000 && riskBoard.deltas.fpRate === 10, JSON.stringify(riskBoard.deltas));
+  check('the dashboard breaks the period down by ring, rule and channel', riskBoard.breakdowns.map((item) => item.dimension).join(',') === 'ring,rule,channel', riskBoard.breakdowns.map((item) => `${item.dimension}:${item.rows.length}`).join(' '));
+  // the payment graph may or may not hold the ledger's accounts: either way the answer says which, never a silent zero
+  check('every ring either has evidence or says why not', riskBoard.evidence.length >= 2 && riskBoard.evidence.every((ring) => (ring.executed
+    ? ring.checks.length === 5 && ring.evidence.length >= 3
+    : Boolean(ring.reason))), JSON.stringify(riskBoard.evidence.map((ring) => ({ ring: ring.ring, executed: ring.executed, reason: ring.reason, verdict: ring.verdict }))));
+  const riskAttributionBundle = await riskAttribution(client, riskRows, riskManifest, { from: '2025-09', to: '2025-10' });
+  check('the risk attribution decomposes the whole delta', riskAttributionBundle.primary.decompositionAddsUp === true && riskAttributionBundle.primary.contributionsSum === riskAttributionBundle.primary.delta, `${riskAttributionBundle.primary.contributionsSum} vs ${riskAttributionBundle.primary.delta}`);
+  check('the ring shares are the ledger arithmetic', riskAttributionBundle.primary.contributions.map((item) => `${item.value}:${item.shareOfChange}`).slice(0, 3).join(' ') === 'ring_a:57.14 ring_b:28.57 none:14.29', riskAttributionBundle.primary.contributions.map((item) => `${item.value}:${item.shareOfChange}`).slice(0, 3).join(' '));
+  check('three explanations, best first, each with its refutations', riskAttributionBundle.hypotheses.map((item) => item.id).join(',') === 'rule-sensitivity,loss-improvement,ring-reentry'
+    && riskAttributionBundle.hypotheses.every((item) => item.checks.length > 0 && Array.isArray(item.refutations))
+    && riskAttributionBundle.hypotheses[0].score >= riskAttributionBundle.hypotheses[1].score, riskAttributionBundle.hypotheses.map((item) => `${item.id}=${item.score}/${item.status}`).join(' '));
+  check('the risk answer says it is descriptive, and that FuzzyLink is a candidate', riskAttributionBundle.limits.some((limit) => /描述性/.test(limit)) && riskAttributionBundle.limits.some((limit) => /FuzzyLink/.test(limit)), '');
+  const riskHtml = renderRiskDashboardHtml(riskBoard);
+  check('the risk dashboard renders to HTML', /^<!doctype html>/.test(riskHtml) && /风控看板/.test(riskHtml), `${riskHtml.length} bytes`);
+  const riskOut = mkdtempSync(join(tmpdir(), 'pda-risk-verify-'));
+  try {
+    const files = saveRiskDashboard(riskBoard, { outDir: riskOut });
+    check('the risk dashboard writes its HTML and JSON', existsSync(files.html) && existsSync(files.json), files.html);
+  } finally {
+    rmSync(riskOut, { recursive: true, force: true });
+  }
 
   console.log(`\n${checks - failures}/${checks} checks passed; model graph: ${graph}`);
   process.exit(failures ? 1 : 0);

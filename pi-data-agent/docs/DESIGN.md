@@ -157,7 +157,47 @@ decompositionAddsUp = |sum(sliceDelta) - totalDelta| <= tolerance
 Slices present in only one period are kept with a warning, so the contributions still sum to the change.
 `limits` always say the answer is descriptive, not causal.
 
-## 5. Editing
+## 5. Risk: the ledger and the graph
+
+A risk question has two sources, and the answer is only as good as the join between them:
+
+```
+case ledger (CSV/JSON)                     entity graph (PhoenixGraph)
+  period × channel × rule × ring             Account —FuzzyLinkedTo→ FuzzyLink
+  exposure / loss / blocked / cases          Account —Payment→ Account (collection receiver)
+  fp_cases / review_hours                    payment count, amount, status
+        │                                            │
+        └──────────── manifest.rings: ring → accounts ┘
+```
+
+The ledger answers *what moved*; the graph answers *who is behind the slice*. Both keep their citations:
+
+```
+summary(period)  = Σ column per metric definition        (metricValue: SUM / COUNT / AVG / RATIO)
+breakdown(dim)   = groupMetric(rows, exposure, dim) sorted by measure
+delta            = summary(to) - summary(from)            (exposure / loss / blocked / cases / rates)
+ring evidence    = members · fuzzy link · payments · receiver · centrality   (one query each)
+verdict          = confirmed iff every check passed, else candidate + failedChecks
+hypotheses       = rule-sensitivity · loss-improvement · ring-reentry, scored and sorted
+```
+
+Each ring's checks are stated, not implied: at least `minMembers` accounts resolved, one shared FuzzyLink key,
+a single collection receiver, that receiver's degree dominating the payer count, and payments present. The
+centrality numbers are what make "one account collects" checkable - `receiverDegree`, `payerCount`,
+`receiverDominance` - instead of an assertion.
+
+Every hypothesis carries `support`, `checks` and `refutations`: a candidate explanation without the observation
+that would overturn it is an opinion. `limits` say the attribution is descriptive and that a FuzzyLink is a
+pattern-similarity candidate, not a fraud fact.
+
+A query the graph cannot answer becomes a `warning` and a failed check (or `executed: false` with its reason
+when there is no client at all). It is never a zero: zero accounts and "nobody could read the accounts" are
+different findings, and only one of them is evidence.
+
+File names built from a period or a graph name go through `pathSegment`, because both come from user input: a
+period of `../../x` must not write outside `.pi/data-agent/`.
+
+## 6. Editing
 
 Operations are validated before any write: id prefix vs entityType, relation whitelist, endpoint types,
 binding format, node existence, delete confirmation and cascade. Writes go through the same schema mapping as
@@ -168,7 +208,7 @@ The HTTP delete endpoints take the id in the body (`POST /graphs/{graph}/vertice
 `POST /graphs/{graph}/edges/delete`) because an id such as `metric/revenue` contains a slash that the path
 form cannot carry through the servlet container.
 
-## 6. Failure modes this design keeps visible
+## 7. Failure modes this design keeps visible
 
 | Situation | Answer |
 |---|---|
@@ -180,10 +220,18 @@ form cannot carry through the servlet container.
 | graph storage has no HTTP write | refuse before writing |
 | dashboard tile that cannot execute | refusal + SQL, not an empty chart |
 | attribution slice missing on one side | kept, warned, sum still equals delta |
+| a ring whose evidence query failed | `warning` + failed check, verdict `candidate` - not zero accounts |
+| no graph client at all | `executed: false` with the reason, never fabricated evidence |
+| risk period/slice not in the ledger | absent from the answer; no interpolated zero |
 
-## 7. Tests
+## 8. Tests
 
 Unit tests (`npm test`) cover readers, extraction, model/binding/merge, schema mapping, catalog reads,
-editing validation, attribution arithmetic, dashboard rendering and extension registration. The live
-verification (`PHOENIXGRAPH_LIVE=1 npm run verify`) builds the retail example, reads it back through the
-catalog, runs a dashboard and an attribution, and applies an edit; it asserts the numbers and the refusals.
+editing validation, attribution arithmetic, dashboard rendering, the risk ledger/manifest/evidence/
+hypotheses, the pi package manifest (extension, skill frontmatter, prompt template, `files`, peer deps) and
+extension registration. The live verification (`PHOENIXGRAPH_LIVE=1 npm run verify`) builds the retail
+example, reads it back through the catalog, runs a dashboard and an attribution, applies an edit, and runs
+the risk ledger end to end; it asserts the numbers and the refusals.
+
+The tests read the package's example files relative to `package.json`, not to the shell, so they pass from
+the package directory and from the repository root.

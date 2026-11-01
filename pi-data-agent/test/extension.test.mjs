@@ -27,7 +27,7 @@ function fakePi() {
   return { pi, tools, commands, handlers, entries, notifications, ctx };
 }
 
-test('the extension registers the six tools, the /data command and the lifecycle hook', () => {
+test('the extension registers the eight tools, the /data command and the lifecycle hook', () => {
   const fake = fakePi();
   extension(fake.pi, { env: {}, home: mkdtempSync(join(tmpdir(), 'pda-home-')) });
   assert.deepEqual([...fake.tools.keys()].sort(), [

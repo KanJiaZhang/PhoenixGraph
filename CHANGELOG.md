@@ -24,12 +24,22 @@ All notable changes to this project are recorded here. The format follows
 
 - **`pi-data-agent`**, a pi package that builds a metadata + semantic layer from PDF/Markdown/wiki/Word
   documents and database `SHOW`/DDL output, stores it in PhoenixGraph with the sentence/row behind every node
-  and edge, lets a reviewer add/change/remove nodes, relations and bindings under validation and audit, and
-  reads dashboards (totals, trend, Top-N) and attributions (contributions, shares, concentration, outlier) from
-  the fact graph. The package carries a skill, a review prompt, an extension with six tools and `/data`
-  commands, a CLI, 33 unit tests and a live verification (`PHOENIXGRAPH_LIVE=1 npm run verify`). The model graph is readable on
-  a keyed store through a catalog on the `Model` node; schema copies under `.pida-schemas` are discovered by
-  `phoenixgraph.storage.schema-dir` on restart.
+  and edge, lets a reviewer add/change/remove nodes, relations and bindings under validation and audit, reads
+  dashboards (totals, trend, Top-N) and attributions (contributions, shares, concentration, outlier) from the
+  fact graph, and joins a risk case ledger with the payment graph (KPI dashboard, ring/rule/channel
+  attribution, FuzzyLink and collection-receiver evidence, ranked hypotheses with their refutations). The
+  package carries a skill, a review prompt, an extension with eight tools and `/data` commands, a CLI, 53 unit
+  tests and a live verification of 36 checks (`PHOENIXGRAPH_LIVE=1 npm run verify`). The package is verified
+  *as a package*: installed with `pi install ./pi-data-agent`, after which `pg_data_model` answered with the
+  model's 7 metrics, `/data-agent-review pi-data-agent-verify` expanded and drove a full review, and
+  `/skill:pi-data-agent` loaded the skill and its two rules; a test resolves `package.json#pi`, imports the
+  extension entry, checks each skill's frontmatter, the prompt template's description, the `files` list
+  against every declared resource, and that the host packages are peers rather than dependencies. The model graph is readable on a keyed store through a
+  catalog on the `Model` node; schema copies under `.pida-schemas` are discovered by
+  `phoenixgraph.storage.schema-dir` on restart. Writing it turned up two defects the tests now hold down:
+  dashboard/risk file names are built through `pathSegment` (a ledger period reached the file name unfiltered,
+  so `../../x` could write outside `.pi/data-agent/`), and a ring whose accounts the graph does not hold says
+  so in a `reason` instead of only reporting `executed: false`.
 - **Every answered turn is remembered, and what the graph holds about the next question is put in its prompt**
   (`extensions/phoenixgraph`). On `turn_end` the question and the answer are ingested as one document with a
   validity window starting now; on `before_agent_start` `POST /api/v1/agent/context` is asked what the graph

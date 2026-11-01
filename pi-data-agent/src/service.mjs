@@ -21,7 +21,7 @@ import { applyEdits } from './edits.mjs';
 import { buildDashboard, renderDashboardHtml, renderDashboardMarkdown } from './dashboard.mjs';
 import { runAttribution, renderAttribution } from './attribution.mjs';
 import { loadConfig, remember, readJson, writeJson, stateFile, projectRoot } from './config.mjs';
-import { quote, unique } from './util.mjs';
+import { pathSegment, quote, unique } from './util.mjs';
 
 export function clientFor(options = {}) {
   return new PhoenixClient({
@@ -109,7 +109,7 @@ export async function scanSources(sources, options = {}) {
 }
 
 function snapshotPath(graph) {
-  return join(projectRoot(), '.pi', 'data-agent', 'models', `${graph}.json`);
+  return join(projectRoot(), '.pi', 'data-agent', 'models', `${pathSegment(graph)}.json`);
 }
 
 export function saveSnapshot(model, options = {}) {
@@ -130,7 +130,7 @@ export function appendAudit(graph, records, options = {}) {
 export function saveSchemaCopy(graph, schema, options = {}) {
   const directory = options.schemaDir || join(projectRoot(), '.pida-schemas');
   mkdirSync(directory, { recursive: true });
-  const path = join(directory, `${graph}.json`);
+  const path = join(directory, `${pathSegment(graph)}.json`);
   writeFileSync(path, `${JSON.stringify(schema, null, 2)}\n`);
   return path;
 }
@@ -226,7 +226,7 @@ export async function dashboardFor(options = {}) {
     const directory = options.outDir || join(projectRoot(), '.pi', 'data-agent', 'dashboards');
     mkdirSync(directory, { recursive: true });
     const stamp = new Date(options.now ?? Date.now()).toISOString().replace(/[:.]/g, '-');
-    const base = join(directory, `${graph}-${stamp}`);
+    const base = join(directory, `${pathSegment(graph)}-${stamp}`);
     writeFileSync(`${base}.html`, renderDashboardHtml(dashboard));
     writeFileSync(`${base}.json`, `${JSON.stringify(dashboard, null, 2)}\n`);
     files = { html: `${base}.html`, json: `${base}.json` };
