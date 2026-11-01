@@ -58,7 +58,7 @@ public class RulePackRegistry {
 
     /** The packs an operator can name: the built-ins plus the JSON files in the configured directory. */
     public List<String> available() {
-        List<String> names = new ArrayList<>(List.of("sanguo", "incident"));
+        List<String> names = new ArrayList<>(List.of("sanguo", "incident", "context"));
         if (directory != null && Files.isDirectory(directory)) {
             try (Stream<Path> files = Files.list(directory)) {
                 files.map(path -> path.getFileName().toString())

@@ -1,5 +1,5 @@
 // needs: service + aerospike
-// what: the incident-triage case of examples/incident-triage: a corpus of four RCAs, a topology, hosts, metrics
+// what: the context-graph case of examples/incident-triage: a corpus of four RCAs, a topology, hosts, metrics
 //       and a change window is ingested, then three symptoms are run through the same ranking the example uses.
 //       Asserts that the three spellings of one service merge and a one-edit near-duplicate is left for review;
 //       that today's fault ranks the change window that touched redis-cache first, with the prior incident named
@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
 const API = 'http://localhost:8081';
-const GRAPH = 'incident-triage';
+const GRAPH = 'context-graph';
 
 let failures = 0;
 const check = (name, ok, detail) => {

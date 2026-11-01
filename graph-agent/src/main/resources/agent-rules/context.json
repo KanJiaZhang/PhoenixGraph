@@ -1,0 +1,122 @@
+{
+  "name": "context",
+  "description": "What a working conversation asserts: causes, dependencies, use and I/O, deployment, impact, ownership, and the decisions a team makes (chosen / rejected / verified) - in English and Chinese, because the turns of a session are rarely one language.",
+  "relationWords": {},
+  "rules": [
+    {
+      "name": "caused",
+      "relation": "caused",
+      "between": "^(?:caused|causes|leads? to|led to|triggers?|triggered)(?: the| a| an)?$|^(?:导致|导致了|引起|引起了|造成|造成了|触发|触发了)$"
+    },
+    {
+      "name": "was-caused-by",
+      "relation": "caused",
+      "between": "^(?:was|is|were) caused by(?: the| a| an)?$|^(?:由|是因为)$",
+      "swap": true
+    },
+    {
+      "name": "fixed",
+      "relation": "fixed",
+      "between": "^(?:fixed|fixes|resolved|mitigated|repaired)(?: the| a| an)?$|^(?:修复|修复了|修好|解决了|解决了|缓解了)$"
+    },
+    {
+      "name": "reverted",
+      "relation": "reverted",
+      "between": "^(?:reverted|rolled back|undid)(?: the| a| an)?$|^(?:回滚|回滚了|撤销|撤销了|退回了)$"
+    },
+    {
+      "name": "replaced",
+      "relation": "replaced",
+      "between": "^(?:replaced|replaces|supersedes|superseded)(?: the| a| an)?$|^(?:替换|替换了|取代|取代了|换成了)$"
+    },
+    {
+      "name": "depends-on",
+      "relation": "depends_on",
+      "between": "^(?:depends on|relies on|requires|needs)$|^(?:依赖|依赖于|依赖着|需要)$"
+    },
+    {
+      "name": "depended-on-by",
+      "relation": "depends_on",
+      "between": "^(?:is|was) (?:depended on by|required by)$|^(?:被依赖)$",
+      "swap": true
+    },
+    {
+      "name": "uses",
+      "relation": "uses",
+      "between": "^(?:uses|used|consumes|calls|invokes)(?: the| a| an)?$|^(?:使用|使用了|调用|调用了|走)$"
+    },
+    {
+      "name": "is-used-by",
+      "relation": "uses",
+      "between": "^(?:is|was) used by$|^(?:被调用)$",
+      "swap": true
+    },
+    {
+      "name": "reads",
+      "relation": "reads",
+      "between": "^(?:reads|read|queries)(?: the| a| an)?$|^(?:读取|读了|查询)$"
+    },
+    {
+      "name": "writes",
+      "relation": "writes",
+      "between": "^(?:writes|wrote|inserts|persists)(?: the| a| an)?$|^(?:写入|写了|落)$"
+    },
+    {
+      "name": "part-of",
+      "relation": "part_of",
+      "between": "^(?:is|was) part of(?: the)?$|^(?:属于|归属)$"
+    },
+    {
+      "name": "deployed-on",
+      "relation": "deployed_on",
+      "between": "^(?:is|was) deployed on(?: the)?$|^(?:runs on)$|^(?:部署在|部署到|运行在|跑在)$"
+    },
+    {
+      "name": "affects",
+      "relation": "affects",
+      "between": "^(?:affects|affected|impacts?|impacted)(?: the| a| an)?$|^(?:影响|影响了|波及)$"
+    },
+    {
+      "name": "blocked",
+      "relation": "blocked",
+      "between": "^(?:blocks?|blocked|prevents?|prevented)(?: the| a| an)?$|^(?:阻塞|阻塞了|挡住|阻止|卡住)$"
+    },
+    {
+      "name": "owns",
+      "relation": "owns",
+      "between": "^(?:owns|owned)(?: the| a| an)?$|^(?:负责|负责了|拥有)$"
+    },
+    {
+      "name": "is-owned-by",
+      "relation": "owns",
+      "between": "^(?:is|was) owned by$|^(?:归)$",
+      "swap": true
+    },
+    {
+      "name": "assigned-to",
+      "relation": "assigned_to",
+      "between": "^(?:is|was) assigned to(?: the)?$|^(?:指派给|分配给|交给了)$"
+    },
+    {
+      "name": "decided",
+      "relation": "decided",
+      "between": "^(?:decided|agreed|chose|chosen|adopted|picked)(?: on| to)?(?: the| a| an)?$|^(?:决定|决定了|采用|采用了|选了|选定)$"
+    },
+    {
+      "name": "rejected",
+      "relation": "rejected",
+      "between": "^(?:rejected|ruled out|dropped|abandoned)(?: the| a| an)?$|^(?:否掉|否了|放弃了|排除|排除了|不采用)$"
+    },
+    {
+      "name": "verified",
+      "relation": "verified",
+      "between": "^(?:verified|confirmed|validated|reproduces)(?: the| a| an)?$|^(?:验证|验证了|确认|确认了|实测|复现)$"
+    },
+    {
+      "name": "reported",
+      "relation": "reported",
+      "between": "^(?:reported|reports|found)(?: the| a| an)?$|^(?:报告|上报|发现|发现了)$"
+    }
+  ],
+  "windows": []
+}

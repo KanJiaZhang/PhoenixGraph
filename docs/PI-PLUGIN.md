@@ -63,10 +63,13 @@ export default function (pi: ExtensionAPI) {
 
 ```
 /pg status                  # 图、端点、时间轴开关、asOf、最近一次 triage 的摘要
-/pg graph incident-triage   # 换图（写状态）
+/pg graph context-graph     # 换图（写状态）
 /pg timeline on|off|2026-10-21
+/pg rules context|incident|sanguo|<name>   # 一轮对话用哪套词汇抽取（写状态）
+/pg auto on|off             # 每轮自动记忆：答完写进图，下一问前把图里的相关事实放回提示词
 /pg triage <symptom>
 /pg ingest <dir> --from 2026-10-24
+/pg remember | /pg note <sentence>         # 手动：整段对话 / 一句话
 ```
 
 `registerCommand` 的 handler 拿 `ExtensionCommandContext`（可以 `waitForIdle`/`reload`），适合"改完状态再
@@ -77,7 +80,7 @@ export default function (pi: ExtensionAPI) {
 这是"每一次交互中启用"的核心：**不靠模型自觉，靠提示词里的事实**。注入一小段（~10 行）而不是整图：
 
 ```
-[phoenixgraph] graph=incident-triage endpoint=http://localhost:8081
+[phoenixgraph] graph=context-graph endpoint=http://localhost:8081
 timeline=on asOf=2026-10-21 (facts after this instant are hidden)
 tools: pg_triage(symptom), pg_context(question), pg_asof(instant)
 answer contract: quote coverage; every relation carries a sentence; if no name match + no relation, say so.
@@ -88,6 +91,9 @@ answer contract: quote coverage; every relation carries a sentence; if no name m
   也会让 provider 的 prompt cache 失效。
 - 只在"该图适用"的会话里注入（见 3.5），否则每次交互都多花 token。
 - 注入的是**契约与状态**，不是数据；数据永远通过工具按需取。
+- 开启了自动记忆时，这一节还会带上一段**该问题的图上证据**（关系 + 原句 + coverage），由
+  `POST /api/v1/agent/context` 取回，所以模型是从证据开始，不是从自己的记忆开始。取不到就不加这一段，
+  契约本身仍然成立。
 
 ### 3.4 状态：单会话、会话内、跨对话
 
@@ -96,7 +102,7 @@ answer contract: quote coverage; every relation carries a sentence; if no name m
 | 工具一次调用的结果 | 工具结果 `details` | 跟随分支 |
 | "这次会话用哪张图 / 时间轴开没开" | `pi.appendEntry()`（不进模型上下文）+ 从 `ctx.sessionManager.getBranch()` 重建 | 随会话，分支安全 |
 | 跨对话（默认图、端点、asOf、上次症状） | `~/.pi/agent/state/phoenixgraph.json` | 进程重启仍在 |
-| 团队/项目级（图名、端点、只读 token） | `<repo>/.pi/phoenixgraph.json`（可提交） | 跟随仓库 |
+| 团队/项目级（图名、端点、抽取词典、只读 token） | `<repo>/.pi/phoenixgraph.json`（可提交，含可选 `"rulePack"`） | 跟随仓库 |
 | 全局开关（是否加载扩展） | `settings.json` 的 `extensions` | 用户配置 |
 
 跨对话的关键设计：**`asOf` 是一个"粘性"默认值**。扩展在工具调用前把会话状态里的 `asOf` 填进未指定的参数

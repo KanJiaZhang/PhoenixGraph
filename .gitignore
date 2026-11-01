@@ -90,6 +90,12 @@ __pycache__/
 # local demo schemas written by earlier demo scripts
 /demo-semantics.json
 /demo-analytics.json
+# data-agent schema files written by POST /api/v1/schema (the durable copies live in .pida-schemas)
+/pi-data-agent-*.json
+/.pida-schemas/
+# pi-data-agent local state: snapshots, audit, dashboards
+/pi-data-agent/.pi/
+/.pi/data-agent/
 
 # JavaScript/TypeScript dependencies
 node_modules/

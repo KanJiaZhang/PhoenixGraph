@@ -68,6 +68,11 @@ jobs:
       - name: pi extension tests (fake pi, fake API)
         run: node --test extensions/phoenixgraph/test/*.test.mjs
 
+      # the data-agent package: readers and extractors, the model and its bindings, edits under validation, the
+      # dashboard and attribution arithmetic. No service, no model - every number is computed from fixtures.
+      - name: pi-data-agent tests (readers, extraction, edits, dashboards)
+        run: node --test pi-data-agent/test/*.test.mjs
+
       # --expect-untagged because CI runs on every push, including the commit that bumps the version before the
       # tag exists: every fact that does not depend on the tag is still enforced here
       - name: the release state agrees with itself

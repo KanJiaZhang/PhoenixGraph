@@ -16,7 +16,7 @@
 | 第二名 | `deploy-42`（同形态但老的变更，score 10），第三名 `deploy-47`（checkout 自身发版回归，score 3） |
 | 被排除 | `deploy-46`（DNS）→ −3：它作用在 `notification-service` / `rabbitmq`，本次无任何信号 |
 | 什么会推翻它 | deploy-48 的发布 diff 里其实没有这个改动；或 redis 指标在 10:00 前就开始恶化；或 5xx 集中在完全不碰缓存前缀的代码路径 |
-| 复核 | `examples/incident-triage/triage.mjs --json`（机器可读）、`verification/verify-incident-triage.mjs`（15 条断言）、artifact `incident-triage.agent.json`（每条边带 `sentence` + `chunkId`） |
+| 复核 | `examples/incident-triage/triage.mjs --json`（机器可读）、`verification/verify-incident-triage.mjs`（15 条断言）、artifact `context-graph.agent.json`（每条边带 `sentence` + `chunkId`） |
 
 ## 1. 语料：真实 ops 数据长什么样
 
@@ -112,7 +112,7 @@ g.V('redis-cache','Entity','cache-key-prefix-churn','Entity','cache-eviction-sto
 
 ```bash
 curl -s localhost:8081/api/v1/agent/find-entities -H 'content-type: application/json' -d '{
-  "graph":"incident-triage",
+  "graph":"context-graph",
   "question":"2026-10-24 14:32 起 checkout-api 的 p99 从 180ms 涨到 4.2s，error-rate-5xx 到 2.3%。同时 redis-cpu-percent 到 95%，redis-evictions-rate 高频抖动，redis-memory-used-percent 88%。",
   "k":20}'
 ```
@@ -217,7 +217,7 @@ node examples/incident-triage/triage.mjs --symptom "支付网关的 TLS 证书�
 
 | 手段 | 命令 / 位置 |
 |---|---|
-| 每条边都有原句和 chunk | artifact `incident-triage.agent.json`，UI 里点开边也能看到 |
+| 每条边都有原句和 chunk | artifact `context-graph.agent.json`，UI 里点开边也能看到 |
 | 排序是算术，不是模型 | `examples/incident-triage/triage.mjs` 的加分项全部打印 |
 | 机器可读的同一份结果 | `--json`（`verification/verify-incident-triage.mjs` 就断言它） |
 | 15 条断言 | `node verification/verify-incident-triage.mjs`：拼写合并、近重复留审、第一名、前例、推翻条件、DNS 负分、安静日换答案、未知症状拒答，以及**重复摄取不重复建边** |

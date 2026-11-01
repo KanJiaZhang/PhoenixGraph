@@ -1,0 +1,48 @@
+{
+  "name": "quick-pay-risk",
+  "description": "轻付（小额免密）收单风控案件账本：风险敞口、确认损失、拦截金额、误报与复核时长。",
+  "metrics": {
+    "exposure": { "column": "exposure", "agg": "SUM", "unit": "元", "label": "风险敞口", "description": "案件涉及的交易金额" },
+    "loss": { "column": "loss", "agg": "SUM", "unit": "元", "label": "确认损失", "description": "已确认的资损金额" },
+    "blocked": { "column": "blocked", "agg": "SUM", "unit": "元", "label": "拦截金额", "description": "策略/人工拦截的金额" },
+    "cases": { "column": "cases", "agg": "SUM", "unit": "件", "label": "案件数", "description": "进入审核台的案件数" },
+    "fp_cases": { "column": "fp_cases", "agg": "SUM", "unit": "件", "label": "误报案件", "description": "复核后判定为误报的案件数" },
+    "review_hours": { "column": "review_hours", "agg": "AVG", "unit": "小时", "label": "平均复核时长" }
+  },
+  "dimensions": {
+    "period": { "column": "period" },
+    "channel": { "column": "channel", "label": "渠道" },
+    "rule": { "column": "rule", "label": "命中规则" },
+    "ring": { "column": "ring", "label": "团伙" }
+  },
+  "rulesSensitive": ["DEVICE_SHARE"],
+  "minMembers": 3,
+  "rings": {
+    "ring_a": {
+      "label": "Ring A · mail.ru / 10.20 / 卡BIN 621700",
+      "accounts": ["fz_a1", "fz_a2", "fz_a3", "fz_a4", "fz_a5", "fz_a6", "fz_a7"],
+      "patternId": 0,
+      "vertexType": "Account"
+    },
+    "ring_b": {
+      "label": "Ring B · 10.30.40 / 卡BIN 621700",
+      "accounts": ["fz_b1", "fz_b2", "fz_b3", "fz_b4"],
+      "patternId": 1,
+      "vertexType": "Account"
+    },
+    "none": {
+      "label": "未命中团伙",
+      "accounts": [],
+      "vertexType": "Account"
+    }
+  },
+  "graph": {
+    "name": "payment-graph",
+    "vertexType": "Account"
+  },
+  "story": {
+    "periodFrom": "2025-09",
+    "periodTo": "2025-10",
+    "note": "10 月上半月轻付的账面敞口上升，但确认损失下降；团伙 A/B 通过同一个收款账户回流，DEVICE_SHARE 在 MINI 新客上触发量上升，带来误报和复核积压。"
+  }
+}

@@ -4,6 +4,7 @@ import com.aerospike.client.AerospikeClient;
 import com.pengcheng.phoenixgraph.http.config.GraphProperties;
 import com.pengcheng.phoenixgraph.http.config.RocksDbGraphStores;
 import com.pengcheng.phoenixgraph.http.config.StorageProperties;
+import com.pengcheng.phoenixgraph.http.config.StorageConfig;
 import com.pengcheng.phoenixgraph.metrics.GraphMetrics;
 import com.pengcheng.phoenixgraph.metrics.MetricsRegistry;
 import com.pengcheng.phoenixgraph.metrics.MetricsStore;
@@ -149,7 +150,20 @@ public class GraphAuthoringService {
                 return Files.readString(file, StandardCharsets.UTF_8);
             }
         } catch (IOException ignored) {
-            // fall through to the classpath copy
+            // fall through to the schema directory and the classpath copy
+        }
+        // A graph discovered from phoenixgraph.storage.schema-dir has no copy in the working directory; the
+        // schema endpoint must still answer, or a client that reads the model before writing sees "unknown".
+        String schemaDir = properties.schemaDir();
+        if (schemaDir != null && !schemaDir.isBlank()) {
+            try {
+                Path discovered = Path.of(schemaDir).resolve(graphName + SCHEMA_SUFFIX).normalize();
+                if (discovered.startsWith(Path.of(schemaDir).normalize()) && Files.isRegularFile(discovered)) {
+                    return Files.readString(discovered, StandardCharsets.UTF_8);
+                }
+            } catch (IOException ignored) {
+                // fall through to the classpath copy
+            }
         }
         try (InputStream in = GraphAuthoringService.class.getResourceAsStream("/" + graphName + SCHEMA_SUFFIX)) {
             if (in != null) {
@@ -231,7 +245,9 @@ public class GraphAuthoringService {
                 return definition.vertexSet();
             }
         }
-        return schema.name() + "_v1";
+        // the same naming a discovered schema uses (StorageConfig.vertexSetFor), so a graph created over
+        // HTTP and the same graph discovered from schema-dir on the next start read ONE vertex set
+        return StorageConfig.vertexSetFor(schema.name());
     }
 
     /**

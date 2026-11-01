@@ -274,7 +274,7 @@ public class StorageConfig {
     }
 
     /** The vertex set of a discovered graph: its name, with what an Aerospike set name cannot hold folded. */
-    static String vertexSetFor(String graphName) {
+    public static String vertexSetFor(String graphName) {
         return graphName.replaceAll("[^A-Za-z0-9_]", "_");
     }
 

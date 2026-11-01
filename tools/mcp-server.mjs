@@ -165,7 +165,7 @@ const LOCAL_TRIAGE = {
     type: 'object',
     properties: {
       symptom: { type: 'string', description: 'The fault symptom, in words (what moved, by how much, when)' },
-      graph: { type: 'string', description: 'Graph name (default incident-triage)' },
+      graph: { type: 'string', description: 'Graph name (default context-graph)' },
       asOf: { type: 'string', description: 'Answer as of this instant (2026-10-21 or an ISO instant)' },
       k: { type: 'number', description: 'How many seed entities to consider (default 20)' },
     },
@@ -183,7 +183,7 @@ const invoke = async (name, args, scope = null) => {
   }
   if (tool._local === 'triage') {
     const asOf = args.asOf ? Date.parse(String(args.asOf).length === 10 ? `${args.asOf}T00:00:00Z` : String(args.asOf)) : null;
-    const result = await runTriage({ endpoint: API, graph: args.graph || 'incident-triage', symptom: args.symptom,
+    const result = await runTriage({ endpoint: API, graph: args.graph || 'context-graph', symptom: args.symptom,
       k: args.k, asOf: Number.isNaN(asOf) ? null : asOf });
     return { status: 200, text: JSON.stringify(result), json: result };
   }

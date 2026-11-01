@@ -129,4 +129,4 @@ demo - the script treats `metric -> affects -> component` as "observes" and says
 | `symptom.txt` | the fault this run answers |
 | `triage.mjs` | ingest + rank + report, `--json` for the same result as data (no dependencies, ~350 lines) |
 | `../../verification/verify-incident-triage.mjs` | the same three symptoms asserted against a running service |
-| `incident-triage.agent.json` | the artifact the run writes (gitignored: regenerable from `documents/`) |
+| `context-graph.agent.json` | the artifact the run writes (gitignored: regenerable from `documents/`) |

@@ -29,6 +29,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -582,7 +583,8 @@ public class AgentIngestService {
 
     /**
      * The pure merge: an ingestion is additive into the graph, so the artifact it writes has to be additive too -
-     * the entities and relations of the earlier ingestions, with this one's reading winning on a collision.
+     * the entities and relations of the earlier ingestions, with the stronger source winning on a collision
+     * (see {@link #keepReading}).
      *
      * <p>It used to merge entity chunk lists and then take this ingestion's relations wholesale, so ingesting one
      * new document left the artifact holding that document's facts only: the graph kept its sixty-three relations,
@@ -622,8 +624,17 @@ public class AgentIngestService {
         for (AgentIndex.Relation relation : previous.relations()) {
             relations.put(relationKey(relation), relation);
         }
+        // which document each chunk of either side came from, so a documented fact can be told from a restatement
+        Map<String, String> documentOf = new LinkedHashMap<>();
+        for (AgentIndex.Chunk chunk : previous.chunks()) {
+            documentOf.put(chunk.chunkId(), chunk.documentId());
+        }
+        for (AgentIndex.Chunk chunk : current.chunks()) {
+            documentOf.put(chunk.chunkId(), chunk.documentId());
+        }
         for (AgentIndex.Relation relation : current.relations()) {
-            relations.put(relationKey(relation), relation);
+            String key = relationKey(relation);
+            relations.put(key, keepReading(relations.get(key), relation, documentOf));
         }
 
         Map<String, AgentIndex.Chunk> chunks = new LinkedHashMap<>();
@@ -641,6 +652,53 @@ public class AgentIngestService {
     /** The identity of a relation in the artifact: the same triple is one fact, whichever ingestion wrote it. */
     private static String relationKey(AgentIndex.Relation relation) {
         return relation.head() + '\u001f' + relation.relation() + '\u001f' + relation.tail();
+    }
+
+    /**
+     * The document ids a conversation turn is ingested under: {@code turn-<stamp>-<n>} for a live turn and
+     * {@code catch-up-<stamp>-<n>} for the turns a session answered before memory existed. Both are the extension
+     * writing the conversation back into the graph.
+     */
+    private static final List<String> CONVERSATION_PREFIXES = List.of("turn-", "catch-up-");
+
+    /**
+     * Which of two readings of the same fact the artifact keeps, when the ingestion that just ran repeats a triple
+     * an earlier one already holds.
+     *
+     * <p>Provenance follows the source, not the clock. A document says a fact once, in its own words, inside the
+     * window it declares; a conversation turn says it again as a paraphrase, and the turn's window starts now
+     * because that is when the turn happened. Letting the turn win therefore replaced the sentence a reader has to
+     * quote with a paraphrase of the answer, and moved an expired fact's window (INC-1042's September chain, closed
+     * by deploy-48) to the day somebody asked about it - the incident became invisible at the instant it describes
+     * while a change that did not exist yet ranked first. So: a restatement never rewrites a documented fact. Two
+     * documents keep today's rule (the newer ingestion wins), two turns of the same kind keep it too, and a fact
+     * only a turn states is still written - that is how an assertion nobody documented gets in.
+     */
+    static AgentIndex.Relation keepReading(AgentIndex.Relation earlier, AgentIndex.Relation incoming,
+                                           Map<String, String> documentOf) {
+        if (earlier == null) {
+            return incoming;
+        }
+        if (isConversation(incoming, documentOf) && !isConversation(earlier, documentOf)) {
+            return earlier;
+        }
+        return incoming;
+    }
+
+    /** Whether this relation was read from a conversation turn rather than from a document. */
+    private static boolean isConversation(AgentIndex.Relation relation, Map<String, String> documentOf) {
+        String document = documentOf.get(relation.chunkId());
+        if (document != null) {
+            for (String prefix : CONVERSATION_PREFIXES) {
+                if (document.startsWith(prefix)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        // an artifact older than the chunk list it cites: the citation is the only source left to read
+        String cite = relation.cite();
+        return cite != null && cite.toLowerCase(Locale.ROOT).startsWith("conversation turn");
     }
 
     // ------------------------------------------------------------------ the review workflow: merging two entities

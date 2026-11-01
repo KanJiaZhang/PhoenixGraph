@@ -226,6 +226,7 @@
       noVertexType: '当前图没有顶点类型',
       enterGremlin: '请输入 gremlin 查询',
       noGraph: '没有可用的图实例',
+      unknownGraphInLink: '这个链接指向的图 {graph} 不在此实例上（现有：{names}）——查询没有执行',
       shortestPath: '最短路径',
       exportCsv: '导出 CSV',
       needTwo: '请先点击两个点，再选择「最短路径」',
@@ -392,6 +393,7 @@
       noVertexType: 'This graph has no vertex types',
       enterGremlin: 'Enter a gremlin query',
       noGraph: 'No graph available',
+      unknownGraphInLink: 'this link names graph {graph}, which this instance does not serve (served: {names}) — the query was not run',
       shortestPath: 'Shortest path',
       exportCsv: 'Export CSV',
       needTwo: 'Pick two vertices first, then choose Shortest path',
@@ -4093,7 +4095,18 @@
     const deep = deepLink();
     if (deep && deep.graph) {
       const named = graphs.find((candidate) => candidate.name === deep.graph);
-      if (named) { el.graphSelect.value = named.name; onGraphChange(named); }
+      if (named) {
+        el.graphSelect.value = named.name;
+        onGraphChange(named);
+      } else {
+        // A link outlives the graph it names: a renamed instance, another deployment, a stale session. Drawing
+        // its query against whichever graph happens to be first is a blank canvas with no reason given - say
+        // which graph is missing, and do not run the query somewhere else.
+        toast(t('unknownGraphInLink').replace('{graph}', deep.graph)
+          .replace('{names}', graphs.map((candidate) => candidate.name).join(', ')), 8000);
+        deep.graph = null;
+        deep.query = null;
+      }
     }
 
     el.graphSelect.addEventListener('change', () => {

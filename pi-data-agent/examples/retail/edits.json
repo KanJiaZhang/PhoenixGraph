@@ -1,0 +1,39 @@
+[
+  {
+    "op": "update-node",
+    "id": "metric/营收",
+    "properties": {
+      "description": "营销带来的成交金额（2026-10 口径评审：按成交日归集，含税）"
+    }
+  },
+  {
+    "op": "add-alias",
+    "id": "metric/营收",
+    "alias": ["销售收入", "流水"]
+  },
+  {
+    "op": "set-binding",
+    "id": "metric/营收",
+    "graphProperty": "revenue"
+  },
+  {
+    "op": "upsert-node",
+    "node": {
+      "id": "term/激活",
+      "entityType": "Term",
+      "properties": {
+        "name": "激活",
+        "description": "完成首次有效成交的用户",
+        "alias": ["首购"]
+      }
+    }
+  },
+  {
+    "op": "upsert-edge",
+    "edge": {
+      "head": "term/激活",
+      "relation": "sameAs",
+      "tail": "metric/新客数"
+    }
+  }
+]

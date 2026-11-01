@@ -1,0 +1,8 @@
+mysql> SHOW TABLES;
++------------------------+
+| Tables_in_marketing    |
++------------------------+
+| marketing              |
+| marketing_channel_dim  |
++------------------------+
+2 rows in set (0.00 sec)

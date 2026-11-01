@@ -70,7 +70,7 @@ await send('Runtime.enable');
 await send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 950, deviceScaleFactor: 1.5, mobile: false });
 await send('Page.navigate', { url: 'http://localhost:8080/' });
 for (let i = 0; i < 60; i++) {
-  const ready = await evaluate("!!document.getElementById('graphSelect') && Array.from(document.getElementById('graphSelect').options).some(o => o.value === 'incident-triage')");
+  const ready = await evaluate("!!document.getElementById('graphSelect') && Array.from(document.getElementById('graphSelect').options).some(o => o.value === 'context-graph')");
   if (ready) break;
   await sleep(500);
 }
@@ -81,14 +81,14 @@ const shots = [
     // deploy-42 that failed the same way in September
     // the change window the ranking blames, one hop out: the six edges deploy-48 actually wrote
     file: 'incident-triage-deploy-48.png',
-    graph: 'incident-triage',
+    graph: 'context-graph',
     query: "g.V('deploy-48','Entity').bothE('Relates').otherV().dedup().limit(30)",
     wait: 7000,
   },
   {
     // the failure signature: two failure modes on the same datastore, the metrics that observe it, the deploys
     file: 'incident-triage-signature.png',
-    graph: 'incident-triage',
+    graph: 'context-graph',
     query: "g.V('redis-cache','Entity','cache-key-prefix-churn','Entity','cache-eviction-storm','Entity','redis-cpu-percent','Entity','redis-evictions-rate','Entity').bothE('Relates').otherV().dedup().limit(40)",
     wait: 7000,
   },

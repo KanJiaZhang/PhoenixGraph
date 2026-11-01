@@ -189,6 +189,11 @@ those values; the rows panel of the UI is exactly this array.
 `DELETE .../edges/{edgeId}`, plus `POST /api/v1/{vertices,edges,batch}` for the primary graph and
 `POST /api/v1/graphs/{graph}/batch` for any graph. A write answers `{"id": ..., "status": "SUCCESS"}`.
 
+An id such as `metric/revenue` contains a slash, and the servlet container rejects `%2F` in the path before
+the handler sees it. For those ids the graph endpoint also accepts the delete in the body:
+`POST /api/v1/graphs/{graph}/vertices/delete {"id": ...}` and
+`POST /api/v1/graphs/{graph}/edges/delete {edgeId, edgeSchemaName, source, destination}`.
+
 **The write shape, as verified:**
 
 ```bash
@@ -359,9 +364,11 @@ cannot disagree about the format.
 | `POST` | `/api/v1/graphs/{graph}/batch` | `GraphWriteController#batch` | `BatchRequest` | `List<WriteResult>` |
 | `POST` | `/api/v1/graphs/{graph}/checkpoint` | `BackupController#checkpoint` | — | `Map<String, Object>` |
 | `POST` | `/api/v1/graphs/{graph}/edges` | `GraphWriteController#upsertEdge` | `EdgeRequest` | `ResponseEntity<WriteResult>` |
+| `POST` | `/api/v1/graphs/{graph}/edges/delete` | `GraphWriteController#deleteEdgeByBody` | `EdgeRequest` | `ResponseEntity<WriteResult>` |
 | `DELETE` | `/api/v1/graphs/{graph}/edges/{edgeId}` | `GraphWriteController#deleteEdge` | — | `ResponseEntity<WriteResult>` |
 | `GET` | `/api/v1/graphs/{graph}/storage` | `BackupController#storage` | — | `Map<String, Object>` |
 | `POST` | `/api/v1/graphs/{graph}/vertices` | `GraphWriteController#upsertVertex` | `VertexRequest` | `ResponseEntity<WriteResult>` |
+| `POST` | `/api/v1/graphs/{graph}/vertices/delete` | `GraphWriteController#deleteVertexByBody` | `DeleteVertexRequest` | `ResponseEntity<WriteResult>` |
 | `DELETE` | `/api/v1/graphs/{graph}/vertices/{id}` | `GraphWriteController#deleteVertex` | — | `ResponseEntity<WriteResult>` |
 | `GET` | `/api/v1/health` | `BatchController#health` | — | `String` |
 | `GET` | `/api/v1/metrics` | `MetricsController#all` | — | `Map<String, Object>` |
@@ -389,7 +396,7 @@ cannot disagree about the format.
 | `DELETE` | `/api/v1/vertices/{id}/properties/{index}` | `VertexController#deleteProperty` | — | `ResponseEntity<WriteResult>` |
 | `PUT` | `/api/v1/vertices/{id}/properties/{index}` | `VertexController#updateProperty` | `PropertyUpdateRequest` | `ResponseEntity<WriteResult>` |
 
-60 endpoints across 15 controllers.
+62 endpoints across 15 controllers.
 <!-- endpoints:end -->
 
 ---

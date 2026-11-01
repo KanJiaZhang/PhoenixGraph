@@ -44,6 +44,8 @@ repository; set `PHOENIXGRAPH_REPO` when the extension is copied somewhere else.
 | command | `/pg status` | graph, endpoint, the pinned instant, the last question asked |
 | command | `/pg graph <name>` · `/pg endpoint <url>` | which graph and which service this session talks to |
 | command | `/pg timeline on\|off\|<instant>` | the same switch as the tool, from the keyboard |
+| command | `/pg auto on\|off` · `/pg rules <name>` | the per-turn memory loop, and the vocabulary a turn is read with |
+| command | `/pg remember` · `/pg note <sentence>` · `/pg ingest <dir>` | writing by hand: the conversation, one fact, or a directory of documents |
 | MCP | `phoenixgraph` | the fourteen tools of the toolkit (`find_entities`, `search`, `context`, `related`, `similar`, `path_between`, the semantic layer), `codemode`-exposed |
 
 The instant is **sticky**, and that is the point: a question that does not name one answers with the session's,
@@ -54,9 +56,9 @@ so "what was true then" is a property of the conversation rather than a paramete
 
 | Where | What | Lifetime |
 |---|---|---|
-| `pi.appendEntry("phoenixgraph.state", …)` | graph, endpoint, instant, timeline switch | the conversation, branch-safe, never sent to the model |
+| `pi.appendEntry("phoenixgraph.state", …)` | graph, endpoint, instant, timeline switch, rule pack, the auto switch | the conversation, branch-safe, never sent to the model |
 | `~/.pi/agent/state/phoenixgraph.json` | the same fields | across conversations (`PHOENIXGRAPH_STATE_FILE` overrides) |
-| `<repo>/.pi/phoenixgraph.json` | `graph`, `endpoint` | the repository - a team pinning a service; it deliberately cannot set the instant |
+| `<repo>/.pi/phoenixgraph.json` | `graph`, `endpoint`, `rulePack` | the repository - a team pinning a service and a vocabulary; it deliberately cannot set the instant |
 
 On `session_start` the file is read, then the last state entry **on the current branch** wins, so `/tree` and
 resume give the instant that branch was asking from. Nothing is written outside those two places.
@@ -88,16 +90,18 @@ context the last answer used - the graph, the traversal over the entities the an
 answer was pinned to - because the UI accepts a link:
 
 ```
-http://localhost:8080/?graph=incident-triage&q=g.V('redis-cache','Entity',…)&asOf=2026-10-26T00:00:00.000Z
+http://localhost:8080/?graph=context-graph&q=g.V('redis-cache','Entity',…)&asOf=2026-10-26T00:00:00.000Z
 ```
 
-The opener is the platform's (`start` / `open` / `xdg-open`); when it fails, the URL and the query are printed so
-they can be pasted. `/pg show <entity>` shows one entity's neighbourhood instead of the last question's.
+The opener is the platform's (`rundll32 url.dll,FileProtocolHandler` / `open` / `xdg-open`). Windows opening
+deliberately does not go through `cmd /c start`: cmd cuts the URL at the first `&`, so the gremlin query (and the
+pinned instant) never reached the browser - `?graph=...` alone was drawn, which is the bug this line used to
+have. When the opener fails, the URL and the query are printed so they can be pasted. `/pg show <entity>` shows one entity's neighbourhood instead of the last question's.
 
 **With nothing asked yet** it shows the graph's most connected entities instead of an empty canvas: the engine has
 no full scan (a start is ids or a type scan), so a `/pg show` before any `pg_context` used to open
 `g.V().limit(0)` - a blank page. The seeds come from the artifact now, and the notice says so
-(`from: nothing asked yet - the 4 most connected entities of 'incident-triage'`). If the graph has no artifact at
+(`from: nothing asked yet - the 4 most connected entities of 'context-graph'`). If the graph has no artifact at
 all, it opens the UI without a query and says to ingest it.
 
 ![the UI opened at the context the agent used](../../docs/screenshots/incident-triage-show-context.png)
@@ -110,7 +114,7 @@ out - and ingests it with a validity window that **starts now**, into the sessio
 
 ```
 /pg remember
-remembered into 'incident-triage':
+remembered into 'context-graph':
 4 entities, 1 relations from 1 document(s) (2 chunks)
 provenanceRate 1 · typeAgreement 1 · entityLinkRate 0.05
 ```
@@ -130,6 +134,45 @@ Because the graph is the one every session of this project uses, the next sessio
 in one `pi -p` and asking in a fresh one, which answered `checkout-api -depends_on-> payment service` with the
 sentence it came from.
 
+## Remembering by itself
+
+`/pg remember` is the manual half. The loop is the automatic one, and it runs when the session is about a graph -
+a pinned graph, a project file, an instant, or `/pg auto on`:
+
+- **after a turn is answered** (`turn_end`) the question and the answer go in as one document with a window
+  starting now, read with the `context` vocabulary;
+- **before the next turn** (`before_agent_start`) `POST /api/v1/agent/context` is asked what the graph holds
+  about the new question, and the relations, their sentences and the coverage are added to the `phoenixgraph`
+  prompt section - so the model starts from the evidence instead of from its own memory of the conversation.
+
+```
+/pg auto                        # auto: on - each answered turn is written into 'context-graph' and read back
+/pg auto off                    # this session writes nothing; /pg remember still does
+/pg rules context               # the vocabulary a turn is read with (context / incident / sanguo / a json file)
+```
+
+**A turn contributes what it asserts, not what it quotes.** Fenced blocks are dropped before extraction: a pasted
+test run or query result is full of ready-made triples, and reading them as claims put six relations into the
+graph out of two turns of discussion - none of them said by either turn. The chunk keeps the full text, so a later
+answer can still quote it.
+
+**Provenance follows the source, not the clock.** When a turn restates a fact a document already states, the
+artifact keeps the document's reading - its sentence and its validity window. A turn's window starts now because
+that is when the turn happened, and letting the turn win moved an expired September incident to the day somebody
+asked about it, hiding it at the instant it describes. A fact only a turn states is still written; that is how an
+assertion nobody documented gets in.
+
+**Nothing is written into a graph this instance does not serve.** The ingest API creates a graph it does not know,
+which is right for a script and wrong for a session: after the `incident-triage` -> `context-graph` rename a
+session kept the old name and quietly grew a second corpus beside the renamed one. The loop reads
+`GET /api/v1/graphs` first: it refuses and names the graphs that exist, and when the project file names a served
+graph it moves the session there.
+
+**Turns answered before the loop existed are caught up once**, on `session_start` - the newest few, keyed like
+live turns so a reload does not repeat them - and the notice says how many. A failure is reported on the event bus
+(`phoenixgraph.remember_failed`, `phoenixgraph.catch_up_failed`) and never breaks the turn: memory is a
+convenience, not a reason to fail a conversation.
+
 ## Ingesting documents, by hand
 
 `/pg ingest <path>` reads local Markdown/text and posts it to the ingest API. It is a command and not a tool on
@@ -138,7 +181,7 @@ purpose: **writing to a graph is a human decision**, so the model cannot do it w
 ```
 /pg ingest docs/runbooks                 # dry run: the whole pipeline runs, nothing is written
 /pg ingest docs/runbooks --apply --from 2026-10-24
-ingested 2 document(s) into 'incident-triage'
+ingested 2 document(s) into 'context-graph'
 4 entities, 3 relations from 2 document(s) (2 chunks)
 provenanceRate 1 · typeAgreement 1 · entityLinkRate 0.5
 ```
@@ -161,3 +204,9 @@ provenanceRate 1 · typeAgreement 1 · entityLinkRate 0.5
   provenance of "asserted in a conversation", not "read from documentation" - the model is right to say so.
 - Remembering does not replace re-ingesting: the corpus documents are still the source of the facts that came with
   a rule pack and a window. `/pg remember` adds to the graph; it never deletes.
+- **The vocabulary is the conversation's, not a domain's.** A turn is read with `rulePack: context` (the
+  `agent-rules/context.json` pack: cause / depends on / uses / reads / writes / deployed on / affects / owns /
+  decided / rejected / verified, in English and Chinese). It is deliberately *not* `incident`: the on-call
+  corpus vocabulary read none of what a working session says, and reading turns with it put incident-shaped facts
+  into a graph that is about the work. A project that wants a domain's rules pins one in
+  `.pi/phoenixgraph.json` (`"rulePack": "incident"`) or for one session with `/pg rules <name>`.

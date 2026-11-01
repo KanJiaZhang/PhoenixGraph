@@ -22,10 +22,14 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
-/** The default endpoint and graph: what a fresh checkout serves after `tools/start-phoenixgraph.sh`. */
+/** The default endpoint, graph and vocabulary: what a fresh checkout serves after `tools/start-phoenixgraph.sh`. */
 const DEFAULTS = {
   endpoint: 'http://localhost:8081',
-  graph: 'incident-triage',
+  graph: 'context-graph',
+  // The vocabulary a turn is read with. It is the *conversation* pack, not a domain pack: a session talks about
+  // decisions, dependencies and verifications, and `incident` (the on-call corpus vocabulary) would read none of
+  // that. A project that wants a domain's rules says so in .pi/phoenixgraph.json or /pg rules <name>.
+  rulePack: 'context',
 };
 
 /** The state file: outside any session, so a new conversation starts where the last one left off. */
@@ -126,10 +130,11 @@ export default function phoenixgraphExtension(pi, options = {}) {
     state = { ...state, ...changes };
     pi.appendEntry('phoenixgraph.state', {
       graph: state.graph, endpoint: state.endpoint, asOf: state.asOf, timeline: state.timeline,
-      mcpUrl: state.mcpUrl, lastContext: state.lastContext,
+      mcpUrl: state.mcpUrl, rulePack: state.rulePack, lastContext: state.lastContext,
     });
     writeFileState({
-      graph: state.graph, endpoint: state.endpoint, asOf: state.asOf, timeline: state.timeline, mcpUrl: state.mcpUrl,
+      graph: state.graph, endpoint: state.endpoint, asOf: state.asOf, timeline: state.timeline,
+      mcpUrl: state.mcpUrl, rulePack: state.rulePack,
     });
     if (notify) notify();
     return state;
@@ -144,6 +149,7 @@ export default function phoenixgraphExtension(pi, options = {}) {
         const project = JSON.parse(readFileSync(join(ctx.cwd, '.pi', 'phoenixgraph.json'), 'utf8'));
         if (project.graph) state.graph = project.graph;
         if (project.endpoint) state.endpoint = project.endpoint;
+        if (project.rulePack) state.rulePack = project.rulePack;
       } catch { /* no project file */ }
       loaded = true;
     }
@@ -466,10 +472,19 @@ export default function phoenixgraphExtension(pi, options = {}) {
     };
   }
 
-  /** Opens a URL with the platform's opener; returns the command it tried (or null when it could not). */
+  /**
+   * Opens a URL with the platform's opener; returns the command it tried (or null when it could not).
+   *
+   * <p>On Windows the opener must not go through {@code cmd}: {@code cmd /c start "" <url>} treats every
+   * {@code &} in the URL as a command separator, so {@code ?graph=x&q=g.V(...)&asOf=...} reached the browser as
+   * {@code ?graph=x} alone - the graph opened, and the gremlin query the link was about was never sent ("'q' is
+   * not recognized as an internal or external command" was the only trace). {@code rundll32 url.dll,
+   * FileProtocolHandler} takes the URL as one argument with no shell in between, so the whole thing arrives.
+   */
   async function openUrl(url) {
     const platform = options.platform || process.platform;
-    const [command, args] = platform === 'win32' ? ['cmd', ['/c', 'start', '', url]]
+    // no shell for the URL itself: 'cmd /c start' splits it at the first '&' (see above)
+    const [command, args] = platform === 'win32' ? ['rundll32', ['url.dll,FileProtocolHandler', url]]
       : platform === 'darwin' ? ['open', [url]] : ['xdg-open', [url]];
     try {
       await pi.exec(command, args);
@@ -525,6 +540,22 @@ export default function phoenixgraphExtension(pi, options = {}) {
   }
 
   /**
+   * A turn with its fenced blocks removed: what the turn *asserts*, not what it quotes.
+   *
+   * <p>A conversation pastes outputs constantly - a test run, a query result, a log - and those blocks are full of
+   * ready-made triples ("deploy-48 -caused-> cache-key-prefix-churn"). Extraction read them as claims: two turns
+   * of discussion put six relations into the graph and every one of them came out of a pasted result, none out of
+   * what the turn said. A fence is a quotation, so it stays out of the facts; the chunk keeps the full text.
+   */
+  function proseOnly(text) {
+    return String(text || '')
+      .replace(/^[ \t]*```[^\n]*\n[\s\S]*?^[ \t]*```[ \t]*$/gm, '')
+      .replace(/^[ \t]*```.*$/gm, '')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  }
+
+  /**
    * The identifier-shaped names a text uses (storefront-api, inventory_db, orders.region, CheckoutApi), as gazetteer
    * entries. The extraction rules relate two *known* mentions; without this, a conversation that introduces a new
    * service produced a citable chunk and no edge at all. It is a regex, not a model: names that look like
@@ -540,6 +571,49 @@ export default function phoenixgraphExtension(pi, options = {}) {
       if (Object.keys(found).length >= 30) break;
     }
     return found;
+  }
+
+  /**
+   * The graphs this instance serves, or null when it cannot say (an unreachable endpoint is not evidence).
+   */
+  async function servedGraphs() {
+    try {
+      const response = await call(`${state.endpoint.replace(/\/+$/, '')}/api/v1/graphs`);
+      if (!response.ok) return null;
+      const graphs = await response.json();
+      return Array.isArray(graphs) ? graphs.map((graph) => graph.name) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Whether the graph this session writes into still exists, and moving the session if the project renamed it.
+   *
+   * <p>The ingest API creates a graph it does not know (`/api/v1/agent/ingest` on a fresh name writes a schema and
+   * serves it), which is right for a script and wrong for a session: after a rename the extension kept its old
+   * graph name and quietly grew a second corpus beside the renamed one - eleven turns, 200 chunks, none of them in
+   * the graph the tools were reading. Writing into a graph nobody serves is not memory, so the guard refuses and
+   * says which names do exist; when the project file names a served graph (the usual rename), it moves there.
+   *
+   * @returns {{ok: boolean, moved?: string, served?: string[], wanted?: string}} what happened
+   */
+  async function ensureGraph(ctx) {
+    const served = await servedGraphs();
+    if (!served || served.includes(state.graph)) return { ok: true };
+    const wanted = state.graph;
+    let projectGraph = null;
+    try {
+      const project = JSON.parse(readFileSync(join(ctx.cwd, '.pi', 'phoenixgraph.json'), 'utf8'));
+      if (project.graph && served.includes(project.graph)) projectGraph = project.graph;
+    } catch { /* no project file: nothing to move to */ }
+    if (projectGraph) {
+      commit({ graph: projectGraph }, { notify: () => ctx.ui.notify(`graph moved: ${wanted} -> ${projectGraph} (the project file renamed it)`, 'info') });
+      pi.events?.emit?.('phoenixgraph.graph_moved', { from: wanted, to: projectGraph });
+      return { ok: true, moved: projectGraph, served, wanted };
+    }
+    pi.events?.emit?.('phoenixgraph.graph_missing', { graph: wanted, served });
+    return { ok: false, served, wanted };
   }
 
   /** The entities the graph already knows, as the gazetteer for this ingestion (names keep their types). */
@@ -568,7 +642,7 @@ export default function phoenixgraphExtension(pi, options = {}) {
     const answer = await postJson('/api/v1/agent/ingest', {
       graph,
       apply: true,
-      rulePack: 'incident',
+      rulePack: state.rulePack,
       dictionary: await graphDictionary(graph),
       documents,
     });
@@ -612,13 +686,19 @@ export default function phoenixgraphExtension(pi, options = {}) {
     },
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const graph = params.graph || state.graph;
-      const text = [conversationText(ctx), params.note].filter(Boolean).join('\n\n') || '';
+      const guard = await ensureGraph(ctx);
+      if (!guard.ok) {
+        return { content: [{ type: 'text', text: `'${guard.wanted}' is not served here (served: `
+          + `${(guard.served || []).join(', ')}); nothing was written. /pg graph <name> first.` }],
+        details: { graph, served: guard.served } };
+      }
+      const text = proseOnly([conversationText(ctx), params.note].filter(Boolean).join('\n\n')) || '';
       if (!text.trim()) {
         return { content: [{ type: 'text', text: 'There is nothing to remember yet: this session has no turns.' }], details: { graph } };
       }
       try {
         const answer = await postJson('/api/v1/agent/ingest', {
-          graph, apply: true, rulePack: 'incident',
+          graph, apply: true, rulePack: state.rulePack,
           dictionary: await graphDictionary(graph),
           documents: [{
             id: `session-${now().toISOString().replace(/[^0-9]/g, '').slice(0, 14)}`,
@@ -851,17 +931,25 @@ export default function phoenixgraphExtension(pi, options = {}) {
    * Records one turn: the question and the answer as a document with a window starting now. Facts the rules can read
    * become entities and relations; the rest stays a citable chunk, which is what the next turn's retrieval quotes.
    */
-  async function rememberTurn(turn) {
+  async function rememberTurn(turn, ctx) {
     const key = turnKey(turn);
     if (key === lastRemembered) return null;
+    const guard = ctx ? await ensureGraph(ctx) : { ok: true };
+    if (!guard.ok) {
+      const notServed = `'${guard.wanted}' is not served here (served: ${(guard.served || []).join(', ')}); `
+        + 'nothing was written - /pg graph <name> or fix .pi/phoenixgraph.json';
+      throw new Error(notServed);
+    }
     lastRemembered = key;
     turnNumber += 1;
     const stamp = now().toISOString().replace(/[^0-9]/g, '').slice(0, 14);
-    const text = ('user: ' + turn.question + '\n\nassistant: ' + turn.answer).slice(0, 20000);
+    // what the turn asserts, not what it quotes: fenced blocks are pasted output (see proseOnly)
+    const said = proseOnly('user: ' + turn.question + '\n\nassistant: ' + turn.answer);
+    const text = (said || ('user: ' + turn.question)).slice(0, 20000);
     const answer = await postJson('/api/v1/agent/ingest', {
       graph: state.graph,
       apply: true,
-      rulePack: 'incident',
+      rulePack: state.rulePack,
       // the graph's own types first, then the names this turn introduced: the rules need both ends known
       dictionary: { ...dictionaryFromText(text), ...(await graphDictionary(state.graph)) },
       documents: [{ id: 'turn-' + stamp + '-' + turnNumber, title: 'conversation turn', text, validFrom: now().toISOString() }],
@@ -894,7 +982,7 @@ export default function phoenixgraphExtension(pi, options = {}) {
     const turn = lastTurn(ctx);
     if (!turn) return;
     try {
-      const answer = await rememberTurn(turn);
+      const answer = await rememberTurn(turn, ctx);
       if (answer && answer.relations) {
         pi.events?.emit?.('phoenixgraph.remembered', {
           graph: state.graph, relations: answer.relations, entities: answer.entities,
@@ -952,10 +1040,13 @@ export default function phoenixgraphExtension(pi, options = {}) {
     const missing = allTurns(ctx).filter((turn) => !recorded.has(turnKey(turn)));
     if (!missing.length) return null;
     const recent = missing.slice(-CATCH_UP_TURNS);
+    const guard = await ensureGraph(ctx);
+    if (!guard.ok) return; // nothing to catch up into: the graph this session pinned is gone
     const cells = [];
     let chars = 0;
     for (const turn of recent) {
-      const text = ('user: ' + turn.question + '\n\nassistant: ' + turn.answer);
+      const text = proseOnly('user: ' + turn.question + '\n\nassistant: ' + turn.answer)
+        || ('user: ' + turn.question);
       if (chars + text.length > CATCH_UP_CHARS) break;
       chars += text.length;
       cells.push({ turn, text });
@@ -965,7 +1056,7 @@ export default function phoenixgraphExtension(pi, options = {}) {
     const answer = await postJson('/api/v1/agent/ingest', {
       graph: state.graph,
       apply: true,
-      rulePack: 'incident',
+      rulePack: state.rulePack,
       dictionary,
       documents: cells.map((cell, index) => ({
         id: 'catch-up-' + now().toISOString().replace(/[^0-9]/g, '').slice(0, 14) + '-' + (index + 1),
@@ -986,8 +1077,8 @@ export default function phoenixgraphExtension(pi, options = {}) {
 
   // ---- P1: the switchboard ------------------------------------------------------------------------------
   pi.registerCommand('pg', {
-    description: 'PhoenixGraph: status | doctor | show [entity] | remember [graph] | note <sentence> | ingest <path> [--apply] [--from <date>] | graph <name> | endpoint <url> | timeline on|off|<instant> | mcp stdio|url | inject on|off',
-    getArgumentCompletions: (prefix) => ['status', 'doctor', 'show', 'remember', 'note', 'ingest', 'auto', 'graph', 'endpoint', 'timeline', 'inject', 'mcp']
+    description: 'PhoenixGraph: status | doctor | show [entity] | remember [graph] | note <sentence> | ingest <path> [--apply] [--from <date>] [--pack <name>] | graph <name> | endpoint <url> | rules <name> | timeline on|off|<instant> | mcp stdio|url | inject on|off',
+    getArgumentCompletions: (prefix) => ['status', 'doctor', 'show', 'remember', 'note', 'ingest', 'auto', 'graph', 'endpoint', 'rules', 'timeline', 'inject', 'mcp']
       .filter((word) => word.startsWith(prefix)).map((word) => ({ value: word, label: word })),
     async handler(args, ctx) {
       reconstruct(ctx);
@@ -1002,6 +1093,15 @@ export default function phoenixgraphExtension(pi, options = {}) {
         case 'endpoint': {
           if (!value) { ctx.ui.notify(`endpoint: ${state.endpoint}`, 'info'); return; }
           commit({ endpoint: value }, { notify: () => ctx.ui.notify(`endpoint: ${value}`, 'info') });
+          return;
+        }
+        case 'rules': {
+          if (!value) {
+            ctx.ui.notify(`rule pack: ${state.rulePack} (a turn is read with this vocabulary; `
+              + `incident / sanguo / context, or any agent-rules/<name>.json)`, 'info');
+            return;
+          }
+          commit({ rulePack: value }, { notify: () => ctx.ui.notify(`rule pack: ${value}`, 'info') });
           return;
         }
         case 'timeline': {
@@ -1048,11 +1148,19 @@ export default function phoenixgraphExtension(pi, options = {}) {
           }
           const graph = parsed.flags.graph || state.graph;
           const apply = parsed.flags.apply === true;
+          if (!parsed.flags.graph) {
+            const guard = await ensureGraph(ctx);
+            if (!guard.ok) {
+              ctx.ui.notify(`'${guard.wanted}' is not served here (served: ${(guard.served || []).join(', ')}); `
+                + 'nothing was read - /pg graph <name>, or --graph <name> to create a new one', 'error');
+              return;
+            }
+          }
           try {
             const answer = await postJson('/api/v1/agent/ingest', {
               graph,
               apply,
-              rulePack: parsed.flags.pack || 'incident',
+              rulePack: parsed.flags.pack || state.rulePack,
               dictionary: { ...(await graphDictionary(graph)), ...dictionaryFrom(join(path, '')) },
               documents: found.documents.map((document) => ({
                 ...document,
@@ -1077,7 +1185,9 @@ ${ingestSummary(answer)}${skipped}`, 'info');
           const text = conversationText(ctx);
           if (!text.trim()) { ctx.ui.notify('nothing to remember yet: this session has no turns', 'warning'); return; }
           try {
-            const answer = await ingestText(graph, 'conversation', text);
+            const guard = await ensureGraph(ctx);
+            if (!guard.ok) { ctx.ui.notify(`'${guard.wanted}' is not served here; nothing was written`, 'error'); return; }
+            const answer = await ingestText(graph, 'conversation', proseOnly(text) || text);
             ctx.ui.notify(`remembered into '${graph}':
 ${ingestSummary(answer)}`, 'info');
           } catch (error) {
@@ -1088,6 +1198,8 @@ ${ingestSummary(answer)}`, 'info');
         case 'note': {
           if (!value) { ctx.ui.notify('usage: /pg note <sentence>', 'warning'); return; }
           try {
+            const guard = await ensureGraph(ctx);
+            if (!guard.ok) { ctx.ui.notify(`'${guard.wanted}' is not served here; nothing was written`, 'error'); return; }
             const answer = await ingestText(state.graph, 'note', `user: ${value}`);
             ctx.ui.notify(`noted into '${state.graph}':
 ${ingestSummary(answer)}`, 'info');
@@ -1176,6 +1288,7 @@ ${ingestSummary(answer)}`, 'info');
             `timeline: ${state.timeline && state.asOf ? `pinned to ${state.asOf}` : 'off (answers use every fact)'}`,
             `inject:   ${state.inject ? 'on (the contract is in the prompt when this session is about a graph)' : 'off'}`,
             `mcp:      ${state.mcpUrl ? `http ${state.mcpUrl}` : 'stdio (spawned next to this extension)'}`,
+            `rules:    ${state.rulePack} (the vocabulary a turn is read with)`,
             `auto:     ${autoOn(ctx) ? 'on (a turn is written into the graph and read back before the next one)' : 'off'}`,
             state.lastContext
               ? `last:     ${state.lastContext.question} (${state.lastContext.graph}${state.lastContext.asOf ? `, as of ${state.lastContext.asOf}` : ''})`

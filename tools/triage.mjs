@@ -286,10 +286,10 @@ if (invokedDirectly) {
     const index = argv.indexOf(`--${name}`);
     return index < 0 ? undefined : argv[index + 1];
   };
-  const graph = value('graph') || process.env.PHOENIXGRAPH_TRIAGE_GRAPH || 'incident-triage';
+  const graph = value('graph') || process.env.PHOENIXGRAPH_TRIAGE_GRAPH || 'context-graph';
   const symptom = value('symptom');
   if (!symptom) {
-    console.error('usage: node tools/triage.mjs --symptom "..." [--graph incident-triage] [--as-of 2026-10-21]');
+    console.error('usage: node tools/triage.mjs --symptom "..." [--graph context-graph] [--as-of 2026-10-21]');
     process.exit(2);
   }
   const asOf = value('as-of') ? Date.parse(value('as-of').length === 10 ? `${value('as-of')}T00:00:00Z` : value('as-of')) : null;

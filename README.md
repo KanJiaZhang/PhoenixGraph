@@ -227,6 +227,7 @@ print(answer["coverage"])
 | Knowledge graph context and data-agent walkthrough | [docs/USE-CASES.md](docs/USE-CASES.md) |
 | Worked analyses and refusals | [docs/AGENT-CASES.md](docs/AGENT-CASES.md) · [docs/DATA-AGENT-CASES.md](docs/DATA-AGENT-CASES.md) |
 | Use it from a pi agent | [extensions/phoenixgraph](extensions/phoenixgraph/README.md) — tools, `/pg` commands, `/pg show`, `/pg remember` · [docs/PI-PLUGIN.md](docs/PI-PLUGIN.md) (design) |
+| Build a data agent's metadata/semantic layer from documents and DB `SHOW` output | [pi-data-agent](pi-data-agent/README.md) — `pg_data_scan/build/model/edit/dashboard/attribute`, `/data` commands |
 | Incident triage from a symptom — a worked case with the UI and the ranking | [docs/INCIDENT-TRIAGE.md](docs/INCIDENT-TRIAGE.md) · [examples/incident-triage](examples/incident-triage) |
 | End-to-end cases (the product in action) | [docs/AI-CONTEXT-ONE-PAGER.md](docs/AI-CONTEXT-ONE-PAGER.md) · [docs/END-TO-END.md](docs/END-TO-END.md) · [docs/AI-CONTEXT-CASES.md](docs/AI-CONTEXT-CASES.md) · [docs/AGENT-INGESTION-CASE.md](docs/AGENT-INGESTION-CASE.md) |
 | HTTP API, keys, limits, errors | [docs/API.md](docs/API.md) |

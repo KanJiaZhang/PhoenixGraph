@@ -68,7 +68,7 @@ public record RulePack(String name, Map<String, String> relationWords, List<Rule
         try (InputStream in = RulePack.class.getResourceAsStream(resource)) {
             if (in == null) {
                 throw new IllegalArgumentException("Unknown rule pack '" + name
-                        + "'; available: sanguo, incident (add agent-rules/<name>.json for another)");
+                        + "'; available: sanguo, incident, context (add agent-rules/<name>.json for another)");
             }
             return load(in);
         } catch (IOException e) {

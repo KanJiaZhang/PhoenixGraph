@@ -36,4 +36,4 @@ export function dictionary() {
 }
 
 /** The graph the example builds, unless the caller names another one. */
-export const DEFAULT_GRAPH = 'incident-triage';
+export const DEFAULT_GRAPH = 'context-graph';

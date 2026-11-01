@@ -20,6 +20,71 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **`pi-data-agent`**, a pi package that builds a metadata + semantic layer from PDF/Markdown/wiki/Word
+  documents and database `SHOW`/DDL output, stores it in PhoenixGraph with the sentence/row behind every node
+  and edge, lets a reviewer add/change/remove nodes, relations and bindings under validation and audit, and
+  reads dashboards (totals, trend, Top-N) and attributions (contributions, shares, concentration, outlier) from
+  the fact graph. The package carries a skill, a review prompt, an extension with six tools and `/data`
+  commands, a CLI, 33 unit tests and a live verification (`PHOENIXGRAPH_LIVE=1 npm run verify`). The model graph is readable on
+  a keyed store through a catalog on the `Model` node; schema copies under `.pida-schemas` are discovered by
+  `phoenixgraph.storage.schema-dir` on restart.
+- **Every answered turn is remembered, and what the graph holds about the next question is put in its prompt**
+  (`extensions/phoenixgraph`). On `turn_end` the question and the answer are ingested as one document with a
+  validity window starting now; on `before_agent_start` `POST /api/v1/agent/context` is asked what the graph
+  holds about the new question, and the relations, their sentences and the coverage are added to the injected
+  section - the model starts from the evidence instead of from its own memory of the conversation. What a turn
+  contributes is what it *asserts*: fenced blocks are dropped before extraction, because a pasted test run or
+  query result is full of ready-made triples (reading them as claims put six relations into the graph out of two
+  turns of discussion, none of them said by either turn). `/pg auto on|off` switches the loop, `/pg rules <name>`
+  the vocabulary it reads with, and `/pg status` reports both.
+- **A `context` rule pack** (`agent-rules/context.json`, served as `rulePack: context`, the extension's default):
+  cause / depends on / uses / reads / writes / replaced / deployed on / affects / owns / decided / rejected /
+  verified, in English and Chinese. The `incident` pack - written for an on-call corpus - read none of what a
+  working session says, so conversation turns became chunks and entities with almost no relations.
+- **A session that answered turns before the loop existed catches up once** on `session_start`: the newest few
+  are written, keyed like live turns so a reload does not repeat them, and the notice says how many. A failure
+  is reported on the event bus (`phoenixgraph.remember_failed`, `phoenixgraph.catch_up_failed`) and never
+  breaks the turn.
+- **Delete-in-body endpoints** for graph writes (`POST /api/v1/graphs/{graph}/vertices/delete` and
+  `/edges/delete`): ids such as `metric/revenue` contain a slash that the path form cannot carry.
+
+### Changed
+
+- **The `incident-triage` graph is now `context-graph`.** Only the name changed: the vertex set keeps its old
+  spelling (`incident_triage_v1`) because the set is where the data lives, and renaming it would mean copying
+  every vertex and edge. The schema file, the agent artifact, the clients, the interface defaults and a project's
+  `.pi/phoenixgraph.json` follow the name.
+
+### Fixed
+
+- **A conversation turn no longer overwrites a documented fact.** Provenance follows the source, not the clock:
+  a turn's window starts now because that is when the turn happened, and letting the turn win replaced the
+  sentence a reader has to quote with a paraphrase of an answer and moved an expired September incident to the
+  day somebody asked about it - invisible at the instant it describes. `AgentIngestService.keepReading` keeps the
+  documented reading of a triple a turn restates, keeps the newer ingestion otherwise, and still writes a fact
+  only a turn states.
+- **The extension refuses to write into a graph this instance does not serve.** The ingest API creates a graph it
+  does not know, which is right for a script and wrong for a session: after the rename a session kept the old
+  name and quietly grew a second corpus beside the renamed one. The loop reads `GET /api/v1/graphs` first,
+  refuses and names the graphs that exist, and moves the session when the project file names a served graph.
+- **`/pg show` on Windows opened the URL without its query.** `cmd /c start "" <url>` treats every `&` as a
+  command separator, so `?graph=x&q=g.V(...)&asOf=...` reached the browser as `?graph=x` alone and the traversal
+  the link was about was never sent. The opener is `rundll32 url.dll,FileProtocolHandler`, which takes the URL as
+  one argument with no shell in between.
+- **A deep link naming a graph this instance does not serve says so** instead of running its query against
+  whichever graph happens to be first - a blank canvas with no reason given.
+- **A dynamically created graph and the same graph discovered from `schema-dir` now use one Aerospike vertex
+  set.** The create path used `<graph>_v1` while discovery used the folded graph name, so a restart served an
+  empty graph. `GraphAuthoringService` now uses `StorageConfig.vertexSetFor`, and `GET /api/v1/schema/{graph}`
+  also reads the configured `schema-dir`.
+- **The generated references were one change behind the controllers.** `docs/API.md` and `docs/openapi.json`
+  now list the two delete-in-body endpoints (62 endpoints, 62 paths), `QUICKSTART.md` shows the same count, and
+  the `pi-data-agent` tests run as a CI step - a package with 33 tests that nothing ran is not covered. Those
+  tests read the example files relative to the package now, not to the shell: four of them passed from
+  `pi-data-agent/` and failed from the repository root, which is where a CI step runs.
+
 ## [1.2.0] - 2026-10-29
 
 ### Added

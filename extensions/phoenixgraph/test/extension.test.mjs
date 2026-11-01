@@ -173,7 +173,7 @@ test('P1: /pg reports status and sets the timeline', async () => {
   const { pi, ctx } = setup();
   pi.handlers.get('session_start')({}, ctx);
   await pi.commands.get('pg').handler('', ctx);
-  assert.match(ctx.notifications.at(-1).message, /graph:\s+incident-triage/);
+  assert.match(ctx.notifications.at(-1).message, /graph:\s+context-graph/);
   assert.match(ctx.notifications.at(-1).message, /timeline: off/);
 
   await pi.commands.get('pg').handler('timeline 2026-10-21', ctx);
@@ -292,7 +292,7 @@ test('P2: the contract is a prompt section, only when the session is about a gra
   const aware = { systemPromptOptions: { sections: { preamble: 'x' } } };
   await first.pi.handlers.get('before_agent_start')(aware, first.ctx);
   const block = aware.systemPromptOptions.sections.phoenixgraph;
-  assert.match(block, /\[phoenixgraph\] graph=incident-triage/);
+  assert.match(block, /\[phoenixgraph\] graph=context-graph/);
   assert.match(block, /pinned to 2026-10-21T00:00:00\.000Z/);
   assert.match(block, /pg_triage\(symptom\)/);
   assert.match(block, /answer contract: quote the sentence and the coverage/);
@@ -367,7 +367,7 @@ test('/pg show opens the UI at the context of the last answer', async () => {
 
   assert.equal(opened.length, 1, 'the opener was called once');
   const url = decodeURIComponent(opened[0].args[0]);
-  assert.match(url, /^http:\/\/localhost:8080\/\?graph=incident-triage&q=/);
+  assert.match(url, /^http:\/\/localhost:8080\/\?graph=context-graph&q=/);
   assert.match(url, /g\.V\('deploy-48','Entity'\)\.bothE\('Relates'\)/,
     'the query is built from the entities the answer seeded on');
   assert.match(url, /asOf=/, 'and it carries the instant the answer was pinned to');
@@ -444,7 +444,7 @@ test('pg_remember ingests the conversation with a window that starts now', async
   const answer = await pi.tools.get('pg_remember').execute('t1', { note: 'checkout-api depends on redis-cache.' }, undefined, undefined, ctx);
   assert.equal(posted.length, 1, 'one ingestion');
   const body = posted[0];
-  assert.equal(body.rulePack, 'incident');
+  assert.equal(body.rulePack, 'context', 'a turn is read with the conversation vocabulary, not a domain pack');
   assert.equal(body.documents.length, 1);
   const document = body.documents[0];
   assert.match(document.text, /^user: 为什么 checkout 慢？/m, 'the user turn is kept, oldest first');
@@ -614,7 +614,7 @@ test('before_agent_start puts what the graph holds about the new question into t
   const event = { messageType: 'user', prompt: 'checkout 为什么慢', systemPromptOptions: { sections: {} } };
   await pi.handlers.get('before_agent_start')(event, ctx);
   const section = event.systemPromptOptions.sections.phoenixgraph;
-  assert.match(section, /\[phoenixgraph\] graph=incident-triage/, 'the contract is still there');
+  assert.match(section, /\[phoenixgraph\] graph=context-graph/, 'the contract is still there');
   assert.match(section, /what the graph already holds about this question/);
   assert.match(section, /deploy-48 -caused-> cache-key-prefix-churn/, 'with the relations');
   assert.match(section, /coverage: 9 entities, 6 relations/, 'and the coverage');
@@ -671,4 +671,139 @@ test('session_start catches up the turns that were answered before the loop exis
   posted.length = 0;
   await pi.handlers.get('session_start')({}, ctx);
   assert.equal(posted.filter((body) => body.documents && body.documents[0].id.startsWith('catch-up-')).length, 0);
+});
+
+test('a turn is read for what it asserts, not for what it pastes', async () => {
+  // A conversation pastes outputs constantly, and a pasted result is full of ready-made triples. Extraction used
+  // to read them as claims: two turns of argument put six relations into the graph and every one came out of a
+  // fenced block. The fence stays out of the facts; the chunk keeps the text.
+  const branch = branchWith([
+    { role: 'user', text: '为什么要换规则包？' },
+    {
+      role: 'assistant',
+      text: [
+        '因为 incident 规则包和上下文对话无关。',
+        '```',
+        '  inventory-db -affects-> checkout-p99-latency  [affects]  "inventory-db 影响了 checkout-p99-latency。"',
+        '```',
+        '所以 context-graph 用 context 规则包。',
+      ].join('\n'),
+    },
+  ]);
+  const { pi, ctx, posts } = memorySetup({ fetchImpl: memoryFetch(), branch });
+  await pi.commands.get('pg').handler('auto on', ctx);
+  posts.length = 0;
+
+  await pi.handlers.get('turn_end')({}, ctx);
+
+  const ingest = posts.find((post) => post.url.includes('/agent/ingest'));
+  assert.ok(ingest, 'the turn is still remembered');
+  const text = ingest.body.documents[0].text;
+  assert.doesNotMatch(text, /```/, 'the fence does not go into the document');
+  assert.doesNotMatch(text, /inventory-db/, 'nor the pasted result inside it');
+  assert.match(text, /incident 规则包和上下文对话无关/, 'what the turn actually says stays');
+  assert.equal(ingest.body.dictionary['inventory-db'], undefined,
+    'and no identifier from the quote enters the gazetteer');
+});
+
+test('a session pinned to a graph this instance no longer serves is not allowed to invent one', async () => {
+  // The rename left the extension holding the old name; ingest creates a graph it does not know, so it quietly
+  // grew a second corpus (eleven turns, 200 chunks) beside the renamed one. The project file is the authority for
+  // where memory goes, so the session moves to the served graph rather than writing into a ghost.
+  const home = mkdtempSync(join(tmpdir(), 'pg-ext-home-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'pg-ext-cwd-'));
+  mkdirSync(join(cwd, '.pi'), { recursive: true });
+  writeFileSync(join(cwd, '.pi', 'phoenixgraph.json'),
+    JSON.stringify({ graph: 'context-graph', endpoint: 'http://localhost:8081', rulePack: 'context' }));
+  mkdirSync(dirname(stateFile(home)), { recursive: true });
+  writeFileSync(stateFile(home), JSON.stringify({ graph: 'incident-triage', endpoint: 'http://localhost:8081' }));
+
+  const posts = [];
+  const fetch = async (url, init) => {
+    if (init?.body) posts.push({ url, body: JSON.parse(init.body) });
+    const body = url.includes('/api/v1/graphs') ? [{ name: 'context-graph', storage: 'Aerospike' }]
+      : url.includes('/agent/ingest') ? { applied: true, entities: 1, relations: 0, quality: {} }
+        : url.includes('/agent/context') ? contextAnswer('q')
+          : url.includes('/agent/index/') ? artifact : {};
+    return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) };
+  };
+  const pi = fakePi();
+  phoenixgraphExtension(pi, { home, fetch });
+  const branch = [
+    { type: 'custom', customType: 'phoenixgraph.state', data: { graph: 'incident-triage', timeline: true } },
+    ...branchWith([
+      { role: 'user', text: '为什么 UI 没画出点？' },
+      { role: 'assistant', text: '因为链接里的图名是旧的。' },
+    ]),
+  ];
+  const ctx = fakeContext({ cwd, branch });
+  await pi.commands.get('pg').handler('auto on', ctx);
+  posts.length = 0;
+
+  await pi.handlers.get('turn_end')({}, ctx);
+
+  const ingest = posts.find((post) => post.url.includes('/agent/ingest'));
+  assert.ok(ingest, 'the turn is still remembered');
+  assert.equal(ingest.body.graph, 'context-graph',
+    'into the graph the project names, not the one the stale session entry pinned');
+  assert.ok(!posts.some((post) => post.body && post.body.graph === 'incident-triage'),
+    'and nothing is written under the old name');
+  assert.match(ctx.notifications.map((n) => n.message).join('\n'), /graph moved: incident-triage -> context-graph/);
+});
+
+test('nothing is written when neither the session nor the project names a served graph', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'pg-ext-home-'));
+  mkdirSync(dirname(stateFile(home)), { recursive: true });
+  writeFileSync(stateFile(home), JSON.stringify({ graph: 'ghost-graph', endpoint: 'http://localhost:8081' }));
+  const posts = [];
+  const fetch = async (url, init) => {
+    if (init?.body) posts.push({ url, body: JSON.parse(init.body) });
+    const body = url.includes('/api/v1/graphs') ? [{ name: 'context-graph', storage: 'Aerospike' }] : {};
+    return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) };
+  };
+  const pi = fakePi();
+  let failed = null;
+  pi.events = { emit: (name, payload) => { if (name === 'phoenixgraph.remember_failed') failed = payload; } };
+  phoenixgraphExtension(pi, { home, fetch });
+  const ctx = fakeContext({
+    branch: branchWith([
+      { role: 'user', text: '这轮会写到哪里？' },
+      { role: 'assistant', text: '什么都不该写。' },
+    ]),
+  });
+  await pi.commands.get('pg').handler('auto on', ctx);
+  posts.length = 0;
+
+  await pi.handlers.get('turn_end')({}, ctx);
+
+  assert.equal(posts.filter((post) => post.url.includes('/agent/ingest')).length, 0,
+    'no ingest is attempted against a graph nobody serves');
+  assert.ok(failed, 'and the failure is reported instead of swallowed');
+  assert.match(failed.error, /ghost-graph.*not served/s);
+});
+
+test('/pg show hands the opener the whole link, query and instant included', async () => {
+  // `cmd /c start "" <url>` splits at the first '&': the browser got "?graph=context-graph" and the gremlin query
+  // the link was about was never sent. Windows opening must therefore not pass the URL through a shell.
+  const opened = [];
+  const pi = fakePi();
+  pi.exec = async (command, args) => { opened.push({ command, args }); return { exitCode: 0 }; };
+  phoenixgraphExtension(pi, { home: mkdtempSync(join(tmpdir(), 'pg-ext-home-')), fetch: drawingFetch(triageFetch()), platform: 'win32' });
+  const ctx = fakeContext();
+  pi.handlers.get('session_start')({}, ctx);
+  await pi.tools.get('pg_asof').execute('t1', { instant: '2026-10-21' }, undefined, undefined, ctx);
+
+  await pi.commands.get('pg').handler('show redis-cache', ctx);
+
+  assert.equal(opened.length, 1, 'the link is opened once');
+  const { command, args } = opened[0];
+  assert.equal(command, 'rundll32', 'no shell in between: cmd would cut the URL at the first &');
+  assert.equal(args.length, 2);
+  const url = args[1];
+  // the query is percent-encoded inside the link (the browser decodes it); what matters is that both parameters
+  // are still there, un-truncated
+  const decoded = decodeURIComponent(url);
+  assert.match(decoded, /[?&]q=g\.V\('redis-cache','Entity'\)\.bothE\('Relates'\)/, 'the query survives into the URL');
+  assert.match(decoded, /[?&]asOf=2026-10-21T00:00:00\.000Z/, 'and so does the pinned instant');
+  assert.equal(url.split('&').length, 3, 'both separators reached the opener: graph, q, asOf');
 });

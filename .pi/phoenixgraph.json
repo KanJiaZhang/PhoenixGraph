@@ -1,4 +1,5 @@
 {
-  "graph": "incident-triage",
-  "endpoint": "http://localhost:8081"
+  "graph": "context-graph",
+  "endpoint": "http://localhost:8081",
+  "rulePack": "context"
 }

@@ -33,6 +33,7 @@ class RulePackRegistryTest {
         assertEquals(1, pack.rules().size());
         assertTrue(registry.available().contains("support"));
         assertTrue(registry.available().contains("incident"));
+        assertTrue(registry.available().contains("context"), "the conversation vocabulary is a built-in too");
     }
 
     @Test

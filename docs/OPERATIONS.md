@@ -31,7 +31,7 @@ java -jar graph-http.jar \
 | Setting | Why you would touch it |
 |---|---|
 | `phoenixgraph.storage.rocksdb-root` | where the analytical graphs live (a mounted volume). **Created if missing.** |
-| `phoenixgraph.storage.schema-dir` | a directory of schema JSON files; every one becomes a graph, no image rebuild. Vertex set = the file name with what a set name cannot hold folded to `_`. **Each file needs its own `"id"`** - two graphs sharing a schema id are refused at startup (`Graph schema id N is already registered as ...`), which is what an operator meets the first time they copy a file to make a second graph |
+| `phoenixgraph.storage.schema-dir` | a directory of schema JSON files; every one becomes a graph, no image rebuild. Vertex set = the file name with what a set name cannot hold folded to `_`. **Each file needs its own `"id"`** - two graphs sharing a schema id are refused at startup (`Graph schema id N is already registered as ...`), which is what an operator meets the first time they copy a file to make a second graph. The packaged configuration points at `.pida-schemas` in the working directory, where `pi-data-agent` keeps the schema copies of the graphs it builds; delete the file to retire the graph, and set it to nothing to stop scanning |
 | `phoenixgraph.storage.graphs[]` | the explicit list (primary graph first); an entry **wins** over a file of the same name, so mounting a directory can never silently re-point a graph |
 | `phoenixgraph.limits.*` | `max-concurrent`, `queue-wait`, `per-graph-concurrent`, `per-graph-per-second`, `request-timeout` |
 | `phoenixgraph.security.*` | `enabled`, and the keys with their role and graph scope (token or its SHA-256) |

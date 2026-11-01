@@ -49,6 +49,31 @@ public class GraphWriteController {
         return WriteResponses.of(id, service.forGraph(graphs, graph).deleteVertex(id));
     }
 
+    /**
+     * Deletes a vertex by taking its id in the body.
+     *
+     * <p>The path form cannot carry an id such as {@code metric/revenue}: the slash is encoded as %2F and the
+     * servlet container rejects it before the handler runs. A data-agent model names its nodes that way, so the
+     * delete has to put the id somewhere a slash is allowed.
+     */
+    @PostMapping("/vertices/delete")
+    public ResponseEntity<WriteResult> deleteVertexByBody(@PathVariable("graph") String graph,
+                                                          @RequestBody DeleteVertexRequest request) {
+        return WriteResponses.of(request.id(), service.forGraph(graphs, graph).deleteVertex(request.id()));
+    }
+
+    /** Deletes an edge by taking its id and endpoints in the body (same reason as the vertex form). */
+    @PostMapping("/edges/delete")
+    public ResponseEntity<WriteResult> deleteEdgeByBody(@PathVariable("graph") String graph,
+                                                        @RequestBody EdgeRequest request) {
+        return WriteResponses.of(request.edgeId(), service.forGraph(graphs, graph)
+                .deleteEdge(request.edgeId(), request.edgeSchemaName(), request.source(), request.destination()));
+    }
+
+    /** An id-only delete body. */
+    public record DeleteVertexRequest(Object id) {
+    }
+
     @PostMapping("/edges")
     public ResponseEntity<WriteResult> upsertEdge(@PathVariable("graph") String graph,
                                                   @RequestBody EdgeRequest request) {

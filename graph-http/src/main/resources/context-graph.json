@@ -1,6 +1,6 @@
 {
   "id": 64,
-  "name": "incident-triage",
+  "name": "context-graph",
   "description": "Ingested from 8 document(s) with the incident rule pack",
   "constraints": {
     "idSchemaIndex": 0,

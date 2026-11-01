@@ -1,4 +1,4 @@
 {
-  "graph": "incident-triage",
+  "graph": "context-graph",
   "endpoint": "http://localhost:8081"
 }

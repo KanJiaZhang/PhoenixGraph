@@ -100,7 +100,7 @@ down needs a second seed (see §5).
 | `phoenixgraph.storage.host` / `.port` | `localhost:3000` | the fallback single seed when no seed list is configured |
 | `phoenixgraph.storage.seeds` | unset | comma list of `host:port` seeds; a restart can bootstrap through another node |
 | `phoenixgraph.storage.rocksdb-root` | `.rocksdb` | where the analytical graphs live; created if missing. **One process per directory** - the reason `graph-http` runs one replica |
-| `phoenixgraph.storage.schema-dir` | unset | a mounted directory of schemas: a graph per file, no image rebuild (each file needs its own `"id"`) |
+| `phoenixgraph.storage.schema-dir` | `.pida-schemas` | a mounted directory of schemas: a graph per file, no image rebuild (each file needs its own `"id"`). The packaged configuration scans the working directory for what `pi-data-agent` wrote |
 | `phoenixgraph.limits.max-concurrent` | 64 | requests in flight; the brake that keeps one slow query from spending the instance |
 | `phoenixgraph.limits.queue-wait` | 2 s | how long a request waits for a slot before it is answered `503` |
 | `phoenixgraph.limits.per-graph-concurrent` | 8 | in-flight requests per graph |

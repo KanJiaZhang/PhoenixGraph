@@ -1427,6 +1427,60 @@
         }
       }
     },
+    "/api/v1/graphs/{graph}/edges/delete": {
+      "post": {
+        "operationId": "GraphWrite_deleteEdgeByBody",
+        "tags": [
+          "graphs"
+        ],
+        "summary": "POST /api/v1/graphs/{graph}/edges/delete",
+        "description": "Java: GraphWriteController#deleteEdgeByBody",
+        "responses": {
+          "200": {
+            "description": "ResponseEntity<WriteResult>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseEntity_WriteResult_"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "GraphWriteController",
+        "x-phoenixgraph-method": "deleteEdgeByBody",
+        "parameters": [
+          {
+            "name": "graph",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EdgeRequest"
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/graphs/{graph}/edges/{edgeId}": {
       "delete": {
         "operationId": "GraphWrite_deleteEdge",
@@ -1571,6 +1625,60 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/VertexRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/graphs/{graph}/vertices/delete": {
+      "post": {
+        "operationId": "GraphWrite_deleteVertexByBody",
+        "tags": [
+          "graphs"
+        ],
+        "summary": "POST /api/v1/graphs/{graph}/vertices/delete",
+        "description": "Java: GraphWriteController#deleteVertexByBody",
+        "responses": {
+          "200": {
+            "description": "ResponseEntity<WriteResult>",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseEntity_WriteResult_"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error body {error, exception, hint, requestId}; see docs/API.md §3.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "x-phoenixgraph-controller": "GraphWriteController",
+        "x-phoenixgraph-method": "deleteVertexByBody",
+        "parameters": [
+          {
+            "name": "graph",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeleteVertexRequest"
               }
             }
           }
@@ -2796,6 +2904,10 @@
       "VertexRequest": {
         "type": "object",
         "description": "Request/response type VertexRequest; see docs/API.md for its fields."
+      },
+      "DeleteVertexRequest": {
+        "type": "object",
+        "description": "Request/response type DeleteVertexRequest; see docs/API.md for its fields."
       },
       "ResponseEntity_String_": {
         "type": "object",

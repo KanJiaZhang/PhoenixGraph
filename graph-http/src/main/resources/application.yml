@@ -37,6 +37,10 @@ phoenixgraph:
     schema: payment-graph
     # RocksDB graphs resolve their (relative) schema paths against this directory
     rocksdb-root: .rocksdb
+    # Every *.json in this directory becomes a graph at start-up (one schema per file, each with its own
+    # "id"). pi-data-agent keeps its schema copies here, so a data-agent graph built over HTTP survives a
+    # restart; delete the file to retire the graph.
+    schema-dir: .pida-schemas
     # further graphs served by the same instance; the UI lists all of them and
     # each one reads its own storage. The dashboard shows four graphs for now:
     # the primary payment-graph above, the aggregated-edge form, the RocksDB-Edge
@@ -83,7 +87,11 @@ phoenixgraph:
       # topology, hosts, metrics and one change window, ingested by examples/incident-triage/triage.mjs with the
       # incident rule pack. Registered here so the graph survives a restart and the UI can draw it.
       #   g.V('deploy-48','Entity').bothE('Relates').otherV().dedup()
-      - schema: incident-triage
+      #
+      # Renamed incident-triage -> context-graph on 2026-10-30: only the graph's name changed. The vertex set keeps
+      # its old spelling on purpose - the set is where the data is, and renaming it would mean copying every vertex
+      # and edge. The schema file, the agent artifact (context-graph.agent.json) and the clients follow the name.
+      - schema: context-graph
         vertex-set: incident_triage_v1
       # 方案 C：同一份数据 + 从文档自由文本（历史/小说）抽出的实体与关系，也是 RocksDB-Edge。
       # 比 sanguo-kg-rocksdb-edge 多 ~42 实体 / ~969 关系（mentions / holds / 军师 / 谋士 / 交战 / 斩杀），

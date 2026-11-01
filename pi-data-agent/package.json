@@ -1,0 +1,43 @@
+{
+  "name": "pi-data-agent",
+  "version": "0.1.0",
+  "description": "A pi package that builds an evidence-carrying metadata and semantic layer from PDF/Markdown/wiki/Word documents and database SHOW/DDL output, stores it in PhoenixGraph, edits it under review, and reads dashboards and attribution from it.",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "phoenixgraph",
+    "data-agent",
+    "semantic-layer",
+    "metadata",
+    "attribution"
+  ],
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "pi-data-agent": "./src/cli.mjs"
+  },
+  "pi": {
+    "extensions": ["./extensions/pi-data-agent/index.js"],
+    "skills": ["./skills"],
+    "prompts": ["./prompts/*.md"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "verify": "node verification/verify-package.mjs"
+  },
+  "files": [
+    "src",
+    "extensions",
+    "skills",
+    "prompts",
+    "examples",
+    "verification",
+    "docs",
+    "README.md"
+  ]
+}

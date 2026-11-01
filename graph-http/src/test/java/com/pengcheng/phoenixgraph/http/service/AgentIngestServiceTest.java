@@ -14,6 +14,7 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -160,6 +161,82 @@ class AgentIngestServiceTest {
         assertEquals(3, merged.relations().size(), merged.relations().toString());
         assertEquals(2, merged.entities().size(), "the entity this ingestion did not mention survives");
         assertEquals(2, merged.chunks().size(), "and so does its chunk");
+    }
+
+    @Test
+    void aTurnRestatingADocumentedFactKeepsTheDocumentsSentenceAndWindow() {
+        // The extension ingests every answered turn, and an answer that quotes the evidence puts the same triples
+        // back in. Extraction then read the paraphrase as a fresh fact with a window starting now, which replaced
+        // the document's sentence, its §cite and - for INC-1042 - the window that closed when deploy-48 landed:
+        // the September chain became invisible as of September, and a change dated October ranked first instead.
+        long september = 1_789_000_000_000L;
+        long october = 1_793_000_000_000L;
+        long today = 1_793_335_793_543L;
+        AgentIndex previous = new AgentIndex("g", "hashing-64", 64, "before",
+                List.of(),
+                List.of(new AgentIndex.Relation("deploy-42", "caused", "cache-eviction-storm", "caused",
+                        "20-inc-1042#6", "20-inc-1042.md §6", "deploy-42 caused cache-eviction-storm.",
+                        september, october)),
+                List.of(new AgentIndex.Chunk("20-inc-1042#6", "20-inc-1042", "20-inc-1042.md", 6,
+                        "deploy-42 caused cache-eviction-storm.")), Map.of());
+        AgentIndex turn = new AgentIndex("g", "hashing-64", 64, "now",
+                List.of(),
+                List.of(new AgentIndex.Relation("deploy-42", "caused", "cache-eviction-storm", "caused",
+                        "turn-20261030044953-1#12", "conversation turn §12",
+                        "事故链（各带 validFrom/validTo）：- deploy-42 caused cache-eviction-storm.", today, null)),
+                List.of(new AgentIndex.Chunk("turn-20261030044953-1#12", "turn-20261030044953-1",
+                        "conversation turn", 12, "事故链（各带 validFrom/validTo）：- deploy-42 caused …")),
+                Map.of());
+
+        AgentIndex merged = AgentIngestService.mergeChunks(previous, turn);
+
+        assertEquals(1, merged.relations().size());
+        AgentIndex.Relation kept = merged.relations().get(0);
+        assertEquals("20-inc-1042#6", kept.chunkId(), "the document's chunk, not the turn's");
+        assertEquals("20-inc-1042.md §6", kept.cite());
+        assertEquals("deploy-42 caused cache-eviction-storm.", kept.sentence(), "the sentence a reader quotes");
+        assertEquals(september, kept.validFrom(), "the window the document declared");
+        assertEquals(october, kept.validTo(), "still closed when deploy-48 landed");
+        assertEquals(2, merged.chunks().size(), "the turn's chunk stays citable even though its edge lost");
+    }
+
+    @Test
+    void aDocumentOutranksATurnButATurnStillWritesWhatNobodyDocumented() {
+        long before = 1_700_000_000_000L;
+        AgentIndex previouslyAsserted = new AgentIndex("g", "hashing-64", 64, "before",
+                List.of(),
+                List.of(new AgentIndex.Relation("storefront-api", "depends_on", "inventory-db", "depends-on",
+                        "turn-1#3", "conversation turn §9", "storefront-api depends on inventory-db.",
+                        before, null)),
+                List.of(new AgentIndex.Chunk("turn-1#3", "turn-20261030044421-8", "conversation turn", 3,
+                        "storefront-api depends on inventory-db.")), Map.of());
+        AgentIndex document = new AgentIndex("g", "hashing-64", 64, "now",
+                List.of(),
+                List.of(new AgentIndex.Relation("storefront-api", "depends_on", "inventory-db", "depends-on",
+                        "10-topology#12", "10-topology.md §12", "storefront-api depends on inventory-db.")),
+                List.of(new AgentIndex.Chunk("10-topology#12", "10-topology", "10-topology.md", 12,
+                        "storefront-api depends on inventory-db.")), Map.of());
+
+        AgentIndex merged = AgentIngestService.mergeChunks(previouslyAsserted, document);
+        assertEquals("10-topology.md §12", merged.relations().get(0).cite(),
+                "a document takes the fact back from the conversation and leaves a window-free fact window-free");
+        assertNull(merged.relations().get(0).validFrom());
+    }
+
+    @Test
+    void aFactOnlyATurnStatesIsStillWritten() {
+        AgentIndex turn = new AgentIndex("g", "hashing-64", 64, "now",
+                List.of(),
+                List.of(new AgentIndex.Relation("alice", "owns", "payment service", "owns", "turn-1#2",
+                        "conversation turn §2", "alice owns payment service.")),
+                List.of(new AgentIndex.Chunk("turn-1#2", "turn-20261030044421-2", "conversation turn", 2,
+                        "alice owns payment service.")), Map.of());
+
+        AgentIndex merged = AgentIngestService.mergeChunks(
+                new AgentIndex("g", "hashing-64", 64, "before", List.of(), List.of(), List.of(), Map.of()), turn);
+
+        assertEquals(1, merged.relations().size(), "memory of an undocumented assertion is the point of the turn ingest");
+        assertEquals("conversation turn §2", merged.relations().get(0).cite());
     }
 
     private static AgentIndex sampleIndex() {

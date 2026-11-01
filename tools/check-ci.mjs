@@ -44,6 +44,7 @@ check('the Python publish workflow exists', existsSync('.github/workflows/publis
 check('the connector tests are wired in', workflow.includes('tools/connectors/*.test.mjs') && existsSync('tools/connectors/confluence.test.mjs'));
 check('the TypeScript client is wired in', workflow.includes('clients/typescript') && existsSync('clients/typescript/package.json') && existsSync('clients/typescript/package-lock.json'));
 check('the MCP HTTP tests are wired in', workflow.includes('tools/mcp-server.test.mjs') && existsSync('tools/mcp-server.test.mjs'));
+check('the pi-data-agent tests are wired in', workflow.includes('pi-data-agent/test/*.test.mjs') && existsSync('pi-data-agent/test'));
 check('the deployment job runs the three-minute demo', workflow.includes('examples/three-minute-demo/demo.mjs') && existsSync('examples/three-minute-demo/demo.mjs'));
 check('the deployment job exercises the document CLI and the incident rule pack',
   workflow.includes('tools/ingest-docs.mjs') && workflow.includes('--rule-pack incident') && existsSync('tools/ingest-docs.mjs'));
