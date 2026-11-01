@@ -16,8 +16,16 @@ services:
   aerospike:
     # pinned: the version this repository is tested against (docker inspect on the running container)
     image: aerospike/aerospike-server:8.1.2.5
+    # the same name tools/start-phoenixgraph.sh starts with `docker start aerospike`, so the two ways to
+    # run the store are one container and one volume rather than two of each
+    container_name: aerospike
     ports:
       - "3000:3000"
+    # The namespace is a device file (the image's own aerospike.conf points test.dat at /opt/aerospike/data), so
+    # the volume is what makes the keyed graphs survive: `docker stop`/`start`, a re-create, or a reboot keep
+    # them; only `docker compose down -v` (or docker volume rm) deletes them - the same rule as the RocksDB graphs.
+    volumes:
+      - aerospike-data:/opt/aerospike/data
     healthcheck:
       test: ["CMD", "asinfo", "-v", "status"]
       interval: 10s
@@ -80,3 +88,7 @@ services:
 
 volumes:
   rocksdb:
+  # pinned rather than project-prefixed, so the plain `docker run` container of
+  # graph-integration-test/scripts/setup-aerospike.sh and the compose service read the same records
+  aerospike-data:
+    name: aerospike-data

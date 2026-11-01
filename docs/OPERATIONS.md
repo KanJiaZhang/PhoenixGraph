@@ -12,7 +12,7 @@ for the person on call, not for the person who wrote the code.
 |---|---|---|---|
 | `graph-http` | 8081 | graphs are defined in its configuration; RocksDB directories live under `phoenixgraph.storage.rocksdb-root` | the engine, the query API, the write API, `/api/v1/health` |
 | `graph-web` | 8080 | none (it proxies `/api` to 8081) | the UI; a restart costs nothing |
-| Aerospike | 3000 | the keyed graphs | one container in the compose file; a real deployment uses the Aerospike operator or a managed service |
+| Aerospike | 3000 | the keyed graphs, on the `aerospike-data` volume | one container in the compose file; a real deployment uses the Aerospike operator or a managed service |
 | RocksDB directories | a volume | the analytical graphs | **one process per directory** - a second service pointed at the same path fails to open it |
 
 Start everything with `tools/start-phoenixgraph.sh` (builds) or `--no-build`; stop with
@@ -223,6 +223,20 @@ docker compose -f docker-compose.yml -f docker-compose.secure.yml up --build
   `host.docker.internal`.
 - **`docker ps -f name=aerospike` also matches `aerospike-1`/`aerospike-2`.** The scripts here pin
   `name=^aerospike$`: once a drill cluster exists, a loose filter picks up the wrong store.
+
+- **The keyed graphs live on a volume, and only one command deletes them.** The image's own `aerospike.conf`
+  writes the `test` namespace to a device file under `/opt/aerospike/data`, and that path is the
+  `aerospike-data` volume in `docker-compose.yml`, which pins both names (`container_name: aerospike`,
+  `name: aerospike-data`) so that `docker compose up -d` and `tools/start-phoenixgraph.sh` operate on one
+  container and one set of records instead of two.
+  So `docker stop`/`start`, a reboot and even `docker rm` followed by a re-create from the same volume keep
+  every record - verified on this machine by asking `g.V('redis-cache','Entity').bothE('Relates').count()`
+  (12) after each. `docker compose down -v` or `docker volume rm aerospike-data` is the only way to lose
+  them: the graphs then come back empty rather than broken, and the live checks refill them
+  (`verification/verify-incident-triage.mjs` and `pi-data-agent/verification/verify-package.mjs`).
+  A volume is only as good as the storage engine behind it: the image's default configuration is a device
+  file, while a memory-engine configuration such as `graph-integration-test/scripts/aerospike.conf` has
+  nothing to keep.
 - **`docker exec` paths from Git Bash**: MSYS rewrites `/tmp/...` into `C:/cygwin64/tmp/...` before `docker`
   sees it, so `asbackup -d /tmp/x` writes nowhere. Set `MSYS2_ARG_CONV_EXCL='*'` (the scripts here do).
 - **The jar cannot be rebuilt while the service runs** (Windows holds it): stop the service first.

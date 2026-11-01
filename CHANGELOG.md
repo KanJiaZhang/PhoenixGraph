@@ -79,6 +79,12 @@ All notable changes to this project are recorded here. The format follows
   set.** The create path used `<graph>_v1` while discovery used the folded graph name, so a restart served an
   empty graph. `GraphAuthoringService` now uses `StorageConfig.vertexSetFor`, and `GET /api/v1/schema/{graph}`
   also reads the configured `schema-dir`.
+- **The Aerospike container keeps its keyed graphs.** The image's own configuration writes the `test` namespace
+  to a device file under `/opt/aerospike/data`, so that path is the `aerospike-data` volume in
+  `docker-compose.yml` (pinned by name, and the service is `container_name: aerospike` so it and
+  `tools/start-phoenixgraph.sh` are one container): a `stop`/`start`, a reboot, or a `docker rm` followed by a
+  re-create from the same volume keeps every record, and only `docker compose down -v` deletes them. Verified by removing the container and re-creating it - 12 edges around
+  `redis-cache` before and after, 27 relations from `/api/v1/agent/context`, and the `demo-data` rows untouched.
 - **The generated references were one change behind the controllers.** `docs/API.md` and `docs/openapi.json`
   now list the two delete-in-body endpoints (62 endpoints, 62 paths), `QUICKSTART.md` shows the same count, and
   the `pi-data-agent` tests run as a CI step - a package with 33 tests that nothing ran is not covered. Those
