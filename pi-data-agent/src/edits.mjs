@@ -10,9 +10,10 @@
 import { unique } from './util.mjs';
 import { relationProps } from './extract/model.mjs';
 import { nodeRequests, edgeRequests } from './graph/schema.mjs';
+import { baseId, instantMs, versionId, windowOf } from './validity.mjs';
 
 export const NODE_TYPES = ['Table', 'Column', 'Metric', 'Dimension', 'Term', 'Query', 'Source', 'Model', 'Domain'];
-export const RELATIONS = ['hasColumn', 'references', 'computedFrom', 'usesColumn', 'groupedBy', 'dimensionColumn', 'definedBy', 'readsTable', 'contributesTo', 'belongsTo', 'describes', 'sameAs'];
+export const RELATIONS = ['hasColumn', 'references', 'computedFrom', 'usesColumn', 'groupedBy', 'dimensionColumn', 'definedBy', 'readsTable', 'contributesTo', 'belongsTo', 'describes', 'sameAs', 'supersededBy'];
 
 const PREFIX_FOR_TYPE = {
   Table: 'table/', Column: 'column/', Metric: 'metric/', Dimension: 'dim/', Term: 'term/',
@@ -22,7 +23,7 @@ const PREFIX_FOR_TYPE = {
 const EDITABLE = new Set([
   'name', 'description', 'alias', 'dataType', 'columnRole', 'tableName', 'aggFunction', 'expression',
   'metricKind', 'unit', 'sqlText', 'graphProperty', 'owner', 'domain', 'dataGraph', 'vertexType',
-  'evidence', 'confidence', 'status', 'proposedBy', 'needsReview', 'sourceId', 'tags',
+  'evidence', 'confidence', 'status', 'proposedBy', 'needsReview', 'sourceId', 'tags', 'factIds',
 ]);
 
 const RELATION_TYPES = {
@@ -38,6 +39,8 @@ const RELATION_TYPES = {
   describes: ['Source', null],
   sameAs: [null, null],
   belongsTo: [null, 'Domain'],
+  // a superseded definition points at the definition that replaced it: any two entity types
+  supersededBy: [null, null],
 };
 
 function nodeOf(model, id) {
@@ -114,6 +117,51 @@ export async function applyEdits(client, graph, model, operations, options = {})
   const deletedNodes = [];
   const deletedEdges = [];
 
+  /**
+   * A change with an effective instant: the definition that held until then is frozen as a version vertex (its
+   * own closed window) and the live vertex takes the new values from that instant on. Re-running the same edit
+   * rewrites the same version id, so this is idempotent; an instant that is not later than the current start
+   * is a correction of this definition and just overwrites.
+   */
+  function supersede(existing, effectiveFrom) {
+    const from = instantMs(effectiveFrom);
+    if (from == null) return existing;
+    const base = baseId(existing.id);
+    const current = windowOf(existing.properties);
+    if (current.from != null && from <= current.from) return existing;
+    const frozen = {
+      id: versionId(base, current.from ?? 0),
+      entityType: existing.entityType,
+      properties: {
+        ...existing.properties,
+        validFrom: current.from ?? 0,
+        validTo: from,
+        definitionId: base,
+        status: existing.properties?.status || 'accepted',
+      },
+    };
+    const index = next.nodes.findIndex((candidate) => candidate.id === frozen.id);
+    if (index >= 0) next.nodes[index] = frozen;
+    else next.nodes.push(frozen);
+    changedNodes.set(frozen.id, frozen);
+
+    const relation = {
+      id: `${frozen.id}|supersededBy|${base}`, head: frozen.id, relation: 'supersededBy', tail: base,
+      properties: { ...relationProps('supersededBy'), confidence: 1, status: 'accepted', proposedBy: 'reviewer', validFrom: from },
+    };
+    const edgeIndex = next.edges.findIndex((candidate) => candidate.id === relation.id);
+    if (edgeIndex >= 0) next.edges[edgeIndex] = relation;
+    else next.edges.push(relation);
+    changedEdges.set(relation.id, relation);
+
+    audit.push({ op: 'supersede', id: base, version: frozen.id, validFrom: current.from ?? 0, validTo: from, effectiveFrom: from });
+    const live = { ...existing, id: base, properties: { ...existing.properties, validFrom: from } };
+    delete live.properties.validTo;
+    const liveIndex = next.nodes.findIndex((candidate) => candidate.id === base);
+    if (liveIndex >= 0) next.nodes[liveIndex] = live;
+    return live;
+  }
+
   for (const operation of operations || []) {
     if (!operation || !operation.op) throw new Error('every edit needs an op');
     const before = null;
@@ -121,7 +169,8 @@ export async function applyEdits(client, graph, model, operations, options = {})
       case 'upsert-node': {
         const node = validateNode(operation);
         const existing = nodeOf(next, node.id) || added.get(node.id) || null;
-        const merged = mergeNode(existing || { id: node.id, entityType: node.entityType, properties: {} }, node.properties || {});
+        const current = existing && operation.effectiveFrom != null ? supersede(existing, operation.effectiveFrom) : existing;
+        const merged = mergeNode(current || { id: node.id, entityType: node.entityType, properties: {} }, node.properties || {});
         if (existing) {
           const index = next.nodes.findIndex((candidate) => candidate.id === node.id);
           next.nodes[index] = merged;
@@ -134,37 +183,55 @@ export async function applyEdits(client, graph, model, operations, options = {})
         break;
       }
       case 'update-node': {
-        const existing = nodeOf(next, operation.id) || added.get(operation.id);
-        if (!existing) throw new Error(`update-node: '${operation.id}' is not in the model (use upsert-node to add it)`);
+        const found = nodeOf(next, operation.id) || added.get(operation.id);
+        if (!found) throw new Error(`update-node: '${operation.id}' is not in the model (use upsert-node to add it)`);
+        const existing = operation.effectiveFrom != null ? supersede(found, operation.effectiveFrom) : found;
         const merged = mergeNode(existing, operation.properties || {});
         const index = next.nodes.findIndex((candidate) => candidate.id === operation.id);
         next.nodes[index] = merged;
         changedNodes.set(operation.id, merged);
-        audit.push({ op: operation.op, id: operation.id, before: existing, after: merged });
+        audit.push({ op: operation.op, id: operation.id, before: found, after: merged });
+        break;
+      }
+      case 'retire-node': {
+        // the soft delete: the definition stops applying at an instant, and stays readable before it
+        const found = nodeOf(next, operation.id) || added.get(operation.id);
+        if (!found) throw new Error(`retire-node: '${operation.id}' is not in the model`);
+        if (found.entityType === 'Model') throw new Error('the Model node is the model; edit its properties instead of retiring it');
+        if (!options.allowDelete && operation.confirm !== true) throw new Error('retire-node needs confirm:true');
+        const to = instantMs(operation.effectiveTo) ?? instantMs(options.now) ?? Date.now();
+        const from = windowOf(found.properties).from;
+        if (from != null && to <= from) throw new Error(`retire-node: effectiveTo ${new Date(to).toISOString()} is not after validFrom ${new Date(from).toISOString()}`);
+        const retired = { ...found, properties: { ...found.properties, validTo: to } };
+        next.nodes[next.nodes.findIndex((candidate) => candidate.id === found.id)] = retired;
+        changedNodes.set(retired.id, retired);
+        audit.push({ op: operation.op, id: found.id, before: found, after: retired, effectiveTo: to });
         break;
       }
       case 'set-binding': {
-        const existing = nodeOf(next, operation.id) || added.get(operation.id);
-        if (!existing) throw new Error(`set-binding: '${operation.id}' is not in the model`);
+        const found = nodeOf(next, operation.id) || added.get(operation.id);
+        if (!found) throw new Error(`set-binding: '${operation.id}' is not in the model`);
         const value = String(operation.graphProperty || '').trim();
         if (!value) throw new Error('set-binding needs graphProperty');
         if (!/^[A-Za-z_][\w$]*(?:\s*=\s*[A-Za-z_][\w$]*)?(?:\s*,\s*[A-Za-z_][\w$]*\s*=\s*[A-Za-z_][\w$]*)*$/.test(value)) {
           throw new Error(`graphProperty '${value}' is not a property name or a grain=property list`);
         }
+        const existing = operation.effectiveFrom != null ? supersede(found, operation.effectiveFrom) : found;
         const merged = mergeNode(existing, { graphProperty: value });
         next.nodes[next.nodes.findIndex((candidate) => candidate.id === operation.id)] = merged;
         changedNodes.set(operation.id, merged);
-        audit.push({ op: operation.op, id: operation.id, before: existing, after: merged });
+        audit.push({ op: operation.op, id: operation.id, before: found, after: merged });
         break;
       }
       case 'add-alias': {
-        const existing = nodeOf(next, operation.id) || added.get(operation.id);
-        if (!existing) throw new Error(`add-alias: '${operation.id}' is not in the model`);
-        const aliases = unique([...(existing.properties?.alias || []), ...(Array.isArray(operation.alias) ? operation.alias : [operation.alias])]);
+        const found = nodeOf(next, operation.id) || added.get(operation.id);
+        if (!found) throw new Error(`add-alias: '${operation.id}' is not in the model`);
+        const aliases = unique([...(found.properties?.alias || []), ...(Array.isArray(operation.alias) ? operation.alias : [operation.alias])]);
+        const existing = operation.effectiveFrom != null ? supersede(found, operation.effectiveFrom) : found;
         const merged = mergeNode(existing, { alias: aliases });
         next.nodes[next.nodes.findIndex((candidate) => candidate.id === operation.id)] = merged;
         changedNodes.set(operation.id, merged);
-        audit.push({ op: operation.op, id: operation.id, before: existing, after: merged });
+        audit.push({ op: operation.op, id: operation.id, before: found, after: merged });
         break;
       }
       case 'upsert-edge': {
@@ -223,7 +290,7 @@ export async function applyEdits(client, graph, model, operations, options = {})
         break;
       }
       default:
-        throw new Error(`unknown edit op '${operation.op}' (use upsert-node, update-node, set-binding, add-alias, upsert-edge, update-edge, delete-node, delete-edge)`);
+        throw new Error(`unknown edit op '${operation.op}' (use upsert-node, update-node, set-binding, add-alias, upsert-edge, update-edge, retire-node, delete-node, delete-edge)`);
     }
   }
 
@@ -231,10 +298,17 @@ export async function applyEdits(client, graph, model, operations, options = {})
   // the model back before and after the write.
   const modelNode = next.nodes.find((node) => node.entityType === 'Model');
   if (modelNode) {
+    // The catalog must keep the version vertices: they are no longer in the live view (`loadModel` resolved them
+    // away), and dropping their ids would make the history unreadable - a keyed store can only read by id.
+    // The catalog is the id list of the graph, not of the live view: a retired definition and a superseded
+    // version are still vertices and still readable with `asOf`, so only a HARD delete removes an id. (Dropping
+    // them here is what once made a retired term unreadable - and un-deletable - after one edit.)
+    const removedNodes = new Set(deletedNodes.map((node) => node.id));
+    const removedEdges = new Set(deletedEdges.map((edge) => edge.id));
     modelNode.properties = {
       ...modelNode.properties,
-      nodeIds: next.nodes.map((node) => node.id),
-      edgeIds: next.edges.map((edge) => edge.id),
+      nodeIds: unique([...(model.catalog?.nodeIds || []).filter((id) => !removedNodes.has(id) && !next.nodes.some((node) => node.id === id)), ...next.nodes.map((node) => node.id)]),
+      edgeIds: unique([...(model.catalog?.edgeIds || []).filter((id) => !removedEdges.has(id) && !next.edges.some((edge) => edge.id === id)), ...next.edges.map((edge) => edge.id)]),
       builtAt: modelNode.properties.builtAt || new Date(options.now ?? Date.now()).toISOString(),
     };
     changedNodes.set(modelNode.id, modelNode);

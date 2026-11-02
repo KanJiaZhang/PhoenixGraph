@@ -14,6 +14,7 @@
  */
 import { quote, slug, shortId, tableOfColumn, unique, isDateType } from '../util.mjs';
 import { parseSqlQueries } from '../readers/sql.mjs';
+import { instantMs } from '../validity.mjs';
 
 const RELATION_LABELS = {
   hasColumn: ['columnOf', '包含字段', '结构'],
@@ -28,6 +29,7 @@ const RELATION_LABELS = {
   belongsTo: ['containsMetric', '属于', '主题'],
   describes: ['describedBy', '描述', '来源'],
   sameAs: ['sameAs', '同义', '语义'],
+  supersededBy: ['supersedes', '被新定义取代', '版本'],
 };
 
 export function relationProps(relation) {
@@ -367,7 +369,14 @@ export function buildModel(options) {
     target.entityType = entityType || target.entityType;
   };
 
-  putNode({ id: `model/${slug(graph)}`, entityType: 'Model', name: `model/${slug(graph)}`, description: `Semantic/metadata layer built by pi-data-agent from ${options.documents?.length ?? 0} source(s)`, dataGraph, vertexType, modelVersion: 1, builtAt: new Date(now).toISOString(), proposedBy: 'pi-data-agent' });
+  putNode({
+    id: `model/${slug(graph)}`, entityType: 'Model', name: `model/${slug(graph)}`,
+    description: `Semantic/metadata layer built by pi-data-agent from ${options.documents?.length ?? 0} source(s)`,
+    dataGraph, vertexType,
+    // a keyed fact graph cannot scan a type: the ids the model was built against make `g.V(ids...)` possible
+    factIds: Array.isArray(options.factIds) && options.factIds.length ? options.factIds.map(String) : undefined,
+    modelVersion: 1, builtAt: new Date(now).toISOString(), proposedBy: 'pi-data-agent',
+  });
 
   for (const document of options.documents || []) {
     putNode({
@@ -537,14 +546,19 @@ export function buildModel(options) {
     if (!metric.tables?.length) warnings.push(`${metric.id} names no source table; its lineage is the columns it uses`);
   }
 
+  // Time on every definition: the model says from when these formulas apply, so a later edit can close the
+  // window and an `asOf` question about before it still reads this build. `validFrom` is the one property the
+  // server's subgraph filter understands; the build time is the only instant a fresh extraction can claim.
+  const validFrom = options.validFrom == null ? new Date(now).getTime() : (instantMs(options.validFrom) ?? new Date(now).getTime());
   return {
     graph,
     dataGraph,
     vertexType,
     modelVersion: 1,
+    validFrom,
     builtAt: new Date(now).toISOString(),
-    nodes: nodeList.map((node) => ({ id: node.id, entityType: node.entityType, properties: node.properties })),
-    edges: edgeList.map((edge) => ({ id: edge.id, head: edge.head, relation: edge.relation, tail: edge.tail, properties: edge.properties })),
+    nodes: nodeList.map((node) => ({ id: node.id, entityType: node.entityType, properties: { validFrom, ...node.properties } })),
+    edges: edgeList.map((edge) => ({ id: edge.id, head: edge.head, relation: edge.relation, tail: edge.tail, properties: { validFrom, ...edge.properties } })),
     sources: (options.documents || []).map((document) => ({ id: document.id, name: document.name, title: document.title, kind: document.kind, path: document.path, url: document.url })),
     stats: {
       nodes: nodeList.length,

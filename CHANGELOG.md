@@ -28,7 +28,7 @@ All notable changes to this project are recorded here. The format follows
   dashboards (totals, trend, Top-N) and attributions (contributions, shares, concentration, outlier) from the
   fact graph, and joins a risk case ledger with the payment graph (KPI dashboard, ring/rule/channel
   attribution, FuzzyLink and collection-receiver evidence, ranked hypotheses with their refutations). The
-  package carries a skill, a review prompt, an extension with eight tools and `/data` commands, a CLI, 53 unit
+  package carries a skill, a review prompt, an extension with nine tools and `/data` commands, a CLI, 70 unit
   tests and a live verification of 36 checks (`PHOENIXGRAPH_LIVE=1 npm run verify`). The package is verified
   *as a package*: installed with `pi install ./pi-data-agent`, after which `pg_data_model` answered with the
   model's 7 metrics, `/data-agent-review pi-data-agent-verify` expanded and drove a full review, and
@@ -59,6 +59,30 @@ All notable changes to this project are recorded here. The format follows
   breaks the turn.
 - **Delete-in-body endpoints** for graph writes (`POST /api/v1/graphs/{graph}/vertices/delete` and
   `/edges/delete`): ids such as `metric/revenue` contain a slash that the path form cannot carry.
+- **Definitions have a validity window, and `asOf` reads the one that was true then** (`pi-data-agent`). Every
+  node and edge carries `validFrom`/`validTo` (epoch millis, `from <= instant < to`, absent meaning open-ended -
+  the pair the server filters `asOf` answers on). An edit with `effectiveFrom` freezes the old definition into a
+  version vertex (`metric/营收#v2024-01-01T00:00:00.000Z`, window closed, `supersededBy` edge) and starts the live
+  vertex at that instant; `retire-node` closes a window without deleting it. Readers collapse a version group back
+  to one node per id, so `model`/`dashboard`/`attribute`/`similar` accept `asOf` and answer with the old formula
+  and the old number - in the case, 2026 revenue is 31,507,086.47 at `asOf 2026-10-01` (`SUM(revenue)`) and
+  30,173,396.87 today (`SUM(net_revenue)`).
+- **Vector similarity over the model, expanded through the graph** (`pg_data_similar`, `src/similar.mjs`): a
+  deterministic hashing embedder (word tokens + character trigrams, 768 dimensions, L2) ranks metrics, dimensions,
+  terms and columns by cosine, with a boost for a name or alias the question literally contains, and every match is
+  expanded one hop through `Relation` so the answer carries the columns, table, dimensions and source behind it. A
+  match with no relations is reported as `isolated`.
+- **A schedule for the two read products** (`src/schedule.mjs`, `/data schedule`, CLI `schedule`): one dashboard
+  and one attribution per period, `everyMs` apart, with the run log kept; an attribution whose base period has no
+  rows is a refusal, not a whole-year "change".
+- **`examples/sales-case/` and a generated case document.** The case owns its data end to end: it defines the fact
+  table, generates 432 rows with a fixed seed, creates the graph and imports them over the write API, reads its own
+  metric dictionary/DDL/`SHOW TABLES` into a model, then runs vector+graph retrieval, the dashboard, the
+  attribution, add/change/delete with audit, a dated definition change with `asOf` round-tripping, and a
+  three-cycle schedule - printing every operation and writing `pi-data-agent/docs/CASE-DATA-AGENT.md` from the same
+  transcript.
+- **A keyed fact graph works too.** `g.V('Type')` needs a type scan, which Aerospike cannot do; the model can now
+  carry the fact vertex ids it was bound to (`factIds`) and a semantic query starts `g.V(id, ..., 'Type')`.
 
 ### Changed
 
@@ -95,6 +119,9 @@ All notable changes to this project are recorded here. The format follows
   `tools/start-phoenixgraph.sh` are one container): a `stop`/`start`, a reboot, or a `docker rm` followed by a
   re-create from the same volume keeps every record, and only `docker compose down -v` deletes them. Verified by removing the container and re-creating it - 12 edges around
   `redis-cache` before and after, 27 relations from `/api/v1/agent/context`, and the `demo-data` rows untouched.
+- **A store constraint is written down instead of worked around:** the write API merges properties, so
+  re-writing a vertex cannot remove the `validTo` an earlier definition wrote (and delete+re-create brings the old
+  bins back). History is expressed with version vertices, a rebuild is not an un-retire, and `DESIGN §9` says so.
 - **The generated references were one change behind the controllers.** `docs/API.md` and `docs/openapi.json`
   now list the two delete-in-body endpoints (62 endpoints, 62 paths), `QUICKSTART.md` shows the same count, and
   the `pi-data-agent` tests run as a CI step - a package with 33 tests that nothing ran is not covered. Those

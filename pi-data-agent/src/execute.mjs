@@ -18,7 +18,11 @@ export function bindingOf(model, options = {}) {
   const node = modelNode(model)?.properties || {};
   const dataGraph = options.dataGraph || model.dataGraph || node.dataGraph || null;
   const vertexType = options.vertexType || model.vertexType || node.vertexType || null;
-  return { dataGraph, vertexType };
+  // A keyed fact graph (Aerospike) cannot scan a whole vertex type, so the model can carry the fact ids it was
+  // bound to. Then a semantic query is `g.V(ids...)` - still one traversal, just addressed the way the store
+  // answers: by id.
+  const factIds = options.factIds || model.factIds || node.factIds || null;
+  return { dataGraph, vertexType, factIds: Array.isArray(factIds) ? factIds.map(String) : null };
 }
 
 export function metricNode(model, id) {
@@ -104,7 +108,10 @@ export async function execute(client, model, request = {}) {
     return { executed: false, reason: `${dimension.id} has no graphProperty at grain '${request.grain || 'raw'}' on the fact graph; the SQL is the export`, sql };
   }
 
-  const traversal = [`g.V(${gremlinString(binding.vertexType)})`];
+  // the engine reads a start step as `g.V(id, id, ..., 'VertexType')`: the last argument names the schema
+  const traversal = [binding.factIds?.length
+    ? `g.V(${[...binding.factIds, binding.vertexType].map(gremlinString).join(',')})`
+    : `g.V(${gremlinString(binding.vertexType)})`];
   const warnings = [];
   if (request.year != null && String(request.year).trim() !== '') {
     const property = yearProperty(model);

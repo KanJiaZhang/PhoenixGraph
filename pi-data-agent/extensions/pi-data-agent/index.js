@@ -17,6 +17,8 @@ import {
   statusFor, renderScanReport, renderBuildReport, renderModel, rememberChoice,
 } from '../../src/service.mjs';
 import { loadConfig, projectFile, readJson, stateFile, writeJson } from '../../src/config.mjs';
+import { renderSimilar, similarWithGraph } from '../../src/similar.mjs';
+import { renderSchedule, runSchedule } from '../../src/schedule.mjs';
 import {
   readRiskCases, loadRiskManifest, riskDashboard, riskAttribution, renderRiskAttribution,
   renderRiskDashboardMarkdown, saveRiskDashboard,
@@ -154,6 +156,37 @@ export default function piDataAgentExtension(pi, options = {}) {
   });
 
   pi.registerTool({
+    name: 'pg_data_similar',
+    label: 'Data agent similarity',
+    description: 'Vector similarity over the model combined with its relations: embed the text, rank the metrics/dimensions/terms/columns by cosine, then expand each match through the Relation edges so the answer carries the lineage (columns, tables, dimensions, source) behind every candidate. A candidate with no relations is reported as isolated rather than dressed up.',
+    promptSnippet: 'pg_data_similar(text) - which definition is meant, and what it is made of (vector + graph)',
+    annotations: { readOnlyHint: true, openWorldHint: false },
+    parameters: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: 'The phrase to find a definition for (a business word, a synonym, a question fragment)' },
+        k: { type: 'number', description: 'How many candidates (default 5)' },
+        hops: { type: 'number', description: 'How far to walk the relations from each match (default 1)' },
+        entityTypes: { type: 'array', items: { type: 'string' }, description: 'Restrict to Metric / Dimension / Term / Column / Table / Domain' },
+        graph: { type: 'string', description: 'Model graph (default: the session graph)' },
+        asOf: { type: 'string', description: 'Search the definitions in force at this instant (ISO date/time)' },
+      },
+      required: ['text'],
+    },
+    async execute(_toolCallId, params) {
+      try {
+        const model = await loadModel(client(params), params.graph || state.graph, { asOf: params.asOf });
+        const bundle = similarWithGraph(model, params.text, { k: params.k, hops: params.hops, entityTypes: params.entityTypes });
+        return {
+          content: [{ type: 'text', text: renderSimilar(bundle) }],
+          details: { graph: model.graph, asOf: model.asOf, query: bundle.query, matches: bundle.matches.map((match) => ({ id: match.id, score: match.score, relations: match.relations.length })), isolated: bundle.isolated },
+        };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `similar failed: ${error.message}` }], details: { error: String(error) }, isError: true };
+      }
+    },
+  });
+  pi.registerTool({
     name: 'pg_data_build',
     label: 'Data agent build',
     description: 'Scan the sources and write the metadata + semantic layer into a PhoenixGraph graph (schema created when new). Returns what persisted, the review list and the graph snapshot path. A dry run writes nothing.',
@@ -202,16 +235,17 @@ export default function piDataAgentExtension(pi, options = {}) {
       type: 'object',
       properties: {
         graph: { type: 'string', description: 'Model graph (default: the session graph)' },
+        asOf: { type: 'string', description: 'Read the model as it stood at this instant (ISO date/time), so a replaced definition answers instead of the current one' },
         json: { type: 'boolean', description: 'Return the structured model instead of prose' },
       },
       required: [],
     },
     async execute(_toolCallId, params) {
       try {
-        const model = await loadModel(client(params), params.graph || state.graph);
+        const model = await loadModel(client(params), params.graph || state.graph, { asOf: params.asOf });
         return {
-          content: [{ type: 'text', text: params.json ? JSON.stringify({ graph: model.graph, dataGraph: model.dataGraph, vertexType: model.vertexType, stats: model.stats, nodes: model.nodes, edges: model.edges, review: model.review }, null, 2) : renderModel(model) }],
-          details: { graph: model.graph, stats: model.stats, review: model.review },
+          content: [{ type: 'text', text: params.json ? JSON.stringify({ graph: model.graph, dataGraph: model.dataGraph, vertexType: model.vertexType, asOf: model.asOf, stats: model.stats, nodes: model.nodes, edges: model.edges, review: model.review }, null, 2) : renderModel(model) }],
+          details: { graph: model.graph, asOf: model.asOf, stats: model.stats, review: model.review },
         };
       } catch (error) {
         return { content: [{ type: 'text', text: `model failed: ${error.message}` }], details: { error: String(error) }, isError: true };
@@ -267,12 +301,13 @@ export default function piDataAgentExtension(pi, options = {}) {
         dimensions: { type: 'array', items: { type: 'string' }, description: 'Dimensions to break down by' },
         metrics: { type: 'array', items: { type: 'string' }, description: 'Metrics to show (default all)' },
         write: { type: 'boolean', description: 'Write the HTML/JSON files (default true)' },
+        asOf: { type: 'string', description: 'Compute with the definitions in force at this instant (ISO date/time)' },
       },
       required: [],
     },
     async execute(_toolCallId, params) {
       try {
-        const result = await dashboardFor({ ...config(params), client: client(params), topN: params.topN, dimensions: params.dimensions, metrics: params.metrics, year: params.year, write: params.write !== false });
+        const result = await dashboardFor({ ...config(params), client: client(params), topN: params.topN, dimensions: params.dimensions, metrics: params.metrics, year: params.year, asOf: params.asOf, write: params.write !== false });
         return {
           content: [{ type: 'text', text: `${result.markdown}${result.files ? `\n\nhtml: ${result.files.html}\njson: ${result.files.json}` : ''}` }],
           details: { graph: result.dashboard.graph, dataGraph: result.dashboard.dataGraph, executed: result.dashboard.executed, refused: result.dashboard.refused, files: result.files, tiles: result.dashboard.tiles.map((tile) => ({ id: tile.id, kind: tile.kind, executed: tile.executed, reason: tile.reason })) },
@@ -297,12 +332,13 @@ export default function piDataAgentExtension(pi, options = {}) {
         from: { type: 'string', description: 'Earlier period, e.g. 2024' },
         to: { type: 'string', description: 'Later period, e.g. 2025' },
         graph: { type: 'string', description: 'Model graph (default: the session graph)' },
+        asOf: { type: 'string', description: 'Compute with the definitions in force at this instant (ISO date/time)' },
       },
       required: ['metric', 'by', 'from', 'to'],
     },
     async execute(_toolCallId, params) {
       try {
-        const result = await attributeFor({ ...config(params), client: client(params), metric: params.metric, by: params.by, from: params.from, to: params.to });
+        const result = await attributeFor({ ...config(params), client: client(params), metric: params.metric, by: params.by, from: params.from, to: params.to, asOf: params.asOf });
         return {
           content: [{ type: 'text', text: result.markdown }],
           details: { executed: result.result.executed, reason: result.result.reason, attribution: result.result.attribution, before: result.result.before?.total, after: result.result.after?.total },
@@ -393,7 +429,9 @@ export default function piDataAgentExtension(pi, options = {}) {
     '/data endpoint <url>',
     '/data scan <file-or-dir> [--data-graph <g> --vertex-type <T>]',
     '/data build <file-or-dir> [--graph <g> --data-graph <g> --vertex-type <T>]',
-    '/data model',
+    '/data model [--as-of <instant>]',
+  '/data similar <text> [--k 5] [--hops 1]',
+  '/data schedule --periods 2024,2025 [--metric 营收 --by 渠道] [--every 60000]',
     '/data dashboard [--year 2025] [--top 5]',
     '/data attribute <metric> --by <dimension> --from 2024 --to 2025',
     '/data risk [cases] [--period 2025-10]',
@@ -459,19 +497,19 @@ export default function piDataAgentExtension(pi, options = {}) {
           return;
         }
         if (command === 'model') {
-          const model = await loadModel(client(), state.graph);
+          const model = await loadModel(client(), state.graph, { asOf: flags['as-of'] });
           ctx.ui?.notify?.(renderModel(model).slice(0, 6000), 'info');
           return;
         }
         if (command === 'dashboard') {
-          const result = await dashboardFor({ ...config(), client: client(), year: flags.year, topN: flags.top ? Number(flags.top) : undefined });
+          const result = await dashboardFor({ ...config(), client: client(), year: flags.year, topN: flags.top ? Number(flags.top) : undefined, asOf: flags['as-of'] });
           ctx.ui?.notify?.(`${result.markdown.split('\n').slice(0, 12).join('\n')}\n${result.files ? `\nhtml: ${result.files.html}` : ''}`, 'info');
           return;
         }
         if (command === 'attribute') {
           const metric = positional[0];
           if (!metric || !flags.by || !flags.from || !flags.to) { ctx.ui?.notify?.('usage: /data attribute <metric> --by <dimension> --from 2024 --to 2025', 'warning'); return; }
-          const result = await attributeFor({ ...config(), client: client(), metric, by: flags.by, from: flags.from, to: flags.to });
+          const result = await attributeFor({ ...config(), client: client(), metric, by: flags.by, from: flags.from, to: flags.to, asOf: flags['as-of'] });
           ctx.ui?.notify?.(result.markdown.slice(0, 6000), 'info');
           return;
         }
@@ -490,6 +528,27 @@ export default function piDataAgentExtension(pi, options = {}) {
             metric: flags.metric, by: flags.by, from: flags.from, to: flags.to, riskGraph: flags['risk-graph'],
           });
           ctx.ui?.notify?.(renderRiskAttribution(bundle).slice(0, 8000), 'info');
+          return;
+        }
+        if (command === 'similar') {
+          const text = positional.join(' ');
+          if (!text) { ctx.ui?.notify?.(`usage: /data similar <text> [--k 5] [--hops 1]`, 'warning'); return; }
+          const model = await loadModel(client(), state.graph, { asOf: flags['as-of'] });
+          const bundle = similarWithGraph(model, text, { k: flags.k ? Number(flags.k) : undefined, hops: flags.hops ? Number(flags.hops) : undefined });
+          ctx.ui?.notify?.(renderSimilar(bundle).slice(0, 6000), 'info');
+          return;
+        }
+        if (command === 'schedule') {
+          const periods = String(flags.periods || '').split(',').map((period) => period.trim()).filter(Boolean);
+          if (!periods.length) { ctx.ui?.notify?.(`usage: /data schedule --periods 2024,2025[,2026] [--metric 营收 --by 渠道] [--every 60000]`, 'warning'); return; }
+          const schedule = await runSchedule({
+            ...config(), client: client(), periods, metric: flags.metric, by: flags.by,
+            everyMs: flags.every ? Number(flags.every) : 0,
+            outDir: flags.out, asOf: flags['as-of'],
+            onRun: (run) => ctx.ui?.notify?.(`${run.period}: ${run.dashboard.executed} executed / ${run.dashboard.refused} refused`,
+              run.dashboard.executed ? 'info' : 'warning'),
+          });
+          ctx.ui?.notify?.(renderSchedule(schedule), 'info');
           return;
         }
         if (command === 'edit') {
@@ -521,7 +580,7 @@ export default function piDataAgentExtension(pi, options = {}) {
     const block = [
       `[pi-data-agent] ${stateLine()}`,
       modelLine,
-      'tools: pg_data_scan(sources) previews; pg_data_build(sources) writes; pg_data_model() shows; pg_data_edit(operations) fixes; pg_data_dashboard() and pg_data_attribute(metric,by,from,to) read; pg_risk_dashboard() and pg_risk_attribution() combine the risk ledger with the payment graph.',
+      'tools: pg_data_scan(sources) previews; pg_data_build(sources) writes; pg_data_model() shows; pg_data_edit(operations) fixes; pg_data_dashboard() and pg_data_attribute(metric,by,from,to) read; pg_data_similar(text) finds the definition a word means and shows its lineage; /data schedule runs both products on a timer; every tool takes asOf to answer with the definitions of that instant; pg_risk_dashboard() and pg_risk_attribution() combine the risk ledger with the payment graph.',
       contract,
     ].filter(Boolean).join('\n');
     options2.sections = { ...(options2.sections || {}), piDataAgent: block };

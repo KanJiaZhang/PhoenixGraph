@@ -95,6 +95,11 @@ __pycache__/
 /.pida-schemas/
 # pi-data-agent local state: snapshots, audit, dashboards
 /pi-data-agent/.pi/
+# graphs the sales-case creates over HTTP: the service drops <graph>.json in its working directory
+/sales-facts.json
+/sales-model.json
+# pi-data-agent case output (dashboards + JSON written by run-case.mjs)
+/pi-data-agent/examples/sales-case/artifacts/
 /.pi/data-agent/
 
 # JavaScript/TypeScript dependencies

@@ -28,6 +28,7 @@ export const NODE_PROPERTIES = [
   property('graphProperty', 'string', 'The fact-graph property a metric/dimension binds to, or grain=property'),
   property('dataGraph', 'string', 'The graph that holds the fact rows (on the Model node)'),
   property('vertexType', 'string', 'The fact vertex type (on the Model node)'),
+  property('factIds', 'list<string>', 'The fact vertex ids the model was bound to, for a keyed store that cannot scan a type (on the Model node)'),
   property('owner', 'string', 'Data owner, when the source says so'),
   property('domain', 'string', 'Business domain a table/metric belongs to'),
   property('sourceId', 'string', 'The source document id the fact was read from'),
@@ -38,6 +39,11 @@ export const NODE_PROPERTIES = [
   property('needsReview', 'boolean', 'Set when a definition is incomplete (for example a metric with no expression)'),
   property('builtAt', 'string', 'When the model was built (ISO instant)'),
   property('modelVersion', 'long', 'The model revision'),
+  // time on the definition itself: `from <= instant < to`, epoch millis, absent meaning open-ended. The server
+  // filters an `asOf` answer on exactly these two names, so a definition that was replaced can still be read.
+  property('validFrom', 'long', 'When this definition starts to apply (epoch millis)'),
+  property('validTo', 'long', 'When it stops applying, exclusive (epoch millis)'),
+  property('definitionId', 'string', 'On a superseded definition: the live node id it was a version of'),
   property('nodeIds', 'list<string>', 'Catalog: every node id in this model (Aerospike stores cannot scan a type)'),
   property('edgeIds', 'list<string>', 'Catalog: every relation id in this model'),
 ];
@@ -51,6 +57,8 @@ export const EDGE_PROPERTIES = [
   property('evidence', 'string', 'JSON: the exact sentence/row behind the edge'),
   property('status', 'string', 'accepted / needs_review'),
   property('sourceId', 'string', 'The source document id the edge was read from'),
+  property('validFrom', 'long', 'When this relation starts to hold (epoch millis)'),
+  property('validTo', 'long', 'When it stops holding, exclusive (epoch millis)'),
 ];
 
 export function schemaDraft(graph, options = {}) {

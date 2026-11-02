@@ -22,6 +22,7 @@ import { buildDashboard, renderDashboardHtml, renderDashboardMarkdown } from './
 import { runAttribution, renderAttribution } from './attribution.mjs';
 import { loadConfig, remember, readJson, writeJson, stateFile, projectRoot } from './config.mjs';
 import { pathSegment, quote, unique } from './util.mjs';
+import { instantMs, isVersion, resolveAsOf } from './validity.mjs';
 
 export function clientFor(options = {}) {
   return new PhoenixClient({
@@ -90,6 +91,9 @@ export async function scanSources(sources, options = {}) {
     factSchema,
     bindings: options.bindings || {},
     inferBindings: options.inferBindings !== false,
+    // the fact ids (a keyed fact graph cannot scan a type) and the instant these definitions start applying
+    factIds: options.factIds,
+    validFrom: options.validFrom,
     now: options.now,
   });
   if (Array.isArray(options.overrides) && options.overrides.length) {
@@ -140,6 +144,7 @@ export async function buildDataAgent(sources, options = {}) {
   const config = loadConfig(options);
   const client = options.client || clientFor({ ...config, ...options });
   const scan = await scanSources(sources, { ...config, ...options, client });
+
   const write = await writeModel(client, scan.model, {
     graph: scan.model.graph,
     storage: options.storage,
@@ -181,12 +186,27 @@ export async function buildDataAgent(sources, options = {}) {
   };
 }
 
-/** The model as read from a graph, with the Model node's fact binding. */
+/** The model as read from a graph, with the Model node's fact binding, as it stood at an instant. */
 export async function loadModel(client, graph, options = {}) {
   const read = await client.readModel(graph);
   if (!read.nodes.length) throw new Error(`graph '${graph}' holds no Node vertices (build the model first)`);
-  const model = modelFromGraph(graph, read.nodes, read.edges);
-  model.sources = read.nodes.filter((node) => node.entityType === 'Source').map((node) => ({ id: node.id.replace(/^source\//, ''), name: node.properties?.name, title: node.properties?.name, kind: 'source' }));
+  const stored = modelFromGraph(graph, read.nodes, read.edges);
+  // A superseded definition is a version vertex with a closed window, so the model as it stands *now* is the
+  // resolved view - not the raw vertex list, which would count yesterday's formula as a second metric. The
+  // instant a caller asks for (`asOf`) decides which version answers, and it defaults to now.
+  const asOf = instantMs(options.asOf) ?? Date.now();
+  const resolved = resolveAsOf(stored, asOf);
+  const model = {
+    ...stored,
+    nodes: resolved.nodes,
+    edges: resolved.edges,
+    asOf: new Date(asOf).toISOString(),
+    versions: read.nodes.filter((node) => isVersion(node.id)).length,
+    // what the catalog holds, so an edit can keep the history readable when it rewrites the catalog
+    catalog: { nodeIds: read.nodes.map((node) => node.id), edgeIds: read.edges.map((edge) => edge.id) },
+  };
+  model.stats = { ...stored.stats, nodes: model.nodes.length, edges: model.edges.length };
+  model.sources = model.nodes.filter((node) => node.entityType === 'Source').map((node) => ({ id: node.id.replace(/^source\//, ''), name: node.properties?.name, title: node.properties?.name, kind: 'source' }));
   model.warnings = [];
   model.review = reviewOf(model);
   return model;
@@ -196,7 +216,7 @@ export async function editDataAgent(operations, options = {}) {
   const config = loadConfig(options);
   const client = options.client || clientFor({ ...config, ...options });
   const graph = options.graph || config.graph;
-  const model = await loadModel(client, graph, { client });
+  const model = await loadModel(client, graph, { client, asOf: options.asOf });
   const result = await applyEdits(client, graph, model, operations, {
     dryRun: options.dryRun === true,
     allowDelete: options.allowDelete === true,
@@ -215,7 +235,7 @@ export async function dashboardFor(options = {}) {
   const config = loadConfig(options);
   const client = options.client || clientFor({ ...config, ...options });
   const graph = options.graph || config.graph;
-  const model = options.model || await loadModel(client, graph, { client });
+  const model = options.model || await loadModel(client, graph, { client, asOf: options.asOf });
   const dashboard = await buildDashboard(client, model, {
     ...options,
     dataGraph: options.dataGraph || config.dataGraph || model.dataGraph,
@@ -238,7 +258,7 @@ export async function attributeFor(options = {}) {
   const config = loadConfig(options);
   const client = options.client || clientFor({ ...config, ...options });
   const graph = options.graph || config.graph;
-  const model = options.model || await loadModel(client, graph, { client });
+  const model = options.model || await loadModel(client, graph, { client, asOf: options.asOf });
   const result = await runAttribution(client, model, {
     ...options,
     dataGraph: options.dataGraph || config.dataGraph || model.dataGraph,

@@ -19,6 +19,8 @@ import {
   clientFor, renderScanReport, renderBuildReport, renderModel, rememberChoice,
 } from './service.mjs';
 import { loadConfig } from './config.mjs';
+import { renderSimilar, similarWithGraph } from './similar.mjs';
+import { renderSchedule, runSchedule } from './schedule.mjs';
 import {
   readRiskCases, loadRiskManifest, riskDashboard, riskAttribution, renderRiskAttribution,
   renderRiskDashboardMarkdown, saveRiskDashboard,
@@ -42,6 +44,8 @@ Commands:
   attribute                attribute a change to one dimension
   risk-dashboard           risk KPI dashboard + ring evidence from the payment graph
   risk-attribute           risk change attribution + ring evidence + refutable hypotheses
+  similar <text>           vector similarity over the model, expanded through its relations
+  schedule                 produce the dashboard + attribution for a list of periods, on a timer
   status                   endpoint, graphs, model counts, state file
   graphs                   list the served graphs
 
@@ -57,6 +61,11 @@ Options:
   --json                   print the structured result instead of prose
   --dry-run                do everything except write (build/edit)
   --year <year>            period filter (dashboard/attribute)
+  --as-of <instant>        read the model as it stood at this instant (ISO date/time)
+  --periods <a,b,c>        periods for schedule (e.g. 2024,2025,2026)
+  --every <ms>             wait between schedule cycles
+  --k <n>                  how many similar candidates (default 5)
+  --hops <n>               how far similar expands through relations (default 1)
   --top <n>                top N rows per breakdown (default 5)
   --dimensions <a,b>       dimensions to break a dashboard down by
   --metric <id>            metric (attribute)
@@ -99,6 +108,11 @@ function parse(argv) {
     else if (arg === '--json') options.json = true;
     else if (arg === '--dry-run') options.dryRun = true;
     else if (arg === '--year') options.year = value();
+    else if (arg === '--as-of') options.asOf = value();
+    else if (arg === '--periods') options.periods = value().split(',').map((part) => part.trim()).filter(Boolean);
+    else if (arg === '--every') options.everyMs = Number(value());
+    else if (arg === '--k') options.k = Number(value());
+    else if (arg === '--hops') options.hops = Number(value());
     else if (arg === '--top') options.topN = Number(value());
     else if (arg === '--dimensions') options.dimensions = value().split(',').map((part) => part.trim()).filter(Boolean);
     else if (arg === '--metric') options.metric = value();
@@ -166,7 +180,7 @@ async function main() {
       return build.dryRun ? 0 : 0;
     }
     case 'model': {
-      const model = await loadModel(client, options.graph || config.graph, { client });
+      const model = await loadModel(client, options.graph || config.graph, { client, asOf: options.asOf });
       if (options.json) print(model, true);
       else console.log(renderModel(model));
       return 0;
@@ -202,6 +216,20 @@ async function main() {
       if (options.json) print(result, true);
       else console.log(result.markdown);
       return result.result.executed ? 0 : 1;
+    }
+    case 'similar': {
+      const text = options.sources.join(' ');
+      if (!text) throw new Error('similar needs a phrase (e.g. similar 收入 按渠道 怎么算)');
+      const model = await loadModel(client, options.graph || config.graph, { client, asOf: options.asOf });
+      const bundle = similarWithGraph(model, text, { k: options.k, hops: options.hops });
+      print(options.json ? bundle : renderSimilar(bundle), options.json);
+      return bundle.matches.length ? 0 : 1;
+    }
+    case 'schedule': {
+      if (!options.periods || !options.periods.length) throw new Error('schedule needs --periods 2024,2025[,2026]');
+      const schedule = await runSchedule({ ...config, ...options, client });
+      print(options.json ? schedule : renderSchedule(schedule), options.json);
+      return schedule.refused > 0 ? 0 : 0;
     }
     case 'risk-dashboard': {
       const { rows } = readRiskCases(options.cases || RISK_CASES);

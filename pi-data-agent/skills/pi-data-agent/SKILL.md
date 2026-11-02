@@ -75,6 +75,21 @@ Contract for risk answers:
 - **The ledger is the boundary of the answer.** A period or slice missing from `risk-cases.csv` is not in the
   result; do not interpolate a zero for it.
 
+## Time, similarity and the schedule
+
+- **A definition has a window.** `asOf` answers with the definitions in force at that instant; without it you get
+  the current ones. When the user asks about "the formula we used in September" or compares two periods across a
+  definition change, pass `asOf` instead of explaining the difference away.
+- **A change with `effectiveFrom` freezes the old definition** as a version node and starts the new one at that
+  instant; `retire-node` stops a definition without deleting it. Report the version id and the window when you
+  make one, and never claim a history that the model does not carry.
+- **Find the definition before quoting it.** A business word ("收入", "客单价") is not an id: use
+  `pg_data_similar(text)` first, quote the match and its score, and prefer a candidate that has relations - an
+  `isolated` match has no lineage, so nothing behind it can be quoted.
+- **The schedule is the same two calls on a timer.** `/data schedule --periods …` produces a dashboard and an
+  attribution per period; report the run log (executed/refused, delta) and the files, and say when an attribution
+  was refused because the base period has no rows.
+
 ## Answer contract
 
 - Quote the sentence/row behind a definition when asked why; every node carries `evidence`.

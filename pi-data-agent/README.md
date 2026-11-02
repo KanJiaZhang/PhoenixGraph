@@ -33,7 +33,7 @@ pi -e ./pi-data-agent
 
 | 资源 | 路径 | 作用 |
 |---|---|---|
-| extension | `extensions/pi-data-agent/index.js` | 8 个工具 + `/data` 命令 + 每轮契约注入 |
+| extension | `extensions/pi-data-agent/index.js` | 9 个工具 + `/data` 命令 + 每轮契约注入 |
 | skill | `skills/pi-data-agent/SKILL.md` | 建模/修订/看板/归因/风控的流程与拒答规则 |
 | prompt | `prompts/data-agent-review.md` | 模型评审模板（`/data-agent-review [graph]`） |
 | CLI | `src/cli.mjs` | 不经过 pi 也能 scan/build/model/edit/dashboard/attribute/risk-dashboard/risk-attribute |
@@ -190,6 +190,44 @@ receiver degree 40，payers 3，dominance 13.33 → verdict: confirmed
 示例账本的真实数字（2025-09 → 2025-10）：敞口 1,000,000 → 1,420,000；确认损失 80,000 → 54,999.99；
 拦截 250,000.02 → 619,999.98；FP 率 15% → 25%；ring_a 贡献 57.14%、ring_b 28.57%。
 
+### 2.6 向量 + 图：把「收入」问成具体定义
+
+```bash
+node src/cli.mjs similar "收入 按渠道 拆分" --graph sales-model --k 4 --hops 1
+```
+
+向量只回答「你大概指哪一个」（包内确定性 hashing embedder，768 维，词 + 字符 n-gram，L2 归一），
+**图**回答「那个定义由什么构成」：匹配到的节点会带上它经 `Relation` 边连到的列、表、维度、来源；
+没有关系的候选会被标成 `isolated`（一个没有血缘的定义不能报价）。在 pi 里是 `pg_data_similar(text)`。
+
+### 2.7 口径的时间戳：过期失效，但可以回溯
+
+```bash
+# 2026-10-15 起营收改为净额口径（旧定义被冻结成版本节点）
+echo '[{"op":"update-node","id":"metric/营收","effectiveFrom":"2026-10-15",
+        "properties":{"expression":"SUM(net_revenue)","graphProperty":"net_revenue"}}]' | \
+  node src/cli.mjs edit --graph sales-model
+
+node src/cli.mjs dashboard --graph sales-model --year 2026 --as-of 2026-10-01   # 旧口径
+node src/cli.mjs dashboard --graph sales-model --year 2026                     # 当前口径
+```
+
+- 规则：`validFrom <= instant < validTo`（epoch millis，两端可空）；`asOf` 不传 = 现在。
+- 修改带 `effectiveFrom` 时，旧定义被**冻结成版本节点** `metric/营收#v<instant>`（窗口关闭），
+  live 节点从该时刻生效，两者用 `supersededBy` 相连；读者按 base id 折叠（一个 id 一个定义）。
+- `retire-node`（需 `confirm:true` + `effectiveTo`）是**软删除**：定义停用但历史仍可读；`delete-node` 是真删。
+- 所有读接口都接受 `asOf`：`model` / `dashboard` / `attribute` / `similar`，pi 里是工具参数 `asOf`。
+
+### 2.8 定时产出：看板 + 归因
+
+```bash
+node src/cli.mjs schedule --graph sales-model --periods 2024,2025,2026 --metric 营收 --by 渠道 --every 60000
+```
+
+每个期间一轮：看板 + 归因各一份产物流落盘（`--out`，默认 `.pi/data-agent/dashboards/`），
+运行日志（每轮的 executed/refused、delta、top mover）作为结果返回；基期没有数据时归因**拒答**而不是
+把整年当成增长。pi 里是 `/data schedule --periods …`，或 `runSchedule()` 自己嵌入别的调度器。
+
 ---
 
 ## 3. 存储模型
@@ -253,6 +291,7 @@ PhoenixGraph 的 `phoenixgraph.storage.schema-dir` 在启动时发现这个目�
 | `pg_data_attribute` | 只读 | 两期变化按一个维度归因 |
 | `pg_risk_dashboard` | 写（生成 HTML） | 风控 KPI 看板 + ring/rule/channel 拆解 + 团伙图上证据 |
 | `pg_risk_attribution` | 只读 | 风险指标两期归因 + 团伙证据 + 可推翻的候选解释 |
+| `pg_data_similar` | 只读 | 向量相似 + 关系展开：一个词最可能指哪个定义、它由什么构成 |
 
 ```text
 /data status
@@ -260,8 +299,10 @@ PhoenixGraph 的 `phoenixgraph.storage.schema-dir` 在启动时发现这个目�
 /data endpoint <url>
 /data scan <file-or-dir> [--data-graph <g> --vertex-type <T>]
 /data build <file-or-dir> [--graph <g> --data-graph <g> --vertex-type <T>]
-/data model
-/data dashboard [--year 2025] [--top 5]
+/data model [--as-of <instant>]
+/data similar <text> [--k 5] [--hops 1]
+/data schedule --periods 2024,2025 [--metric 营收 --by 渠道] [--every 60000]
+/data dashboard [--year 2025] [--top 5] [--as-of <instant>]
 /data attribute <metric> --by <dimension> --from 2024 --to 2025
 /data risk [cases] [--period 2025-10]
 /data risk-attr [cases] [--by ring --from 2025-09 --to 2025-10]
@@ -284,6 +325,16 @@ PHOENIXGRAPH_LIVE=1 npm run verify
 `SHOW TABLES` 输出。它对齐 `demo-data` / `MarketingDay`，可以直接跑通 scan → build → dashboard →
 attribute。
 
+端到端案例在 `examples/sales-case/`：自己生成并导入 432 行事实数据（三年 × 12 月 × 4 渠道 × 3 地区）、
+自己的指标字典/DDL/`SHOW TABLES`、11 步跑完并从真实返回生成
+[`docs/CASE-DATA-AGENT.md`](docs/CASE-DATA-AGENT.md)（文档/DDL → 元数据 → schema → 关系 → 向量+图 → 看板 →
+归因 → 增删改 → 口径变更与回溯 → 定时产出）：
+
+```bash
+node examples/sales-case/generate.mjs      # 建图 + 导入事实
+node examples/sales-case/run-case.mjs       # 跑完并重写案例文档
+```
+
 风控示例在 `examples/risk-control/`：120 行案件账本（2025-09 / 2025-10，含团伙 ring_a/ring_b、敏感规则
 `DEVICE_SHARE`、MINI 渠道）和它的 manifest。它不需要事实图就能算 KPI 和归因；团伙证据要 `payment-graph`
 里有对应 Account/FuzzyLink/Payment 顶点，没有就降级为 `candidate` 并说明原因。
@@ -298,6 +349,10 @@ attribute。
 - 不把描述性归因说成因果。
 - 不把 FuzzyLink 当欺诈事实：它是模式相似候选，`confirmed` 也要人工复核账户与资金路径。
 - 不推算没进账本的案件：账本里没有的 period×切片不在答案里，归因也不会替它补一个 0。
+- 向量是**确定性 hashing 基线**（无外部模型）：换成本地 embedder 只换 `src/embed.mjs` 一个函数，
+  但不要混用两个向量空间。
+- 写接口是 **merge 语义**：重写一个顶点**不能删除**它已有的属性（例如 `validTo`），所以重建模型
+  不会「复活」一个已停用的定义 —— 这点写在 DESIGN §9，需要的语义用新的版本节点表达而不是擦除。
 - 不做 PDF 的手写解析：PDF 依赖 `pdftotext`（可选 OCR）。
 - 不做实时 wiki 爬取/页面树同步；给 URL 就抓这一页，导出 HTML 也可以。
 

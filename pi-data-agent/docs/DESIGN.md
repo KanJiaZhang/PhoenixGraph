@@ -235,3 +235,39 @@ the risk ledger end to end; it asserts the numbers and the refusals.
 
 The tests read the package's example files relative to `package.json`, not to the shell, so they pass from
 the package directory and from the repository root.
+
+## 9. Time, vector and the schedule
+
+**Time.** A definition is true for a period and then replaced, so every node and edge carries a window:
+`validFrom`/`validTo`, epoch millis, `from <= instant < to`, absent meaning open-ended - the same pair the
+server's `Validity` filters `asOf` answers on. A keyed store gives one vertex per id, so a replaced definition
+cannot be the same vertex: an edit with `effectiveFrom` freezes the old values into a *version vertex*
+`metric/x#v<ISO>` with the closed window and a `supersededBy` edge, and the live vertex starts at that instant.
+Readers collapse the group back to one node per base id (`resolveAsOf`), preferring the live node and then the
+latest start, and re-point relations at the base id, so the dashboard, the attribution and the review keep
+addressing `metric/x` and get the definition that was true then. `retire-node` closes a window without removing
+the definition (a soft delete that stays readable); `delete-node` is the hard delete, and it is the only thing
+that removes an id from the catalog. The catalog keeps retired and version ids for the same reason a keyed store
+needs it at all: it can only read by id.
+
+**Vector + graph.** A business word is not an id. `similarWithGraph` embeds the text and every node's text
+(name, aliases, description, expression, type) with a deterministic hashing embedder (word tokens, character
+trigrams for Chinese, L2-normalised, 768 dimensions), ranks by cosine with a boost for a name or alias the
+question literally contains, and then expands each match through the `Relation` edges. The vector decides
+*which* definition is meant; the graph decides *what it is made of*. A match with no relations is reported as
+`isolated`, because a definition nothing points at cannot be quoted.
+
+**The schedule** is the two read products on a timer: for each period a dashboard and an attribution, `everyMs`
+apart, with the run log kept (`executed`/`refused` tiles, delta, top mover, files). An attribution whose base
+period has no rows is recorded as a refusal - the whole year is not a "change".
+
+**A constraint the store imposes.** The write API merges properties: re-writing a vertex without `validTo` does
+not remove the `validTo` an earlier definition set, so a rebuild cannot un-retire a node and the package does not
+pretend otherwise - history is expressed by version vertices, not by erasing a window. (Deleting and re-creating
+the vertex does not help: the record comes back with its old bins.) The case therefore rebuilds into a graph it
+empties first, and `docs/CASE-DATA-AGENT.md` records the run.
+
+**A keyed fact graph.** `g.V('Type')` needs a store that can scan a type; Aerospike answers by id. The model can
+carry `factIds` (the fact vertices it was bound to), and a semantic query then starts `g.V(id, …, 'Type')` - one
+traversal, addressed the way the store answers. Without `factIds` the traversal starts at the type name, which
+is what a RocksDB-Edge fact graph needs.
