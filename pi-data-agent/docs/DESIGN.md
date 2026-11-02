@@ -250,6 +250,14 @@ the definition (a soft delete that stays readable); `delete-node` is the hard de
 that removes an id from the catalog. The catalog keeps retired and version ids for the same reason a keyed store
 needs it at all: it can only read by id.
 
+**One reference, one answer.** The dashboard and the attribution are a user-facing grammar, so every reference is
+resolved once, in one place (`src/resolve.mjs`): id, then name, then alias, then bound property, then column, with
+candidates scanned in id order so an ambiguous model resolves the same way every run. A reference that resolves to
+nothing becomes a refusal tile naming the alternatives - the previous behaviour (dropping `dimensions: ["channel"]`
+and answering with five tiles fewer) was the worst kind of instability: a different question, answered quietly.
+`verification/check-stability.mjs` runs seventeen pairs of equivalent spellings and four controls that must differ,
+comparing whole result fingerprints, and writes `docs/STABILITY.md`.
+
 **Vector + graph.** A business word is not an id. `similarWithGraph` embeds the text and every node's text
 (name, aliases, description, expression, type) with a deterministic hashing embedder (word tokens, character
 trigrams for Chinese, L2-normalised, 768 dimensions), ranks by cosine with a boost for a name or alias the

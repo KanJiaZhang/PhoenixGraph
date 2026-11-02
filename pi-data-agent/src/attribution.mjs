@@ -8,7 +8,8 @@
  * contributions stop adding up to the change, which is the one property this answer promises.
  */
 import { round } from './util.mjs';
-import { execute, bindingOf, dimensionNode } from './execute.mjs';
+import { execute, bindingOf, dimensionNode, metricNode } from './execute.mjs';
+import { choices } from './resolve.mjs';
 
 function median(values) {
   const sorted = [...values].sort((a, b) => a - b);
@@ -100,14 +101,18 @@ export function attribute(input) {
 /** Executes both periods and attributes the change; a missing binding is a refusal with the SQL. */
 export async function runAttribution(client, model, options = {}) {
   const binding = bindingOf(model, options);
-  const metricId = options.metric ? (String(options.metric).includes('/') ? String(options.metric) : `metric/${options.metric}`) : null;
-  if (!metricId) return { executed: false, reason: 'an attribution needs a metric' };
-  const dimensionId = options.by ? (String(options.by).includes('/') ? String(options.by) : `dim/${options.by}`) : null;
-  if (!dimensionId) {
-    const available = (model.nodes || []).filter((node) => node.entityType === 'Dimension').map((node) => node.id);
-    return { executed: false, reason: `an attribution needs a dimension to decompose by; this model has ${available.join(', ') || 'none'}` };
+  // a reference is resolved once, here, and the rest of the function speaks ids: id, name, alias, bound
+  // property or column are all the same dimension, and two spellings must give one answer
+  if (!options.metric) return { executed: false, reason: 'an attribution needs a metric' };
+  const metric = metricNode(model, options.metric);
+  if (!metric) return { executed: false, reason: `no metric '${options.metric}' in this model (by id, name, alias or bound property); available: ${choices(model, 'Metric').join(', ') || 'none'}` };
+  const metricId = metric.id;
+  if (!options.by) {
+    return { executed: false, reason: `an attribution needs a dimension to decompose by; this model has ${choices(model, 'Dimension').join(', ') || 'none'}` };
   }
-  if (!dimensionNode(model, dimensionId)) return { executed: false, reason: `no dimension '${dimensionId}' in this model` };
+  const dimension = dimensionNode(model, options.by);
+  if (!dimension) return { executed: false, reason: `no dimension '${options.by}' in this model (by id, name, alias, bound property or column); available: ${choices(model, 'Dimension').join(', ') || 'none'}` };
+  const dimensionId = dimension.id;
   if (options.from == null || options.to == null) return { executed: false, reason: 'an attribution needs two periods (from and to), e.g. 2024 and 2025' };
   if (String(options.from) === String(options.to)) return { executed: false, reason: 'from and to are the same period; there is no change to attribute' };
 

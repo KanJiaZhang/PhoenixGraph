@@ -8,6 +8,7 @@
  */
 import { gremlinString, gremlinNumber, round, isDateType } from './util.mjs';
 import { metricSql } from './extract/model.mjs';
+import { resolveDimension, resolveMetric } from './resolve.mjs';
 
 function modelNode(model) {
   return (model.nodes || []).find((node) => node.entityType === 'Model') || null;
@@ -25,16 +26,13 @@ export function bindingOf(model, options = {}) {
   return { dataGraph, vertexType, factIds: Array.isArray(factIds) ? factIds.map(String) : null };
 }
 
+// One spelling or another: id, name, alias or the property it binds to (see src/resolve.mjs).
 export function metricNode(model, id) {
-  if (!id) return null;
-  const wanted = id.includes('/') ? id : `metric/${id}`;
-  return (model.nodes || []).find((node) => node.id === wanted) || null;
+  return resolveMetric(model, id)?.node || null;
 }
 
 export function dimensionNode(model, id) {
-  if (!id) return null;
-  const wanted = id.includes('/') ? id : `dim/${id}`;
-  return (model.nodes || []).find((node) => node.id === wanted) || null;
+  return resolveDimension(model, id)?.node || null;
 }
 
 function parseBindings(text) {

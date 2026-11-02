@@ -200,6 +200,20 @@ node src/cli.mjs similar "收入 按渠道 拆分" --graph sales-model --k 4 --h
 **图**回答「那个定义由什么构成」：匹配到的节点会带上它经 `Relation` 边连到的列、表、维度、来源；
 没有关系的候选会被标成 `isolated`（一个没有血缘的定义不能报价）。在 pi 里是 `pg_data_similar(text)`。
 
+### 2.6.1 稳定性：同一个问题，写法不同，答案必须一样
+
+指标/维度可以用 **id**（`metric/营收`）、**名字**（`营收`）、**别名**（`收入`）、**绑定列**（`revenue`、`channel`）
+来指代；期间可以写字符串或数字；`asOf` 可以是 ISO 时刻、日期或毫秒；`topN` 可以是数字或字符串 —— 这些都解析到同一个
+节点/同一个值（`src/resolve.mjs`，解析顺序 id → 名字 → 别名 → 绑定 → 列，同级按 id 排序，歧义时结果确定）。
+**指代不到**的指标/维度会变成一张**拒答 tile**并列出可选值，而不是被悄悄丢掉（以前 `dimensions:["channel"]` 会
+悄悄少 5 张 tile，现在会解析或拒答）。
+
+17 组等价写法 + 4 组「必须不同」的对照，实测见 [`docs/STABILITY.md`](docs/STABILITY.md)：
+
+```bash
+node verification/check-stability.mjs --doc docs/STABILITY.md
+```
+
 ### 2.7 口径的时间戳：过期失效，但可以回溯
 
 ```bash

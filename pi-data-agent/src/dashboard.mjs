@@ -7,11 +7,19 @@
  * avoid.
  */
 import { escapeHtml, round, unique } from './util.mjs';
-import { execute, bindingOf, dimensionNode, dateDimension, yearProperty } from './execute.mjs';
+import { execute, bindingOf, dimensionNode, dateDimension, yearProperty, metricNode } from './execute.mjs';
 import { attribute } from './attribution.mjs';
 
 function metricOf(model, id) {
-  return (model.nodes || []).find((node) => node.id === id) || null;
+  return metricNode(model, id);
+}
+
+function metricIds(model) {
+  return (model.nodes || []).filter((node) => node.entityType === 'Metric').map((node) => node.id).sort();
+}
+
+function dimensionIds(model) {
+  return (model.nodes || []).filter((node) => node.entityType === 'Dimension').map((node) => node.id).sort();
 }
 
 function dimensionsOf(model, metricId) {
@@ -58,15 +66,26 @@ export async function buildDashboard(client, model, options = {}) {
   const binding = bindingOf(model, options);
   const now = options.now ?? new Date();
   const topN = Math.max(1, Math.min(20, Number(options.topN) || 5));
-  const wanted = options.metrics && options.metrics.length
-    ? options.metrics.map((id) => (String(id).includes('/') ? String(id) : `metric/${id}`))
+  // `metrics: ['营收']`, `metric: '营收'` and no selection at all are one question with three spellings.
+  const requested = options.metrics && options.metrics.length ? options.metrics
+    : (options.metric ? [options.metric] : null);
+  const wanted = requested
+    ? requested.map((id) => String(id))
     : (model.nodes || []).filter((node) => node.entityType === 'Metric').map((node) => node.id);
   const tiles = [];
   const warnings = [...(model.warnings || [])];
 
-  for (const metricId of wanted) {
-    const metric = metricOf(model, metricId);
-    if (!metric) { warnings.push(`${metricId} is not in the model`); continue; }
+  for (const reference of wanted) {
+    const metric = metricOf(model, reference);
+    // tiles and traversals speak the resolved id, so the same question spelled two ways produces the same tiles
+    const metricId = metric ? metric.id : reference;
+    if (!metric) {
+      // a requested metric nobody can resolve is an answer to nothing: say so, and keep the tile count stable
+      const reason = `no metric '${reference}' in this model (by id, name, alias or bound property); available: ${metricIds(model).join(', ') || 'none'}`;
+      warnings.push(reason);
+      tiles.push({ id: `${reference}|unknown`, kind: 'refusal', metric: reference, title: reference, reason });
+      continue;
+    }
     const expression = metric.properties?.expression;
     const metricLabel = metric.properties?.name || metricId.replace(/^metric\//, '');
     if (!expression) {
@@ -108,10 +127,21 @@ export async function buildDashboard(client, model, options = {}) {
 
     // 3. the breakdown: the dimensions the model says may slice this metric, bound first
     const available = dimensionsOf(model, metricId).filter((node) => !isDateDimension(node));
-    const chosen = (options.dimensions && options.dimensions.length
-      ? options.dimensions.map((id) => (String(id).includes('/') ? String(id) : `dim/${id}`)).map((id) => dimensionNode(model, id)).filter(Boolean)
-      : available.filter((node) => node.properties?.graphProperty)).slice(0, Math.max(1, Math.min(3, Number(options.breakdowns) || 1)));
-    for (const dimension of chosen) {
+    // a dimension can be named by id, name, alias, bound property or column; one that resolves to nothing is
+    // reported as a refusal tile instead of being dropped (dropping it silently answered a different question)
+    // an explicit list is honoured (every dimension the caller named, up to five); the default selection of a
+    // metric is the one breakdown the dashboard promises (`breakdowns`)
+    const explicit = Boolean(options.dimensions && options.dimensions.length);
+    const requestedDimensions = explicit
+      ? options.dimensions.map((id) => ({ reference: String(id), node: dimensionNode(model, id) }))
+      : available.filter((node) => node.properties?.graphProperty).map((node) => ({ reference: node.id, node }));
+    const chosen = requestedDimensions.slice(0, explicit ? 5 : Math.max(1, Math.min(3, Number(options.breakdowns) || 1)));
+    for (const unresolved of chosen.filter((candidate) => !candidate.node)) {
+      const reason = `no dimension '${unresolved.reference}' in this model (by id, name, alias, bound property or column); available: ${dimensionIds(model).join(', ') || 'none'}`;
+      warnings.push(reason);
+      tiles.push({ id: `${metricId}|dimension|${unresolved.reference}`, kind: 'refusal', metric: metricId, dimension: unresolved.reference, title: `${metricLabel} · by ${unresolved.reference}`, reason });
+    }
+    for (const { node: dimension } of chosen.filter((candidate) => candidate.node)) {
       const breakdown = await execute(client, model, { ...options, metric: metricId, dimension: dimension.id, year: options.year, grain: 'raw' });
       tiles.push({
         id: `${metricId}|breakdown|${dimension.id}`, kind: 'breakdown', title: `${metricLabel} · by ${dimension.properties?.name || dimension.id}`,

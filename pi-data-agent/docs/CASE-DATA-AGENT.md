@@ -8,7 +8,7 @@
 | 模型图 | sales-model（Aerospike，schema 由包创建） |
 | 事实图 | sales-facts / SalesDay（案例自己生成并导入） |
 | 口径变更 | 2026-10-15：营收 SUM(revenue) → SUM(net_revenue) |
-| 生成时间 | 2026-11-02T03:23:46.308Z |
+| 生成时间 | 2026-11-02T07:06:03.136Z |
 
 ## 覆盖的能力
 
@@ -52,7 +52,7 @@ vertex type SalesDay
 
 **做了什么 / 返回了什么**
 
-- 读了 16 个来源：sales-model-2026-11-02T03-20-06-849Z.html, sales-model-2026-11-02T03-20-06-849Z.json, sales-model-2026-11-02T03-20-07-976Z.html, sales-model-2026-11-02T03-20-07-976Z.json, sales-model-2026-11-02T03-20-09-110Z.html, sales-model-2026-11-02T03-20-09-110Z.json, sales-model-2026-11-02T03-20-24-054Z.html, sales-model-2026-11-02T03-20-24-054Z.json, sales-model-2026-11-02T03-20-25-372Z.html, sales-model-2026-11-02T03-20-25-372Z.json, sales-model-2026-11-02T03-20-26-646Z.html, sales-model-2026-11-02T03-20-26-646Z.json, metrics-2026-10.md, metrics.md, schema.sql, show_tables.txt
+- 读了 23 个来源：README.md, sales-model-2026-11-02T03-20-06-849Z.html, sales-model-2026-11-02T03-20-06-849Z.json, sales-model-2026-11-02T03-20-07-976Z.html, sales-model-2026-11-02T03-20-07-976Z.json, sales-model-2026-11-02T03-20-09-110Z.html, sales-model-2026-11-02T03-20-09-110Z.json, sales-model-2026-11-02T03-20-24-054Z.html, sales-model-2026-11-02T03-20-24-054Z.json, sales-model-2026-11-02T03-20-25-372Z.html, sales-model-2026-11-02T03-20-25-372Z.json, sales-model-2026-11-02T03-20-26-646Z.html, sales-model-2026-11-02T03-20-26-646Z.json, sales-model-2026-11-02T03-23-43-671Z.html, sales-model-2026-11-02T03-23-43-671Z.json, sales-model-2026-11-02T03-23-44-907Z.html, sales-model-2026-11-02T03-23-44-907Z.json, sales-model-2026-11-02T03-23-46-151Z.html, sales-model-2026-11-02T03-23-46-151Z.json, metrics-2026-10.md, metrics.md, schema.sql, show_tables.txt
 - 抽取：2 表 / 14 列 / 6 指标 / 4 维度 / 0 参考查询
 - review：6 项待确认（metric/客单价:metric-without-expression, metric/客单价:metric-unbound, metric/毛利率:metric-without-expression, metric/毛利率:metric-unbound, …）
 
@@ -81,7 +81,7 @@ metric/营收 | SUM(net_revenue) | net_revenue | 元
 
 **做了什么 / 返回了什么**
 
-- 重置已有的模型图：删除 33 个顶点 / 76 条边（所以本案例可重复运行）
+- 重置已有的模型图：删除 35 个顶点 / 76 条边（所以本案例可重复运行）
 - 写入 33 个顶点、76 条边；schema 已存在
 - schema 里声明的类型：Node(31 属性) / Relation
 - catalog 写在 Model 顶点上：nodeIds=33、edgeIds=76（keyed store 只能按 id 读）
@@ -138,19 +138,16 @@ relationFamily=结构 / 血缘 / 关联 / 指标 / 归因 / 来源
 **做了什么 / 返回了什么**
 
 - 查询："收入 按渠道拆分 怎么算" → 4 个候选
+- 0.473 dim/渠道（Dimension）渠道，关系 7 条
+- 0.469 metric/营收（Metric）营收，关系 7 条
 - 0.230 metric/毛利率（Metric）毛利率，关系 1 条
-- 0.223 dim/渠道（Dimension）渠道，关系 7 条
-- 0.219 metric/营收（Metric）营收，关系 7 条
 - 0.209 column/date（Column）date，关系 2 条
-- 扩展出的子图：27 个节点 / 62 条边；孤立候选 0 个
+- 扩展出的子图：15 个节点 / 16 条边；孤立候选 0 个
 
 **候选与它们的图邻域**
 
 ```
-0.230 metric/毛利率  毛利率 · 毛利润占营收的比例。 · %
-    <- describes source/metrics-93857cfe (Source)
-
-0.223 dim/渠道  渠道 · APP / WEB / MINI / STORE · VARCHAR(20)
+0.473 dim/渠道  渠道 · APP / WEB / MINI / STORE · VARCHAR(20)
     -> dimensionColumn column/sales_day.channel (Column)
     <- groupedBy metric/成本 (Metric)
     <- groupedBy metric/订单数 (Metric)
@@ -158,13 +155,16 @@ relationFamily=结构 / 血缘 / 关联 / 指标 / 归因 / 来源
     <- groupedBy metric/客户数 (Metric)
     <- groupedBy metric/营收 (Metric)
 
-0.219 metric/营收  营收 · 收入 · 销售收入 · 营业额 · 成交金额（毛），未扣除退款。按订单支付时间归属。 · SUM(revenue) · 元
+0.469 metric/营收  营收 · 收入 · 销售收入 · 营业额 · 成交金额（毛），未扣除退款。按订单支付时间归属。 · SUM(revenue) · 元
     -> usesColumn column/sales_day.revenue (Column)
     -> groupedBy dim/日期 (Dimension)
     -> groupedBy dim/渠道 (Dimension)
     -> groupedBy dim/活动 (Dimension)
-    -> computedFrom table/sales_day (Table)
     -> groupedBy dim/地区 (Dimension)
+    -> computedFrom table/sales_day (Table)
+
+0.230 metric/毛利率  毛利率 · 毛利润占营收的比例。 · %
+    <- describes source/metrics-93857cfe (Source)
 
 0.209 column/date  date · 自然年 / 自然月 · DATE
     <- dimensionColumn dim/日期 (Dimension)
@@ -187,7 +187,7 @@ relationFamily=结构 / 血缘 / 关联 / 指标 / 归因 / 来源
 - metric/净营收：26602544.09
 - metric/客户数：59866
 - metric/营收：27176294.39
-- 看板文件：D:\workspace\eclipse\PhoenixGraph\.pi\data-agent\dashboards\sales-model-2026-11-02T03-23-42-129Z.html
+- 看板文件：D:\workspace\eclipse\PhoenixGraph\.pi\data-agent\dashboards\sales-model-2026-11-02T07-05-59-049Z.html
 
 **营收总额的遍历与 SQL**
 
@@ -308,7 +308,7 @@ relation  : metric/营收#v2024-01-01T00:00:00.000Z|supersededBy|metric/营收
 
 **做了什么 / 返回了什么**
 
-- 周期 1/3 2024：看板 15 执行 / 1 拒答；归因 Δ 22166052
+- 周期 1/3 2024：看板 15 执行 / 1 拒答
 - 周期 2/3 2025：看板 15 执行 / 1 拒答；归因 Δ 4436492
 - 周期 3/3 2026：看板 15 执行 / 1 拒答；归因 Δ 3570853
 
@@ -318,9 +318,9 @@ relation  : metric/营收#v2024-01-01T00:00:00.000Z|supersededBy|metric/营收
 schedule: graph sales-model · 3 cycle(s) · every 800 ms
 period | dashboard (executed/refused) | attribution | files
 ---|---|---|---
-2024 | 15/1 tiles | 2023 -> 2024: delta 22166052 | D:\workspace\eclipse\PhoenixGraph\pi-data-agent\examples\sales-case\artifacts\sales-model-2026-11-02T03-23-43-671Z.html
-2025 | 15/1 tiles | 2024 -> 2025: delta 4436492 | D:\workspace\eclipse\PhoenixGraph\pi-data-agent\examples\sales-case\artifacts\sales-model-2026-11-02T03-23-44-907Z.html
-2026 | 15/1 tiles | 2025 -> 2026: delta 3570853 | D:\workspace\eclipse\PhoenixGraph\pi-data-agent\examples\sales-case\artifacts\sales-model-2026-11-02T03-23-46-151Z.html
+2024 | 15/1 tiles | refused: period 2023 has no rows, so there is no change to attribute | D:\workspace\eclipse\PhoenixGraph\pi-data-agent\examples\sales-case\artifacts\sales-model-2026-11-02T07-06-00-555Z.html
+2025 | 15/1 tiles | 2024 -> 2025: delta 4436492 | D:\workspace\eclipse\PhoenixGraph\pi-data-agent\examples\sales-case\artifacts\sales-model-2026-11-02T07-06-01-754Z.html
+2026 | 15/1 tiles | 2025 -> 2026: delta 3570853 | D:\workspace\eclipse\PhoenixGraph\pi-data-agent\examples\sales-case\artifacts\sales-model-2026-11-02T07-06-02-977Z.html
 
 total: 45 executed, 3 refused (a refusal is an answer: it carries the SQL)
 ```
@@ -337,7 +337,7 @@ total: 45 executed, 3 refused (a refusal is an answer: it carries the SQL)
 
 - 节点 32（另 1 个历史版本节点不在默认视图中）、边 73
 - 指标 6、维度 4、表 2、列 14、术语 2
-- asOf 2026-11-02T03:23:46.306Z
+- asOf 2026-11-02T07:06:03.136Z
 
 **结论**：案例结束时模型可读、可回溯、可继续编辑，事实图数据独立于模型图。
 

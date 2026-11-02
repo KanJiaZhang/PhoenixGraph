@@ -83,6 +83,14 @@ All notable changes to this project are recorded here. The format follows
   transcript.
 - **A keyed fact graph works too.** `g.V('Type')` needs a type scan, which Aerospike cannot do; the model can now
   carry the fact vertex ids it was bound to (`factIds`) and a semantic query starts `g.V(id, ..., 'Type')`.
+- **Every spelling of a reference resolves to one answer** (`src/resolve.mjs`, `verification/check-stability.mjs`).
+  A metric or a dimension can be named by id, name, alias, bound property (`channel`, `revenue`) or column; a period as
+  a string or a number; `asOf` as an ISO instant, a date or epoch millis; `topN` as either type; `metrics` as an array,
+  `metric` as one value, or nothing at all. Resolution is ordered (id, name, alias, binding, column) and deterministic
+  under ambiguity (id order), and a reference that resolves to nothing is a **refusal tile naming the alternatives** -
+  it used to be dropped silently, so `dimensions: ['channel']` answered a different question with five tiles fewer.
+  Seventeen pairs of equivalent spellings plus four controls that must differ compare whole result fingerprints and
+  write `docs/STABILITY.md`.
 
 ### Changed
 
