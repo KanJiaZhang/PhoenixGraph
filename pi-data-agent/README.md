@@ -33,7 +33,7 @@ pi -e ./pi-data-agent
 
 | 资源 | 路径 | 作用 |
 |---|---|---|
-| extension | `extensions/pi-data-agent/index.js` | 9 个工具 + `/data` 命令 + 每轮契约注入 |
+| extension | `extensions/pi-data-agent/index.js` | 10 个工具 + `/data` 命令 + 每轮契约注入 |
 | skill | `skills/pi-data-agent/SKILL.md` | 建模/修订/看板/归因/风控的流程与拒答规则 |
 | prompt | `prompts/data-agent-review.md` | 模型评审模板（`/data-agent-review [graph]`） |
 | CLI | `src/cli.mjs` | 不经过 pi 也能 scan/build/model/edit/dashboard/attribute/risk-dashboard/risk-attribute |
@@ -208,7 +208,29 @@ node src/cli.mjs similar "收入 按渠道 拆分" --graph sales-model --k 4 --h
 **指代不到**的指标/维度会变成一张**拒答 tile**并列出可选值，而不是被悄悄丢掉（以前 `dimensions:["channel"]` 会
 悄悄少 5 张 tile，现在会解析或拒答）。
 
-17 组等价写法 + 4 组「必须不同」的对照，实测见 [`docs/STABILITY.md`](docs/STABILITY.md)：
+更复杂的是**问句**：`src/ask.mjs` 把自然语言解析成结构化请求（指标按名字/别名/id/绑定/表达式，维度按
+按/by 之后的名字或任意位置的名字，期间按出现的年份，`前3`/`top 3`/`前三名` 都能读），所以
+
+```
+2025年营收按渠道拆分，前3
+营收 2025 by 渠道 top3
+按渠道看下 2025 年的收入前三
+2025 年销售额按 channel 拆解 top 3
+2024 到 2025 营收按渠道为什么增长
+```
+
+都是同一个请求（前四句是看板，最后一句是归因）。pi 里 `pg_data_ask(question)` 或 `/data ask <question>`，
+CLI `node src/cli.mjs ask "…"`，返回里带 `understood as …`，一眼能看出它理解成了什么；问句里没有模型认识的
+指标时**拒答并列出可选指标**。
+
+稳定性实测（四组，见 [`docs/STABILITY.md`](docs/STABILITY.md)）：
+
+- **A. 17 组等价写法**：写法不同、结果指纹完全相同；
+- **B. 12 种自然语言问法**：解析成同一请求、同一结果；
+- **C. 5 条恒等式**：按年一次问 = 按月问再相加；归因 delta = 两个年度看板之差；2024→2025 与 2025→2024
+  delta 取反、切片不变；按表达式引用指标（`SUM(cost)`）= 按 id；按表限定列引用维度
+  （`sales_day.channel`）= `dim/渠道`；
+- **D. 4 组对照**：换年份/时点/维度/期间，结果必须不同（否则测试无意义）。
 
 ```bash
 node verification/check-stability.mjs --doc docs/STABILITY.md
@@ -305,6 +327,7 @@ PhoenixGraph 的 `phoenixgraph.storage.schema-dir` 在启动时发现这个目�
 | `pg_data_attribute` | 只读 | 两期变化按一个维度归因 |
 | `pg_risk_dashboard` | 写（生成 HTML） | 风控 KPI 看板 + ring/rule/channel 拆解 + 团伙图上证据 |
 | `pg_risk_attribution` | 只读 | 风险指标两期归因 + 团伙证据 + 可推翻的候选解释 |
+| `pg_data_ask` | 只读 | 用自然语言问：解析成看板或归因请求，并返回 `understood as …` |
 | `pg_data_similar` | 只读 | 向量相似 + 关系展开：一个词最可能指哪个定义、它由什么构成 |
 
 ```text
@@ -314,6 +337,7 @@ PhoenixGraph 的 `phoenixgraph.storage.schema-dir` 在启动时发现这个目�
 /data scan <file-or-dir> [--data-graph <g> --vertex-type <T>]
 /data build <file-or-dir> [--graph <g> --data-graph <g> --vertex-type <T>]
 /data model [--as-of <instant>]
+/data ask <question>      (e.g. 2025年营收按渠道拆分，前3)
 /data similar <text> [--k 5] [--hops 1]
 /data schedule --periods 2024,2025 [--metric 营收 --by 渠道] [--every 60000]
 /data dashboard [--year 2025] [--top 5] [--as-of <instant>]

@@ -28,7 +28,7 @@ All notable changes to this project are recorded here. The format follows
   dashboards (totals, trend, Top-N) and attributions (contributions, shares, concentration, outlier) from the
   fact graph, and joins a risk case ledger with the payment graph (KPI dashboard, ring/rule/channel
   attribution, FuzzyLink and collection-receiver evidence, ranked hypotheses with their refutations). The
-  package carries a skill, a review prompt, an extension with nine tools and `/data` commands, a CLI, 70 unit
+  package carries a skill, a review prompt, an extension with ten tools and `/data` commands, a CLI, 81 unit
   tests and a live verification of 36 checks (`PHOENIXGRAPH_LIVE=1 npm run verify`). The package is verified
   *as a package*: installed with `pi install ./pi-data-agent`, after which `pg_data_model` answered with the
   model's 7 metrics, `/data-agent-review pi-data-agent-verify` expanded and drove a full review, and
@@ -83,6 +83,18 @@ All notable changes to this project are recorded here. The format follows
   transcript.
 - **A keyed fact graph works too.** `g.V('Type')` needs a type scan, which Aerospike cannot do; the model can now
   carry the fact vertex ids it was bound to (`factIds`) and a semantic query starts `g.V(id, ..., 'Type')`.
+- **A question in words, and a stability check with four sections** (`src/ask.mjs`, `pg_data_ask`, `/data ask`, CLI
+  `ask`, `verification/check-stability.mjs`). `ask` parses "2025年营收按渠道拆分，前3", "营收 2025 by 渠道 top3",
+  "按渠道看下 2025 年的收入前三" and "2025 年销售额按 channel 拆解 top 3" into one request - metric by id, name, alias,
+  bound property or expression (longest match first, so 净营收 is not read as 营收), dimension after 按/by or by binding
+  or by table-qualified column, `topN` as 前3 / top 3 / 前三名 - and "2024 到 2025 营收按渠道为什么增长" into an
+  attribution whose years are ordered rather than taken from the sentence. The parse comes back as `understood as …`,
+  so the understanding can be checked instead of assumed. The stability check now has four sections: A, seventeen
+  pairs of equivalent spellings; B, twelve natural-language phrasings parsed to the same request and the same result
+  fingerprint; C, five identities between *different* questions (a year's total is the sum of its months, an
+  attribution's delta is the difference of the two dashboards, asking the change backwards negates the delta and
+  keeps the slices, a metric named by its expression is that metric, a dimension named by a table-qualified column is
+  that dimension); D, four controls that must differ. `docs/STABILITY.md` is written from the run.
 - **Every spelling of a reference resolves to one answer** (`src/resolve.mjs`, `verification/check-stability.mjs`).
   A metric or a dimension can be named by id, name, alias, bound property (`channel`, `revenue`) or column; a period as
   a string or a number; `asOf` as an ISO instant, a date or epoch millis; `topN` as either type; `metrics` as an array,

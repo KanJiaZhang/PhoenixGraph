@@ -8,7 +8,7 @@
 | 模型图 | sales-model（Aerospike，schema 由包创建） |
 | 事实图 | sales-facts / SalesDay（案例自己生成并导入） |
 | 口径变更 | 2026-10-15：营收 SUM(revenue) → SUM(net_revenue) |
-| 生成时间 | 2026-11-02T07:06:03.136Z |
+| 生成时间 | 2026-11-02T07:22:30.018Z |
 
 ## 覆盖的能力
 
@@ -52,7 +52,7 @@ vertex type SalesDay
 
 **做了什么 / 返回了什么**
 
-- 读了 23 个来源：README.md, sales-model-2026-11-02T03-20-06-849Z.html, sales-model-2026-11-02T03-20-06-849Z.json, sales-model-2026-11-02T03-20-07-976Z.html, sales-model-2026-11-02T03-20-07-976Z.json, sales-model-2026-11-02T03-20-09-110Z.html, sales-model-2026-11-02T03-20-09-110Z.json, sales-model-2026-11-02T03-20-24-054Z.html, sales-model-2026-11-02T03-20-24-054Z.json, sales-model-2026-11-02T03-20-25-372Z.html, sales-model-2026-11-02T03-20-25-372Z.json, sales-model-2026-11-02T03-20-26-646Z.html, sales-model-2026-11-02T03-20-26-646Z.json, sales-model-2026-11-02T03-23-43-671Z.html, sales-model-2026-11-02T03-23-43-671Z.json, sales-model-2026-11-02T03-23-44-907Z.html, sales-model-2026-11-02T03-23-44-907Z.json, sales-model-2026-11-02T03-23-46-151Z.html, sales-model-2026-11-02T03-23-46-151Z.json, metrics-2026-10.md, metrics.md, schema.sql, show_tables.txt
+- 读了 29 个来源：README.md, sales-model-2026-11-02T03-20-06-849Z.html, sales-model-2026-11-02T03-20-06-849Z.json, sales-model-2026-11-02T03-20-07-976Z.html, sales-model-2026-11-02T03-20-07-976Z.json, sales-model-2026-11-02T03-20-09-110Z.html, sales-model-2026-11-02T03-20-09-110Z.json, sales-model-2026-11-02T03-20-24-054Z.html, sales-model-2026-11-02T03-20-24-054Z.json, sales-model-2026-11-02T03-20-25-372Z.html, sales-model-2026-11-02T03-20-25-372Z.json, sales-model-2026-11-02T03-20-26-646Z.html, sales-model-2026-11-02T03-20-26-646Z.json, sales-model-2026-11-02T03-23-43-671Z.html, sales-model-2026-11-02T03-23-43-671Z.json, sales-model-2026-11-02T03-23-44-907Z.html, sales-model-2026-11-02T03-23-44-907Z.json, sales-model-2026-11-02T03-23-46-151Z.html, sales-model-2026-11-02T03-23-46-151Z.json, sales-model-2026-11-02T07-06-00-555Z.html, sales-model-2026-11-02T07-06-00-555Z.json, sales-model-2026-11-02T07-06-01-754Z.html, sales-model-2026-11-02T07-06-01-754Z.json, sales-model-2026-11-02T07-06-02-977Z.html, sales-model-2026-11-02T07-06-02-977Z.json, metrics-2026-10.md, metrics.md, schema.sql, show_tables.txt
 - 抽取：2 表 / 14 列 / 6 指标 / 4 维度 / 0 参考查询
 - review：6 项待确认（metric/客单价:metric-without-expression, metric/客单价:metric-unbound, metric/毛利率:metric-without-expression, metric/毛利率:metric-unbound, …）
 
@@ -187,7 +187,7 @@ relationFamily=结构 / 血缘 / 关联 / 指标 / 归因 / 来源
 - metric/净营收：26602544.09
 - metric/客户数：59866
 - metric/营收：27176294.39
-- 看板文件：D:\workspace\eclipse\PhoenixGraph\.pi\data-agent\dashboards\sales-model-2026-11-02T07-05-59-049Z.html
+- 看板文件：D:\workspace\eclipse\PhoenixGraph\.pi\data-agent\dashboards\sales-model-2026-11-02T07-22-25-884Z.html
 
 **营收总额的遍历与 SQL**
 
@@ -318,9 +318,9 @@ relation  : metric/营收#v2024-01-01T00:00:00.000Z|supersededBy|metric/营收
 schedule: graph sales-model · 3 cycle(s) · every 800 ms
 period | dashboard (executed/refused) | attribution | files
 ---|---|---|---
-2024 | 15/1 tiles | refused: period 2023 has no rows, so there is no change to attribute | D:\workspace\eclipse\PhoenixGraph\pi-data-agent\examples\sales-case\artifacts\sales-model-2026-11-02T07-06-00-555Z.html
-2025 | 15/1 tiles | 2024 -> 2025: delta 4436492 | D:\workspace\eclipse\PhoenixGraph\pi-data-agent\examples\sales-case\artifacts\sales-model-2026-11-02T07-06-01-754Z.html
-2026 | 15/1 tiles | 2025 -> 2026: delta 3570853 | D:\workspace\eclipse\PhoenixGraph\pi-data-agent\examples\sales-case\artifacts\sales-model-2026-11-02T07-06-02-977Z.html
+2024 | 15/1 tiles | refused: period 2023 has no rows, so there is no change to attribute | D:\workspace\eclipse\PhoenixGraph\pi-data-agent\examples\sales-case\artifacts\sales-model-2026-11-02T07-22-27-382Z.html
+2025 | 15/1 tiles | 2024 -> 2025: delta 4436492 | D:\workspace\eclipse\PhoenixGraph\pi-data-agent\examples\sales-case\artifacts\sales-model-2026-11-02T07-22-28-606Z.html
+2026 | 15/1 tiles | 2025 -> 2026: delta 3570853 | D:\workspace\eclipse\PhoenixGraph\pi-data-agent\examples\sales-case\artifacts\sales-model-2026-11-02T07-22-29-835Z.html
 
 total: 45 executed, 3 refused (a refusal is an answer: it carries the SQL)
 ```
@@ -337,7 +337,7 @@ total: 45 executed, 3 refused (a refusal is an answer: it carries the SQL)
 
 - 节点 32（另 1 个历史版本节点不在默认视图中）、边 73
 - 指标 6、维度 4、表 2、列 14、术语 2
-- asOf 2026-11-02T07:06:03.136Z
+- asOf 2026-11-02T07:22:30.017Z
 
 **结论**：案例结束时模型可读、可回溯、可继续编辑，事实图数据独立于模型图。
 

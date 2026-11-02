@@ -19,6 +19,7 @@ import {
 import { loadConfig, projectFile, readJson, stateFile, writeJson } from '../../src/config.mjs';
 import { renderSimilar, similarWithGraph } from '../../src/similar.mjs';
 import { renderSchedule, runSchedule } from '../../src/schedule.mjs';
+import { askFor } from '../../src/service.mjs';
 import {
   readRiskCases, loadRiskManifest, riskDashboard, riskAttribution, renderRiskAttribution,
   renderRiskDashboardMarkdown, saveRiskDashboard,
@@ -151,6 +152,38 @@ export default function piDataAgentExtension(pi, options = {}) {
         };
       } catch (error) {
         return { content: [{ type: 'text', text: `scan failed: ${error.message}` }], details: { error: String(error) }, isError: true };
+      }
+    },
+  });
+
+  pi.registerTool({
+    name: 'pg_data_ask',
+    label: 'Data agent question',
+    description: 'Ask the model a question in words: "2025年营收按渠道拆分，前3" becomes a dashboard, "2024 到 2025 营收按渠道为什么增长" becomes an attribution. The parsed request comes back with the answer so the understanding can be checked, and a question naming nothing the model holds is refused with the alternatives instead of guessed.',
+    promptSnippet: 'pg_data_ask(question) - a question in words, parsed against the model into a dashboard or an attribution',
+    annotations: { readOnlyHint: true, openWorldHint: false },
+    parameters: {
+      type: 'object',
+      properties: {
+        question: { type: 'string', description: 'The question as a person would ask it (Chinese or English)' },
+        graph: { type: 'string', description: 'Model graph (default: the session graph)' },
+        asOf: { type: 'string', description: 'Answer with the definitions in force at this instant (ISO date/time)' },
+      },
+      required: ['question'],
+    },
+    async execute(_toolCallId, params) {
+      try {
+        const result = await askFor(params.question, { ...config(params), client: client(params), graph: params.graph || state.graph, asOf: params.asOf });
+        const understood = result.ok ? `understood as ${result.kind}: ${JSON.stringify(result.request)}` : `not understood: ${result.reason}`;
+        return {
+          content: [{ type: 'text', text: `${understood}
+
+${result.markdown || ''}`.trim() }],
+          details: { ok: result.ok, kind: result.kind, understood: result.understood || null, request: result.request || null, reason: result.reason || null, files: result.files || null },
+          isError: result.ok !== true,
+        };
+      } catch (error) {
+        return { content: [{ type: 'text', text: `ask failed: ${error.message}` }], details: { error: String(error) }, isError: true };
       }
     },
   });
@@ -430,6 +463,7 @@ export default function piDataAgentExtension(pi, options = {}) {
     '/data scan <file-or-dir> [--data-graph <g> --vertex-type <T>]',
     '/data build <file-or-dir> [--graph <g> --data-graph <g> --vertex-type <T>]',
     '/data model [--as-of <instant>]',
+  '/data ask <question>      (e.g. 2025年营收按渠道拆分，前3)',
   '/data similar <text> [--k 5] [--hops 1]',
   '/data schedule --periods 2024,2025 [--metric 营收 --by 渠道] [--every 60000]',
     '/data dashboard [--year 2025] [--top 5]',
@@ -530,6 +564,17 @@ export default function piDataAgentExtension(pi, options = {}) {
           ctx.ui?.notify?.(renderRiskAttribution(bundle).slice(0, 8000), 'info');
           return;
         }
+        if (command === 'ask') {
+          const question = positional.join(' ');
+          if (!question) { ctx.ui?.notify?.('usage: /data ask <question>', 'warning'); return; }
+          const result = await askFor(question, { ...config(), client: client(), graph: state.graph, asOf: flags['as-of'] });
+          ctx.ui?.notify?.(result.ok
+            ? `understood as ${result.kind}: ${JSON.stringify(result.request)}
+
+${(result.markdown || '').slice(0, 5000)}`
+            : `not understood: ${result.reason}`, result.ok ? 'info' : 'warning');
+          return;
+        }
         if (command === 'similar') {
           const text = positional.join(' ');
           if (!text) { ctx.ui?.notify?.(`usage: /data similar <text> [--k 5] [--hops 1]`, 'warning'); return; }
@@ -580,7 +625,7 @@ export default function piDataAgentExtension(pi, options = {}) {
     const block = [
       `[pi-data-agent] ${stateLine()}`,
       modelLine,
-      'tools: pg_data_scan(sources) previews; pg_data_build(sources) writes; pg_data_model() shows; pg_data_edit(operations) fixes; pg_data_dashboard() and pg_data_attribute(metric,by,from,to) read; pg_data_similar(text) finds the definition a word means and shows its lineage; /data schedule runs both products on a timer; every tool takes asOf to answer with the definitions of that instant; pg_risk_dashboard() and pg_risk_attribution() combine the risk ledger with the payment graph.',
+      'tools: pg_data_scan(sources) previews; pg_data_build(sources) writes; pg_data_model() shows; pg_data_edit(operations) fixes; pg_data_dashboard() and pg_data_attribute(metric,by,from,to) read; pg_data_ask(question) takes the question in words and returns what it understood; pg_data_similar(text) finds the definition a word means and shows its lineage; /data schedule runs both products on a timer; every tool takes asOf to answer with the definitions of that instant; pg_risk_dashboard() and pg_risk_attribution() combine the risk ledger with the payment graph.',
       contract,
     ].filter(Boolean).join('\n');
     options2.sections = { ...(options2.sections || {}), piDataAgent: block };

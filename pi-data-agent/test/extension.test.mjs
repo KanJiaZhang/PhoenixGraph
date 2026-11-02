@@ -27,11 +27,11 @@ function fakePi() {
   return { pi, tools, commands, handlers, entries, notifications, ctx };
 }
 
-test('the extension registers the nine tools, the /data command and the lifecycle hook', () => {
+test('the extension registers the ten tools, the /data command and the lifecycle hook', () => {
   const fake = fakePi();
   extension(fake.pi, { env: {}, home: mkdtempSync(join(tmpdir(), 'pda-home-')) });
   assert.deepEqual([...fake.tools.keys()].sort(), [
-    'pg_data_attribute', 'pg_data_build', 'pg_data_dashboard', 'pg_data_edit', 'pg_data_model', 'pg_data_scan', 'pg_data_similar',
+    'pg_data_ask', 'pg_data_attribute', 'pg_data_build', 'pg_data_dashboard', 'pg_data_edit', 'pg_data_model', 'pg_data_scan', 'pg_data_similar',
     'pg_risk_attribution', 'pg_risk_dashboard',
   ]);
   assert.ok(fake.commands.has('data'));

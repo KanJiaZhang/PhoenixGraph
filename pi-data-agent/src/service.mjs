@@ -23,6 +23,7 @@ import { runAttribution, renderAttribution } from './attribution.mjs';
 import { loadConfig, remember, readJson, writeJson, stateFile, projectRoot } from './config.mjs';
 import { pathSegment, quote, unique } from './util.mjs';
 import { instantMs, isVersion, resolveAsOf } from './validity.mjs';
+import { parseQuestion } from './ask.mjs';
 
 export function clientFor(options = {}) {
   return new PhoenixClient({
@@ -229,6 +230,28 @@ export async function editDataAgent(operations, options = {}) {
   result.graph = graph;
   result.model = result.model;
   return result;
+}
+
+/**
+ * One question, in words: parse it against the model, then run the product it asks for.
+ *
+ * "2025年营收按渠道拆分，前3" and `{ metric: '营收', year: '2025', dimensions: ['渠道'], topN: 3 }` are the same
+ * request; the parse is returned with the answer so a caller can show what was understood, and a question that
+ * names nothing the model holds is refused with the alternatives instead of guessed.
+ */
+export async function askFor(question, options = {}) {
+  const config = loadConfig(options);
+  const client = options.client || clientFor({ ...config, ...options });
+  const graph = options.graph || config.graph;
+  const model = await loadModel(client, graph, { client, asOf: options.asOf });
+  const parsed = parseQuestion(model, question);
+  if (!parsed.ok) return { ok: false, kind: parsed.kind, question, reason: parsed.reason, model: graph, asOf: model.asOf };
+  if (parsed.kind === 'attribution') {
+    const result = await attributeFor({ ...config, ...parsed.request, client, graph, asOf: options.asOf });
+    return { ok: true, kind: 'attribution', question, understood: parsed.understood, request: parsed.request, result: result.result, markdown: result.markdown };
+  }
+  const result = await dashboardFor({ ...config, ...parsed.request, client, graph, asOf: options.asOf, write: options.write });
+  return { ok: true, kind: 'dashboard', question, understood: parsed.understood, request: parsed.request, dashboard: result.dashboard, files: result.files, markdown: result.markdown };
 }
 
 export async function dashboardFor(options = {}) {

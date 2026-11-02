@@ -258,6 +258,20 @@ and answering with five tiles fewer) was the worst kind of instability: a differ
 `verification/check-stability.mjs` runs seventeen pairs of equivalent spellings and four controls that must differ,
 comparing whole result fingerprints, and writes `docs/STABILITY.md`.
 
+**A question in words.** `src/ask.mjs` is a grammar over the model, not a language model: it looks for the metric
+(by id, name, alias, bound property or expression - longest match first, so 净营收 is not read as 营收), the
+dimension (after 按/by, or anywhere a dimension is named), the years (two years plus a change word makes an
+attribution, and the years are ordered, not taken from the sentence), and `topN` (前3 / top 3 / 前三名). Every phrase
+resolves against the model, so "2025年营收按渠道拆分，前3" and `{metric:'营收', year:'2025', dimensions:['渠道'], topN:3}`
+are one request; a phrase naming no metric is refused with the alternatives. The parsed request is returned with the
+answer (`understood as …`), which is what makes the understanding checkable rather than assumed.
+
+**Identity, not just equality.** The stability check asserts relations *between different questions*, because those
+are what a semantic layer promises: a year's total equals the sum of its months; an attribution's delta equals the
+difference of the two dashboards; asking the change backwards negates the delta and keeps the slices; a metric named
+by its expression is that metric; a dimension named by a table-qualified column is that dimension. A spelling test
+alone cannot catch a layer that returns a consistent, wrong number.
+
 **Vector + graph.** A business word is not an id. `similarWithGraph` embeds the text and every node's text
 (name, aliases, description, expression, type) with a deterministic hashing embedder (word tokens, character
 trigrams for Chinese, L2-normalised, 768 dimensions), ranks by cosine with a boost for a name or alias the

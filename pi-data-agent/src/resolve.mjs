@@ -49,15 +49,31 @@ export function resolveNode(model, reference, entityType) {
     .filter((node) => node.entityType === entityType)
     .sort((left, right) => String(left.id).localeCompare(String(right.id)));
 
+  // the column a dimension maps to, through the relation the model already carries
+  const columnsOf = new Map();
+  if (entityType === 'Dimension') {
+    for (const edge of model.edges || []) {
+      if (edge.relation !== 'dimensionColumn') continue;
+      if (!columnsOf.has(edge.head)) columnsOf.set(edge.head, []);
+      columnsOf.get(edge.head).push(String(edge.tail));
+    }
+  }
+
   const levels = [
     ['id', (node) => text(node.id) === wanted || text(node.id) === `${prefix}${wanted}`],
     ['name', (node) => lower(node.properties?.name) === wantedLower],
     ['alias', (node) => aliasesOf(node).some((alias) => alias.toLowerCase() === wantedLower)],
     ['binding', (node) => bindingProperties(node).some((property) => property.toLowerCase() === wantedLower)],
+    ['expression', (node) => lower(node.properties?.expression).replace(/\s+/g, '') === wantedLower.replace(/\s+/g, '')],
     ['column', (node) => {
-      const column = text(node.properties?.column || node.properties?.tableName);
-      const bare = text(node.properties?.column).replace(/^.*\./, '');
-      return Boolean(column) && (column.toLowerCase() === wantedLower || bare.toLowerCase() === wantedLower);
+      const column = text(node.properties?.column);
+      const bare = column.replace(/^.*\./, '');
+      if (column && (column.toLowerCase() === wantedLower || bare.toLowerCase() === wantedLower)) return true;
+      // `sales_day.channel` names a column node, so a table-qualified reference resolves through the edge
+      return (columnsOf.get(node.id) || []).some((id) => {
+        const suffix = id.replace(/^.*\//, '').toLowerCase();
+        return suffix === wantedLower || suffix.endsWith(`.${wantedLower}`);
+      });
     }],
   ];
   for (const [how, matches] of levels) {

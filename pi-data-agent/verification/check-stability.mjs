@@ -17,7 +17,8 @@ import process from 'node:process';
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { clientFor, dashboardFor, attributeFor } from '../src/service.mjs';
+import { clientFor, dashboardFor, attributeFor, loadModel } from '../src/service.mjs';
+import { parseQuestion, renderQuestion } from '../src/ask.mjs';
 
 const PACKAGE = fileURLToPath(new URL('..', import.meta.url));
 const args = process.argv.slice(2);
@@ -167,6 +168,141 @@ const pairs = [
   },
 ];
 
+
+/**
+ * Natural language: one dashboard question and one attribution question, asked the way a person would.
+ * Each phrasing is parsed to the structured request, then compared with the structured baseline.
+ */
+const model = await loadModel(client, GRAPH);
+
+const dashboardQuestion = { metric: '营收', year: '2025', dimensions: ['渠道'], topN: 3 };
+const attributionQuestion = { metric: '营收', by: '渠道', from: '2024', to: '2025' };
+
+const phrasings = [
+  {
+    name: '看板问句（同一问题 7 种说法）',
+    baseline: dash('结构化请求', dashboardQuestion),
+    variants: [
+      '2025年营收按渠道拆分，前3',
+      '营收 2025 by 渠道 top3',
+      '按渠道看下 2025 年的收入前三',
+      '给我 2025 年 metric/营收 按 dim/渠道 前 3 名',
+      '2025 年销售额按 channel 拆解 top 3',
+      '2025年营收按 sales_day.channel 拆分，前3名',
+      '营收 2025 按渠道 前三',
+    ],
+    kind: 'dashboard',
+  },
+  {
+    name: '归因问句（同一问题 5 种说法）',
+    baseline: attr('结构化请求', attributionQuestion),
+    variants: [
+      '2024 到 2025 营收按渠道为什么增长',
+      '营收 2024 vs 2025 按渠道贡献',
+      '按渠道归因：营收从 2024 到 2025 的变化',
+      '2025 比 2024，营收按渠道增长了多少',
+      'metric/营收 2024 -> 2025 by dim/渠道 归因',
+    ],
+    kind: 'attribution',
+  },
+];
+
+/**
+ * Identities that must hold between *different* questions: the same fact reached another way.
+ * These are not spelling pairs - they are arithmetic and grain relations the layer promises.
+ */
+const identities = [];
+
+async function evaluatePhrasings() {
+  const rows = [];
+  for (const group of phrasings) {
+    const baseline = group.kind === 'dashboard' ? await dashboardFingerprint(group.baseline.request) : await attributionFingerprint(group.baseline.request);
+    const results = [];
+    for (const phrase of group.variants) {
+      const parsed = parseQuestion(model, phrase);
+      const request = parsed.ok ? (parsed.kind === 'dashboard' ? { ...parsed.request, ...(parsed.request.topN ? {} : {}) } : parsed.request) : null;
+      let result = null;
+      if (parsed.ok) {
+        result = parsed.kind === 'dashboard' ? await dashboardFingerprint(request) : await attributionFingerprint(request);
+      }
+      results.push({
+        label: phrase,
+        understood: renderQuestion(parsed),
+        same: Boolean(result) && result.fingerprint === baseline.fingerprint,
+        kind: parsed.kind,
+        value: result?.value ?? null,
+        reason: parsed.ok ? null : parsed.reason,
+      });
+    }
+    rows.push({ name: group.name, baseline: baseline.value, rows: results, same: results.every((row) => row.same) });
+  }
+  return rows;
+}
+
+async function evaluateIdentities() {
+  const checks = [];
+
+  // 1. a year's total is the sum of its months (same fact, two grains)
+  const board = await dashboardFor({ endpoint: ENDPOINT, client, graph: GRAPH, write: false, ...dashboardQuestion });
+  const trend = board.dashboard.tiles.find((tile) => tile.id.endsWith('|trend|month'));
+  const total = board.dashboard.tiles.find((tile) => tile.id.endsWith('|total'));
+  const monthSum = (trend?.rows || []).reduce((sum, row) => sum + Number(row.measure || 0), 0);
+  checks.push({
+    name: '按年一次问 = 按月问再相加',
+    detail: `趋势 12 个月合计 ${Math.round(monthSum)} vs 年度总额 ${Math.round(total?.total)}（差 ${Math.abs(monthSum - total?.total).toFixed(4)}）`,
+    pass: Math.abs(monthSum - Number(total?.total)) < 0.01,
+    a: Math.round(monthSum), b: Math.round(total?.total),
+  });
+
+  // 2. the attribution delta is the difference of the two dashboards (change vs two points)
+  const from = await dashboardFor({ endpoint: ENDPOINT, client, graph: GRAPH, write: false, metric: '营收', year: '2024' });
+  const to = await dashboardFor({ endpoint: ENDPOINT, client, graph: GRAPH, write: false, metric: '营收', year: '2025' });
+  const deltaFromBoards = to.dashboard.tiles.find((tile) => tile.id.endsWith('|total'))?.total
+    - from.dashboard.tiles.find((tile) => tile.id.endsWith('|total'))?.total;
+  const attribution = await attributeFor({ endpoint: ENDPOINT, client, graph: GRAPH, ...attributionQuestion });
+  const delta = attribution.result.attribution?.delta;
+  checks.push({
+    name: '归因 delta = 两个年度看板之差',
+    detail: `归因 ${Math.round(delta)} vs 2025-2024 ${Math.round(deltaFromBoards)}`,
+    pass: Math.abs(Number(delta) - Number(deltaFromBoards)) < 0.01,
+    a: Math.round(Number(delta)), b: Math.round(Number(deltaFromBoards)),
+  });
+
+  // 3. asking the change backwards negates it, and keeps the same slices
+  const reversed = await attributeFor({ endpoint: ENDPOINT, client, graph: GRAPH, ...attributionQuestion, from: '2025', to: '2024' });
+  const reversedDelta = reversed.result.attribution?.delta;
+  const sameSlices = JSON.stringify((attribution.result.attribution?.contributions || []).map((item) => item.value).sort())
+    === JSON.stringify((reversed.result.attribution?.contributions || []).map((item) => item.value).sort());
+  checks.push({
+    name: '2024→2025 与 2025→2024：delta 取反，切片不变',
+    detail: `${Math.round(Number(delta))} vs ${Math.round(Number(reversedDelta))}；切片相同=${sameSlices}；和校验=${reversed.result.attribution?.decompositionAddsUp}`,
+    pass: Math.abs(Number(delta) + Number(reversedDelta)) < 0.01 && sameSlices && reversed.result.attribution?.decompositionAddsUp === true,
+    a: Math.round(Number(delta)), b: Math.round(Number(reversedDelta)),
+  });
+
+  // 4. a metric named by its expression is the same metric
+  const expressionMetric = await dashboardFor({ endpoint: ENDPOINT, client, graph: GRAPH, write: false, metric: 'SUM(cost)', year: '2025' });
+  const expressionId = expressionMetric.dashboard.tiles.find((tile) => tile.id.endsWith('|total'))?.id;
+  checks.push({
+    name: '按表达式引用指标（SUM(cost)）= 按 id（metric/成本）',
+    detail: `解析到 ${expressionId || '未解析'}`,
+    pass: expressionId === 'metric/成本|total',
+    a: expressionId || '(none)', b: 'metric/成本|total',
+  });
+
+  // 5. a dimension named by a table-qualified column is the same dimension
+  const qualified = await dashboardFor({ endpoint: ENDPOINT, client, graph: GRAPH, write: false, metric: '营收', year: '2025', dimensions: ['sales_day.channel'] });
+  const breakdown = qualified.dashboard.tiles.find((tile) => tile.id.includes('|breakdown|'));
+  checks.push({
+    name: '按表限定列引用维度（sales_day.channel）= dim/渠道',
+    detail: `解析到 ${breakdown?.id || '未解析'}`,
+    pass: breakdown?.id === 'metric/营收|breakdown|dim/渠道',
+    a: breakdown?.id || '(none)', b: 'metric/营收|breakdown|dim/渠道',
+  });
+
+  return checks;
+}
+
 /** Controls: different questions, which must NOT agree (or the check above proves nothing). */
 const controls = [
   {
@@ -208,53 +344,106 @@ async function evaluate(group) {
 
 const main = async () => {
   const checked = await evaluate(pairs);
+  const spoken = await evaluatePhrasings();
+  const proven = await evaluateIdentities();
   const controlled = await evaluate(controls);
   const failures = [
     ...checked.filter((row) => !row.same).map((row) => `NOT STABLE: ${row.name}`),
+    ...spoken.flatMap((group) => group.rows.filter((row) => !row.same)
+      .map((row) => `PHRASING NOT STABLE: ${row.label}${row.reason ? ` (${row.reason})` : ''}`)),
+    ...proven.filter((check) => !check.pass).map((check) => `IDENTITY BROKEN: ${check.name}`),
     ...controlled.filter((row) => row.same).map((row) => `CONTROL DID NOT DIFFER: ${row.name}`),
   ];
 
   if (json) {
-    console.log(JSON.stringify({ endpoint: ENDPOINT, graph: GRAPH, pairs: checked, controls: controlled, failures }, null, 2));
+    console.log(JSON.stringify({ endpoint: ENDPOINT, graph: GRAPH, pairs: checked, phrasings: spoken, identities: proven, controls: controlled, failures }, null, 2));
   } else {
     console.log(`stability: ${ENDPOINT} · model ${GRAPH}\n`);
+    console.log('### A. 同一个问题的不同写法（必须一致）\n');
     console.log('| # | 问题 | 写法 A | 写法 B | 结果 | 值 |');
     console.log('|---|---|---|---|---|---|');
     checked.forEach((row, index) => {
       console.log(`| ${index + 1} | ${row.name} | ${row.forms[0]} | ${row.forms[1]}${row.forms[2] ? ` / ${row.forms[2]}` : ''} | ${row.same ? '一致 ✅' : '不一致 ❌'} | ${row.value} |`);
     });
-    console.log('\n| 对照（必须不同） | 写法 A | 写法 B | 结果 | A / B |');
+
+    console.log('\n### B. 自然语言问句（不同问法必须解析成同一请求）\n');
+    for (const group of spoken) {
+      console.log(`**${group.name}** — 基线 ${group.baseline}\n`);
+      console.log('| 问法 | 解析为 | 结果 | 值 |');
+      console.log('|---|---|---|---|');
+      for (const row of group.rows) {
+        console.log(`| ${row.label} | ${row.understood.replace(/\|/g, '\|')} | ${row.same ? '一致 ✅' : '不一致 ❌'} | ${row.value ?? row.reason ?? '-'} |`);
+      }
+      console.log('');
+    }
+
+    console.log('### C. 恒等式（不同的问题之间必须成立的关系）\n');
+    console.log('| 恒等式 | 结果 | A | B | 说明 |');
+    console.log('|---|---|---|---|---|');
+    for (const check of proven) {
+      console.log(`| ${check.name} | ${check.pass ? '成立 ✅' : '不成立 ❌'} | ${check.a} | ${check.b} | ${check.detail.replace(/\|/g, '\\|')} |`);
+    }
+
+    console.log('\n### D. 对照（换一个问题，结果必须变）\n');
+    console.log('| 对照 | 写法 A | 写法 B | 结果 | A / B |');
     console.log('|---|---|---|---|---|');
     controlled.forEach((row) => {
       console.log(`| ${row.name} | ${row.forms[0]} | ${row.forms[1]} | ${row.same ? '相同 ❌（对照失效）' : '不同 ✅'} | ${row.results[0].value} / ${row.results[1].value} |`);
     });
-    console.log(failures.length ? `\n${failures.length} problem(s):\n- ${failures.join('\n- ')}` : `\n${checked.length} pairs agree, ${controlled.length} controls differ.`);
+    console.log(failures.length ? `\n${failures.length} problem(s):\n- ${failures.join('\n- ')}` : `\n${checked.length} 组等价写法、${spoken.reduce((sum, group) => sum + group.rows.length, 0)} 种问法、${proven.length} 条恒等式成立，${controlled.length} 组对照不同。`);
   }
 
   if (doc) {
     const path = join(PACKAGE, doc);
     mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, renderDoc(checked, controlled, failures));
+    writeFileSync(path, renderDoc({ checked, spoken, proven, controlled, failures }));
     console.log(`\nwritten to ${path}`);
   }
   process.exit(failures.length ? 1 : 0);
 };
 
-function renderDoc(checked, controlled, failures) {
+function renderDoc({ checked, spoken, proven, controlled, failures }) {
   const lines = [];
-  lines.push('# 稳定性测试：同一个问题，两种文法，一个答案');
+  lines.push('# 稳定性测试：同一个问题，不同问法，一个答案');
   lines.push('');
   lines.push('本文件由 `node verification/check-stability.mjs --doc docs/STABILITY.md` 生成（对着运行中的 PhoenixGraph 与');
-  lines.push(`\`${GRAPH}\` 模型执行）。比较的是**完整结果指纹**——每个 tile 的 id、是否执行、金额/行、拒答理由，以及归因的`);
-  lines.push('before/after/delta/贡献序列/和校验/限制条数——而不是只看一个数字。');
+  lines.push(`\`${GRAPH}\` 模型执行）。比较的是**完整结果指纹**——每个 tile 的 id / 是否执行 / 金额或行 / 拒答理由，归因的`);
+  lines.push('before / after / delta / 贡献序列 / 和校验 / 限制条数——而不是只看一个数字。四组：');
   lines.push('');
-  lines.push('| # | 问题（两种写法应等价） | 写法 A | 写法 B | 结果 | 值 |');
+  lines.push(`- **A. 等价写法**：${checked.length} 组，同一个请求的两种（或三种）拼写；`);
+  lines.push(`- **B. 自然语言问句**：${spoken.reduce((sum, group) => sum + group.rows.length, 0)} 种说法，经 \`src/ask.mjs\` 解析成结构化请求后与基线比较；`);
+  lines.push(`- **C. 恒等式**：${proven.length} 条，不同问题之间必须成立的关系（年 = 月之和、归因 = 两个看板之差、反向取反、表达式/表限定列引用）；`);
+  lines.push(`- **D. 对照**：${controlled.length} 组换了问题，结果必须不同（否则前面什么也没证明）。`);
+  lines.push('');
+  lines.push('## A. 等价写法');
+  lines.push('');
+  lines.push('| # | 问题 | 写法 A | 写法 B | 结果 | 值 |');
   lines.push('|---|---|---|---|---|---|');
   checked.forEach((row, index) => {
     lines.push(`| ${index + 1} | ${row.name} | ${row.forms[0]} | ${row.forms[1]}${row.forms[2] ? ` / ${row.forms[2]}` : ''} | ${row.same ? '一致 ✅' : '不一致 ❌'} | ${row.value} |`);
   });
   lines.push('');
-  lines.push('## 对照：换一个问题，结果必须变');
+  lines.push('## B. 自然语言问句');
+  for (const group of spoken) {
+    lines.push('');
+    lines.push(`### ${group.name}（基线：${group.baseline}）`);
+    lines.push('');
+    lines.push('| 问法 | 解析为 | 结果 | 值 |');
+    lines.push('|---|---|---|---|');
+    for (const row of group.rows) {
+      lines.push(`| ${row.label} | ${row.understood.replace(/\|/g, '\|')} | ${row.same ? '一致 ✅' : '不一致 ❌'} | ${row.value ?? row.reason ?? '-'} |`);
+    }
+  }
+  lines.push('');
+  lines.push('## C. 恒等式');
+  lines.push('');
+  lines.push('| 恒等式 | 结果 | A | B | 说明 |');
+  lines.push('|---|---|---|---|---|');
+  for (const check of proven) {
+    lines.push(`| ${check.name} | ${check.pass ? '成立 ✅' : '不成立 ❌'} | ${check.a} | ${check.b} | ${check.detail.replace(/\|/g, '\|')} |`);
+  }
+  lines.push('');
+  lines.push('## D. 对照');
   lines.push('');
   lines.push('| 对照 | 写法 A | 写法 B | 结果 | A / B |');
   lines.push('|---|---|---|---|---|');
@@ -266,16 +455,12 @@ function renderDoc(checked, controlled, failures) {
   lines.push('');
   lines.push(failures.length
     ? `发现 ${failures.length} 个问题：${failures.map((failure) => `\`${failure}\``).join('、')}。`
-    : `${checked.length} 组等价写法全部得到同一份结果，${controlled.length} 组对照全部不同。`);
-  lines.push('');
-  lines.push('覆盖的等价关系：指标（id / 名字 / 别名 / 绑定列）、维度（id / 名字 / 绑定列）、期间（字符串 / 数字 / 带空白）、');
-  lines.push('topN（数字 / 字符串）、`asOf`（ISO 时刻 / 日期 / epoch 毫秒）、事实图绑定（显式 / 取自模型）、指标选择（单数 /');
-  lines.push('数组 / 不选）、归因（指标与维度的四种写法、期间类型、时点）。');
+    : `A 组 ${checked.length} 组等价写法一致，B 组 ${spoken.reduce((sum, group) => sum + group.rows.length, 0)} 种问法全部解析成同一请求，C 组 ${proven.length} 条恒等式成立，D 组 ${controlled.length} 组对照全部不同。`);
   lines.push('');
   lines.push('## 复现');
   lines.push('');
   lines.push('```bash');
-  lines.push('node verification/check-stability.mjs              # 打印');
+  lines.push('node verification/check-stability.mjs              # 打印四组');
   lines.push('node verification/check-stability.mjs --doc docs/STABILITY.md');
   lines.push('```');
   return `${lines.join('\n')}\n`;

@@ -21,6 +21,7 @@ import {
 import { loadConfig } from './config.mjs';
 import { renderSimilar, similarWithGraph } from './similar.mjs';
 import { renderSchedule, runSchedule } from './schedule.mjs';
+import { askFor } from './service.mjs';
 import {
   readRiskCases, loadRiskManifest, riskDashboard, riskAttribution, renderRiskAttribution,
   renderRiskDashboardMarkdown, saveRiskDashboard,
@@ -44,6 +45,7 @@ Commands:
   attribute                attribute a change to one dimension
   risk-dashboard           risk KPI dashboard + ring evidence from the payment graph
   risk-attribute           risk change attribution + ring evidence + refutable hypotheses
+  ask <question>           a question in words -> the dashboard or the attribution it asks for
   similar <text>           vector similarity over the model, expanded through its relations
   schedule                 produce the dashboard + attribution for a list of periods, on a timer
   status                   endpoint, graphs, model counts, state file
@@ -216,6 +218,18 @@ async function main() {
       if (options.json) print(result, true);
       else console.log(result.markdown);
       return result.result.executed ? 0 : 1;
+    }
+    case 'ask': {
+      const question = options.sources.join(' ');
+      if (!question) throw new Error('ask needs a question (e.g. ask "2025年营收按渠道拆分，前3")');
+      const result = await askFor(question, { ...config, ...options, client });
+      if (options.json) print(result, true);
+      else {
+        console.log(result.ok ? `understood as ${result.kind}: ${JSON.stringify(result.request)}` : `not understood: ${result.reason}`);
+        if (result.markdown) console.log(`
+${result.markdown}`);
+      }
+      return result.ok ? 0 : 1;
     }
     case 'similar': {
       const text = options.sources.join(' ');

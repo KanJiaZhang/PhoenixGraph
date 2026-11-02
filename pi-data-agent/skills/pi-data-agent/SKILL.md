@@ -75,6 +75,14 @@ Contract for risk answers:
 - **The ledger is the boundary of the answer.** A period or slice missing from `risk-cases.csv` is not in the
   result; do not interpolate a zero for it.
 
+## A question in words
+
+`pg_data_ask(question)` parses the question against the model and returns `understood as …` plus the answer: a
+dashboard when the question names a period, an attribution when it names two periods and a change word. Read the
+`understood` line back to the user when the phrasing was loose - it is the evidence that the metric, the dimension,
+the periods and the top-N were read the way they meant. If the parse is refused, quote the alternatives it lists
+instead of picking one.
+
 ## Time, similarity and the schedule
 
 - **A definition has a window.** `asOf` answers with the definitions in force at that instant; without it you get
