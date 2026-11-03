@@ -106,6 +106,11 @@ Three ways, by scale:
 #    or tools/bench-load.sh, which assembles the classpath (see docs/BENCHMARK.md)
 ```
 
+An Aerospike graph that was emptied (a new container, a dropped namespace) is restored with
+[the runbook](DATA-RESTORE.md) - one loader per graph, plus `tools/generate-payment-graph.mjs` for the payment
+network, which seeds the distribution the query docs and the UI walk (`KG_PARALLELISM=1` for the knowledge graphs:
+parallel seeding loses edge bins).
+
 For a large analytical import, a loader writes straight into the ordered tables (the same layout the
 engine scans); the write API is for the transactional, request-driven path. A RocksDB graph is loaded,
 not written over REST; the write API applies to Aerospike graphs. See [API.md §5](API.md#5-writes).

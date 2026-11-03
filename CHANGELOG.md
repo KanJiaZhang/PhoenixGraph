@@ -95,6 +95,22 @@ All notable changes to this project are recorded here. The format follows
   attribution's delta is the difference of the two dashboards, asking the change backwards negates the delta and
   keeps the slices, a metric named by its expression is that metric, a dimension named by a table-qualified column is
   that dimension); D, four controls that must differ. `docs/STABILITY.md` is written from the run.
+- **The demo graphs can be restored, and the payment one is generated rather than copied**
+  (`docs/DATA-RESTORE.md`, `tools/generate-payment-graph.mjs`). The Aerospike sets are the one part of this
+  repository that is not a file, so a new container leaves `payment-graph`, `sanguo-kg`, `kg-entity-graph` and
+  `agent-demo` answering with nothing while their schemas still exist. The runbook names the loader for each, and
+  the new generator builds a payment network with a distribution worth querying: 6 000 accounts in three behaviour
+  clusters (8-dimensional `accountVector`, indexed), 3 000 IPs and 2 400 phones shared by 1-4 accounts, and ~24 000
+  payments with log-normal amounts and zipf-chosen targets (out-degree p50 3 / p90 7 / p99 31 / max 444). It is
+  deterministic, additive, writes its vectors as property updates and rebuilds the HNSW index once (writing them
+  through the batch API re-indexes per row, which is what made 20 000 accounts take minutes). Restored on this
+  machine: 11 400 objects for `payment-graph`, 3 801 for `payment-graph-as-edge`, 11 418 vertices / 21 162 edges
+  for `sanguo-kg`, and 113 553 entity-shards / 149 678 edges for `kg-entity-graph` (NELL995).
+- **Parallel knowledge-graph seeding loses edges, and the runbook says so.** Seeding NELL995 with the default
+  `KG_PARALLELISM=8` wrote 149 678 edges but left the top hub with a degree of 377 instead of 2 237 - about 84 % of
+  its incident edges lost to last-writer-wins on the same per-vertex edge bin. `KG_PARALLELISM=1` produces the exact
+  degree (2 237; Sanguo's 曹操 252), which is what the integration tests assert; the proper fix belongs in
+  `AerospikeEdgeStore` (an optimistic or locked read-modify-write).
 - **Every spelling of a reference resolves to one answer** (`src/resolve.mjs`, `verification/check-stability.mjs`).
   A metric or a dimension can be named by id, name, alias, bound property (`channel`, `revenue`) or column; a period as
   a string or a number; `asOf` as an ISO instant, a date or epoch millis; `topN` as either type; `metrics` as an array,
