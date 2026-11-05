@@ -24,6 +24,7 @@ import { loadConfig, remember, readJson, writeJson, stateFile, projectRoot } fro
 import { pathSegment, quote, unique } from './util.mjs';
 import { instantMs, isVersion, resolveAsOf } from './validity.mjs';
 import { parseQuestion } from './ask.mjs';
+import { planFor, planForQuestion, renderPlan } from './plan.mjs';
 
 export function clientFor(options = {}) {
   return new PhoenixClient({
@@ -233,6 +234,48 @@ export async function editDataAgent(operations, options = {}) {
 }
 
 /**
+ * The plan a request or a question would run - without running it.
+ *
+ * Every read product is built as a plan first (metric, dimensions, filters, algorithm, fact binding, definition
+ * instant), and an interactive caller shows that plan and waits for a yes. The model is loaded here once, so the
+ * plan and the execution cannot disagree about what was read.
+ */
+export async function previewFor(input, options = {}) {
+  const config = loadConfig(options);
+  const client = options.client || clientFor({ ...config, ...options });
+  const graph = options.graph || config.graph;
+  const model = options.model || await loadModel(client, graph, { client, asOf: options.asOf });
+  const plan = input.question
+    ? planForQuestion(model, input.question)
+    : planFor(model, { kind: input.kind, request: { ...input.request, asOf: options.asOf } });
+  return { plan, planText: renderPlan(plan), model, client, config, graph };
+}
+
+/**
+ * Plan, ask, then run. `confirm` is the caller's gate: it receives the plan and returns true to execute. Without
+ * it the request runs unconfirmed (scripts, tests, non-interactive modes), which the plan still records.
+ */
+export async function runPlanned(input, options = {}) {
+  const preview = await previewFor(input, options);
+  const { plan, planText, model, client, config, graph } = preview;
+  if (!plan.ok) {
+    return { ok: false, kind: plan.kind, plan, planText, confirmed: false, reason: plan.reason || plan.missing.join('; ') };
+  }
+  if (options.confirm) {
+    const approved = await options.confirm(plan, planText);
+    if (!approved) {
+      return { ok: false, kind: plan.kind, plan, planText, confirmed: false, cancelled: true, reason: 'the plan was not confirmed' };
+    }
+  }
+  if (plan.kind === 'attribution') {
+    const result = await attributeFor({ ...config, ...plan.request, client, graph, model, asOf: options.asOf });
+    return { ok: true, kind: 'attribution', plan, planText, confirmed: Boolean(options.confirm), result: result.result, markdown: result.markdown };
+  }
+  const result = await dashboardFor({ ...config, ...plan.request, client, graph, model, asOf: options.asOf, write: options.write });
+  return { ok: true, kind: 'dashboard', plan, planText, confirmed: Boolean(options.confirm), dashboard: result.dashboard, files: result.files, markdown: result.markdown };
+}
+
+/**
  * One question, in words: parse it against the model, then run the product it asks for.
  *
  * "2025年营收按渠道拆分，前3" and `{ metric: '营收', year: '2025', dimensions: ['渠道'], topN: 3 }` are the same
@@ -240,20 +283,18 @@ export async function editDataAgent(operations, options = {}) {
  * names nothing the model holds is refused with the alternatives instead of guessed.
  */
 export async function askFor(question, options = {}) {
-  const config = loadConfig(options);
-  const client = options.client || clientFor({ ...config, ...options });
-  const graph = options.graph || config.graph;
-  const model = await loadModel(client, graph, { client, asOf: options.asOf });
-  const parsed = parseQuestion(model, question);
-  if (!parsed.ok) return { ok: false, kind: parsed.kind, question, reason: parsed.reason, model: graph, asOf: model.asOf };
-  if (parsed.kind === 'attribution') {
-    const result = await attributeFor({ ...config, ...parsed.request, client, graph, asOf: options.asOf });
-    return { ok: true, kind: 'attribution', question, understood: parsed.understood, request: parsed.request, result: result.result, markdown: result.markdown };
+  // one code path for every front end: parse, plan, ask for a confirmation when the caller can ask, then run.
+  const result = await runPlanned({ question }, options);
+  if (!result.ok) {
+    return {
+      ...result, question,
+      understood: result.plan?.understood || null,
+      request: result.plan?.request || null,
+      model: result.plan?.model || options.graph || null,
+    };
   }
-  const result = await dashboardFor({ ...config, ...parsed.request, client, graph, asOf: options.asOf, write: options.write });
-  return { ok: true, kind: 'dashboard', question, understood: parsed.understood, request: parsed.request, dashboard: result.dashboard, files: result.files, markdown: result.markdown };
+  return { ...result, question, understood: result.plan?.understood || null, request: result.plan.request };
 }
-
 export async function dashboardFor(options = {}) {
   const config = loadConfig(options);
   const client = options.client || clientFor({ ...config, ...options });

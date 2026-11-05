@@ -76,3 +76,84 @@ test('/data graph commits session state and notifies', async () => {
     rmSync(cwd, { recursive: true, force: true });
   }
 });
+
+/** A fake HTTP layer: enough of the read path for a plan, and a record of everything asked. */
+function fakeFetch() {
+  const calls = [];
+  const nodes = [
+    { id: 'model/sales_model', entityType: 'Model', name: 'model/sales-model', dataGraph: 'sales-facts', vertexType: 'SalesDay' },
+    { id: 'metric/营收', entityType: 'Metric', name: '营收', expression: 'SUM(net_revenue)', graphProperty: 'net_revenue' },
+    { id: 'dim/日期', entityType: 'Dimension', name: '日期', graphProperty: 'year=year,month=month' },
+    { id: 'dim/渠道', entityType: 'Dimension', name: '渠道', graphProperty: 'channel' },
+  ];
+  const fetchImpl = async (url, init = {}) => {
+    const target = String(url);
+    const body = init.body ? JSON.parse(init.body) : {};
+    calls.push({ url: target, body });
+    const json = (value) => ({ ok: true, status: 200, text: async () => JSON.stringify(value) });
+    if (target.includes('/api/v1/graphs')) return json([{ name: 'sales-model', storage: 'Aerospike', vertexTypes: ['Node'], edgeTypes: ['Relation'] }]);
+    if (target.includes('/api/v1/query')) {
+      const gremlin = String(body.query || '');
+      const quoted = (gremlin.match(/'[^']+'/g) || []);
+      const ids = quoted.filter((value) => value !== "'Node'");
+      // the catalog read asks for the Model node alone; a node batch asks for several ids
+      if (gremlin.includes('elementMap') && ids.length === 1 && ids[0].startsWith("'model/")) {
+        return json([{ id: 'model/sales_model', nodeIds: nodes.map((node) => node.id), edgeIds: [] }]);
+      }
+      if (gremlin.includes("outE('Relation')")) return json([]);
+      if (quoted.includes("'Node'")) return json(nodes.filter((node) => ids.some((id) => id === `'${node.id}'`)));
+      return json([]);
+    }
+    return json({});
+  };
+  return { calls, fetchImpl };
+}
+function uiContext(approve) {
+  const asked = [];
+  return {
+    asked,
+    cwd: process.cwd(),
+    hasUI: true,
+    mode: 'tui',
+    ui: {
+      confirm: async (title, text) => { asked.push({ title, text }); return approve; },
+      notify() {},
+    },
+    sessionManager: { getBranch() { return []; } },
+  };
+}
+
+test('in an interactive session the tool shows the plan and executes nothing until the user agrees', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'pda-home-'));
+  try {
+    const fake = fakeFetch();
+    const extensionWith = extension;
+    const tools = new Map();
+    const pi = {
+      registerTool(tool) { tools.set(tool.name, tool); },
+      registerCommand() {}, on() {}, appendEntry() {}, events: { emit() {} },
+    };
+    extensionWith(pi, { env: {}, home, fetchImpl: fake.fetchImpl });
+
+    const declined = uiContext(false);
+    const debugAsk = await tools.get('pg_data_ask').execute('t0', { question: '2025年营收按渠道拆分，前3', graph: 'sales-model', autoApprove: true }, undefined, undefined, { hasUI: false, cwd: process.cwd(), sessionManager: { getBranch() { return []; } } });
+
+    const answer = await tools.get('pg_data_ask').execute('t1', { question: '2025年营收按渠道拆分，前3', graph: 'sales-model' }, undefined, undefined, declined);
+    assert.equal(declined.asked.length, 1, 'the user was asked once');
+    assert.match(declined.asked[0].text, /将执行：看板/);
+    assert.match(answer.content[0].text, /未执行（未确认）/);
+    assert.equal(answer.details.cancelled, true);
+    assert.equal(fake.calls.some((call) => String(call.url).includes('/api/v1/graphs/sales-model/batch')), false);
+
+    const accepted = uiContext(true);
+    const ran = await tools.get('pg_data_ask').execute('t2', { question: '2025年营收按渠道拆分，前3', graph: 'sales-model' }, undefined, undefined, accepted);
+    assert.equal(accepted.asked.length, 1, 'accepting also asks, then runs');
+    assert.equal(ran.details.confirmed, true);
+
+    // a session without a UI (print, JSON, a nested tool call) does not ask and says it was not confirmed
+    const headless = await tools.get('pg_data_ask').execute('t3', { question: '2025年营收按渠道拆分，前3', graph: 'sales-model' }, undefined, undefined, { hasUI: false, cwd: process.cwd(), sessionManager: { getBranch() { return []; } } });
+    assert.equal(headless.details.confirmed, false);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});

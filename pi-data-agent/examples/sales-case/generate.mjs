@@ -11,8 +11,10 @@
  *   node examples/sales-case/generate.mjs --graph other --years 2024,2025,2026
  */
 import process from 'node:process';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { clientFor } from '../../src/service.mjs';
-import { loadConfig } from '../../src/config.mjs';
+import { loadConfig, projectRoot } from '../../src/config.mjs';
 
 const CHANNELS = ['APP', 'WEB', 'MINI', 'STORE'];
 const REGIONS = ['华东', '华南', '华北'];
@@ -118,6 +120,17 @@ export async function importFacts(options = {}) {
   const config = loadConfig(options);
   const client = options.client || clientFor({ ...config, ...options });
   const ensured = await client.ensureGraph(graph, salesDaySchema(graph));
+  // A graph created over HTTP lives in the running instance only. Keeping its schema in the configured
+  // schema-dir (.pida-schemas) is what makes a restart serve it again - the same trick pi-data-agent uses for
+  // the model graph. Without this the fact graph disappears with the process and every dashboard refuses.
+  let schemaFile = null;
+  if (options.persistSchema !== false) {
+    const schemaDir = options.schemaDir || join(projectRoot(), '.pida-schemas');
+    mkdirSync(schemaDir, { recursive: true });
+    schemaFile = join(schemaDir, `${graph}.json`);
+    writeFileSync(schemaFile, `${JSON.stringify(ensured.schema, null, 2)}
+`);
+  }
   const requests = requestsFor(rows, ensured.schema);
   let written = 0;
   for (let index = 0; index < requests.length; index += 200) {
@@ -125,7 +138,7 @@ export async function importFacts(options = {}) {
     const results = await client.batch(graph, { vertices: chunk, edges: [] });
     written += (results || []).filter((result) => result && !result.error).length || chunk.length;
   }
-  return { graph, rows, written, created: Boolean(ensured.created), schema: ensured.schema?.name || graph };
+  return { graph, rows, written, created: Boolean(ensured.created), schema: ensured.schema?.name || graph, schemaFile };
 }
 
 if (process.argv[1] && process.argv[1].endsWith('generate.mjs')) {

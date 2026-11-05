@@ -83,6 +83,17 @@ All notable changes to this project are recorded here. The format follows
   transcript.
 - **A keyed fact graph works too.** `g.V('Type')` needs a type scan, which Aerospike cannot do; the model can now
   carry the fact vertex ids it was bound to (`factIds`) and a semantic query starts `g.V(id, ..., 'Type')`.
+- **The read products are confirmed before they run** (`src/plan.mjs`, `previewFor`/`runPlanned`, `pg_data_ask`/
+  `pg_data_dashboard`/`pg_data_attribute`, `/data ask|dashboard|attribute`, CLI `--confirm`). A dashboard or an
+  attribution resolves six things on the user's behalf - metric, dimension, rows, algorithm, fact graph, definition
+  instant - and used to do it silently. Now the request becomes a **plan** first: one line per decision, tagged
+  `explicit` / `resolved` (from a name, alias, binding or expression) / `default` / `missing`, with the traversal the
+  algorithm will run and the refusals it already knows about. In an interactive session (`ctx.hasUI`) the plan is
+  shown through `ctx.ui.confirm` and nothing executes until the user says yes; the CLI prompts on a TTY (`--confirm`
+  forces it, `--yes` skips it), and headless callers (print/JSON/RPC) run without a gate and report
+  `confirmed: false` instead of pretending somebody agreed. A declined plan returns `cancelled: true` with the plan
+  and touches no data - the test asserts the fact graph is not queried at all. `autoApprove: true` exists for a
+  caller that has already shown the plan itself.
 - **A question in words, and a stability check with four sections** (`src/ask.mjs`, `pg_data_ask`, `/data ask`, CLI
   `ask`, `verification/check-stability.mjs`). `ask` parses "2025年营收按渠道拆分，前3", "营收 2025 by 渠道 top3",
   "按渠道看下 2025 年的收入前三" and "2025 年销售额按 channel 拆解 top 3" into one request - metric by id, name, alias,

@@ -77,15 +77,21 @@ export class PhoenixClient {
 
   /** Validates, builds stores and registers a new graph; a previously served name needs `replace`. */
   ensureGraph(graph, schemaDraft, options = {}) {
-    return this.schema(graph).then(async (existing) => {
-      if (existing) return { created: false, schema: existing };
+    // A schema FILE on disk is not a served graph: the schema endpoint answers from the working directory and the
+    // classpath, so after a restart it happily describes a graph whose stores were never built. Only `/api/v1/graphs`
+    // says what this instance actually serves, and writing to an unserved graph fails with "Unknown graph".
+    return this.graphs().then((graphs) => (Array.isArray(graphs) ? graphs.some((candidate) => candidate.name === graph) : true))
+      .catch(() => true) // a service that cannot list graphs is not evidence that the graph is missing
+      .then(async (served) => {
+        const existing = served ? await this.schema(graph) : null;
+        if (existing) return { created: false, schema: existing };
       const saved = await this.createSchema(schemaDraft);
       if (!saved || saved.saved === false) {
         throw new PhoenixError(`Cannot create graph '${graph}': ${(saved?.errors || [saved?.message]).filter(Boolean).join('; ')}`, { body: saved, path: '/api/v1/schema' });
       }
-      const stored = await this.schema(graph);
-      return { created: true, schema: stored || existing, saved };
-    });
+        const stored = await this.schema(graph);
+        return { created: true, schema: stored || null, saved };
+      });
   }
 
   // ---- writes -------------------------------------------------------------------------------------

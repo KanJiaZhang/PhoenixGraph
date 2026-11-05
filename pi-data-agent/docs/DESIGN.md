@@ -258,6 +258,16 @@ and answering with five tiles fewer) was the worst kind of instability: a differ
 `verification/check-stability.mjs` runs seventeen pairs of equivalent spellings and four controls that must differ,
 comparing whole result fingerprints, and writes `docs/STABILITY.md`.
 
+**The plan is a value, and executing is a separate step.** A dashboard or an attribution resolves six things on the
+user's behalf (metric, dimension, rows, algorithm, fact graph, definition instant), so `src/plan.mjs` turns a request
+into a plan: one decision per line, each tagged `explicit` / `resolved` / `default` / `missing`, plus the traversal
+the algorithm will run and the refusals already known. `renderPlan` is the text a person is shown; `runPlanned` takes
+the plan, asks a caller-supplied `confirm(plan, text)` and only then executes - so "confirm first" is a property of the
+code path, not a convention a front end has to remember. The pi extension passes `ctx.ui.confirm` when the session has
+a UI (and no gate at all otherwise, which is why the result carries `confirmed: false` rather than a silent yes); the
+CLI prompts on a TTY (`--confirm` forces it, `--yes` skips it). A declined plan touches nothing: the test asserts the
+fact graph is not queried at all.
+
 **A question in words.** `src/ask.mjs` is a grammar over the model, not a language model: it looks for the metric
 (by id, name, alias, bound property or expression - longest match first, so 净营收 is not read as 营收), the
 dimension (after 按/by, or anywhere a dimension is named), the years (two years plus a change word makes an

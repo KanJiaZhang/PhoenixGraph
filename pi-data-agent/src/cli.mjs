@@ -21,7 +21,9 @@ import {
 import { loadConfig } from './config.mjs';
 import { renderSimilar, similarWithGraph } from './similar.mjs';
 import { renderSchedule, runSchedule } from './schedule.mjs';
-import { askFor } from './service.mjs';
+import { askFor, runPlanned } from './service.mjs';
+import { renderPlan } from './plan.mjs';
+import { createInterface } from 'node:readline/promises';
 import {
   readRiskCases, loadRiskManifest, riskDashboard, riskAttribution, renderRiskAttribution,
   renderRiskDashboardMarkdown, saveRiskDashboard,
@@ -83,6 +85,8 @@ Options:
   --schema-dir <dir>       where to keep the schema copy a restart discovers (default .pida-schemas)
   --no-write               do not write dashboard files
   --allow-delete           allow delete operations without confirm:true
+  --yes                    do not ask for confirmation (non-interactive callers)
+  --confirm                ask for confirmation even when stdin is not a terminal
   --help                   this text
 `;
 
@@ -130,6 +134,8 @@ function parse(argv) {
     else if (arg === '--schema-dir') options.schemaDir = value();
     else if (arg === '--no-write') options.write = false;
     else if (arg === '--allow-delete') options.allowDelete = true;
+    else if (arg === '--yes' || arg === '-y') options.yes = true;
+    else if (arg === '--confirm') options.confirm = true;
     else if (arg === '--help' || arg === '-h') options.help = true;
     else if (arg.startsWith('--')) throw new Error(`unknown option '${arg}'`);
     else positional.push(arg);
@@ -202,7 +208,24 @@ async function main() {
       return 0;
     }
     case 'dashboard': {
-      const result = await dashboardFor({ ...config, ...options, client });
+      const plannedBoard = !options.yes && (process.stdin.isTTY || options.confirm === true)
+        ? await runPlanned({ kind: 'dashboard', request: options }, {
+          ...config, client,
+          confirm: async (plan, planText) => {
+            console.log(planText || renderPlan(plan));
+            const readline = createInterface({ input: process.stdin, output: process.stdout });
+            try {
+              const answer = (await readline.question('执行这个查询？[y/N] ')).trim().toLowerCase();
+              return answer === 'y' || answer === 'yes';
+            } finally {
+              readline.close();
+            }
+          },
+        })
+        : null;
+      if (plannedBoard?.cancelled) { console.log('未执行（未确认）。'); return 0; }
+      if (plannedBoard && !plannedBoard.ok && plannedBoard.plan) { console.log(plannedBoard.planText); return 1; }
+      const result = plannedBoard?.ok ? { dashboard: plannedBoard.dashboard, files: plannedBoard.files, markdown: plannedBoard.markdown } : await dashboardFor({ ...config, ...options, client });
       if (options.json) print({ dashboard: result.dashboard, files: result.files }, true);
       else {
         console.log(result.markdown);
@@ -214,7 +237,24 @@ async function main() {
       if (!options.metric || !options.by || options.from == null || options.to == null) {
         throw new Error('attribute needs --metric, --by, --from and --to');
       }
-      const result = await attributeFor({ ...config, ...options, client });
+      const plannedAttribute = !options.yes && (process.stdin.isTTY || options.confirm === true)
+        ? await runPlanned({ kind: 'attribution', request: options }, {
+          ...config, client,
+          confirm: async (plan, planText) => {
+            console.log(planText || renderPlan(plan));
+            const readline = createInterface({ input: process.stdin, output: process.stdout });
+            try {
+              const answer = (await readline.question('执行这个归因？[y/N] ')).trim().toLowerCase();
+              return answer === 'y' || answer === 'yes';
+            } finally {
+              readline.close();
+            }
+          },
+        })
+        : null;
+      if (plannedAttribute?.cancelled) { console.log('未执行（未确认）。'); return 0; }
+      if (plannedAttribute && !plannedAttribute.ok && plannedAttribute.plan) { console.log(plannedAttribute.planText); return 1; }
+      const result = plannedAttribute?.ok ? { result: plannedAttribute.result, markdown: plannedAttribute.markdown } : await attributeFor({ ...config, ...options, client });
       if (options.json) print(result, true);
       else console.log(result.markdown);
       return result.result.executed ? 0 : 1;
@@ -222,7 +262,26 @@ async function main() {
     case 'ask': {
       const question = options.sources.join(' ');
       if (!question) throw new Error('ask needs a question (e.g. ask "2025年营收按渠道拆分，前3")');
-      const result = await askFor(question, { ...config, ...options, client });
+      // the terminal is the interactive mode here: show the plan and wait for a yes unless --yes was passed.
+      // Redirected stdin (a script, a pipe) means there is nobody to ask, so the plan still prints and the run
+      // proceeds - the same rule the extension applies with ctx.hasUI.
+      const interactive = !options.yes && (process.stdin.isTTY || options.confirm === true);
+      const result = await askFor(question, {
+        ...config, client, ...options,
+        confirm: interactive
+          ? async (plan, planText) => {
+            console.log(planText || renderPlan(plan));
+            const readline = createInterface({ input: process.stdin, output: process.stdout });
+            try {
+              const answer = (await readline.question('执行这个查询？[y/N] ')).trim().toLowerCase();
+              return answer === 'y' || answer === 'yes';
+            } finally {
+              readline.close();
+            }
+          }
+          : undefined,
+      });
+      if (result.cancelled) { console.log('未执行（未确认）。'); return 0; }
       if (options.json) print(result, true);
       else {
         console.log(result.ok ? `understood as ${result.kind}: ${JSON.stringify(result.request)}` : `not understood: ${result.reason}`);

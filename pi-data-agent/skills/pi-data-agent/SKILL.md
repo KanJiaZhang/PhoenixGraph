@@ -75,6 +75,21 @@ Contract for risk answers:
 - **The ledger is the boundary of the answer.** A period or slice missing from `risk-cases.csv` is not in the
   result; do not interpolate a zero for it.
 
+## Confirm before executing
+
+A dashboard or an attribution decides a lot on the user's behalf: which metric, which dimension, which rows, which
+algorithm, which fact graph, which definition instant. So every run goes through a plan first (`src/plan.mjs`), and in
+an interactive session the user confirms it before anything executes.
+
+- Call `pg_data_ask` (or the dashboard/attribution tool) and let the tool ask; do not pre-approve with
+  `autoApprove` unless the user asked for that explicitly.
+- The plan marks each decision: explicit, resolved (from a name/alias/binding), default, or a refusal. When the
+  answer comes back, quote the `confirmed` flag: `confirmed: false` means nobody was asked.
+- If the user declines, the result is `cancelled` and carries the plan. Show the plan, ask what to change (a
+  different metric, a period, a dimension), and run again - never re-run with `autoApprove` to "fix" a refusal.
+- A plan whose lines start with `!` will refuse when executed. Say why before running it, or offer to fix the model
+  (`pg_data_edit`) first.
+
 ## A question in words
 
 `pg_data_ask(question)` parses the question against the model and returns `understood as …` plus the answer: a

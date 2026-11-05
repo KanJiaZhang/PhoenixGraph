@@ -19,7 +19,8 @@ import {
 import { loadConfig, projectFile, readJson, stateFile, writeJson } from '../../src/config.mjs';
 import { renderSimilar, similarWithGraph } from '../../src/similar.mjs';
 import { renderSchedule, runSchedule } from '../../src/schedule.mjs';
-import { askFor } from '../../src/service.mjs';
+import { askFor, runPlanned } from '../../src/service.mjs';
+import { renderPlan } from '../../src/plan.mjs';
 import {
   readRiskCases, loadRiskManifest, riskDashboard, riskAttribution, renderRiskAttribution,
   renderRiskDashboardMarkdown, saveRiskDashboard,
@@ -111,6 +112,32 @@ export default function piDataAgentExtension(pi, options = {}) {
       + (state.lastBuild ? ` lastBuild=${state.lastBuild.at}` : '');
   }
 
+  /**
+   * The confirmation gate: in an interactive session the plan is shown and the user decides; anywhere else
+   * (print mode, JSON, RPC without UI, a tool called by another tool) it runs and the result says it was not
+   * confirmed. `autoApprove` exists for a caller that has already shown the plan itself.
+   */
+  function confirmationGate(ctx, params = {}) {
+    // no UI (print/JSON/RPC-without-dialog) or an explicit autoApprove: there is nobody to ask, so no gate is
+    // passed at all - the answer then records confirmed:false instead of pretending somebody agreed.
+    if (params.autoApprove === true) return undefined;
+    if (!ctx?.hasUI || typeof ctx.ui?.confirm !== 'function') return undefined;
+    return async (plan, planText) => ctx.ui.confirm('确认执行这个数据查询？', planText || renderPlan(plan));
+  }
+
+  /** The reply when the user declines: the plan, and nothing executed. */
+  function cancelledResult(planText, reason) {
+    return {
+      content: [{ type: 'text', text: `未执行（未确认）：
+
+${planText}
+
+${reason || ''}`.trim() }],
+      details: { ok: false, cancelled: true, planText },
+      isError: false,
+    };
+  }
+
   const contract = [
     'contract:',
     '- a metric without an expression is a term needing review; never invent a formula.',
@@ -171,15 +198,20 @@ export default function piDataAgentExtension(pi, options = {}) {
       },
       required: ['question'],
     },
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       try {
-        const result = await askFor(params.question, { ...config(params), client: client(params), graph: params.graph || state.graph, asOf: params.asOf });
+        const result = await askFor(params.question, {
+          ...config(params), client: client(params), graph: params.graph || state.graph, asOf: params.asOf,
+          autoApprove: params.autoApprove,
+          confirm: confirmationGate(ctx, params),
+        });
+        if (result.cancelled) return cancelledResult(result.planText, result.reason);
         const understood = result.ok ? `understood as ${result.kind}: ${JSON.stringify(result.request)}` : `not understood: ${result.reason}`;
         return {
           content: [{ type: 'text', text: `${understood}
 
 ${result.markdown || ''}`.trim() }],
-          details: { ok: result.ok, kind: result.kind, understood: result.understood || null, request: result.request || null, reason: result.reason || null, files: result.files || null },
+          details: { ok: result.ok, kind: result.kind, confirmed: result.confirmed === true, understood: result.understood || null, request: result.request || null, reason: result.reason || null, files: result.files || null, plan: result.plan || null },
           isError: result.ok !== true,
         };
       } catch (error) {
@@ -335,12 +367,20 @@ ${result.markdown || ''}`.trim() }],
         metrics: { type: 'array', items: { type: 'string' }, description: 'Metrics to show (default all)' },
         write: { type: 'boolean', description: 'Write the HTML/JSON files (default true)' },
         asOf: { type: 'string', description: 'Compute with the definitions in force at this instant (ISO date/time)' },
+        autoApprove: { type: 'boolean', description: 'Skip the confirmation dialog (default: ask when the session has a UI)' },
       },
       required: [],
     },
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       try {
-        const result = await dashboardFor({ ...config(params), client: client(params), topN: params.topN, dimensions: params.dimensions, metrics: params.metrics, year: params.year, asOf: params.asOf, write: params.write !== false });
+        const planned = await runPlanned({ kind: 'dashboard', request: params }, {
+          ...config(params), client: client(params), graph: params.graph || state.graph, asOf: params.asOf,
+          write: params.write !== false,
+          confirm: confirmationGate(ctx, params),
+        });
+        if (planned.cancelled) return cancelledResult(planned.planText, planned.reason);
+        if (!planned.ok) return { content: [{ type: 'text', text: `dashboard refused before running:\n\n${planned.planText}` }], details: { plan: planned.plan, reason: planned.reason }, isError: true };
+        const result = { dashboard: planned.dashboard, files: planned.files, markdown: planned.markdown, confirmed: planned.confirmed };
         return {
           content: [{ type: 'text', text: `${result.markdown}${result.files ? `\n\nhtml: ${result.files.html}\njson: ${result.files.json}` : ''}` }],
           details: { graph: result.dashboard.graph, dataGraph: result.dashboard.dataGraph, executed: result.dashboard.executed, refused: result.dashboard.refused, files: result.files, tiles: result.dashboard.tiles.map((tile) => ({ id: tile.id, kind: tile.kind, executed: tile.executed, reason: tile.reason })) },
@@ -366,12 +406,19 @@ ${result.markdown || ''}`.trim() }],
         to: { type: 'string', description: 'Later period, e.g. 2025' },
         graph: { type: 'string', description: 'Model graph (default: the session graph)' },
         asOf: { type: 'string', description: 'Compute with the definitions in force at this instant (ISO date/time)' },
+        autoApprove: { type: 'boolean', description: 'Skip the confirmation dialog (default: ask when the session has a UI)' },
       },
       required: ['metric', 'by', 'from', 'to'],
     },
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       try {
-        const result = await attributeFor({ ...config(params), client: client(params), metric: params.metric, by: params.by, from: params.from, to: params.to, asOf: params.asOf });
+        const planned = await runPlanned({ kind: 'attribution', request: params }, {
+          ...config(params), client: client(params), graph: params.graph || state.graph, asOf: params.asOf,
+          confirm: confirmationGate(ctx, params),
+        });
+        if (planned.cancelled) return cancelledResult(planned.planText, planned.reason);
+        if (!planned.ok) return { content: [{ type: 'text', text: `attribution refused before running:\n\n${planned.planText}` }], details: { plan: planned.plan, reason: planned.reason }, isError: true };
+        const result = { result: planned.result, markdown: planned.markdown, confirmed: planned.confirmed };
         return {
           content: [{ type: 'text', text: result.markdown }],
           details: { executed: result.result.executed, reason: result.result.reason, attribution: result.result.attribution, before: result.result.before?.total, after: result.result.after?.total },
@@ -567,8 +614,12 @@ ${result.markdown || ''}`.trim() }],
         if (command === 'ask') {
           const question = positional.join(' ');
           if (!question) { ctx.ui?.notify?.('usage: /data ask <question>', 'warning'); return; }
-          const result = await askFor(question, { ...config(), client: client(), graph: state.graph, asOf: flags['as-of'] });
-          ctx.ui?.notify?.(result.ok
+          const result = await askFor(question, {
+            ...config(), client: client(), graph: state.graph, asOf: flags['as-of'],
+            confirm: confirmationGate(ctx),
+          });
+          ctx.ui?.notify?.(result.cancelled ? `未执行（未确认）：
+${result.planText}` : result.ok
             ? `understood as ${result.kind}: ${JSON.stringify(result.request)}
 
 ${(result.markdown || '').slice(0, 5000)}`
