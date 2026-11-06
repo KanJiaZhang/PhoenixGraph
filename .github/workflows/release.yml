@@ -1,0 +1,123 @@
+# Cut a release: verify the tag, then publish the GitHub Release with the jars attached.
+#
+#   git tag -a v1.2.0 -m "1.2.0: ..." && git push origin v1.2.0
+#
+# The tag starts three workflows at once, each with one job:
+#
+#   release         (this one)  verify the release state and attach the two fat jars to a GitHub Release
+#   publish-images              push ghcr.io/<owner>/phoenixgraph-{http,web}:<version> and :latest
+#   publish-python              build the client wheel; publish to PyPI when credentials are configured
+#
+# The release notes are generated from CHANGELOG.md (tools/release-notes.mjs), so what the release says is the
+# section the repository already reviewed. Nothing here needs a secret beyond the workflow token.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  # a manual run re-creates the Release (and its notes) for a version that is already tagged
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'version, e.g. 1.2.0 (the tag v<version> must exist)'
+        required: true
+
+permissions:
+  contents: write        # create the Release and upload the jars
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # workflow_dispatch passes the version; a tag push derives it from the ref
+  VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+
+jobs:
+  verify:
+    name: the tag and the repository agree
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # check-release reads the tag history
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build the jars (tests ran in ci; this proves the release artifacts assemble)
+        run: ./mvnw -B -ntp -DskipTests package
+
+      - name: The release state agrees with itself
+        run: |
+          # a tag push must be strict (the tag exists); a manual run may be ahead of the tag, which the
+          # --expect-untagged mode is for
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            node tools/check-release.mjs --expect-untagged
+          else
+            node tools/check-release.mjs
+          fi
+
+      - name: The generated references match the controllers
+        run: |
+          node tools/api-endpoints.mjs --check
+          node tools/openapi.mjs --check
+
+      - name: The pi extension, the data-agent package and the MCP server
+        run: |
+          node --test extensions/phoenixgraph/test/*.test.mjs
+          node --test pi-data-agent/test/*.test.mjs
+          node --test tools/mcp-server.test.mjs
+
+      - name: The workflow and the manifests are coherent
+        run: |
+          node tools/check-ci.mjs
+          node tools/check-k8s.mjs
+
+      - name: The release notes come from the changelog
+        run: node tools/release-notes.mjs "${VERSION#v}" --out release-notes.md
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-artifacts
+          path: |
+            graph-http/target/graph-http-*.jar
+            graph-web/target/graph-web-*.jar
+            release-notes.md
+          if-no-files-found: error
+
+  publish-release:
+    name: GitHub Release
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-artifacts
+          path: dist
+
+      - name: Create the Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
+          name: PhoenixGraph ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+          body_path: dist/release-notes.md
+          files: |
+            dist/graph-http/target/graph-http-*.jar
+            dist/graph-web/target/graph-web-*.jar
+          fail_on_unmatched_files: true
+          # the notes are the changelog section, not a list of commits
+          generate_release_notes: false
+          make_latest: true
+
+      - name: What else the tag published
+        run: |
+          echo "::notice::images: ghcr.io/${{ github.repository_owner }}/phoenixgraph-http:${VERSION#v} and -web:${VERSION#v} (publish-images)"
+          echo "::notice::python: the wheel was built, published when PYPI_API_TOKEN or PYPI_TRUSTED_PUBLISHING is set (publish-python)"
+          echo "::notice::pi package: pi-data-agent is packed, published when NPM_TOKEN or NPM_TRUSTED_PUBLISHING is set (publish-npm)"

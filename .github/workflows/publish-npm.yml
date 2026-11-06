@@ -1,0 +1,91 @@
+# Pack the pi package on every release tag, and publish it when a credential path is configured.
+#
+#   pi-data-agent is the package this repository distributes to pi (keywords: pi-package, a `pi` manifest in
+#   package.json). Its own version in pi-data-agent/package.json is independent of the server tag, as the Python
+#   client's is, so a server release does not have to publish anything.
+#
+# The tarball is always built (it proves `pi install` would have something to install - the package test does the
+# same offline). The publish step runs only when one of two paths is configured:
+#
+#   * the repository secret NPM_TOKEN (an npm automation token), or
+#   * npm trusted publishing: set the repository variable NPM_TRUSTED_PUBLISHING=true and add a trusted publisher
+#     for this workflow on npm (the id-token: write permission is what it needs).
+#
+# With neither, the pack is uploaded as an artifact and the run says so instead of failing the tag.
+name: publish-npm
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pack:
+    name: build the pi package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: The package's own tests (manifest, extension, skill, prompt, tools)
+        working-directory: pi-data-agent
+        run: node --test test/*.test.mjs
+      - name: Pack
+        working-directory: pi-data-agent
+        run: |
+          npm pack --json > /tmp/pack.json
+          node -e 'const p=require("/tmp/pack.json")[0]; console.log(`${p.filename}  ${p.size} bytes  ${p.entryCount} files`)'
+          node -e 'const p=require("/tmp/pack.json")[0]; const want=["src/","extensions/","skills/","prompts/","verification/","docs/"]; for (const w of want) { if (!p.files.some((f) => f.path.startsWith(w))) { console.error("missing from the tarball: " + w); process.exit(1); } }'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pi-data-agent-tarball
+          path: pi-data-agent/*.tgz
+
+  publish:
+    name: publish to npm (when configured)
+    needs: pack
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write        # npm trusted publishing, when NPM_TRUSTED_PUBLISHING is set
+    env:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+      NPM_TRUSTED: ${{ vars.NPM_TRUSTED_PUBLISHING }}
+      # setup-node writes the registry into .npmrc; npm reads the token from this variable
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+      - uses: actions/download-artifact@v4
+        with:
+          name: pi-data-agent-tarball
+          path: tarball
+      - name: Where the credentials are
+        run: |
+          if [ -n "${NPM_TOKEN}" ]; then echo "publishing with NPM_TOKEN"; fi
+          if [ "${NPM_TRUSTED}" = "true" ]; then echo "publishing with npm trusted publishing"; fi
+          if [ -z "${NPM_TOKEN}" ] && [ "${NPM_TRUSTED}" != "true" ]; then
+            echo "::notice::no NPM_TOKEN secret and no NPM_TRUSTED_PUBLISHING variable: the tarball was built, npm was not touched"
+          fi
+      - name: Publish
+        if: env.NPM_TOKEN != '' || env.NPM_TRUSTED == 'true'
+        run: |
+          VERSION=$(node -p "require('./pi-data-agent/package.json').version")
+          set +e
+          npm publish tarball/*.tgz --access public --provenance
+          CODE=$?
+          set -e
+          if [ $CODE -ne 0 ]; then
+            # "cannot publish over the previously published versions" is a re-run of the tag, not a failure of this
+            # build: the version in package.json already is on npm
+            echo "::warning::npm publish exited $CODE (a version that already exists is not an error for a tag re-run)"
+          fi
+          echo "::notice::pi-data-agent $VERSION was published (or already existed)"

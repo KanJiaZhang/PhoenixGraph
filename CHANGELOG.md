@@ -106,6 +106,20 @@ All notable changes to this project are recorded here. The format follows
   attribution's delta is the difference of the two dashboards, asking the change backwards negates the delta and
   keeps the slices, a metric named by its expression is that metric, a dimension named by a table-qualified column is
   that dimension); D, four controls that must differ. `docs/STABILITY.md` is written from the run.
+- **The whole directory has a CI/CD pipeline, and it is documented and checked** (`docs/CI-CD.md`). CI keeps the
+  four jobs it had (unit + generated docs, both SDKs, the container path) and gains an **integration** job that runs
+  a real Aerospike and a real engine on every push for the checks that seed their own data (the context-graph case,
+  the input/limits contract), next to the nightly suite. A `v*` tag now starts a **release** workflow that verifies
+  the release state, builds the jars and publishes a GitHub Release whose body is generated from `CHANGELOG.md`
+  (`tools/release-notes.mjs`) with both jars attached - alongside the image, PyPI and new **npm** publish workflows
+  (the `pi-data-agent` tarball is always packed and checked, published only with `NPM_TOKEN` or trusted publishing).
+  **`deploy.yml`** renders `deploy/k8s` with the tag being deployed, asserts both images carry it, uploads the
+  rendered set, diffs it and applies only with `KUBE_CONFIG` plus `DEPLOY_ENABLED=true` behind a GitHub environment,
+  printing the rollback command. `dependabot.yml` keeps Maven, npm, pip and the actions moving. `tools/check-ci.mjs`
+  grew from a CI-only checker into a pipeline checker: it now asserts the release chain (tag trigger, verify before
+  publish, notes from the changelog, jars attached), the deploy guards, the npm pack checks, dependabot's
+  ecosystems - and, a real defect it caught, that **`deploy/k8s/kustomization.yaml` pinned `newTag: 0.2.0`** while the
+  manifests and the pom said 1.2.0, so `kubectl apply -k` would have deployed a year-old image.
 - **The demo graphs can be restored, and the payment one is generated rather than copied**
   (`docs/DATA-RESTORE.md`, `tools/generate-payment-graph.mjs`). The Aerospike sets are the one part of this
   repository that is not a file, so a new container leaves `payment-graph`, `sanguo-kg`, `kg-entity-graph` and

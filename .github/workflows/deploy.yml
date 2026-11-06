@@ -1,0 +1,132 @@
+# Deploy a released version to a cluster.
+#
+#   gh workflow run deploy -f environment=staging -f tag=1.2.0
+#   gh workflow run deploy -f environment=production -f tag=1.2.0 -f dry_run=false
+#
+# Manual by design: a merge is not a deployment, and a deploy needs the tag that was verified, an environment
+# (GitHub can gate it with reviewers) and a cluster credential the repository does not carry. The two steps are
+# separate so the manifests can always be rendered - the render proves the set builds with the tag being deployed,
+# and it is the artifact a reviewer can diff - while the apply needs KUBE_CONFIG.
+#
+#   secret KUBE_CONFIG   a kubeconfig with access to the target cluster (base64 or plain YAML)
+#   var    DEPLOY_ENABLED "true" to allow the apply step at all (a second lock next to the environment gate)
+name: deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'target environment (GitHub environments gate the production one)'
+        type: choice
+        options: [staging, production]
+        default: staging
+      tag:
+        description: 'image tag to deploy, e.g. 1.2.0 (must exist in GHCR)'
+        required: true
+      namespace:
+        description: 'kubernetes namespace'
+        default: default
+      dry_run:
+        description: 'render and diff only, do not apply'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  render:
+    name: render the manifests for ${{ inputs.tag }}
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.set.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Put the tag into the manifests (a deployment that pulls latest cannot be rolled back)
+        id: set
+        run: |
+          TAG="${{ inputs.tag }}"
+          TAG="${TAG#v}"
+          test -n "$TAG"
+          sed -i -E "s/^(    newTag: ).*/\1${TAG}/" deploy/k8s/kustomization.yaml
+          grep -E "newTag: " deploy/k8s/kustomization.yaml
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+      - name: Render
+        run: |
+          kubectl kustomize deploy/k8s > rendered.yaml
+          grep -E '^\s+image: ' rendered.yaml
+          test "$(grep -c "phoenixgraph-http:${{ steps.set.outputs.tag }}" rendered.yaml)" -ge 1
+          test "$(grep -c "phoenixgraph-web:${{ steps.set.outputs.tag }}" rendered.yaml)" -ge 1
+      - name: The rendered set is still coherent
+        run: node tools/check-k8s.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rendered-${{ inputs.environment }}
+          path: rendered.yaml
+
+  deploy:
+    name: apply to ${{ inputs.environment }} (${{ inputs.namespace }})
+    needs: render
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    env:
+      KUBE_CONFIG: ${{ secrets.KUBE_CONFIG }}
+      DEPLOY_ENABLED: ${{ vars.DEPLOY_ENABLED }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: rendered-${{ inputs.environment }}
+      - name: Is there a cluster to talk to?
+        run: |
+          if [ -z "${KUBE_CONFIG}" ]; then
+            echo "::notice::no KUBE_CONFIG secret: the manifests were rendered and validated, nothing was applied"
+            echo "cluster=false" >> "$GITHUB_OUTPUT"
+          elif [ "${DEPLOY_ENABLED}" != "true" ]; then
+            echo "::warning::DEPLOY_ENABLED is not 'true': refusing to apply even though a kubeconfig exists"
+            echo "cluster=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "cluster=true" >> "$GITHUB_OUTPUT"
+          fi
+        id: gate
+      - name: Point kubectl at the cluster
+        if: steps.gate.outputs.cluster == 'true'
+        run: |
+          mkdir -p "$HOME/.kube"
+          if echo "${KUBE_CONFIG}" | base64 -d >/dev/null 2>&1; then
+            echo "${KUBE_CONFIG}" | base64 -d > "$HOME/.kube/config"
+          else
+            printf '%s\n' "${KUBE_CONFIG}" > "$HOME/.kube/config"
+          fi
+          chmod 600 "$HOME/.kube/config"
+          kubectl version --client=true
+          kubectl cluster-info
+      - name: Diff what would change
+        if: steps.gate.outputs.cluster == 'true'
+        run: kubectl -n "${{ inputs.namespace }}" diff -f rendered.yaml || true
+      - name: Apply
+        if: steps.gate.outputs.cluster == 'true' && inputs.dry_run == false
+        run: |
+          kubectl -n "${{ inputs.namespace }}" apply -f rendered.yaml
+          kubectl -n "${{ inputs.namespace }}" rollout status deploy/graph-http --timeout=300s
+          kubectl -n "${{ inputs.namespace }}" rollout status deploy/graph-web --timeout=300s
+      - name: Say what happened
+        run: |
+          if [ "${{ steps.gate.outputs.cluster }}" != "true" ]; then
+            echo "::notice::dry run: rendered manifests are in the artifact, nothing was applied"
+          elif [ "${{ inputs.dry_run }}" = "true" ]; then
+            echo "::notice::dry run: the diff above is what a deploy would change; re-run with dry_run=false to apply"
+          else
+            echo "::notice::deployed ${{ needs.render.outputs.tag }} to ${{ inputs.environment }}/${{ inputs.namespace }}"
+            echo "rollback: kubectl -n ${{ inputs.namespace }} rollout undo deploy/graph-http (and graph-web)"
+          fi
+      - name: Events when a rollout fails
+        if: failure()
+        run: |
+          kubectl -n "${{ inputs.namespace }}" get pods -o wide || true
+          kubectl -n "${{ inputs.namespace }}" describe deploy/graph-http | tail -40 || true
+          kubectl -n "${{ inputs.namespace }}" logs -l app.kubernetes.io/component=engine --tail=120 || true

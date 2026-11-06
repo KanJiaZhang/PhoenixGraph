@@ -1,0 +1,50 @@
+# Keep the build inputs moving without a human reading changelogs.
+#
+# Maven, npm (the TypeScript client and the pi packages) and the actions themselves. Weekly, grouped, and capped:
+# a repository that runs its whole unit suite in CI does not need a pull request per patch bump.
+version: 2
+updates:
+  - package-ecosystem: maven
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      maven-minor-patch:
+        patterns: ['*']
+        update-types: ['minor', 'patch']
+    ignore:
+      # the Aerospike client and the server image are pinned together; the image is pinned in docker-compose.yml
+      # and deploy/k8s, so a bump has to be one reviewed change, not a surprise PR
+      - dependency-name: com.aerospike:*
+        update-types: ['version-update:semver-major']
+
+  - package-ecosystem: npm
+    directory: /clients/typescript
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      typescript-client:
+        patterns: ['*']
+
+  - package-ecosystem: npm
+    directory: /pi-data-agent
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+
+  - package-ecosystem: pip
+    directory: /clients/python
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      actions:
+        patterns: ['*']

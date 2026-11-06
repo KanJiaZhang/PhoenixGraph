@@ -178,6 +178,55 @@ jobs:
         if: always()
         run: docker compose down -v
 
+  integration:
+    name: live service contract (engine + store, no browser)
+    runs-on: ubuntu-latest
+    # A per-push job that talks to a real store and a real engine: the two checks here seed their own graph, so
+    # they need no fixtures - they are the fastest honest answer to "does the API still behave".
+    services:
+      aerospike:
+        image: aerospike/aerospike-server:8.1.2.5
+        ports: ['3000:3000']
+        options: >-
+          --health-cmd "asinfo -v status"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Build the jars
+        run: ./mvnw -B -ntp -DskipTests package
+      - name: Start the engine
+        run: |
+          nohup java -jar graph-http/target/graph-http-*.jar > /tmp/http.log 2>&1 &
+          for i in $(seq 1 90); do
+            if curl -fsS localhost:8081/api/v1/health >/dev/null 2>&1; then break; fi
+            sleep 2
+          done
+          curl -fsS localhost:8081/api/v1/health
+          curl -fsS localhost:8081/api/v1/graphs | head -c 200
+      # the incident corpus builds its own graph and asserts the ranking, the window and the re-ingest
+      - name: The context-graph case, end to end
+        run: node verification/run.mjs --only incident-triage --retry 0
+      # the input contract and the request limits need no seed: they send the requests nobody intends to send
+      - name: The API contract (bad input, 404/405, limits, request id)
+        run: |
+          node verification/run.mjs --only input-contract --retry 0
+          node verification/run.mjs --only request-limits --retry 0
+      - name: Logs on failure
+        if: failure()
+        run: |
+          tail -200 /tmp/http.log || true
+          docker ps -a || true
+
   nightly:
     name: live verification suite (seeded stack)
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'

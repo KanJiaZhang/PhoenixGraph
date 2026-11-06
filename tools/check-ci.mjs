@@ -19,14 +19,29 @@ const check = (name, ok, detail) => {
 };
 
 const workflow = readFileSync(WORKFLOW, 'utf8');
+const release = readFileSync('.github/workflows/release.yml', 'utf8');
+const deployWorkflow = readFileSync('.github/workflows/deploy.yml', 'utf8');
+const publishNpm = readFileSync('.github/workflows/publish-npm.yml', 'utf8');
+const publishImages = readFileSync('.github/workflows/publish-images.yml', 'utf8');
+const dependabot = readFileSync('.github/dependabot.yml', 'utf8');
+const kustomization = readFileSync('deploy/k8s/kustomization.yaml', 'utf8');
 const pom = readFileSync('pom.xml', 'utf8');
 const compose = readFileSync('docker-compose.yml', 'utf8');
 
 // 1. the jobs the plan promises, each with a runner
-for (const job of ['unit', 'python-sdk', 'deployment', 'nightly']) {
+for (const job of ['unit', 'python-sdk', 'typescript-sdk', 'deployment', 'integration', 'nightly']) {
   check(`job '${job}' exists and has runs-on`, new RegExp(`^  ${job}:[\\s\\S]*?runs-on:`, 'm').test(workflow));
 }
 check('the nightly job is scheduled, not per-push', /cron:/.test(workflow) && /if: github\.event_name == 'schedule'/.test(workflow));
+// the integration job is the per-push answer to "does a real store + engine still behave", and it may only run
+// checks that seed themselves (a seeded-fixture check would fail on an empty store, which proves nothing)
+check('the integration job runs against a real store and starts the engine',
+  /^  integration:[\s\S]*?aerospike\/aerospike-server:/m.test(workflow) && /graph-http-\*\.jar/.test(workflow));
+check('the integration job runs checks that seed themselves',
+  /verification\/run\.mjs --only incident-triage/.test(workflow) && /--only input-contract/.test(workflow));
+check('the image publish workflow pushes to a registry on a tag',
+  /tags: \['v\*'\]/.test(publishImages) && /docker\/build-push-action/.test(publishImages));
+
 
 // 2. the commands exist as files, and the checks the plan promised are wired in
 for (const path of ['tools/api-endpoints.mjs', 'verification/run.mjs', 'tools/check-ci.mjs', 'tools/check-k8s.mjs']) {
@@ -52,6 +67,43 @@ check('the deployment job asserts the 404/405 error contract, not just a 200',
   /%\{http_code\}/.test(workflow) && /404/.test(workflow) && /error/.test(workflow));
 
 // 3. the copies of the version facts agree
+// 2b. the release chain: a tag publishes a GitHub Release whose notes come from the changelog
+for (const job of ['verify', 'publish-release']) {
+  check(`release.yml has the '${job}' job`, new RegExp(`^  ${job}:[\\s\\S]*?runs-on:`, 'm').test(release));
+}
+check('release.yml runs on a version tag and can be re-run by hand',
+  /tags: \['v\*'\]/.test(release) && /workflow_dispatch:/.test(release));
+check('release.yml verifies the tag before publishing', /check-release\.mjs/.test(release) && /needs: verify/.test(release));
+check('the release notes are generated from the changelog, and the generator exists',
+  /tools\/release-notes\.mjs/.test(release) && existsSync('tools/release-notes.mjs'));
+check('the release publishes the two jars as assets',
+  /graph-http-\*\.jar/.test(release) && /graph-web-\*\.jar/.test(release) && /fail_on_unmatched_files: true/.test(release));
+check('release.yml may write contents (a Release) and nothing else',
+  /permissions:[\s\S]*?contents: write/.test(release) && !/packages: write/.test(release));
+
+// 2c. deployment: manual, gated, and it renders the manifests before touching a cluster
+check('deploy.yml is manual only',
+  /workflow_dispatch:/.test(deployWorkflow) && !/^\s{2}push:/m.test(deployWorkflow.split('jobs:')[0]));
+check('deploy.yml needs an environment and a kubeconfig to apply',
+  /environment: \$\{\{ inputs\.environment \}\}/.test(deployWorkflow) && /secrets\.KUBE_CONFIG/.test(deployWorkflow));
+check('deploy.yml renders with the tag it deploys, and renders before applying',
+  /newTag/.test(deployWorkflow) && /kubectl kustomize/.test(deployWorkflow) && /needs: render/.test(deployWorkflow));
+check('deploy.yml defaults to a dry run', /dry_run:[\s\S]*?default: true/.test(deployWorkflow));
+check('deploy.yml says how to roll back', /rollout undo/.test(deployWorkflow));
+
+// 2d. the pi package: packed on every tag, published only with credentials
+check('publish-npm.yml packs the pi package on a tag', /tags: \['v\*'\]/.test(publishNpm) && /npm pack/.test(publishNpm));
+check('publish-npm.yml checks the tarball carries the resources before publishing',
+  /missing from the tarball/.test(publishNpm) && existsSync('pi-data-agent/package.json'));
+check('publish-npm.yml publishes only with a configured credential path',
+  /NPM_TOKEN/.test(publishNpm) && /NPM_TRUSTED_PUBLISHING/.test(publishNpm));
+
+// 2e. dependency updates are automated
+check('dependabot watches maven, npm, pip and the actions',
+  ['package-ecosystem: maven', 'package-ecosystem: npm', 'package-ecosystem: pip', 'package-ecosystem: github-actions']
+    .every((line) => dependabot.includes(line)));
+
+
 const javaInPom = (/<java\.version>([^<]+)</.exec(pom) || [])[1];
 const javaInCi = (/java-version: '([^']+)'/.exec(workflow) || [])[1];
 check('the CI JDK matches the pom', javaInPom === javaInCi, `pom=${javaInPom} ci=${javaInCi}`);
@@ -59,11 +111,23 @@ check('the CI JDK matches the pom', javaInPom === javaInCi, `pom=${javaInPom} ci
 const tagInCompose = (/image: aerospike\/aerospike-server:([^\s]+)/.exec(compose) || [])[1];
 check('the deployment compose pins an Aerospike version (not `latest`)', !!tagInCompose && tagInCompose !== 'latest', tagInCompose);
 const nightlyService = (/image: aerospike\/aerospike-server:([^\s]+)/.exec(workflow) || [])[1];
+// the kustomization overrides the tags in the manifests, so a stale newTag deploys the wrong version silently
+const kustomizeTags = [...kustomization.matchAll(/newTag:\s*([^\s#]+)/g)].map((match) => match[1]);
+const manifestTags = [...readFileSync('deploy/k8s/graph-http.yaml', 'utf8').matchAll(/image: phoenixgraph-http:([^\s#]+)/g)].map((match) => match[1]);
+const versionInPom = (/<version>([^<]+)<\/version>/.exec(pom) || [])[1];
+check('the kustomization tags match the manifests and the pom',
+  kustomizeTags.length >= 2 && kustomizeTags.every((tag) => tag === versionInPom)
+    && manifestTags.every((tag) => tag === versionInPom),
+  `pom=${versionInPom} kustomization=${kustomizeTags.join(',')} manifests=${manifestTags.join(',')}`);
+
 check('the CI service uses the same pinned store as the deployment', nightlyService === tagInCompose,
   `compose=${tagInCompose} ci=${nightlyService}`);
 
 // 4. YAML shape: tabs are illegal, and every job must have at least one step
-check('no tab characters (illegal in YAML)', !/\t/.test(workflow));
+for (const [name, body] of [['ci.yml', workflow], ['release.yml', release], ['deploy.yml', deployWorkflow],
+  ['publish-npm.yml', publishNpm], ['publish-images.yml', publishImages]]) {
+  check(`no tab characters in ${name} (illegal in YAML)`, !/	/.test(body));
+}
 const steps = (workflow.match(/^\s{6}- /gm) || []).length;
 check('the workflow has steps in every job', steps >= 8, `${steps} steps`);
 

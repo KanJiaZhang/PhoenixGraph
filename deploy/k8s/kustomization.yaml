@@ -14,9 +14,9 @@ resources:
 
 images:
   - name: phoenixgraph-http
-    newTag: 0.2.0
+    newTag: 1.2.0
   - name: phoenixgraph-web
-    newTag: 0.2.0
+    newTag: 1.2.0
 
 labels:
   - includeSelectors: false

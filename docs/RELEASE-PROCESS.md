@@ -62,6 +62,15 @@ release stops describing the code it claims to describe. It also probes the buil
 > `ghcr.io/<owner>/phoenixgraph-http` and `ghcr.io/<owner>/phoenixgraph-web`. The `docker push` row above is
 > for a registry you control (Docker Hub, a private registry); it is not required for GHCR.
 
+## 4a. What the tag does automatically
+
+Since 1.2.0 the tag is not a manual checklist any more: four workflows start with it. `release` verifies the release
+state and publishes the GitHub Release with the two fat jars and the notes generated from `CHANGELOG.md`
+(`tools/release-notes.mjs`); `publish-images` pushes both GHCR images; `publish-python` builds the wheel and
+publishes it when a credential is configured; `publish-npm` packs and (when configured) publishes the `pi-data-agent`
+package. `docs/CI-CD.md` is the map, including the secrets each one needs. The steps below are what is left for a tag
+that was published by hand before that, or for a note written outside the changelog.
+
 ## 4b. The two steps that need GitHub itself
 
 Both are one command with the `gh` CLI, which is not part of the build (it is not needed to compile, test or
