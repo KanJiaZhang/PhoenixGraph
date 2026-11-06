@@ -180,6 +180,8 @@ jobs:
 
   integration:
     name: live service contract (engine + store, no browser)
+    # the nightly run has the seeded suite already; this job exists for the push that changed something
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     # A per-push job that talks to a real store and a real engine: the two checks here seed their own graph, so
     # they need no fixtures - they are the fastest honest answer to "does the API still behave".
